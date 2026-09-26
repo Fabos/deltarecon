@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.5
+Negro Recon v0.6
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -34,8 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
+TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
 HOST_SOURCE_ORDER = [
     "crtsh",
@@ -1118,7 +1119,7 @@ def search_db(paths: dict[str, Path], pattern: str) -> None:
         print(f"  {icon(r['review_state'], r['classification'])} {r['url']}")
 
 
-def config_load() -> dict:
+def _legacy_config_load() -> dict:
     if not CONFIG_PATH.exists():
         return {}
     try:
@@ -1127,9 +1128,97 @@ def config_load() -> dict:
         return {}
 
 
-def config_save(domain: str, workspace: Path) -> None:
+def target_key(domain: str) -> str:
+    domain = domain.strip().lower().rstrip(".")
+    safe = "".join(ch if (ch.isalnum() or ch in ".-") else "-" for ch in domain)
+    return safe.strip("-.")
+
+
+def targets_load() -> dict:
+    data = {"last_target": None, "targets": {}}
+    if TARGETS_PATH.exists():
+        try:
+            raw = json.loads(TARGETS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data["last_target"] = raw.get("last_target")
+                targets = raw.get("targets")
+                if isinstance(targets, dict):
+                    data["targets"] = targets
+        except Exception:
+            pass
+
+    # One-time/backward-compatible migration from v0.5's single target config.
+    legacy = _legacy_config_load()
+    if legacy.get("domain") and legacy.get("workspace"):
+        key = target_key(str(legacy["domain"]))
+        if key and key not in data["targets"]:
+            data["targets"][key] = {
+                "domain": str(legacy["domain"]).strip().lower().rstrip("."),
+                "workspace": str(Path(str(legacy["workspace"])).expanduser()),
+            }
+        if not data.get("last_target"):
+            data["last_target"] = key
+    return data
+
+
+def targets_save(data: dict) -> None:
+    TARGETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TARGETS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def register_target(domain: str, workspace: Path, make_current: bool = True) -> str:
+    domain = domain.strip().lower().rstrip(".")
+    key = target_key(domain)
+    if not key:
+        raise ValueError("Target inválido")
+    workspace = workspace.expanduser()
+    data = targets_load()
+    data.setdefault("targets", {})[key] = {"domain": domain, "workspace": str(workspace)}
+    if make_current:
+        data["last_target"] = key
+    targets_save(data)
+    if make_current:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps({"domain": domain, "workspace": str(workspace)}, indent=2) + "\n", encoding="utf-8")
+    return key
+
+
+def set_current_target(key: str) -> None:
+    data = targets_load()
+    target = data.get("targets", {}).get(key)
+    if not target:
+        raise KeyError(key)
+    data["last_target"] = key
+    targets_save(data)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps({"domain": domain, "workspace": str(workspace)}, indent=2) + "\n", encoding="utf-8")
+    CONFIG_PATH.write_text(json.dumps(target, indent=2) + "\n", encoding="utf-8")
+
+
+def get_target(key: str) -> dict | None:
+    target = targets_load().get("targets", {}).get(key)
+    return dict(target) if isinstance(target, dict) else None
+
+
+def list_targets() -> list[dict]:
+    data = targets_load()
+    current = data.get("last_target")
+    result = []
+    for key, target in sorted(data.get("targets", {}).items(), key=lambda item: item[1].get("domain", item[0])):
+        result.append({"key": key, "domain": target.get("domain", key), "workspace": target.get("workspace", ""), "current": key == current})
+    return result
+
+
+def config_load() -> dict:
+    data = targets_load()
+    key = data.get("last_target")
+    target = data.get("targets", {}).get(key) if key else None
+    if target:
+        return dict(target)
+    return _legacy_config_load()
+
+
+def config_save(domain: str, workspace: Path) -> None:
+    register_target(domain, workspace, make_current=True)
 
 
 def default_workspace(domain: str) -> Path:

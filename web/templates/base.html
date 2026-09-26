@@ -8,13 +8,20 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
+    <a class="brand" href="{{ target_base }}/"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
     <nav>
-      <a href="/">Dashboard</a>
-      <a href="/hosts">Hosts</a>
-      <a href="/tree">Árbol</a>
+      <a href="{{ target_base }}/">Dashboard</a>
+      <a href="{{ target_base }}/hosts">Hosts</a>
+      <a href="{{ target_base }}/tree">Árbol</a>
     </nav>
-    <div class="target"><span class="muted">Target</span><strong>{{ domain }}</strong></div>
+    <div class="target-switch-wrap">
+      <label for="target-switch">Target</label>
+      <select id="target-switch" data-target-switch>
+        {% for t in targets %}
+          <option value="/t/{{ t.key }}/" {% if t.key==target_key %}selected{% endif %}>{{ t.domain }}</option>
+        {% endfor %}
+      </select>
+    </div>
   </header>
   <main class="page">
     {% block content %}{% endblock %}

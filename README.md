@@ -1,109 +1,83 @@
-# Negro Recon 🐕 — v0.5
+# Negro Recon 🐕 — v0.6
 
 > **Olfatea donde otros no miran.**
 
-Negro es un workspace local para organizar recon de **Bug Bounty**. Mantiene el CLI para ejecutar y automatizar, y agrega una interfaz web para revisar, clasificar, priorizar y documentar activos sin perder contexto.
+Negro es un workspace local de recon para **Bug Bounty**. El CLI ejecuta discovery/inspecciones y la Web UI organiza la investigación: targets, hosts, resources, provenance, estados, prioridad, notas e historial.
+
+## Qué cambia en v0.6
+
+- **Multi-target Web UI**: varios programas/targets desde un solo `negro web`.
+- selector de target en la barra superior;
+- agregar un target nuevo desde el dashboard;
+- cada target conserva su workspace y su propia `inventory/negro.db`;
+- migración automática del target único de v0.5 a `~/.config/negro/targets.json`;
+- **Basic Inspect live**: al lanzarlo desde un host se muestra el progreso y la página se actualiza sola al terminar;
+- dashboard actualiza contadores mientras corren jobs;
+- botón **Abrir** para hosts desde inventario/árbol/dashboard;
+- botones **Abrir HTTPS / HTTP** en la ficha del host;
+- botón **Abrir recurso** para URLs/endpoints HTTP(S).
 
 ## Arquitectura
 
 ```text
-                    NEGRO
-                      │
-              ┌───────┴────────┐
-              │                │
-          CLI / Engine       Web UI
-              │                │
-    discovery / inspect     review / notes
-              │                │
-              └───────┬────────┘
-                      │
-                  SQLite DB
+                         NEGRO
+                           │
+                ┌──────────┴──────────┐
+                │                     │
+           CLI / Engine            Web UI
+                │                     │
+   discovery / inspect       review / targets / notes
+                │                     │
+                └──────────┬──────────┘
+                           │
+               un SQLite por target
 ```
 
-El mismo `inventory/negro.db` es usado por terminal y web.
+Los RAW siguen siendo evidencia/reproducibilidad. SQLite es la fuente de verdad para el estado de la investigación.
 
-## Fuentes automatizadas
+## Targets
 
-- `crt.sh`
-- Subfinder
-- Amass passive
-- GAU / OTX
-- GAU / URLScan
-- GAU / Wayback
-- GAU / Common Crawl
-
-Negro conserva `raw/`, `normalized/` y `delta/`, pero SQLite es la fuente de verdad para hosts, resources, estados, notas e historial.
-
-## Estados
-
-Cada host y resource tiene tres dimensiones independientes:
+La lista local vive en:
 
 ```text
-Revisión:
-  pending       todavía no revisado
-  in_progress   investigación abierta
-  reviewed      análisis terminado
-
-Clasificación:
-  unknown
-  informational
-  lead
-  discarded
-  finding
-
-Prioridad:
-  none
-  low
-  medium
-  high
+~/.config/negro/targets.json
 ```
 
-Ejemplos:
+Cada entrada apunta a un workspace independiente:
 
 ```text
-reviewed + discarded       revisado y cerrado sin finding
-in_progress + lead + high  señal prometedora; volver pronto
-reviewed + finding         impacto demostrado
+mercadolibre.com -> ~/Documents/recon/mercadolibre
+example.com      -> ~/recon/example.com
 ```
 
+La v0.6 importa automáticamente el target anterior guardado en `config.json`.
 
-## Actualizar desde v0.4
+### Agregar desde CLI
 
-Haz backup/commit de tu repo antes de reemplazar archivos. La v0.5 migra `inventory/negro.db` de forma conservadora: agrega `priority` y `events`, sin borrar hosts, resources, notas, inspecciones ni estados existentes.
-
-Después de copiar los archivos nuevos:
+Cualquier `init` registra el target:
 
 ```bash
-cd ~/Documents/recon/tools/deltarecon
-chmod +x negro.py install-web.sh
-./install-web.sh
+negro example.com -w ~/Documents/recon/example init
 ```
 
-Si `/usr/local/bin/negro` ya apunta a `negro.py`, no tienes que recrear el symlink.
+### Agregar desde Web
+
+```bash
+negro web
+```
+
+En el dashboard abre **+ Agregar target**, escribe el dominio y opcionalmente el workspace. Después puedes cambiar de target desde el selector superior sin reiniciar el servidor.
 
 ## Web UI
 
-La UI está diseñada para correr **sólo en localhost**. No tiene autenticación.
-
-### Instalar dependencias web
-
-Desde el repo:
+Instala las dependencias si aún no lo hiciste:
 
 ```bash
+chmod +x install-web.sh
 ./install-web.sh
 ```
 
-Esto crea `.venv/` e instala FastAPI, Uvicorn, Jinja2 y `python-multipart`.
-
-### Ejecutar
-
-Primero asegúrate de tener un target configurado. Por ejemplo:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre init
-```
-
-Luego:
+Arranca:
 
 ```bash
 negro web
@@ -115,141 +89,165 @@ Abre:
 http://127.0.0.1:8765
 ```
 
-Puerto alternativo:
+La UI no tiene autenticación. Por defecto escucha únicamente en localhost.
 
-```bash
-negro web --port 9000
+## Discovery integrado
+
+- `crt.sh`
+- Subfinder
+- Amass passive
+- GAU / OTX
+- GAU / URLScan
+- GAU / Wayback
+- GAU / Common Crawl
+
+GAU asocia automáticamente cada URL a su host/resource y conserva provenance.
+
+## Estados
+
+Cada host/resource conserva tres dimensiones:
+
+```text
+Review:
+  pending
+  in_progress
+  reviewed
+
+Classification:
+  unknown
+  informational
+  lead
+  discarded
+  finding
+
+Priority:
+  none
+  low
+  medium
+  high
 ```
 
-> No uses `--host 0.0.0.0` salvo que sepas exactamente lo que haces y tengas una capa de autenticación/proxy delante. Negro Web no implementa auth en v0.5.
+Ejemplos:
 
-## Qué permite la UI
+```text
+reviewed + discarded
+  investigado y cerrado sin finding
 
-- dashboard del target;
-- hosts y resources asociados;
-- árbol Host → Resources → Sources;
-- filtros por revisión, clasificación y prioridad;
-- cambiar estados desde formularios;
-- agregar notas;
-- lanzar `crt.sh`, Subfinder, Amass y providers de GAU de forma explícita;
-- ejecutar Basic Inspect sobre un único host;
-- ver DNS / TLS / HTTP de la última inspección;
-- historial de inspecciones;
-- auditoría de cambios de estado desde v0.5.
+in_progress + lead + high
+  investigación prometedora que debemos retomar
 
-Las tareas largas se ejecutan en threads locales y el dashboard muestra su estado. Si el proceso web se apaga, los jobs en memoria se pierden, aunque los resultados ya persistidos en SQLite/RAW permanecen.
-
-## CLI sigue disponible
-
-Dashboard:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre status
-```
-
-Fuentes:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources crtsh subfinder
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources amass
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider otx
-```
-
-Basic Inspect:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre inspect url8202.mercadolibre.com
-```
-
-Árbol:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre tree
-```
-
-Pendientes/en revisión:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre queue
-```
-
-Cambiar estado desde CLI:
-
-```bash
-negro mercadolibre.com \
-  -w ~/Documents/recon/mercadolibre \
-  mark host url8202.mercadolibre.com \
-  --review in_progress \
-  --classification lead \
-  --priority high \
-  --note "OTX encontró /wf; falta completar triage."
-```
-
-Cerrar un activo:
-
-```bash
-negro mercadolibre.com \
-  -w ~/Documents/recon/mercadolibre \
-  mark host url8202.mercadolibre.com \
-  --review reviewed \
-  --classification discarded \
-  --priority none \
-  --note "DNS/TLS/HTTP revisados. Sin impacto demostrable."
+reviewed + finding
+  impacto demostrado/documentado
 ```
 
 ## Basic Inspect
 
-Sobre un host seleccionado explícitamente, Negro recopila:
+Sólo se ejecuta sobre un host seleccionado explícitamente:
 
 ```text
-DNS: A / AAAA / CNAME
-TLS :443: subject / issuer / dates / SAN / handshake error
-HTTP /: status / Server / Location / Content-Type / Via / X-Powered-By
-HTTPS /: mismos headers, usando -k sólo para observar respuesta aunque el certificado sea inválido
+DNS
+  A
+  AAAA
+  CNAME
+
+TLS :443
+  subject
+  issuer
+  dates
+  SAN
+  handshake/error
+
+HTTP /
+HTTPS /
+  status
+  Server
+  Location
+  Content-Type
+  Via
+  X-Powered-By
 ```
 
-No sigue redirecciones automáticamente.
+No sigue redirecciones automáticamente y no marca el host como revisado.
 
-## Workspace
+Desde Web, al pulsar **Inspección básica**:
 
 ```text
-target/
-├── raw/
-│   └── inspect/<hostname>/<timestamp>.json
-├── normalized/
-├── delta/
-├── inventory/
-│   ├── all-hosts.txt
-│   ├── provenance.json
-│   ├── state.json
-│   └── negro.db
-└── notes/
+inicia job
+   ↓
+UI consulta estado
+   ↓
+termina
+   ↓
+la ficha se actualiza automáticamente
 ```
 
-## Estructura del repo
+## Abrir activos en navegador
+
+Desde la UI puedes abrir una pestaña nueva para revisar manualmente:
+
+- Host → HTTPS;
+- Host → HTTP;
+- Resource → URL exacta encontrada por la fuente histórica.
+
+Negro sólo genera botones para resources con esquema `http` o `https`.
+
+## Modelo de trabajo
 
 ```text
-deltarecon/
-├── negro.py              launcher
-├── negro_core.py         motor CLI / DB / discovery / inspect
-├── negro_web.py          aplicación FastAPI
-├── web/
-│   ├── templates/
-│   └── static/
-├── requirements.txt
-├── install-web.sh
-├── METHODOLOGY.md
-└── ROADMAP.md
+DISCOVER
+   ↓
+ASSOCIATE
+   ↓
+INSPECT
+   ↓
+ANALYZE
+   ↓
+CLASSIFY
+   ↓
+REMEMBER
 ```
 
-## Regla metodológica
+Negro organiza la evidencia; no decide que un activo sea vulnerable.
 
-```text
-DISCOVER → ASSOCIATE → INSPECT → ANALYZE → CLASSIFY → REMEMBER
+## CLI sigue disponible
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre status
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources crtsh subfinder
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources amass
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider otx
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre inspect url8202.mercadolibre.com
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre queue
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre leads
 ```
 
-Negro no decide que algo sea vulnerable por tener `admin`, un CNAME externo o TLS roto. Organiza evidencia; el investigador decide y documenta el impacto.
+## Lo siguiente
+
+No queremos integrar herramientas por cantidad. La próxima etapa debe añadir **señal distinta** y encajar en el modelo Host → Resource → Observation → Lead/Finding.
+
+Prioridades técnicas:
+
+1. Wayback/CDX directo, independiente de GAU;
+2. URLScan directo con metadata y recursos relacionados;
+3. Passive DNS;
+4. TLS SAN pivoting;
+5. GitHub/public code search;
+6. extracción de endpoints desde JavaScript/source maps;
+7. comparación automática de snapshots DNS/TLS/HTTP;
+8. content discovery dirigido e importable, nunca masivo por defecto.
+
+Prioridades de comodidad/orden:
+
+- cola de trabajo / “next action”;
+- tags personalizados;
+- evidencia/adjuntos por lead;
+- timeline más rico;
+- diffs entre inspecciones;
+- vista global de leads/findings entre targets;
+- export de finding a Markdown/HackerOne;
+- saved searches/filtros;
+- relaciones entre hosts, providers, IPs y resources.
 
 ## Uso responsable
 
-Úsalo sólo sobre activos autorizados. Respeta scope, restricciones de automatización, rate limits y reglas del programa. Negro v0.5 no incluye port scanning, brute force, directory fuzzing, credential attacks ni explotación automática.
+Usa Negro sólo sobre activos autorizados y respeta scope, rate limits y reglas de cada programa. La v0.6 no incluye port scanning, brute force, fuzzing masivo, credential attacks ni explotación automática.

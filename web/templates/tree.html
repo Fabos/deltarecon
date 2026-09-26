@@ -13,18 +13,18 @@
 {% for item in tree %}
 <details class="tree-host" {% if item.host.classification in ['lead','finding'] or item.host.priority=='high' %}open{% endif %}>
   <summary>
-    <span class="tree-line"><span class="node-dot class-{{ item.host.classification }}"></span><a href="/host/{{ item.host.id }}">{{ item.host.hostname }}</a></span>
+    <span class="tree-line"><span class="node-dot class-{{ item.host.classification }}"></span><a href="{{ target_base }}/host/{{ item.host.id }}">{{ item.host.hostname }}</a></span>
     <span class="badges"><span class="badge review-{{ item.host.review_state }}">{{ item.host.review_state }}</span><span class="badge class-{{ item.host.classification }}">{{ item.host.classification }}</span><span class="badge priority-{{ item.host.priority }}">{{ item.host.priority }}</span><span class="badge neutral">{{ item.host.resource_count }} resources</span></span>
   </summary>
   <div class="tree-children">
-    <div class="provenance">sources: {{ item.sources|join(', ') if item.sources else '-' }}</div>
+    <div class="tree-tools"><span class="provenance">sources: {{ item.sources|join(', ') if item.sources else '-' }}</span><a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer">Abrir host ↗</a></div>
     {% for res in item.resources %}
     <div class="tree-resource">
       <span class="branch">└─</span><span class="node-dot class-{{ res.row.classification }}"></span><code>{{ res.row.path }}{% if res.row.query %}?{{ res.row.query }}{% endif %}</code>
-      <span class="badges"><span class="badge review-{{ res.row.review_state }}">{{ res.row.review_state }}</span><span class="badge class-{{ res.row.classification }}">{{ res.row.classification }}</span><span class="source">{{ res.sources|join(', ') }}</span></span>
+      <span class="badges"><span class="badge review-{{ res.row.review_state }}">{{ res.row.review_state }}</span><span class="badge class-{{ res.row.classification }}">{{ res.row.classification }}</span><span class="source">{{ res.sources|join(', ') }}</span>{% if res.open_url %}<a class="open-link" href="{{ res.open_url }}" target="_blank" rel="noopener noreferrer">↗</a>{% endif %}</span>
     </div>
     {% endfor %}
-    {% if item.host.resource_count > item.resources|length %}<a class="more" href="/host/{{ item.host.id }}#resources">+ {{ item.host.resource_count - item.resources|length }} recursos más</a>{% endif %}
+    {% if item.host.resource_count > item.resources|length %}<a class="more" href="{{ target_base }}/host/{{ item.host.id }}#resources">+ {{ item.host.resource_count - item.resources|length }} recursos más</a>{% endif %}
   </div>
 </details>
 {% else %}<div class="panel empty">No hay activos con esos filtros.</div>{% endfor %}

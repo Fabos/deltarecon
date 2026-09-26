@@ -1,8 +1,8 @@
-# Negro Recon — Methodology v0.5
+# Negro Recon — Methodology v0.6
 
-Negro separa **descubrimiento** de **decisión**. Una herramienta puede encontrar miles de nombres; la metodología busca saber qué ya se revisó, qué quedó abierto y por qué.
+Negro separa **descubrimiento**, **observación** y **decisión humana**.
 
-## Flujo principal
+## Flujo
 
 ```text
 DISCOVER
@@ -18,13 +18,13 @@ CLASSIFY
 REMEMBER
 ```
 
-### 1. Discover
+## 1. Discover
 
-Fuentes pasivas/históricas encuentran hosts y URLs. Cada resultado conserva su provenance.
+Fuentes pasivas/históricas descubren hosts y URLs. Cada resultado conserva su provenance.
 
-### 2. Associate
+## 2. Associate
 
-Las URLs se vinculan al host correspondiente:
+Cada URL se vincula al hostname correspondiente:
 
 ```text
 api.example.com
@@ -33,41 +33,58 @@ api.example.com
 └── /errorux/config
 ```
 
-Si varias fuentes observan el mismo recurso, Negro mantiene un solo nodo con múltiples sources.
+Una URL observada por varias fuentes sigue siendo un solo resource con múltiples sources.
 
-### 3. Inspect
+## 3. Inspect
 
-Cuando un activo merece atención se ejecuta Basic Inspect, **dirigido a un host seleccionado**:
+Sobre un **host seleccionado explícitamente**:
 
-- `A`
-- `AAAA`
-- `CNAME`
-- TLS/SAN
-- HTTP `/`
-- HTTPS `/`
+- DNS A/AAAA/CNAME;
+- TLS :443 y SAN;
+- HTTP `/`;
+- HTTPS `/`.
 
-La inspección no marca automáticamente el activo como revisado.
+La inspección no cambia automáticamente review/classification.
 
-### 4. Analyze
+## 4. Analyze — checklist inicial
 
-Con la información básica preguntamos, en orden:
+Cuando un activo nos parece sospechoso seguimos el mismo orden:
 
 ```text
-¿Quién resuelve este hostname?
-¿Hay proveedor externo / SaaS?
-¿El TLS corresponde al hostname?
-¿Qué responde HTTP y HTTPS?
-¿Existe una redirección?
-¿Qué tecnología o producto parece ser?
-¿Qué resources ya conocemos por fuentes históricas?
-¿Tenemos una hipótesis concreta que justifique profundizar?
+1. Provenance
+   ¿quién lo encontró y cuándo?
+
+2. DNS
+   A / AAAA / CNAME
+   ¿propio, CDN, SaaS, legacy?
+
+3. TLS
+   ¿certificado válido para el hostname?
+   ¿qué SANs revela?
+   ¿qué issuer/provider aparece?
+
+4. HTTP / HTTPS
+   status
+   Server
+   Location
+   Content-Type
+   comportamiento HTTP vs HTTPS
+
+5. Recursos conocidos
+   ¿OTX/Wayback/URLScan ya conocen rutas concretas?
+
+6. Tecnología / integración
+   ¿qué aplicación/proveedor parece ser?
+
+7. Hipótesis
+   ¿qué señal concreta justifica profundizar?
 ```
 
-Evitar saltar directamente a fuzzing o scanning masivo. Si OTX/Wayback ya entregaron una ruta concreta, validar primero esa evidencia.
+No saltar a fuzzing masivo sólo porque un hostname sea raro. Primero usar la evidencia ya disponible.
 
-### 5. Classify
+## 5. Classify
 
-**Review state** describe cuánto trabajo humano se ha hecho:
+### Review state
 
 ```text
 pending
@@ -75,7 +92,7 @@ in_progress
 reviewed
 ```
 
-**Classification** describe la conclusión actual:
+### Classification
 
 ```text
 unknown
@@ -85,7 +102,7 @@ discarded
 finding
 ```
 
-**Priority** sólo ordena nuestro trabajo:
+### Priority
 
 ```text
 none
@@ -94,16 +111,16 @@ medium
 high
 ```
 
-Prioridad no significa severidad.
+Prioridad organiza nuestro tiempo; no equivale a severidad.
 
-### 6. Remember
+## 6. Remember
 
-Agregar una nota cuando una decisión no sea obvia. Una buena nota responde:
+Una nota útil responde:
 
 - qué vimos;
-- qué comprobamos;
+- qué validamos;
 - qué falta;
-- por qué lo dejamos abierto o cerrado.
+- por qué queda abierto/cerrado.
 
 Ejemplo:
 
@@ -113,28 +130,29 @@ Certificado no corresponde al hostname, pero no se encontró control externo
 ni impacto adicional. Cerrar como discarded.
 ```
 
-## Árbol
+## Multi-target
 
-El árbol no es una lista de findings. Es un mapa de superficie:
+Cada programa vive aislado:
 
 ```text
-target
-└── host
-    ├── resource
-    │   └── sources
-    ├── inspections
-    ├── notes
-    ├── state
-    └── priority
+Negro Web
+├── mercadolibre.com
+│   └── workspace + negro.db
+├── target-b.com
+│   └── workspace + negro.db
+└── target-c.net
+    └── workspace + negro.db
 ```
+
+Cambiar target en la UI nunca mezcla inventarios.
 
 ## Separación de fases
 
 ```text
-Passive discovery    automatización razonable según reglas del programa
-Active inspection    sólo al seleccionar un host
+Passive discovery    automatización razonable según las reglas
+Active inspection    host seleccionado explícitamente
 Deep enumeration     decisión explícita del investigador
-Exploitation         manual y sólo cuando scope/reglas lo permiten
+Exploitation         manual y dentro de scope/reglas
 ```
 
 ## Regla de evidencia
@@ -143,8 +161,4 @@ Exploitation         manual y sólo cuando scope/reglas lo permiten
 ASSET ≠ LEAD ≠ FINDING
 ```
 
-- hostname interesante → asset;
-- señal que justifica seguir → lead;
-- impacto reproducible → finding.
-
-Un CNAME externo, `admin` en una ruta, un certificado inválido o código fuente accesible no son findings por sí solos.
+Un CNAME externo, una ruta `admin`, un certificado inválido o código fuente accesible son señales; no findings por sí mismos.
