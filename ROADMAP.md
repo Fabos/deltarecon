@@ -1,52 +1,40 @@
 # Negro Recon — Roadmap
 
-Regla:
+## v0.5 — Web Foundation
 
-> **Aprender manualmente -> entender -> automatizar.**
+Implementado:
 
-## v0.3 implementado
+- CLI + Web UI sobre la misma SQLite;
+- dashboard;
+- inventario de hosts;
+- árbol host → resources → sources;
+- estados `pending / in_progress / reviewed`;
+- clasificación `unknown / informational / lead / discarded / finding`;
+- prioridad `none / low / medium / high`;
+- notas;
+- auditoría de cambios de estado;
+- Basic Inspect desde web;
+- lanzamiento explícito de crt.sh, Subfinder, Amass y GAU;
+- jobs locales en background.
 
-- crt.sh
-- Subfinder
-- Amass passive
-- GAU por provider
-- URLs -> host -> resource
-- SQLite (`negro.db`)
-- review state
-- classification
-- notes
-- árbol de assets
-- cola de pendientes
-- leads/findings
-- migración conservadora desde v0.2
+## Próximo — sólo después de usar v0.5 en casos reales
 
-## Próximo aprendizaje manual
+- mejorar timeline y provenance visual;
+- vistas de recursos más grandes/paginación;
+- comparación entre snapshots de inspección;
+- export/import de leads;
+- tags personalizados;
+- detección de cambios de DNS/TLS/HTTP entre inspecciones.
 
-- URLScan directo
-- Passive DNS
-- TLS SAN pivots
-- GitHub/public code search
+## Técnicas por aprender antes de automatizar
 
-## Más adelante
+- Passive DNS;
+- TLS SAN pivoting;
+- GitHub/public code search;
+- análisis de JavaScript/source maps;
+- content discovery dirigido;
+- fingerprints de SaaS/takeover basados en hipótesis.
 
-Importadores dirigidos para resultados de:
+Regla permanente:
 
-- content discovery
-- crawling
-- JS endpoints
-
-La herramienta no debe lanzar fuzzing masivo por defecto. Primero aprenderemos cada técnica y respetaremos las reglas específicas de cada programa.
-
-## Implementado en v0.4
-
-### Basic host triage
-
-Estado: AUTOMATIZADO / DIRIGIDO
-
-Un host a la vez:
-- DNS A / AAAA / CNAME
-- TLS certificate metadata
-- HTTP / HTTPS status and selected headers
-- snapshot JSON + SQLite history
-
-No convierte automáticamente un activo en `reviewed`; la clasificación sigue siendo humana.
+> aprender manualmente → entender señal/ruido → integrar al modelo de Negro.

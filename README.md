@@ -1,406 +1,255 @@
-# Negro Recon 🐕
+# Negro Recon 🐕 — v0.5
 
 > **Olfatea donde otros no miran.**
 
-Negro es una herramienta personal de enumeración y organización de superficie de ataque para **Bug Bounty autorizado**.
+Negro es un workspace local para organizar recon de **Bug Bounty**. Mantiene el CLI para ejecutar y automatizar, y agrega una interfaz web para revisar, clasificar, priorizar y documentar activos sin perder contexto.
 
-El objetivo no es ser un scanner automático de vulnerabilidades. La idea es aprender una técnica manualmente, entender qué aporta y luego automatizar únicamente la parte repetitiva.
+## Arquitectura
 
-## v0.3 — Qué cambia
+```text
+                    NEGRO
+                      │
+              ┌───────┴────────┐
+              │                │
+          CLI / Engine       Web UI
+              │                │
+    discovery / inspect     review / notes
+              │                │
+              └───────┬────────┘
+                      │
+                  SQLite DB
+```
 
-Automatizado:
+El mismo `inventory/negro.db` es usado por terminal y web.
+
+## Fuentes automatizadas
 
 - `crt.sh`
-- `Subfinder`
-- `Amass passive`
-- `GAU` (`OTX`, `URLScan`, `Wayback`, `Common Crawl`)
-- inspección básica dirigida por host (`DNS`, `TLS`, `HTTP/HTTPS`)
-- `Amass passive`
-- `GAU / OTX`
-- `GAU / URLScan`
-- `GAU / Wayback`
-- `GAU / Common Crawl`
+- Subfinder
+- Amass passive
+- GAU / OTX
+- GAU / URLScan
+- GAU / Wayback
+- GAU / Common Crawl
 
-Nuevo modelo de datos:
-
-```text
-TARGET
-└── HOST
-    ├── RESOURCE / endpoint
-    ├── SOURCE / provenance
-    ├── REVIEW STATE
-    ├── CLASSIFICATION
-    └── NOTES
-```
-
-Negro conserva también:
-
-```text
-RAW -> NORMALIZED -> DELTA -> INVENTORY
-```
-
-La base SQLite se guarda en:
-
-```text
-inventory/negro.db
-```
+Negro conserva `raw/`, `normalized/` y `delta/`, pero SQLite es la fuente de verdad para hosts, resources, estados, notas e historial.
 
 ## Estados
 
-Cada host y recurso tiene dos dimensiones separadas.
-
-### Review state
+Cada host y resource tiene tres dimensiones independientes:
 
 ```text
-pending   = todavía no se revisó
-reviewed  = ya se revisó manualmente
+Revisión:
+  pending       todavía no revisado
+  in_progress   investigación abierta
+  reviewed      análisis terminado
+
+Clasificación:
+  unknown
+  informational
+  lead
+  discarded
+  finding
+
+Prioridad:
+  none
+  low
+  medium
+  high
 ```
 
-### Classification
+Ejemplos:
 
 ```text
-unknown        = todavía sin conclusión
-informational  = aporta contexto/arquitectura, pero no hay vulnerabilidad
-lead           = sospechoso; requiere seguimiento
- discarded      = revisado y sin interés de seguridad
-finding        = impacto de seguridad confirmado
+reviewed + discarded       revisado y cerrado sin finding
+in_progress + lead + high  señal prometedora; volver pronto
+reviewed + finding         impacto demostrado
 ```
 
-Esto evita mezclar “ya lo miré” con “es vulnerable”.
 
-## Iconos del árbol
+## Actualizar desde v0.4
+
+Haz backup/commit de tu repo antes de reemplazar archivos. La v0.5 migra `inventory/negro.db` de forma conservadora: agrega `priority` y `events`, sin borrar hosts, resources, notas, inspecciones ni estados existentes.
+
+Después de copiar los archivos nuevos:
+
+```bash
+cd ~/Documents/recon/tools/deltarecon
+chmod +x negro.py install-web.sh
+./install-web.sh
+```
+
+Si `/usr/local/bin/negro` ya apunta a `negro.py`, no tienes que recrear el symlink.
+
+## Web UI
+
+La UI está diseñada para correr **sólo en localhost**. No tiene autenticación.
+
+### Instalar dependencias web
+
+Desde el repo:
+
+```bash
+./install-web.sh
+```
+
+Esto crea `.venv/` e instala FastAPI, Uvicorn, Jinja2 y `python-multipart`.
+
+### Ejecutar
+
+Primero asegúrate de tener un target configurado. Por ejemplo:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre init
+```
+
+Luego:
+
+```bash
+negro web
+```
+
+Abre:
 
 ```text
-[ ][?] pendiente / unknown
-[x][i] revisado / informational
-[x][-] revisado / discarded
-[ ][!] pendiente / lead
-[x][F] revisado / finding
+http://127.0.0.1:8765
 ```
 
----
+Puerto alternativo:
 
-# Instalación
+```bash
+negro web --port 9000
+```
 
-Requisitos:
+> No uses `--host 0.0.0.0` salvo que sepas exactamente lo que haces y tengas una capa de autenticación/proxy delante. Negro Web no implementa auth en v0.5.
 
-- Python 3
-- Subfinder
-- Amass (para su módulo)
-- GAU moderno (para fuentes históricas)
-- `dig`, `openssl` y `curl` para `inspect`
-- OWASP Amass
-- GAU moderno recomendado (`~/go/bin/gau`)
+## Qué permite la UI
 
-En Kali, Amass 5 puede instalar `/usr/bin/amass` como wrapper. Negro prefiere automáticamente:
+- dashboard del target;
+- hosts y resources asociados;
+- árbol Host → Resources → Sources;
+- filtros por revisión, clasificación y prioridad;
+- cambiar estados desde formularios;
+- agregar notas;
+- lanzar `crt.sh`, Subfinder, Amass y providers de GAU de forma explícita;
+- ejecutar Basic Inspect sobre un único host;
+- ver DNS / TLS / HTTP de la última inspección;
+- historial de inspecciones;
+- auditoría de cambios de estado desde v0.5.
+
+Las tareas largas se ejecutan en threads locales y el dashboard muestra su estado. Si el proceso web se apaga, los jobs en memoria se pierden, aunque los resultados ya persistidos en SQLite/RAW permanecen.
+
+## CLI sigue disponible
+
+Dashboard:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre status
+```
+
+Fuentes:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources crtsh subfinder
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre run --sources amass
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider otx
+```
+
+Basic Inspect:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre inspect url8202.mercadolibre.com
+```
+
+Árbol:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre tree
+```
+
+Pendientes/en revisión:
+
+```bash
+negro mercadolibre.com -w ~/Documents/recon/mercadolibre queue
+```
+
+Cambiar estado desde CLI:
+
+```bash
+negro mercadolibre.com \
+  -w ~/Documents/recon/mercadolibre \
+  mark host url8202.mercadolibre.com \
+  --review in_progress \
+  --classification lead \
+  --priority high \
+  --note "OTX encontró /wf; falta completar triage."
+```
+
+Cerrar un activo:
+
+```bash
+negro mercadolibre.com \
+  -w ~/Documents/recon/mercadolibre \
+  mark host url8202.mercadolibre.com \
+  --review reviewed \
+  --classification discarded \
+  --priority none \
+  --note "DNS/TLS/HTTP revisados. Sin impacto demostrable."
+```
+
+## Basic Inspect
+
+Sobre un host seleccionado explícitamente, Negro recopila:
 
 ```text
-/usr/lib/amass/amass
+DNS: A / AAAA / CNAME
+TLS :443: subject / issuer / dates / SAN / handshake error
+HTTP /: status / Server / Location / Content-Type / Via / X-Powered-By
+HTTPS /: mismos headers, usando -k sólo para observar respuesta aunque el certificado sea inválido
 ```
 
-Para GAU, Negro busca primero:
+No sigue redirecciones automáticamente.
+
+## Workspace
 
 ```text
-~/go/bin/gau
-```
-
-Luego `gau` en `PATH`, y como fallback `getallurls`.
-
-Dar permisos:
-
-```bash
-chmod +x negro.py
-```
-
-Instalar el comando global desde este repo:
-
-```bash
-sudo ln -sf \
-/home/kali/Documents/recon/tools/deltarecon/negro.py \
-/usr/local/bin/negro
-```
-
-Después:
-
-```bash
-negro
-```
-
----
-
-# Modo interactivo
-
-```bash
-negro
-```
-
-Menú principal:
-
-```text
-[1] Dashboard / estado
-[2] Ejecutar crt.sh
-[3] Ejecutar Subfinder
-[4] Ejecutar Amass passive
-[5] Ejecutar GAU (elegir provider)
-[6] Ver árbol de assets
-[7] Ver pendientes
-[8] Marcar / revisar asset
-[9] Ver leads / findings
-[10] Buscar
-[11] Ver fuentes
-[12] Cambiar target
-[0] Salir
-```
-
----
-
-# Modo CLI
-
-Todos los comandos pueden usarse sin menú.
-
-## Inicializar / migrar workspace
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-init
-```
-
-La migración es conservadora: importa el inventario v0.2 existente a SQLite sin borrar archivos ni estados.
-
-## crt.sh
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-run --sources crtsh
-```
-
-## Subfinder
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-run --sources subfinder
-```
-
-## Amass passive
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-run --sources amass
-```
-
-Amass puede tardar bastante. Negro usa el flujo v5:
-
-```text
-amass enum -passive
-        ↓
-amass subs -names
-        ↓
-hosts normalizados
-```
-
-## GAU / OTX
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-gau --provider otx
-```
-
-Otros providers:
-
-```bash
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider urlscan
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider wayback
-negro mercadolibre.com -w ~/Documents/recon/mercadolibre gau --provider commoncrawl
-```
-
-Negro diferencia:
-
-```text
-OK     = provider respondió y produjo datos
-EMPTY  = provider respondió correctamente con cero resultados
-ERROR  = timeout, error TLS, conexión, etc.
-```
-
-Un `ERROR` nunca se interpreta como cero resultados.
-
-GAU alimenta dos niveles:
-
-```text
-URL histórica
-    ↓
-HOST
-    ↓
-RESOURCE / path / query
-```
-
-Ejemplo conceptual:
-
-```text
-api.example.com
-├── /oauth/token       [gau_otx]
-├── /orders/           [gau_otx]
-└── /config            [gau_urlscan]
-```
-
-## Dashboard
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-status
-```
-
-Muestra hosts, recursos, pendientes, leads, findings y últimas ejecuciones.
-
-## Árbol
-
-Vista general:
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-tree
-```
-
-Un host específico:
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-tree --host api.mercadolibre.com
-```
-
-Más recursos por host:
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-tree --host api.mercadolibre.com --resource-limit 50
-```
-
-## Cola de pendientes
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-queue
-```
-
-## Marcar un host
-
-Ejemplo: revisado y descartado.
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-mark host artifacts.mercadolibre.com \
---review reviewed \
---classification discarded \
---note "Nexus público revisado; artefactos parecen intencionalmente públicos."
-```
-
-Ejemplo: dejar un lead pendiente.
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-mark host url8202.mercadolibre.com \
---review pending \
---classification lead \
---note "Certificado no coincide con hostname; falta revisar DNS/TLS/HTTP y /wf."
-```
-
-## Marcar un recurso
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-mark resource 'https://api.mercadolibre.com/errorux/config' \
---review reviewed \
---classification informational \
---note "Configuración pública revisada; sin impacto demostrado."
-```
-
-## Leads / findings
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-leads
-```
-
-## Buscar
-
-```bash
-negro mercadolibre.com \
--w ~/Documents/recon/mercadolibre \
-search session-replay
-```
-
-Busca tanto hostnames como URLs/resources.
-
----
-
-# Workspace v0.3
-
-```text
-mercadolibre/
+target/
 ├── raw/
-│   ├── crtsh.json
-│   ├── subfinder.txt
-│   ├── amass-enum.txt
-│   ├── amass-subs.txt
-│   ├── gau_otx.txt
-│   └── ...stderr.txt
-│
+│   └── inspect/<hostname>/<timestamp>.json
 ├── normalized/
-│   ├── crtsh.txt
-│   ├── subfinder.txt
-│   ├── amass.txt
-│   ├── gau_otx-hosts.txt
-│   ├── gau_otx-urls.txt
-│   └── ...
-│
 ├── delta/
-│   ├── crtsh-new.txt
-│   ├── subfinder-new.txt
-│   ├── amass-new.txt
-│   └── gau_otx-new.txt
-│
 ├── inventory/
 │   ├── all-hosts.txt
 │   ├── provenance.json
 │   ├── state.json
 │   └── negro.db
-│
 └── notes/
 ```
 
----
-
-# Regla metodológica
+## Estructura del repo
 
 ```text
-DISCOVERED
-    ↓
-PENDING
-    ↓
-REVIEWED
-    ├── DISCARDED
-    ├── INFORMATIONAL
-    ├── LEAD
-    └── FINDING
+deltarecon/
+├── negro.py              launcher
+├── negro_core.py         motor CLI / DB / discovery / inspect
+├── negro_web.py          aplicación FastAPI
+├── web/
+│   ├── templates/
+│   └── static/
+├── requirements.txt
+├── install-web.sh
+├── METHODOLOGY.md
+└── ROADMAP.md
 ```
 
-Un hostname raro no es una vulnerabilidad. Un certificado roto no es automáticamente un finding. Un CNAME externo no implica takeover. Un endpoint `admin` no implica acceso indebido.
+## Regla metodológica
 
-Ver `METHODOLOGY.md` para el checklist manual.
+```text
+DISCOVER → ASSOCIATE → INSPECT → ANALYZE → CLASSIFY → REMEMBER
+```
+
+Negro no decide que algo sea vulnerable por tener `admin`, un CNAME externo o TLS roto. Organiza evidencia; el investigador decide y documenta el impacto.
 
 ## Uso responsable
 
-Usa Negro exclusivamente sobre activos autorizados. Respeta scope, rate limits y restricciones del programa. Negro v0.3 sigue siendo **passive-first** y no hace brute force, fuzzing ni explotación automática.
+Úsalo sólo sobre activos autorizados. Respeta scope, restricciones de automatización, rate limits y reglas del programa. Negro v0.5 no incluye port scanning, brute force, directory fuzzing, credential attacks ni explotación automática.

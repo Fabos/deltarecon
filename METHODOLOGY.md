@@ -1,293 +1,81 @@
-# Negro — Metodología de triage manual
+# Negro Recon — Methodology v0.5
 
-Cuando Negro descubre algo “raro”, no saltamos directamente a explotación.
+Negro separa **descubrimiento** de **decisión**. Una herramienta puede encontrar miles de nombres; la metodología busca saber qué ya se revisó, qué quedó abierto y por qué.
 
-La pregunta inicial es:
-
-> **¿Qué es este activo, cómo está conectado y qué evidencia tengo de impacto?**
-
-## Flujo
+## Flujo principal
 
 ```text
-DISCOVERY
+DISCOVER
    ↓
-PROVENANCE
+ASSOCIATE
    ↓
-DNS
+INSPECT
    ↓
-TLS
-   ↓
-HTTP
-   ↓
-TECH / PROVIDER
-   ↓
-KNOWN RESOURCES
-   ↓
-PUBLIC ARTIFACTS
+ANALYZE
    ↓
 CLASSIFY
-```
-
-## 1. Provenance
-
-Antes de tocar el host, registra de dónde salió:
-
-```text
-crt.sh
-Subfinder
-Amass
-GAU/OTX
-GAU/URLScan
-Wayback
-etc.
-```
-
-Un hostname histórico no tiene el mismo significado que uno observado hoy en DNS.
-
-## 2. DNS
-
-Pruebas pequeñas y dirigidas:
-
-```bash
-dig +short HOST A
-dig +short HOST AAAA
-dig +short HOST CNAME
-```
-
-Preguntas:
-
-- ¿resuelve?
-- ¿apunta a infraestructura propia o a SaaS?
-- ¿el CNAME parece activo, legacy o potencialmente dangling?
-- ¿cambian las IPs?
-
-Un CNAME externo es un **lead**, no un takeover.
-
-## 3. TLS
-
-```bash
-openssl s_client \
--connect HOST:443 \
--servername HOST </dev/null 2>/dev/null \
-| openssl x509 -noout \
--subject -issuer -dates -ext subjectAltName
-```
-
-Revisar:
-
-- Subject / SAN
-- issuer
-- expiración
-- si el hostname está cubierto
-
-`NET::ERR_CERT_COMMON_NAME_INVALID` significa que el certificado presentado no cubre el hostname solicitado.
-
-Eso por sí solo suele ser una misconfiguración operativa, no una vulnerabilidad de seguridad demostrada.
-
-## 4. HTTP y HTTPS
-
-No necesitas pelear con el navegador si TLS está roto.
-
-```bash
-curl -v --max-time 15 http://HOST/
-curl -vkI --max-time 15 https://HOST/
-curl -skL --max-time 15 https://HOST/ | head -n 80
-```
-
-`-k` sólo le dice a curl que continúe aunque el certificado no valide. Sirve para inspección controlada del servicio.
-
-Revisar:
-
-- status code
-- redirects
-- `Server`
-- `Location`
-- cookies
-- HSTS
-- title/body/error del proveedor
-
-Si Chrome no ofrece “continuar”, puede ser por HSTS u otra política de validación estricta. Para recon no hace falta saltársela en el navegador: usa curl/OpenSSL.
-
-## 5. Tecnología / proveedor
-
-Identifica qué hay detrás:
-
-```text
-CloudFront
-Google
-Qualtrics
-Nexus
-SendGrid
-GitHub Pages
-S3
-etc.
-```
-
-Una página de error del proveedor puede ser más valiosa que una página bonita porque ayuda a distinguir:
-
-```text
-activo configurado
-vs
-binding roto
-vs
-servicio desaparecido
-```
-
-## 6. Recursos ya descubiertos
-
-Si GAU/OTX encontró una ruta específica, prueba **esa ruta exacta** antes de pensar en fuzzing.
-
-Ejemplo:
-
-```bash
-curl -vk --max-time 15 https://HOST/wf
-curl -v  --max-time 15 http://HOST/wf
-```
-
-Esto mantiene el triage dirigido y evita convertir cada lead en un escaneo masivo.
-
-## 7. Artefactos públicos de bajo impacto
-
-Si la web carga normalmente, puedes revisar recursos publicados por la propia aplicación:
-
-```text
-robots.txt
-sitemap.xml
-JS referenciado por la página
-source maps referenciados
-configuración frontend pública
-```
-
-No asumas que `/config` o un source map es sensible; revisa el contenido y busca impacto real.
-
-## 8. Auth / boundaries
-
-Si aparece login/SSO:
-
-- identifica el proveedor;
-- observa el flujo;
-- usa únicamente cuentas propias o test autorizadas;
-- no hagas brute force;
-- no pruebes usuarios ajenos.
-
-## 9. Clasificación Negro
-
-### discarded
-
-Revisado y sin interés de seguridad.
-
-### informational
-
-Da contexto útil, nombres internos, arquitectura o comportamiento, pero no demuestra impacto.
-
-### lead
-
-Hay una hipótesis concreta que merece otra prueba dirigida.
-
-### finding
-
-Existe impacto de seguridad reproducible y demostrable dentro del scope.
-
-## 10. Nota mínima recomendada
-
-Cada asset revisado debería terminar con una nota de una o dos líneas:
-
-```text
-Qué vi:
-Qué probé:
-Qué concluyo:
-Qué falta (si aplica):
-```
-
-Ejemplo:
-
-```text
-Qué vi: certificado no cubre url8202.mercadolibre.com.
-Qué probé: DNS, TLS, HTTP/HTTPS y ruta histórica /wf.
-Conclusión: pendiente; parece integración legacy.
-Falta: identificar proveedor y comportamiento de /wf.
-```
-
-
-## Triage básico dirigido de un activo
-
-Cuando un hostname pasa de inventario a activo interesante, no se empieza con fuzzing. Primero se recoge contexto mínimo y reproducible.
-
-```text
-PROVENANCE
    ↓
-DNS
-   ↓
-TLS
-   ↓
-HTTP / HTTPS
-   ↓
-RECURSOS YA CONOCIDOS
-   ↓
-DECISIÓN MANUAL
+REMEMBER
 ```
 
-### 1. Provenance
+### 1. Discover
 
-¿De dónde salió el host? `crt.sh`, Subfinder, Amass, OTX, URLScan, etc.
+Fuentes pasivas/históricas encuentran hosts y URLs. Cada resultado conserva su provenance.
 
-### 2. DNS
+### 2. Associate
 
-Revisar como mínimo:
+Las URLs se vinculan al host correspondiente:
 
 ```text
-A
-AAAA
-CNAME
+api.example.com
+├── /oauth/
+├── /tracks
+└── /errorux/config
 ```
 
-Objetivo: saber si existe, a dónde resuelve y si delega en un proveedor externo.
+Si varias fuentes observan el mismo recurso, Negro mantiene un solo nodo con múltiples sources.
 
-### 3. TLS
+### 3. Inspect
 
-En `:443` observar:
+Cuando un activo merece atención se ejecuta Basic Inspect, **dirigido a un host seleccionado**:
+
+- `A`
+- `AAAA`
+- `CNAME`
+- TLS/SAN
+- HTTP `/`
+- HTTPS `/`
+
+La inspección no marca automáticamente el activo como revisado.
+
+### 4. Analyze
+
+Con la información básica preguntamos, en orden:
 
 ```text
-subject
-issuer
-notBefore / notAfter
-SAN
-errores de handshake
+¿Quién resuelve este hostname?
+¿Hay proveedor externo / SaaS?
+¿El TLS corresponde al hostname?
+¿Qué responde HTTP y HTTPS?
+¿Existe una redirección?
+¿Qué tecnología o producto parece ser?
+¿Qué resources ya conocemos por fuentes históricas?
+¿Tenemos una hipótesis concreta que justifique profundizar?
 ```
 
-Un certificado inválido es una observación, no una vulnerabilidad por sí sola.
+Evitar saltar directamente a fuzzing o scanning masivo. Si OTX/Wayback ya entregaron una ruta concreta, validar primero esa evidencia.
 
-### 4. HTTP / HTTPS
+### 5. Classify
 
-Hacer una única petición a `/` por esquema y registrar:
-
-```text
-status
-Server
-Location
-Content-Type
-Via
-X-Powered-By
-```
-
-No seguir redirecciones automáticamente: el destino puede salir del scope y además la redirección es evidencia útil.
-
-### 5. Recursos conocidos
-
-Si una fuente histórica ya descubrió `/wf`, `/oauth/`, `/config`, etc., revisar primero esas rutas conocidas antes de pensar en content discovery.
-
-### 6. Decisión
-
-La inspección técnica no equivale a revisión completa.
-
-Estados de revisión:
+**Review state** describe cuánto trabajo humano se ha hecho:
 
 ```text
 pending
+in_progress
 reviewed
 ```
 
-Clasificación:
+**Classification** describe la conclusión actual:
 
 ```text
 unknown
@@ -297,13 +85,66 @@ discarded
 finding
 ```
 
-Ejemplos:
+**Priority** sólo ordena nuestro trabajo:
 
 ```text
-pending + lead       = interesante; falta análisis
-reviewed + discarded = revisado y cerrado
-reviewed + informational = aporta contexto, sin vulnerabilidad
-reviewed + finding   = impacto demostrado
+none
+low
+medium
+high
 ```
 
-Negro conserva notas e historial para evitar investigar dos veces el mismo activo.
+Prioridad no significa severidad.
+
+### 6. Remember
+
+Agregar una nota cuando una decisión no sea obvia. Una buena nota responde:
+
+- qué vimos;
+- qué comprobamos;
+- qué falta;
+- por qué lo dejamos abierto o cerrado.
+
+Ejemplo:
+
+```text
+Revisado DNS/CNAME/TLS/HTTP y ruta histórica /wf.
+Certificado no corresponde al hostname, pero no se encontró control externo
+ni impacto adicional. Cerrar como discarded.
+```
+
+## Árbol
+
+El árbol no es una lista de findings. Es un mapa de superficie:
+
+```text
+target
+└── host
+    ├── resource
+    │   └── sources
+    ├── inspections
+    ├── notes
+    ├── state
+    └── priority
+```
+
+## Separación de fases
+
+```text
+Passive discovery    automatización razonable según reglas del programa
+Active inspection    sólo al seleccionar un host
+Deep enumeration     decisión explícita del investigador
+Exploitation         manual y sólo cuando scope/reglas lo permiten
+```
+
+## Regla de evidencia
+
+```text
+ASSET ≠ LEAD ≠ FINDING
+```
+
+- hostname interesante → asset;
+- señal que justifica seguir → lead;
+- impacto reproducible → finding.
+
+Un CNAME externo, `admin` en una ruta, un certificado inválido o código fuente accesible no son findings por sí solos.

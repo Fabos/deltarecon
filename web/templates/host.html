@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ host.hostname }} · Negro{% endblock %}
+{% block content %}
+<section class="page-head host-head">
+  <div><p class="eyebrow">HOST</p><h1>{{ host.hostname }}</h1><div class="badges"><span class="badge review-{{ host.review_state }}">{{ host.review_state }}</span><span class="badge class-{{ host.classification }}">{{ host.classification }}</span><span class="badge priority-{{ host.priority }}">{{ host.priority }}</span></div></div>
+  <form action="/host/{{ host.id }}/inspect" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">Inspección básica</button></form>
+</section>
+
+<div class="grid host-grid">
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">STATE</p><h2>Clasificación</h2></div></div>
+    <form class="state-form" action="/host/{{ host.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Revisión<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if host.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+      <label>Clasificación<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if host.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+      <label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if host.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+      <button class="button" type="submit">Guardar estado</button>
+    </form>
+    <div class="divider"></div>
+    <h3>Procedencia</h3><div class="chips">{% for s in sources %}<span class="chip">{{ s }}</span>{% else %}<span class="muted">Sin fuentes</span>{% endfor %}</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">LATEST TRIAGE</p><h2>Inspección</h2></div>{% if inspections %}<small>{{ inspections[0].observed_at }}</small>{% endif %}</div>
+    {% if inspections %}
+      {% set p=inspections[0].payload %}
+      <div class="kv"><span>A</span><code>{{ p.dns.a|join(', ') if p.dns and p.dns.a else '-' }}</code><span>AAAA</span><code>{{ p.dns.aaaa|join(', ') if p.dns and p.dns.aaaa else '-' }}</code><span>CNAME</span><code>{{ p.dns.cname|join(', ') if p.dns and p.dns.cname else '-' }}</code><span>TLS</span><code>{{ p.tls.status if p.tls else '-' }}</code><span>HTTP</span><code>{{ p.http.status if p.http and p.http.status else '-' }}</code><span>HTTPS</span><code>{{ p.https.status if p.https and p.https.status else '-' }}</code></div>
+      {% if p.tls and p.tls.error %}<div class="callout warning"><strong>TLS:</strong> {{ p.tls.error }}</div>{% endif %}
+    {% else %}<p class="empty">Todavía no hay inspecciones. Ejecuta una para obtener DNS, TLS y HTTP/HTTPS.</p>{% endif %}
+  </section>
+</div>
+
+<section class="panel" id="notes">
+  <div class="panel-head"><div><p class="eyebrow">MEMORY</p><h2>Notas</h2></div></div>
+  <form class="note-form" action="/host/{{ host.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" rows="3" required placeholder="Qué vimos, qué falta, por qué lo descartamos..."></textarea><button class="button" type="submit">Agregar nota</button></form>
+  <div class="notes">{% for n in notes %}<article><small>{{ n.created_at }}</small><p>{{ n.body }}</p></article>{% else %}<p class="empty">Sin notas todavía.</p>{% endfor %}</div>
+</section>
+
+<section class="panel" id="resources">
+  <div class="panel-head"><div><p class="eyebrow">RESOURCES</p><h2>Endpoints y URLs</h2></div><span>{{ resources|length }} mostrados</span></div>
+  <div class="resources">
+  {% for item in resources %}
+    {% set r=item.row %}
+    <details class="resource-card">
+      <summary><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span></span></summary>
+      <div class="resource-body">
+        <div><span class="muted small">URL</span><code class="break">{{ r.url }}</code></div>
+        <div><span class="muted small">Sources</span><div class="chips">{% for s in item.sources %}<span class="chip">{{ s }}</span>{% endfor %}</div></div>
+        <form class="inline-state" action="/resource/{{ r.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if r.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select>
+          <select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if r.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select>
+          <select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if r.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select>
+          <button class="button small-button" type="submit">Guardar</button>
+        </form>
+        <form class="note-form compact" action="/resource/{{ r.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="body" required placeholder="Nota sobre este recurso"><button class="button ghost small-button" type="submit">+ nota</button></form>
+        {% for n in item.notes %}<div class="mini-note"><small>{{ n.created_at }}</small> {{ n.body }}</div>{% endfor %}
+      </div>
+    </details>
+  {% else %}<p class="empty">No hay recursos asociados todavía.</p>{% endfor %}
+  </div>
+</section>
+
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">HISTORY</p><h2>Inspecciones</h2></div></div>
+  {% for i in inspections %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>Basic inspect</strong><small>{{ i.observed_at }}</small><div class="muted small">A={{ i.payload.dns.a|join(', ') if i.payload.dns and i.payload.dns.a else '-' }} · CNAME={{ i.payload.dns.cname|join(', ') if i.payload.dns and i.payload.dns.cname else '-' }} · TLS={{ i.payload.tls.status if i.payload.tls else '-' }} · HTTPS={{ i.payload.https.status if i.payload.https and i.payload.https.status else '-' }}</div></div></div>{% else %}<p class="empty">Sin inspecciones.</p>{% endfor %}
+</section>
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">AUDIT</p><h2>Cambios</h2></div></div>
+  {% for e in events %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ e.row.event_type }}</strong><small>{{ e.row.created_at }}</small>{% if e.row.event_type=='state_changed' %}<div class="muted small">{{ e.payload.before }} → {{ e.payload.after }}</div>{% elif e.row.event_type=='note_added' %}<div class="muted small">{{ e.payload.body }}</div>{% endif %}</div></div>{% else %}<p class="empty">Sin cambios registrados desde v0.5.</p>{% endfor %}
+</section>
+</div>
+{% endblock %}

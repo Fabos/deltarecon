@@ -4,9 +4,4 @@ __pycache__/
 venv/
 .env
 .DS_Store
-*.db-shm
-*.db-wal
-# Nunca subir workspaces/targets reales al repo público
-workspaces/
-recon/
-outputs/
+*.log

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Negro · {{ domain }}{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">BUG BOUNTY WORKSPACE</p>
+    <h1>{{ domain }}</h1>
+    <p class="muted">Descubre, asocia, inspecciona, clasifica y recuerda por qué tomaste cada decisión.</p>
+  </div>
+  <a class="button secondary" href="/tree">Ver árbol de superficie</a>
+</section>
+
+<section class="stats">
+  <a class="stat" href="/hosts"><span>Hosts</span><strong>{{ stats.hosts }}</strong></a>
+  <div class="stat"><span>Resources</span><strong>{{ stats.resources }}</strong></div>
+  <a class="stat" href="/hosts?review=pending"><span>Pendientes</span><strong>{{ stats.pending }}</strong></a>
+  <a class="stat" href="/hosts?review=in_progress"><span>En revisión</span><strong>{{ stats.in_progress }}</strong></a>
+  <a class="stat warning" href="/hosts?classification=lead"><span>Leads</span><strong>{{ stats.leads }}</strong></a>
+  <a class="stat danger" href="/hosts?classification=finding"><span>Findings</span><strong>{{ stats.findings }}</strong></a>
+</section>
+
+<div class="grid two">
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">DISCOVERY</p><h2>Ejecutar fuentes</h2></div><span class="muted small">Acción explícita</span></div>
+    <p class="muted">Los botones llaman el mismo motor del CLI. No hay port scan, fuzzing ni explotación automática.</p>
+    <div class="scan-grid">
+      {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass passive'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl')] %}
+      <form action="/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="source" value="{{ source }}">
+        <button class="button scan" type="submit">{{ label }}</button>
+      </form>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD</p><h2>Trabajos de esta sesión</h2></div></div>
+    <div id="jobs" data-jobs>
+      {% if jobs %}
+        {% for job in jobs %}
+          <div class="job"><span class="status-dot {{ job.status }}"></span><div><strong>{{ job.label }}</strong><small>{{ job.status }} · {{ job.started_at }}</small>{% if job.error %}<small class="error">{{ job.error }}</small>{% endif %}</div></div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">No hay trabajos iniciados desde la UI.</p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">FOCUS</p><h2>Activos con señal</h2></div><a href="/hosts?classification=lead">Ver leads</a></div>
+    {% if priority_hosts %}
+      <div class="list">
+      {% for h in priority_hosts %}
+        <a class="row-link" href="/host/{{ h.id }}">
+          <span class="asset-name">{{ h.hostname }}</span>
+          <span class="badges"><span class="badge review-{{ h.review_state }}">{{ h.review_state }}</span><span class="badge class-{{ h.classification }}">{{ h.classification }}</span><span class="badge priority-{{ h.priority }}">{{ h.priority }}</span></span>
+        </a>
+      {% endfor %}
+      </div>
+    {% else %}<p class="empty">Todavía no marcaste leads o prioridades altas.</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">HISTORY</p><h2>Últimas fuentes</h2></div></div>
+    {% if recent_runs %}
+      <div class="run-list">
+      {% for r in recent_runs %}
+        <div class="run"><span class="badge run-{{ r.status }}">{{ r.status }}</span><strong>{{ r.source }}</strong><span>{{ r.result_count }} resultados</span><small>{{ r.finished_at }}</small>{% if r.error %}<small class="error">{{ r.error }}</small>{% endif %}</div>
+      {% endfor %}
+      </div>
+    {% else %}<p class="empty">No hay ejecuciones registradas.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}
