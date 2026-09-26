@@ -1,51 +1,52 @@
-# Negro Recon — Learning Roadmap
+# Negro Recon — Roadmap
 
-Regla del proyecto:
+Regla:
 
-> **Aprender manualmente -> entender qué aporta -> automatizar.**
+> **Aprender manualmente -> entender -> automatizar.**
 
-## Implementado
+## v0.3 implementado
 
-### 01. crt.sh
-Estado: AUTOMATIZADO
+- crt.sh
+- Subfinder
+- Amass passive
+- GAU por provider
+- URLs -> host -> resource
+- SQLite (`negro.db`)
+- review state
+- classification
+- notes
+- árbol de assets
+- cola de pendientes
+- leads/findings
+- migración conservadora desde v0.2
 
-Conceptos:
-- Certificate Transparency
-- SANs
-- wildcard certificates
-- normalización
-- deduplicación
+## Próximo aprendizaje manual
 
-### 02. Subfinder
-Estado: AUTOMATIZADO
+- URLScan directo
+- Passive DNS
+- TLS SAN pivots
+- GitHub/public code search
 
-Conceptos:
-- passive sources
-- multi-source aggregation
-- delta frente a crt.sh
-- cobertura vs señal
+## Más adelante
 
-## Siguiente
+Importadores dirigidos para resultados de:
 
-### 03. Amass passive
-Estado: APRENDER MANUALMENTE
+- content discovery
+- crawling
+- JS endpoints
 
-Antes de automatizar debemos entender:
-- qué fuentes consulta;
-- qué diferencia aporta frente a Subfinder;
-- qué significa `-passive`;
-- cómo medir hosts realmente nuevos;
-- cuánto ruido agrega.
+La herramienta no debe lanzar fuzzing masivo por defecto. Primero aprenderemos cada técnica y respetaremos las reglas específicas de cada programa.
 
-Después se integra a Negro como fuente #3.
+## Implementado en v0.4
 
-## Pendiente
+### Basic host triage
 
-04. GAU
-05. Wayback / CDX
-06. URLScan
-07. Passive DNS
-08. TLS SAN pivots
-09. GitHub / public code search
+Estado: AUTOMATIZADO / DIRIGIDO
 
-Cada módulo debe demostrar que aporta información distinta antes de automatizarse.
+Un host a la vez:
+- DNS A / AAAA / CNAME
+- TLS certificate metadata
+- HTTP / HTTPS status and selected headers
+- snapshot JSON + SQLite history
+
+No convierte automáticamente un activo en `reviewed`; la clasificación sigue siendo humana.
