@@ -7,6 +7,9 @@
     <a class="button secondary" href="{{ host_https_url }}" target="_blank" rel="noopener noreferrer">Abrir HTTPS ↗</a>
     <a class="button ghost" href="{{ host_http_url }}" target="_blank" rel="noopener noreferrer">HTTP ↗</a>
     <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit" data-inspect-button>Inspección básica</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Pivot TLS SAN</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Passive DNS</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Descubrir JS</button></form>
   </div>
 </section>
 <div class="inspect-status" data-inspect-status aria-live="polite"></div>
@@ -38,6 +41,45 @@
   <div class="panel-head"><div><p class="eyebrow">MEMORY</p><h2>Notas</h2></div></div>
   <form class="note-form" action="{{ target_base }}/host/{{ host.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" rows="3" required placeholder="Qué vimos, qué falta, por qué lo descartamos..."></textarea><button class="button" type="submit">Agregar nota</button></form>
   <div class="notes">{% for n in notes %}<article><small>{{ n.created_at }}</small><p>{{ n.body }}</p></article>{% else %}<p class="empty">Sin notas todavía.</p>{% endfor %}</div>
+</section>
+
+<section class="panel" id="javascript">
+  <div class="panel-head"><div><p class="eyebrow">JAVASCRIPT</p><h2>Bundles y análisis</h2></div><span>{{ js_assets|length }} assets</span></div>
+  <p class="muted">El análisis local extrae URLs, rutas, WebSockets, source maps y señales. La IA sólo recibe evidencia seleccionada después de mostrarte una estimación de costo.</p>
+  {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OpenAI no está configurado. Ve a <a href="{{ target_base }}/settings">Settings</a> para ver dónde poner la key.</div>{% endif %}
+  <div class="resources">
+  {% for item in js_assets %}
+    {% set j=item.row %}
+    <details class="resource-card js-card" {% if loop.first %}open{% endif %}>
+      <summary><code class="break">{{ j.url }}</code><span class="badges">{% if j.analyzed_at %}<span class="badge review-reviewed">local ✓</span>{% else %}<span class="badge">sin analizar</span>{% endif %}{% if j.sourcemap_url %}<span class="badge class-informational">source map</span>{% endif %}{% if item.ai %}<span class="badge class-lead">AI {{ item.ai|length }}</span>{% endif %}</span></summary>
+      <div class="resource-body">
+        <div class="js-meta"><span>Tamaño</span><code>{{ j.size_bytes if j.size_bytes else '-' }} bytes</code><span>SHA256</span><code>{{ j.sha256[:20] ~ '…' if j.sha256 else '-' }}</code></div>
+        <div class="host-actions">
+          <a class="button ghost small-button" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Abrir JS ↗</a>
+          <form action="{{ target_base }}/js/{{ j.id }}/local-analyze" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button small-button" type="submit">Análisis local</button></form>
+          {% if j.sourcemap_url %}<form action="{{ target_base }}/js/{{ j.id }}/sourcemap" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">Source map</button></form>{% endif %}
+        </div>
+        {% if item.local %}
+          <div class="kv js-summary"><span>URLs in-scope</span><code>{{ item.local.in_scope_urls|length }}</code><span>Rutas</span><code>{{ item.local.relative_paths|length }}</code><span>WebSockets</span><code>{{ item.local.websockets|length }}</code><span>Source maps</span><code>{{ item.local.source_maps|length }}</code></div>
+          {% if item.local.keywords %}<div class="chips">{% for k,v in item.local.keywords.items() %}<span class="chip">{{ k }} ×{{ v }}</span>{% endfor %}</div>{% endif %}
+          <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/js/{{ j.id }}/ai-estimate" data-run-url="{{ target_base }}/js/{{ j.id }}/ai-run">
+            <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if intel_settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if intel_settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
+            <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. No se enviará nada a OpenAI todavía.</div>
+            <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar con IA</button></form>
+          </div>
+        {% endif %}
+        {% for ai in item.ai %}
+          <div class="ai-result"><div class="panel-head"><strong>{{ ai.row.model }}</strong><small>{{ ai.row.created_at }}</small></div>{% if ai.result %}<p>{{ ai.result.summary }}</p>{% if ai.result.observations %}<div class="notes">{% for o in ai.result.observations[:10] %}<article><div class="badges"><span class="badge class-{{ 'lead' if o.signal=='high' else 'informational' }}">{{ o.signal }}</span></div><strong>{{ o.title }}</strong><p><b>Evidencia:</b> {{ o.evidence }}</p><p><b>Validación manual:</b> {{ o.manual_validation }}</p></article>{% endfor %}</div>{% endif %}{% endif %}</div>
+        {% endfor %}
+      </div>
+    </details>
+  {% else %}<p class="empty">No hay JS descubiertos todavía. Usa <b>Descubrir JS</b> arriba sobre este host.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="panel" id="observations">
+  <div class="panel-head"><div><p class="eyebrow">INTELLIGENCE</p><h2>Observaciones</h2></div><span>{{ observations|length }} recientes</span></div>
+  {% for o in observations[:30] %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ o.row.source }} · {{ o.row.kind }}</strong><small>{{ o.row.observed_at }}</small>{% if o.row.value %}<code class="break">{{ o.row.value }}</code>{% endif %}</div></div>{% else %}<p class="empty">Todavía no hay observaciones adicionales.</p>{% endfor %}
 </section>
 
 <section class="panel" id="resources">

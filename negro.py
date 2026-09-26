@@ -8,11 +8,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-# If the local web virtualenv exists, transparently use it for `negro web`.
-if len(sys.argv) >= 2 and sys.argv[1] == "web":
-    venv_python = ROOT / ".venv" / "bin" / "python"
-    if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
-        os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+# If the local virtualenv exists, use it for both Web and CLI so optional
+# intelligence/AI dependencies are available consistently.
+venv_python = ROOT / ".venv" / "bin" / "python"
+if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 from negro_core import main
 

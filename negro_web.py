@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.6.
+"""Local web workspace for Negro Recon v0.7.
 
-v0.6 adds a multi-target web workspace while keeping every target isolated in its
+v0.7 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
 the same core functions used by the CLI.
 """
@@ -228,6 +228,47 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
             except Exception:
                 payload = {}
             event_data.append({"row": e, "payload": payload})
+
+        observations = conn.execute(
+            "SELECT * FROM observations WHERE entity_type='host' AND entity_id=? ORDER BY id DESC LIMIT 60",
+            (host_id,),
+        ).fetchall()
+        observation_data = []
+        for o in observations:
+            try:
+                payload = json.loads(o["payload_json"] or "null")
+            except Exception:
+                payload = None
+            observation_data.append({"row": o, "payload": payload})
+
+        js_rows = conn.execute(
+            "SELECT * FROM js_assets WHERE host_id=? ORDER BY id DESC", (host_id,)
+        ).fetchall()
+        js_assets = []
+        for j in js_rows:
+            try:
+                local = json.loads(j["local_analysis_json"] or "null")
+            except Exception:
+                local = None
+            ai_rows = conn.execute(
+                "SELECT * FROM ai_analyses WHERE js_asset_id=? ORDER BY id DESC LIMIT 3", (j["id"],)
+            ).fetchall()
+            analyses = []
+            for a in ai_rows:
+                try:
+                    result = json.loads(a["result_json"] or "null")
+                except Exception:
+                    result = None
+                try:
+                    estimate = json.loads(a["estimate_json"] or "null")
+                except Exception:
+                    estimate = None
+                try:
+                    usage = json.loads(a["usage_json"] or "null")
+                except Exception:
+                    usage = None
+                analyses.append({"row": a, "result": result, "estimate": estimate, "usage": usage})
+            js_assets.append({"row": j, "local": local, "ai": analyses})
     return {
         "host": host,
         "host_https_url": f"https://{host['hostname']}/",
@@ -237,6 +278,8 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
         "resources": resource_data,
         "inspections": inspection_data,
         "events": event_data,
+        "observations": observation_data,
+        "js_assets": js_assets,
     }
 
 
@@ -298,15 +341,39 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{key}/", status_code=307)
 
     @app.post("/targets/create")
-    def target_create(domain: str = Form(...), workspace: str = Form(""), csrf: str = Form(...)):
+    def target_create(request: Request, domain: str = Form(...), workspace: str = Form(""), csrf: str = Form(...)):
         verify_csrf(csrf)
         domain = domain.strip().lower().rstrip(".")
         if domain.startswith("http://") or domain.startswith("https://") or not DOMAIN_RE.fullmatch(domain):
-            raise HTTPException(status_code=400, detail="Usa sólo el dominio, por ejemplo example.com")
-        target_workspace = Path(workspace).expanduser() if workspace.strip() else core.default_workspace(domain)
-        core.ensure_workspace(target_workspace, domain)
-        key = core.register_target(domain, target_workspace, make_current=True)
+            return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":"Usa sólo el dominio, por ejemplo example.com", "version":core.VERSION})
+        target_workspace = Path(workspace).expanduser() if workspace.strip() else core.suggested_workspace(domain)
+        try:
+            core.ensure_workspace(target_workspace, domain)
+            key = core.register_target(domain, target_workspace, make_current=True)
+        except Exception as exc:
+            print(f"[!] No pude crear target {domain}: {exc}")
+            return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":str(exc), "workspace":str(target_workspace), "version":core.VERSION})
         return RedirectResponse(url=f"/t/{key}/", status_code=303)
+
+    @app.get("/t/{target_key}/settings", response_class=HTMLResponse)
+    def settings_page(request: Request, target_key: str):
+        import negro_intel as intel
+        domain, workspace, _ = _target_context(target_key)
+        return render(request, "settings.html", target_key, domain, workspace, settings=intel.load_settings(), secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH))
+
+    @app.post("/t/{target_key}/settings")
+    def settings_save(request: Request, target_key: str, ai_model: str = Form(...), ai_output_tokens: int = Form(...), usd_cop_rate: float = Form(...), csrf: str = Form(...)):
+        import negro_intel as intel
+        verify_csrf(csrf)
+        domain, workspace, _ = _target_context(target_key)
+        if ai_model not in intel.OPENAI_PRICING:
+            raise HTTPException(status_code=400, detail="Modelo inválido")
+        if ai_output_tokens < 500 or ai_output_tokens > 12000:
+            raise HTTPException(status_code=400, detail="ai_output_tokens fuera de rango")
+        if usd_cop_rate <= 0:
+            raise HTTPException(status_code=400, detail="Tasa USD/COP inválida")
+        values = intel.save_settings({"ai_model":ai_model, "ai_output_tokens":ai_output_tokens, "usd_cop_rate":usd_cop_rate, "usd_cop_rate_date":datetime.now().date().isoformat()})
+        return render(request, "settings.html", target_key, domain, workspace, settings=values, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH), saved=True)
 
     @app.get("/t/{target_key}/", response_class=HTMLResponse)
     def dashboard(request: Request, target_key: str):
@@ -331,11 +398,12 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/t/{target_key}/host/{host_id}", response_class=HTMLResponse)
     def host_detail(request: Request, target_key: str, host_id: int):
+        import negro_intel as intel
         domain, workspace, paths = _target_context(target_key)
         detail = _host_detail(paths, host_id)
         if not detail:
             raise HTTPException(status_code=404, detail="Host no encontrado")
-        return render(request, "host.html", target_key, domain, workspace, **detail)
+        return render(request, "host.html", target_key, domain, workspace, **detail, intel_settings=intel.load_settings(), secret_status=intel.secret_status())
 
     @app.post("/t/{target_key}/host/{host_id}/state")
     def host_state(target_key: str, host_id: int, review_state: str = Form(...), classification: str = Form(...), priority: str = Form(...), csrf: str = Form(...)):
@@ -399,16 +467,119 @@ def create_app(default_domain: str, default_workspace: Path):
             return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
         return RedirectResponse(url=f"{refresh_url}?inspection=started", status_code=303)
 
+    @app.post("/t/{target_key}/host/{host_id}/tls-san")
+    def host_tls_san(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"TLS SAN {row['hostname']}", target_key, core.tls_san_pivot, domain, paths, row["hostname"], 30)
+        refresh_url = f"/t/{target_key}/host/{host_id}"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/passive-dns")
+    def host_passive_dns(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"Passive DNS {row['hostname']}", target_key, core.securitytrails_history_for_host, domain, paths, row["hostname"], 45)
+        refresh_url = f"/t/{target_key}/host/{host_id}"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/js-discover")
+    def host_js_discover(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"JS discovery {row['hostname']}", target_key, core.discover_js_for_host, domain, paths, row["hostname"], 35)
+        refresh_url = f"/t/{target_key}/host/{host_id}#javascript"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    def _asset_context(target_key: str, asset_id: int):
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT j.*, h.id AS page_host_id FROM js_assets j JOIN hosts h ON h.id=j.host_id WHERE j.id=?", (asset_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="JS asset no encontrado")
+        return domain, paths, row
+
+    @app.post("/t/{target_key}/js/{asset_id}/local-analyze")
+    def js_local_analyze(request: Request, target_key: str, asset_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, paths, row = _asset_context(target_key, asset_id)
+        job_id = _start_job(f"JS local #{asset_id}", target_key, core.local_analyze_js_asset, domain, paths, asset_id, 60)
+        refresh_url = f"/t/{target_key}/host/{row['page_host_id']}#javascript"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/js/{asset_id}/sourcemap")
+    def js_sourcemap(request: Request, target_key: str, asset_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, paths, row = _asset_context(target_key, asset_id)
+        job_id = _start_job(f"Source map #{asset_id}", target_key, core.fetch_sourcemap_for_asset, domain, paths, asset_id, 75)
+        refresh_url = f"/t/{target_key}/host/{row['page_host_id']}#javascript"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.get("/api/t/{target_key}/js/{asset_id}/ai-estimate", response_class=JSONResponse)
+    def js_ai_estimate(target_key: str, asset_id: int, model: str = ""):
+        _, paths, _ = _asset_context(target_key, asset_id)
+        try:
+            return core.ai_estimate_js_asset(paths, asset_id, model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/t/{target_key}/js/{asset_id}/ai-run")
+    def js_ai_run(request: Request, target_key: str, asset_id: int, model: str = Form(""), confirm_cost: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if confirm_cost != "yes":
+            raise HTTPException(status_code=400, detail="Debes estimar y confirmar el costo antes de enviar a IA")
+        _, paths, row = _asset_context(target_key, asset_id)
+        # Recompute estimate server-side immediately before creating the billable job.
+        try:
+            estimate = core.ai_estimate_js_asset(paths, asset_id, model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        job_id = _start_job(f"AI JS #{asset_id} · {estimate['model']}", target_key, core.ai_run_js_asset, paths, asset_id, model or None)
+        refresh_url = f"/t/{target_key}/host/{row['page_host_id']}#javascript"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url, "estimate": estimate})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
     @app.post("/t/{target_key}/scan")
     def scan(target_key: str, source: str = Form(...), csrf: str = Form(...)):
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
-        allowed = set(core.HOST_SOURCE_ORDER)
+        allowed = {"crtsh","subfinder","amass","gau_otx","gau_urlscan","gau_wayback","gau_commoncrawl","wayback_cdx","urlscan_direct","securitytrails","github_code"}
         if source not in allowed:
             raise HTTPException(status_code=400, detail="Fuente inválida")
         if source.startswith("gau_"):
             provider = source.removeprefix("gau_")
             _start_job(f"scan {source}", target_key, core.collect_gau_provider, provider, domain, paths, 900)
+        elif source == "wayback_cdx":
+            _start_job("Wayback CDX direct", target_key, core.collect_wayback_cdx, domain, paths, 120)
+        elif source == "urlscan_direct":
+            _start_job("URLScan direct", target_key, core.collect_urlscan_direct, domain, paths, 120)
+        elif source == "securitytrails":
+            _start_job("SecurityTrails subdomains", target_key, core.collect_securitytrails, domain, paths, 120)
+        elif source == "github_code":
+            _start_job("GitHub public code", target_key, core.collect_github_code, domain, paths, 120)
         else:
             timeout = 7200 if source == "amass" else 900
             _start_job(f"scan {source}", target_key, core.collect_source, source, domain, paths, timeout)

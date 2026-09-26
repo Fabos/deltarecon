@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Settings · {{ domain }} · Negro{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">SETTINGS</p><h1>Integraciones y costos</h1><p class="muted">Las claves nunca se muestran ni se guardan en la base del target.</p></div></section>
+{% if saved %}<div class="callout success">Configuración guardada.</div>{% endif %}
+<div class="grid two">
+<section class="panel"><div class="panel-head"><div><p class="eyebrow">SECRETS</p><h2>API keys</h2></div></div>
+<p class="muted">Archivo local: <code>{{ secrets_path }}</code></p>
+<div class="kv"><span>OpenAI</span><code>{{ 'configurada' if secret_status.OPENAI_API_KEY else 'falta' }}</code><span>URLScan</span><code>{{ 'configurada' if secret_status.URLSCAN_API_KEY else 'falta' }}</code><span>SecurityTrails</span><code>{{ 'configurada' if secret_status.SECURITYTRAILS_API_KEY else 'falta' }}</code><span>GitHub</span><code>{{ 'configurada' if secret_status.GITHUB_TOKEN else 'falta' }}</code></div>
+<div class="callout"><pre>OPENAI_API_KEY=sk-...
+URLSCAN_API_KEY=...
+SECURITYTRAILS_API_KEY=...
+GITHUB_TOKEN=...</pre></div>
+<p class="muted small">Después: <code>chmod 600 {{ secrets_path }}</code>. También puedes usar variables de entorno; tienen prioridad.</p>
+</section>
+<section class="panel"><div class="panel-head"><div><p class="eyebrow">AI</p><h2>Estimación previa</h2></div></div>
+<form class="state-form" action="{{ target_base }}/settings" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+<label>Modelo<select name="ai_model"><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · barato</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol · profundo</option></select></label>
+<label>Máx. salida<input type="number" name="ai_output_tokens" min="500" max="12000" value="{{ settings.ai_output_tokens }}"></label>
+<label>USD → COP<input type="number" step="0.01" name="usd_cop_rate" value="{{ settings.usd_cop_rate }}"></label>
+<button class="button" type="submit">Guardar</button></form>
+<p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · fecha {{ settings.usd_cop_rate_date }}. La UI la usa sólo para estimar; OpenAI factura en USD.</p>
+</section></div>
+{% endblock %}

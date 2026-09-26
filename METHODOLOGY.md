@@ -1,164 +1,90 @@
-# Negro Recon — Methodology v0.6
+# Negro Recon — Metodología v0.7
 
-Negro separa **descubrimiento**, **observación** y **decisión humana**.
-
-## Flujo
+## Filosofía
 
 ```text
-DISCOVER
-   ↓
-ASSOCIATE
-   ↓
-INSPECT
-   ↓
-ANALYZE
-   ↓
-CLASSIFY
-   ↓
-REMEMBER
+ASSET → OBSERVATION → LEAD → MANUAL VALIDATION → FINDING / DISCARDED
 ```
 
-## 1. Discover
+## Capa 1 — superficie pasiva
 
-Fuentes pasivas/históricas descubren hosts y URLs. Cada resultado conserva su provenance.
+1. crt.sh — CT/SANs públicos.
+2. Subfinder — agregador multi-source.
+3. Amass passive — correlación OSINT.
+4. GAU providers — URLs históricas/observadas.
+5. Wayback CDX direct — snapshots + timestamp/MIME/status.
+6. URLScan direct — scans y requests observados.
+7. SecurityTrails — subdominios/DNS histórico (si hay key).
+8. GitHub code search — arquitectura pública (si hay token).
 
-## 2. Associate
-
-Cada URL se vincula al hostname correspondiente:
+## Capa 2 — un host que decidimos investigar
 
 ```text
-api.example.com
-├── /oauth/
-├── /tracks
-└── /errorux/config
+Basic Inspect
+  A / AAAA / CNAME
+  TLS subject / issuer / dates / SAN
+  HTTP / HTTPS headers
 ```
 
-Una URL observada por varias fuentes sigue siendo un solo resource con múltiples sources.
+Luego, según señal:
 
-## 3. Inspect
+- TLS SAN pivot;
+- Passive DNS history;
+- JavaScript discovery;
+- recursos históricos ya asociados.
 
-Sobre un **host seleccionado explícitamente**:
+## Capa 3 — aplicación / JavaScript
 
-- DNS A/AAAA/CNAME;
-- TLS :443 y SAN;
-- HTTP `/`;
-- HTTPS `/`.
+Primero determinístico/local:
 
-La inspección no cambia automáticamente review/classification.
+- guardar RAW;
+- calcular SHA-256;
+- beautify cuando la dependencia está disponible;
+- extraer URLs/rutas/WebSockets;
+- detectar `sourceMappingURL`;
+- contar señales de auth, roles, feature flags, admin/internal, etc.;
+- recortar sólo contextos relevantes.
 
-## 4. Analyze — checklist inicial
+Después IA opcional:
 
-Cuando un activo nos parece sospechoso seguimos el mismo orden:
+- se estima tokens/costo antes de enviar;
+- se envían extracción + chunks, no el bundle completo por defecto;
+- la IA reconstruye comportamiento y propone validaciones manuales;
+- no puede declarar finding ni inventar endpoints/impacto.
 
-```text
-1. Provenance
-   ¿quién lo encontró y cuándo?
+## Source maps
 
-2. DNS
-   A / AAAA / CNAME
-   ¿propio, CDN, SaaS, legacy?
+Si el JS declara un source map público:
 
-3. TLS
-   ¿certificado válido para el hostname?
-   ¿qué SANs revela?
-   ¿qué issuer/provider aparece?
+1. descarga explícita;
+2. conserva `.map` en RAW;
+3. lista `sources`;
+4. si existe `sourcesContent`, analiza sólo un límite local;
+5. endpoints in-scope derivados se asocian con provenance `sourcemap`.
 
-4. HTTP / HTTPS
-   status
-   Server
-   Location
-   Content-Type
-   comportamiento HTTP vs HTTPS
+## Estados
 
-5. Recursos conocidos
-   ¿OTX/Wayback/URLScan ya conocen rutas concretas?
+Review:
 
-6. Tecnología / integración
-   ¿qué aplicación/proveedor parece ser?
+- `pending`
+- `in_progress`
+- `reviewed`
 
-7. Hipótesis
-   ¿qué señal concreta justifica profundizar?
-```
+Classification:
 
-No saltar a fuzzing masivo sólo porque un hostname sea raro. Primero usar la evidencia ya disponible.
+- `unknown`
+- `informational`
+- `lead`
+- `discarded`
+- `finding`
 
-## 5. Classify
+Priority:
 
-### Review state
+- `none`
+- `low`
+- `medium`
+- `high`
 
-```text
-pending
-in_progress
-reviewed
-```
+## Límites
 
-### Classification
-
-```text
-unknown
-informational
-lead
-discarded
-finding
-```
-
-### Priority
-
-```text
-none
-low
-medium
-high
-```
-
-Prioridad organiza nuestro tiempo; no equivale a severidad.
-
-## 6. Remember
-
-Una nota útil responde:
-
-- qué vimos;
-- qué validamos;
-- qué falta;
-- por qué queda abierto/cerrado.
-
-Ejemplo:
-
-```text
-Revisado DNS/CNAME/TLS/HTTP y ruta histórica /wf.
-Certificado no corresponde al hostname, pero no se encontró control externo
-ni impacto adicional. Cerrar como discarded.
-```
-
-## Multi-target
-
-Cada programa vive aislado:
-
-```text
-Negro Web
-├── mercadolibre.com
-│   └── workspace + negro.db
-├── target-b.com
-│   └── workspace + negro.db
-└── target-c.net
-    └── workspace + negro.db
-```
-
-Cambiar target en la UI nunca mezcla inventarios.
-
-## Separación de fases
-
-```text
-Passive discovery    automatización razonable según las reglas
-Active inspection    host seleccionado explícitamente
-Deep enumeration     decisión explícita del investigador
-Exploitation         manual y dentro de scope/reglas
-```
-
-## Regla de evidencia
-
-```text
-ASSET ≠ LEAD ≠ FINDING
-```
-
-Un CNAME externo, una ruta `admin`, un certificado inválido o código fuente accesible son señales; no findings por sí mismos.
+Negro sigue siendo passive-first. Content discovery/fuzzing activo no se ejecuta sobre todo el inventario. Cuando se integre, será sólo sobre un host seleccionado y con rate explícito.

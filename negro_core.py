@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.6
+Negro Recon v0.7
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -46,6 +46,14 @@ HOST_SOURCE_ORDER = [
     "gau_urlscan",
     "gau_wayback",
     "gau_commoncrawl",
+    "wayback_cdx",
+    "urlscan_direct",
+    "securitytrails",
+    "tls_san",
+    "github_code",
+    "js_discovery",
+    "js_local",
+    "sourcemap",
 ]
 
 GAU_PROVIDERS = {
@@ -67,9 +75,15 @@ SOURCE_INFO = {
     "gau_urlscan": ("AUTOMATIZADA", "GAU / URLScan", "URLs observadas en navegaciones públicas de URLScan."),
     "gau_wayback": ("AUTOMATIZADA", "GAU / Wayback", "URLs históricas de Internet Archive; puede sufrir timeouts."),
     "gau_commoncrawl": ("AUTOMATIZADA", "GAU / Common Crawl", "URLs históricas de Common Crawl; puede sufrir timeouts."),
-    "passive_dns": ("PENDIENTE", "Passive DNS", "Relaciones DNS históricas adicionales."),
-    "tls_san": ("PENDIENTE", "TLS SAN discovery", "Hosts hermanos observados en certificados."),
-    "github": ("PENDIENTE", "GitHub / code search", "Dominios, APIs y nombres internos desde código público."),
+    "wayback_cdx": ("AUTOMATIZADA", "Wayback CDX direct", "Capturas históricas con timestamp/status/MIME, independiente de GAU."),
+    "urlscan_direct": ("AUTOMATIZADA", "URLScan direct", "Scans históricos y requests observados públicamente."),
+    "securitytrails": ("OPCIONAL", "SecurityTrails passive DNS", "Subdominios y DNS histórico; requiere API key."),
+    "tls_san": ("AUTOMATIZADA", "TLS SAN pivot", "Importa SANs in-scope del certificado de un host seleccionado."),
+    "github_code": ("OPCIONAL", "GitHub public code search", "Fragmentos públicos que referencian el dominio; requiere token."),
+    "js_discovery": ("DIRIGIDA", "JavaScript discovery", "Scripts cargados por un host seleccionado."),
+    "js_local": ("DIRIGIDA", "JavaScript local analysis", "Endpoints, URLs, source maps y señales extraídas localmente."),
+    "sourcemap": ("DIRIGIDA", "Source maps", "Sources/sourcesContent públicos y endpoints derivados."),
+    "ai_js": ("OPCIONAL", "AI JavaScript analysis", "Analiza sólo evidencia/chunks relevantes; requiere OPENAI_API_KEY."),
 }
 
 
@@ -227,11 +241,52 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT,
+                payload_json TEXT,
+                observed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS js_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                host_id INTEGER NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL,
+                size_bytes INTEGER,
+                sha256 TEXT,
+                local_path TEXT,
+                sourcemap_url TEXT,
+                local_analysis_json TEXT,
+                discovered_at TEXT NOT NULL,
+                analyzed_at TEXT,
+                FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                js_asset_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                estimate_json TEXT,
+                usage_json TEXT,
+                result_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(js_asset_id) REFERENCES js_assets(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_inspections_host ON host_inspections(host_id, observed_at);
             CREATE INDEX IF NOT EXISTS idx_resources_host ON resources(host_id);
             CREATE INDEX IF NOT EXISTS idx_hosts_review ON hosts(review_state, classification);
             CREATE INDEX IF NOT EXISTS idx_resources_review ON resources(review_state, classification);
+            CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations(entity_type, entity_id, observed_at);
+            CREATE INDEX IF NOT EXISTS idx_js_assets_host ON js_assets(host_id, discovered_at);
+            CREATE INDEX IF NOT EXISTS idx_ai_asset ON ai_analyses(js_asset_id, created_at);
             """
         )
         # Conservative schema migration for workspaces created by v0.3/v0.4.
@@ -255,7 +310,7 @@ def ensure_workspace(workspace: Path, domain: str) -> dict[str, Path]:
         state = json.loads(paths["state_file"].read_text(encoding="utf-8"))
         existing_domain = state.get("domain")
         if existing_domain and existing_domain != domain:
-            raise SystemExit(f"[!] Este workspace pertenece a {existing_domain}, no a {domain}")
+            raise RuntimeError(f"Este workspace pertenece a {existing_domain}, no a {domain}")
     else:
         state = {"domain": domain, "version": VERSION}
 
@@ -356,7 +411,7 @@ def migrate_existing_workspace(paths: dict[str, Path], domain: str) -> None:
                     upsert_host(conn, host, source)
                     imported.add(host)
 
-            if source.startswith("gau_"):
+            if source.startswith("gau_") or source in {"wayback_cdx", "urlscan_direct", "github_code", "js_local", "sourcemap"}:
                 url_path = source_url_file(paths, source)
                 if url_path.exists():
                     for url in read_lines(url_path):
@@ -387,13 +442,17 @@ def rebuild_inventory(paths: dict[str, Path], domain: str) -> tuple[int, dict[st
     legacy = set(normalize_hosts(read_lines(paths["inventory_file"]), domain))
     seen |= legacy
 
+    db_source_map: dict[str, set[str]] = {}
     with db_connect(paths) as conn:
         db_hosts = {row["hostname"] for row in conn.execute("SELECT hostname FROM hosts")}
+        for row in conn.execute("SELECT h.hostname, hs.source FROM host_sources hs JOIN hosts h ON h.id=hs.host_id"):
+            db_source_map.setdefault(row["hostname"], set()).add(row["source"])
     seen |= db_hosts
 
     for host in sorted(seen):
-        sources = [source for source in HOST_SOURCE_ORDER if host in source_sets[source]]
-        provenance[host] = {"sources": sources}
+        sources = {source for source in HOST_SOURCE_ORDER if host in source_sets[source]}
+        sources |= db_source_map.get(host, set())
+        provenance[host] = {"sources": sorted(sources)}
 
     write_lines(paths["inventory_file"], seen)
     paths["provenance_file"].write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -861,6 +920,304 @@ def inspect_host(domain: str, paths: dict[str, Path], hostname: str, timeout: in
     return payload
 
 
+
+def record_observation(conn: sqlite3.Connection, entity_type: str, entity_id: int, source: str, kind: str, value: str | None = None, payload: dict | list | None = None) -> None:
+    conn.execute(
+        "INSERT INTO observations(entity_type, entity_id, source, kind, value, payload_json, observed_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (entity_type, entity_id, source, kind, value, json.dumps(payload, ensure_ascii=False) if payload is not None else None, now_iso()),
+    )
+
+
+def _persist_url_list(domain: str, paths: dict[str, Path], source: str, urls: Iterable[str]) -> tuple[int, int, int]:
+    normalized_urls: list[str] = []
+    hosts: set[str] = set()
+    new_hosts = 0
+    new_resources = 0
+    with db_connect(paths) as conn:
+        for raw_url in urls:
+            parsed = canonicalize_url(str(raw_url), domain)
+            if not parsed:
+                continue
+            canonical, host, _, _, _ = parsed
+            normalized_urls.append(canonical)
+            host_created, resource_created = upsert_resource(conn, canonical, source, domain)
+            hosts.add(host)
+            new_hosts += int(host_created)
+            new_resources += int(resource_created)
+    write_lines(source_url_file(paths, source), normalized_urls)
+    write_lines(source_host_file(paths, source), hosts)
+    total, _ = rebuild_inventory(paths, domain)
+    return new_hosts, new_resources, total
+
+
+def collect_wayback_cdx(domain: str, paths: dict[str, Path], timeout: int = 60) -> dict:
+    import negro_intel as intel
+    source = "wayback_cdx"
+    started = now_iso()
+    try:
+        settings = intel.load_settings()
+        result = intel.wayback_cdx(domain, limit=int(settings.get("wayback_limit", 5000)), timeout=timeout)
+        raw_path = paths["raw"] / "wayback-cdx.json"
+        raw_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        urls = [c.get("original") for c in result.get("captures", []) if isinstance(c, dict) and c.get("original")]
+        new_hosts, new_resources, total = _persist_url_list(domain, paths, source, urls)
+        # Capture metadata is retained as observations on matching resources.
+        with db_connect(paths) as conn:
+            for capture in result.get("captures", [])[:20000]:
+                if not isinstance(capture, dict):
+                    continue
+                parsed = canonicalize_url(str(capture.get("original", "")), domain)
+                if not parsed:
+                    continue
+                row = conn.execute("SELECT id FROM resources WHERE url=?", (parsed[0],)).fetchone()
+                if row:
+                    record_observation(conn, "resource", int(row["id"]), source, "wayback_capture", str(capture.get("timestamp", "")), capture)
+        log_run(paths, source, "ok" if urls else "empty", len(urls), None, started)
+        return {"source": source, "captures": len(urls), "new_hosts": new_hosts, "new_resources": new_resources, "inventory": total, "raw": str(raw_path)}
+    except Exception as exc:
+        log_run(paths, source, "error", 0, str(exc), started)
+        raise
+
+
+def collect_urlscan_direct(domain: str, paths: dict[str, Path], timeout: int = 45) -> dict:
+    import negro_intel as intel
+    source = "urlscan_direct"
+    started = now_iso()
+    try:
+        settings = intel.load_settings()
+        result = intel.urlscan_direct(domain, detail_limit=int(settings.get("urlscan_detail_limit", 8)), timeout=timeout)
+        raw_path = paths["raw"] / "urlscan-direct.json"
+        raw_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        urls = result.get("urls", []) if isinstance(result, dict) else []
+        new_hosts, new_resources, total = _persist_url_list(domain, paths, source, urls)
+        with db_connect(paths) as conn:
+            root_id, _ = upsert_host(conn, domain, source)
+            for scan in result.get("scans", [])[:100] if isinstance(result, dict) else []:
+                if isinstance(scan, dict):
+                    record_observation(conn, "host", root_id, source, "urlscan_scan", str(scan.get("id", "")), scan)
+        log_run(paths, source, "ok" if urls else "empty", len(urls), None, started)
+        return {"source": source, "urls": len(urls), "new_hosts": new_hosts, "new_resources": new_resources, "inventory": total, "authenticated": result.get("authenticated"), "raw": str(raw_path)}
+    except Exception as exc:
+        log_run(paths, source, "error", 0, str(exc), started)
+        raise
+
+
+def collect_securitytrails(domain: str, paths: dict[str, Path], timeout: int = 40) -> dict:
+    import negro_intel as intel
+    source = "securitytrails"
+    started = now_iso()
+    try:
+        result = intel.securitytrails_subdomains(domain, timeout=timeout)
+        raw_path = paths["raw"] / "securitytrails-subdomains.json"
+        raw_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        hosts = normalize_hosts(result.get("hosts", []), domain)
+        total, delta_count = persist_host_source(source, hosts, domain, paths)
+        log_run(paths, source, "ok" if hosts else "empty", len(hosts), None, started)
+        return {"source": source, "hosts": len(hosts), "delta": delta_count, "inventory": total, "raw": str(raw_path)}
+    except Exception as exc:
+        log_run(paths, source, "error", 0, str(exc), started)
+        raise
+
+
+def securitytrails_history_for_host(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 40) -> dict:
+    import negro_intel as intel
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    result = intel.securitytrails_dns_history(hostname, timeout=timeout)
+    out_dir = paths["raw"] / "passive-dns"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{hostname}.securitytrails.json"
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with db_connect(paths) as conn:
+        host_id, _ = upsert_host(conn, hostname, "securitytrails")
+        record_observation(conn, "host", host_id, "securitytrails", "dns_history", None, result)
+    return {"raw": str(out), "result": result}
+
+
+def tls_san_pivot(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 25) -> dict:
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    tls = inspect_tls(hostname, timeout=timeout)
+    sans = []
+    for value in tls.get("sans", []) if isinstance(tls, dict) else []:
+        candidate = str(value).lower().rstrip(".")
+        if candidate.startswith("*."):
+            candidate = candidate[2:]
+        normalized = normalize_host(candidate, domain)
+        if normalized:
+            sans.append(normalized)
+    hosts = sorted(set(sans))
+    total, delta = persist_host_source("tls_san", hosts, domain, paths)
+    with db_connect(paths) as conn:
+        host_id, _ = upsert_host(conn, hostname, "tls_san")
+        record_observation(conn, "host", host_id, "tls_san", "certificate_sans", None, {"tls": tls, "imported": hosts})
+    return {"host": hostname, "sans": hosts, "count": len(hosts), "delta": delta, "inventory": total}
+
+
+def collect_github_code(domain: str, paths: dict[str, Path], timeout: int = 45) -> dict:
+    import negro_intel as intel
+    source = "github_code"
+    started = now_iso()
+    try:
+        result = intel.github_code_search(domain, timeout=timeout)
+        raw_path = paths["raw"] / "github-code.json"
+        raw_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        combined = "\n".join(result.get("fragments", []))
+        local = intel.analyze_js_text(combined, f"https://{domain}/", domain, max_contexts=80)
+        urls = local.get("in_scope_urls", [])
+        new_hosts, new_resources, total = _persist_url_list(domain, paths, source, urls)
+        with db_connect(paths) as conn:
+            root_id, _ = upsert_host(conn, domain, source)
+            record_observation(conn, "host", root_id, source, "github_search", None, {"total_count": result.get("total_count"), "items": result.get("items", [])[:100]})
+            for ws in local.get("websockets", []):
+                record_observation(conn, "host", root_id, source, "websocket", ws, None)
+        log_run(paths, source, "ok" if result.get("items") else "empty", len(result.get("items", [])), None, started)
+        return {"source": source, "matches": len(result.get("items", [])), "new_hosts": new_hosts, "new_resources": new_resources, "inventory": total, "raw": str(raw_path)}
+    except Exception as exc:
+        log_run(paths, source, "error", 0, str(exc), started)
+        raise
+
+
+def discover_js_for_host(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 30) -> dict:
+    import negro_intel as intel
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    result = intel.discover_js(hostname, domain, timeout=timeout)
+    with db_connect(paths) as conn:
+        host_id, _ = upsert_host(conn, hostname, "js_discovery")
+        for url in result.get("in_scope", []):
+            upsert_resource(conn, url, "js_discovery", domain)
+            conn.execute(
+                "INSERT OR IGNORE INTO js_assets(host_id, url, source, discovered_at) VALUES(?, ?, 'js_discovery', ?)",
+                (host_id, url, now_iso()),
+            )
+        for url in result.get("external", []):
+            record_observation(conn, "host", host_id, "js_discovery", "external_script", url, None)
+        record_observation(conn, "host", host_id, "js_discovery", "page_scripts", result.get("page_url"), {"in_scope": result.get("in_scope", []), "external": result.get("external", []), "errors": result.get("errors", [])})
+    rebuild_inventory(paths, domain)
+    return result
+
+
+def _js_asset_row(paths: dict[str, Path], asset_id: int):
+    with db_connect(paths) as conn:
+        return conn.execute("SELECT j.*, h.hostname FROM js_assets j JOIN hosts h ON h.id=j.host_id WHERE j.id=?", (asset_id,)).fetchone()
+
+
+def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, timeout: int = 35) -> dict:
+    import hashlib
+    import negro_intel as intel
+    row = _js_asset_row(paths, asset_id)
+    if not row:
+        raise RuntimeError("JS asset no encontrado")
+    settings = intel.load_settings()
+    max_bytes = int(settings.get("js_max_download_mb", 8)) * 1024 * 1024
+    raw, content_type, final_url = intel.http_bytes(row["url"], timeout=timeout, max_bytes=max_bytes, insecure=True)
+    sha = hashlib.sha256(raw).hexdigest()
+    out_dir = paths["raw"] / "js" / row["hostname"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = out_dir / f"{sha[:16]}.js"
+    raw_path.write_bytes(raw)
+    text = raw.decode("utf-8", errors="replace")
+    analysis_text = intel.beautify_js(text)
+    local = intel.analyze_js_text(analysis_text, final_url, domain)
+    sourcemap_url = None
+    if local.get("source_maps"):
+        sourcemap_url = urllib.parse.urljoin(final_url, local["source_maps"][0])
+    with db_connect(paths) as conn:
+        conn.execute(
+            "UPDATE js_assets SET size_bytes=?, sha256=?, local_path=?, sourcemap_url=?, local_analysis_json=?, analyzed_at=? WHERE id=?",
+            (len(raw), sha, str(raw_path), sourcemap_url, json.dumps(local, ensure_ascii=False), now_iso(), asset_id),
+        )
+        host_id = int(row["host_id"])
+        record_observation(conn, "host", host_id, "js_local", "js_analysis", row["url"], {"asset_id": asset_id, "size_bytes": len(raw), "content_type": content_type, "summary": {"in_scope_urls": len(local.get("in_scope_urls", [])), "relative_paths": len(local.get("relative_paths", [])), "websockets": len(local.get("websockets", [])), "source_maps": local.get("source_maps", []), "keywords": local.get("keywords", {})}})
+        for url in local.get("in_scope_urls", []):
+            upsert_resource(conn, url, "js_local", domain)
+        for ws in local.get("websockets", []):
+            record_observation(conn, "host", host_id, "js_local", "websocket", ws, None)
+    rebuild_inventory(paths, domain)
+    return {"asset_id": asset_id, "url": row["url"], "size_bytes": len(raw), "sha256": sha, "local_path": str(raw_path), "sourcemap_url": sourcemap_url, "analysis": local}
+
+
+def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int, timeout: int = 40) -> dict:
+    import negro_intel as intel
+    row = _js_asset_row(paths, asset_id)
+    if not row:
+        raise RuntimeError("JS asset no encontrado")
+    if not row["sourcemap_url"]:
+        raise RuntimeError("Este JS no tiene sourceMappingURL detectado")
+    raw, ctype, final_url = intel.http_bytes(row["sourcemap_url"], timeout=timeout, max_bytes=25_000_000, insecure=True)
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        raise RuntimeError(f"Source map no es JSON válido: {exc}")
+    out_dir = paths["raw"] / "js" / row["hostname"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"asset-{asset_id}.js.map"
+    out.write_bytes(raw)
+    sources = data.get("sources", []) if isinstance(data, dict) else []
+    contents = data.get("sourcesContent", []) if isinstance(data, dict) else []
+    joined_parts = []
+    total_chars = 0
+    for content in contents if isinstance(contents, list) else []:
+        if not isinstance(content, str):
+            continue
+        if total_chars + len(content) > 4_000_000:
+            break
+        joined_parts.append(content)
+        total_chars += len(content)
+    local = intel.analyze_js_text("\n".join(joined_parts), row["url"], domain) if joined_parts else {"in_scope_urls": [], "websockets": [], "relative_paths": [], "keywords": {}, "contexts": [], "source_maps": []}
+    with db_connect(paths) as conn:
+        for url in local.get("in_scope_urls", []):
+            upsert_resource(conn, url, "sourcemap", domain)
+        record_observation(conn, "host", int(row["host_id"]), "sourcemap", "source_map", final_url, {"asset_id": asset_id, "path": str(out), "content_type": ctype, "sources_count": len(sources) if isinstance(sources, list) else 0, "sources_sample": sources[:100] if isinstance(sources, list) else [], "extracted_urls": local.get("in_scope_urls", [])[:500]})
+    rebuild_inventory(paths, domain)
+    return {"url": final_url, "path": str(out), "sources_count": len(sources) if isinstance(sources, list) else 0, "analysis": local}
+
+
+def ai_estimate_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = None) -> dict:
+    import negro_intel as intel
+    row = _js_asset_row(paths, asset_id)
+    if not row:
+        raise RuntimeError("JS asset no encontrado")
+    if not row["local_analysis_json"]:
+        raise RuntimeError("Primero ejecuta análisis local del JS")
+    settings = intel.load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = int(settings.get("ai_output_tokens", 3000))
+    local = json.loads(row["local_analysis_json"])
+    payload = intel.ai_payload(local, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
+    estimate["payload_chars"] = len(payload)
+    estimate["asset_id"] = asset_id
+    estimate["fx_rate_date"] = settings.get("usd_cop_rate_date")
+    return estimate
+
+
+def ai_run_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = None) -> dict:
+    import negro_intel as intel
+    row = _js_asset_row(paths, asset_id)
+    if not row:
+        raise RuntimeError("JS asset no encontrado")
+    if not row["local_analysis_json"]:
+        raise RuntimeError("Primero ejecuta análisis local del JS")
+    settings = intel.load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = int(settings.get("ai_output_tokens", 3000))
+    local = json.loads(row["local_analysis_json"])
+    payload = intel.ai_payload(local, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
+    result, usage = intel.run_openai_js_analysis(payload, model=selected_model, output_tokens=output_tokens)
+    with db_connect(paths) as conn:
+        conn.execute(
+            "INSERT INTO ai_analyses(js_asset_id, model, status, estimate_json, usage_json, result_json, created_at) VALUES(?, ?, 'done', ?, ?, ?, ?)",
+            (asset_id, selected_model, json.dumps(estimate), json.dumps(usage), json.dumps(result, ensure_ascii=False), now_iso()),
+        )
+        record_observation(conn, "host", int(row["host_id"]), "ai_js", "ai_analysis", row["url"], {"asset_id": asset_id, "model": selected_model, "summary": result.get("summary"), "observation_count": len(result.get("observations", [])) if isinstance(result, dict) else 0})
+    return {"asset_id": asset_id, "model": selected_model, "estimate": estimate, "usage": usage, "result": result}
+
 def print_inspection_history(paths: dict[str, Path], hostname: str, limit: int = 5) -> None:
     hostname = hostname.strip().lower().rstrip(".")
     with db_connect(paths) as conn:
@@ -1222,7 +1579,20 @@ def config_save(domain: str, workspace: Path) -> None:
 
 
 def default_workspace(domain: str) -> Path:
-    return Path.home() / "recon" / domain
+    # Keep targets together. Existing users can override with -w or the Web form.
+    return Path.home() / "Documents" / "recon" / domain
+
+
+def suggested_workspace(domain: str) -> Path:
+    current = config_load()
+    try:
+        if current.get("workspace"):
+            parent = Path(str(current["workspace"])).expanduser().parent
+            if parent.exists() or parent.parent.exists():
+                return parent / domain
+    except Exception:
+        pass
+    return default_workspace(domain)
 
 
 def choose_target(force_new: bool = False) -> tuple[str, Path]:
@@ -1326,10 +1696,38 @@ def build_parser() -> argparse.ArgumentParser:
     subs.add_parser("sources")
 
     runp = subs.add_parser("run", help="Ejecutar una o más fuentes de hosts")
-    runp.add_argument("--sources", nargs="+", choices=HOST_SOURCE_ORDER, default=["crtsh", "subfinder"])
+    runp.add_argument("--sources", nargs="+", choices=["crtsh","subfinder","amass","gau_otx","gau_urlscan","gau_wayback","gau_commoncrawl"], default=["crtsh", "subfinder"])
 
     gaup = subs.add_parser("gau", help="Ejecutar GAU por provider")
     gaup.add_argument("--provider", choices=list(GAU_PROVIDERS), default="otx")
+
+    subs.add_parser("wayback-cdx", help="Wayback CDX directo con metadata histórica")
+    subs.add_parser("urlscan", help="URLScan directo: scans históricos y requests")
+    subs.add_parser("securitytrails", help="SecurityTrails subdomains (requiere API key)")
+    subs.add_parser("github-code", help="GitHub public code search (requiere token)")
+
+    pdnsp = subs.add_parser("passive-dns", help="DNS histórico de un host vía SecurityTrails")
+    pdnsp.add_argument("host")
+
+    sanp = subs.add_parser("tls-san", help="Pivot de SANs TLS para un host")
+    sanp.add_argument("host")
+
+    jsdp = subs.add_parser("js-discover", help="Descubrir JS de un host seleccionado")
+    jsdp.add_argument("host")
+
+    jsap = subs.add_parser("js-analyze", help="Descargar y analizar localmente un JS asset")
+    jsap.add_argument("asset_id", type=int)
+
+    jssp = subs.add_parser("js-sourcemap", help="Descargar/analizar source map detectado")
+    jssp.add_argument("asset_id", type=int)
+
+    aiep = subs.add_parser("ai-estimate", help="Estimar tokens/costo antes de enviar JS a IA")
+    aiep.add_argument("asset_id", type=int)
+    aiep.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
+
+    aiap = subs.add_parser("ai-analyze", help="Analizar evidencia JS con OpenAI")
+    aiap.add_argument("asset_id", type=int)
+    aiap.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
 
     inspectp = subs.add_parser("inspect", help="Triage básico de un host: DNS, TLS y HTTP/HTTPS")
     inspectp.add_argument("host")
@@ -1384,6 +1782,28 @@ def cli_main(args: argparse.Namespace) -> None:
         print_status(domain, paths)
     elif args.command == "gau":
         collect_gau_provider(args.provider, domain, paths, args.timeout)
+    elif args.command == "wayback-cdx":
+        print(json.dumps(collect_wayback_cdx(domain, paths, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "urlscan":
+        print(json.dumps(collect_urlscan_direct(domain, paths, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "securitytrails":
+        print(json.dumps(collect_securitytrails(domain, paths, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "github-code":
+        print(json.dumps(collect_github_code(domain, paths, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "passive-dns":
+        print(json.dumps(securitytrails_history_for_host(domain, paths, args.host, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "tls-san":
+        print(json.dumps(tls_san_pivot(domain, paths, args.host, min(args.timeout, 60)), indent=2, ensure_ascii=False))
+    elif args.command == "js-discover":
+        print(json.dumps(discover_js_for_host(domain, paths, args.host, min(args.timeout, 60)), indent=2, ensure_ascii=False))
+    elif args.command == "js-analyze":
+        print(json.dumps(local_analyze_js_asset(domain, paths, args.asset_id, min(args.timeout, 90)), indent=2, ensure_ascii=False))
+    elif args.command == "js-sourcemap":
+        print(json.dumps(fetch_sourcemap_for_asset(domain, paths, args.asset_id, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "ai-estimate":
+        print(json.dumps(ai_estimate_js_asset(paths, args.asset_id, args.model), indent=2, ensure_ascii=False))
+    elif args.command == "ai-analyze":
+        print(json.dumps(ai_run_js_asset(paths, args.asset_id, args.model), indent=2, ensure_ascii=False))
     elif args.command == "inspect":
         inspect_host(domain, paths, args.host, min(args.timeout, 60))
     elif args.command == "inspect-history":
