@@ -53,7 +53,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.11.1 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.11.2 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
@@ -128,9 +128,12 @@ public class NegroBurpBridge implements BurpExtension {
         public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
             try {
                 HttpRequest request = response.initiatingRequest();
+                if (isNegroBridgeTraffic(request.url())) {
+                    return ResponseReceivedAction.continueWith(response);
+                }
                 String tool = response.toolSource().toolType().name();
                 String json = toJson(request, response, tool);
-                sendAsync(json);
+                sendAsync(json, request.method(), request.url(), tool);
             } catch (Exception ex) {
                 errors.incrementAndGet();
                 api.logging().logToError("Negro Bridge: " + ex.getMessage());
@@ -209,19 +212,29 @@ public class NegroBurpBridge implements BurpExtension {
         return value.replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t");
     }
 
-    private void sendAsync(String json) {
+    private void sendAsync(String json, String method, String observedUrl, String tool) {
+        byte[] payload = json.getBytes(StandardCharsets.UTF_8);
+        String first = payload.length == 0 ? "<empty>" : String.format("0x%02x('%s')", payload[0] & 0xff, payload[0] >= 32 && payload[0] <= 126 ? Character.toString((char) payload[0]) : ".");
+        api.logging().logToOutput("Negro → ingest: " + tool + " " + method + " " + observedUrl + " | payload=" + payload.length + " bytes | first=" + first);
+
         java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/ingest/http"))
                 .timeout(Duration.ofSeconds(5))
-                .header("Content-Type", "application/json")
-                .POST(BodyPublishers.ofString(json, StandardCharsets.UTF_8))
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Accept", "application/json")
+                .POST(BodyPublishers.ofByteArray(payload))
                 .build();
-        client.sendAsync(req, BodyHandlers.ofString())
+        client.sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenAccept(resp -> {
                     String body = resp.body();
                     if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
-                        if (body.contains("\"accepted\":true") || body.contains("\"accepted\": true")) accepted.incrementAndGet();
-                        else ignored.incrementAndGet();
+                        if (body.contains("\"accepted\":true") || body.contains("\"accepted\": true")) {
+                            accepted.incrementAndGet();
+                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true");
+                        } else {
+                            ignored.incrementAndGet();
+                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=false");
+                        }
                     } else {
                         errors.incrementAndGet();
                         api.logging().logToError("Negro ingest HTTP " + resp.statusCode() + ": " + body);
@@ -229,8 +242,23 @@ public class NegroBurpBridge implements BurpExtension {
                 })
                 .exceptionally(ex -> {
                     errors.incrementAndGet();
+                    api.logging().logToError("Negro ingest exception: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "" : ex.getMessage()));
                     return null;
                 });
+    }
+
+    private boolean isNegroBridgeTraffic(String url) {
+        try {
+            URI observed = URI.create(url);
+            URI negro = URI.create(negroBaseUrl);
+            int observedPort = observed.getPort() > 0 ? observed.getPort() : ("https".equalsIgnoreCase(observed.getScheme()) ? 443 : 80);
+            int negroPort = negro.getPort() > 0 ? negro.getPort() : ("https".equalsIgnoreCase(negro.getScheme()) ? 443 : 80);
+            return observed.getHost() != null && negro.getHost() != null
+                    && observed.getHost().equalsIgnoreCase(negro.getHost())
+                    && observedPort == negroPort;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String toJson(HttpRequest request, HttpResponseReceived response, String tool) {

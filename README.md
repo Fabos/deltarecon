@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.11.1
+# Negro Recon 🐕 — v0.11.2
 
 > **Olfatea donde otros no miran.**
 
@@ -7,9 +7,9 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.11.1 — Investigation Workspace
+## v0.11.2 — Investigation Workspace
 
-La v0.11 convierte Resources en unidades de investigación: detalle HTTP estilo proxy con request/response, herramientas contextuales, provenance, evidencia, Findings persistentes multi-entidad y ciclo de retest. La navegación y los estados visuales se refuerzan para usar Negro como memoria operativa durante pentests y bug bounty. Consulta `UPDATE-v0.11.1.md`.
+La v0.11 convierte Resources en unidades de investigación: detalle HTTP estilo proxy con request/response, herramientas contextuales, provenance, evidencia, Findings persistentes multi-entidad y ciclo de retest. La navegación y los estados visuales se refuerzan para usar Negro como memoria operativa durante pentests y bug bounty. Consulta `UPDATE-v0.11.2.md`.
 
 ## v0.10.0 — Burp Bridge + HTTP Operations
 

@@ -1167,11 +1167,15 @@ def create_app(default_domain: str, default_workspace: Path):
             raw_body = await request.body()
             payload = json.loads(raw_body.decode("utf-8"))
         except UnicodeDecodeError as exc:
-            raise HTTPException(status_code=400, detail=f"JSON inválido: UTF-8 en byte {exc.start}")
+            first_byte = raw_body[0] if raw_body else None
+            raise HTTPException(status_code=400, detail=f"JSON inválido: UTF-8 en byte {exc.start}; body_len={len(raw_body)}; first_byte={first_byte}")
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail=f"JSON inválido: {exc.msg} en posición {exc.pos}")
+            first_byte = raw_body[0] if raw_body else None
+            raise HTTPException(status_code=400, detail=f"JSON inválido: {exc.msg} en posición {exc.pos}; body_len={len(raw_body)}; first_byte={first_byte}")
         except Exception:
-            raise HTTPException(status_code=400, detail="JSON inválido")
+            first_byte = raw_body[0] if 'raw_body' in locals() and raw_body else None
+            body_len = len(raw_body) if 'raw_body' in locals() else -1
+            raise HTTPException(status_code=400, detail=f"JSON inválido; body_len={body_len}; first_byte={first_byte}")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Payload inválido")
         url = str(payload.get("url") or "").strip()
