@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Mapa · {{ domain }} · Negro{% endblock %}
+{% block content %}
+<section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}">
+  <header class="graph-toolbar">
+    <div>
+      <div class="eyebrow">ATTACK KNOWLEDGE GRAPH</div>
+      <h1>Mapa de investigación</h1>
+      <p>Una vista conectada de lo que Negro conoce, observó, probó y documentó.</p>
+    </div>
+    <div class="graph-toolbar-actions">
+      <button type="button" class="btn-secondary" data-graph-fit>Centrar</button>
+      <button type="button" class="btn-secondary" data-graph-neighborhood>1 hop</button>
+      <button type="button" class="btn-secondary" data-graph-all>Todo</button>
+    </div>
+  </header>
+
+  <div class="graph-stats">
+    {% for kind,count in graph_counts|dictsort %}
+      <span><b>{{ count }}</b> {{ kind }}</span>
+    {% endfor %}
+    <small>Generado {{ graph_generated }}</small>
+  </div>
+
+  <div class="graph-workspace">
+    <aside class="graph-controls">
+      <label class="graph-search"><span>Buscar</span><input type="search" placeholder="host, endpoint, finding…" data-graph-search></label>
+      <div class="graph-filter-title">Perspectiva</div>
+      <button class="graph-filter active" data-graph-preset="all">All</button>
+      <button class="graph-filter" data-graph-preset="untested">Untested</button>
+      <button class="graph-filter" data-graph-preset="interesting">Leads / Findings</button>
+      <button class="graph-filter" data-graph-preset="burp">Burp</button>
+      <button class="graph-filter" data-graph-preset="resources">Resources</button>
+      <div class="graph-filter-title">Tipos</div>
+      <div class="graph-type-filters" data-graph-types></div>
+      <div class="graph-legend">
+        <div><i class="legend-dot state-untested"></i> Untested</div>
+        <div><i class="legend-dot state-interesting"></i> Interesting</div>
+        <div><i class="legend-dot state-finding"></i> Finding</div>
+        <div><i class="legend-dot state-tested"></i> Tested</div>
+      </div>
+    </aside>
+
+    <div class="graph-canvas-wrap">
+      <svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg>
+      <div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div>
+      <div class="graph-hint">Rueda para zoom · arrastra para mover · click para explorar</div>
+    </div>
+
+    <aside class="graph-detail" data-graph-detail>
+      <div class="graph-detail-empty">
+        <div class="graph-detail-icon">⌁</div>
+        <h3>Selecciona un nodo</h3>
+        <p>Verás procedencia, estado, relaciones y accesos directos a la evidencia real.</p>
+      </div>
+    </aside>
+  </div>
+</section>
+<script src="/static/graph.js"></script>
+{% endblock %}

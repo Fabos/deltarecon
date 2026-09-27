@@ -1,3 +1,17 @@
+# Roadmap
+
+## v0.12 — Attack Knowledge Graph V1 ✅
+- Graph projection over existing entities
+- Semantic edges + provenance
+- Search / filters / 1-hop focus
+- Interactive visual investigation map
+
+## Next
+- Persistent Hypothesis lifecycle
+- AI Give me ideas / I'm stuck using structured graph context
+- Identities / roles
+- Business objects and richer attack paths
+
 # Negro Recon — Roadmap posterior a v0.9.0
 
 ## Implementado en el Hunter Intelligence MVP

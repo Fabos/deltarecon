@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.11.
+"""Local web workspace for Negro Recon v0.12.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -525,6 +525,136 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
         notes = _notes(conn, "finding", finding_id)
         return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes}
 
+
+def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 120, observation_limit: int = 120) -> dict[str, Any]:
+    """Build a read-only graph projection from Negro's existing relational model.
+
+    The graph never duplicates authoritative entities. Node IDs are stable references
+    such as ``resource:17`` and edges explain why two existing records are connected.
+    """
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    seen_nodes: set[str] = set()
+    seen_edges: set[str] = set()
+
+    def add_node(node_id: str, node_type: str, label: str, *, state: str = "normal", meta: dict[str, Any] | None = None, href: str | None = None) -> str:
+        if node_id in seen_nodes:
+            return node_id
+        seen_nodes.add(node_id)
+        nodes.append({"id": node_id, "type": node_type, "label": str(label), "state": state or "normal", "meta": meta or {}, "href": href})
+        return node_id
+
+    def add_edge(src: str, dst: str, relation: str, *, source: str | None = None, evidence: Any = None) -> None:
+        key = f"{src}|{relation}|{dst}|{source or ''}"
+        if src == dst or key in seen_edges or src not in seen_nodes or dst not in seen_nodes:
+            return
+        seen_edges.add(key)
+        edges.append({"id": f"e{len(edges)+1}", "source": src, "target": dst, "relation": relation, "meta": {"source": source, "evidence": evidence}})
+
+    target_id = add_node("target:root", "target", domain, state="normal", meta={"domain": domain})
+    with _db(paths) as conn:
+        hosts = conn.execute("SELECT * FROM hosts ORDER BY hostname").fetchall()
+        host_by_name: dict[str, str] = {}
+        for h in hosts:
+            state = "finding" if h["classification"] == "finding" else "interesting" if h["classification"] == "lead" else "tested" if h["review_state"] == "reviewed" else "untested"
+            nid = add_node(f"host:{h['id']}", "host", h["hostname"], state=state, meta={"id": h["id"], "review": h["review_state"], "classification": h["classification"], "priority": h["priority"], "updated_at": h["updated_at"]}, href=f"host/{h['id']}")
+            host_by_name[str(h["hostname"]).lower()] = nid
+            add_edge(target_id, nid, "contains", source="inventory")
+
+        resources = conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id ORDER BY r.id").fetchall()
+        resource_by_url: dict[str, str] = {}
+        for r in resources:
+            state = "finding" if r["classification"] == "finding" else "interesting" if r["classification"] == "lead" else "tested" if r["review_state"] == "reviewed" else "untested"
+            nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta={"id": r["id"], "url": r["url"], "host": r["hostname"], "review": r["review_state"], "classification": r["classification"], "priority": r["priority"], "updated_at": r["updated_at"]}, href=f"resource/{r['id']}")
+            resource_by_url[str(r["url"])] = nid
+            add_edge(f"host:{r['host_id']}", nid, "contains", source="inventory")
+            for rs in conn.execute("SELECT source,first_seen_at FROM resource_sources WHERE resource_id=? ORDER BY first_seen_at", (r["id"],)).fetchall():
+                src_name = str(rs["source"])
+                sid = add_node(f"source:{src_name}", "source", src_name.replace("_", " "), meta={"source": src_name})
+                add_edge(sid, nid, "discovered", source=src_name, evidence={"first_seen_at": rs["first_seen_at"]})
+
+        operations = conn.execute("SELECT o.*,r.path,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id ORDER BY o.id").fetchall()
+        for o in operations:
+            label = f"{o['method']} {o['path']}"
+            state = "interesting" if o["last_status"] and int(o["last_status"]) >= 500 else "normal"
+            nid = add_node(f"operation:{o['id']}", "operation", label, state=state, meta={"id": o["id"], "method": o["method"], "status": o["last_status"], "seen_count": o["seen_count"], "authenticated": bool(o["authenticated_observed"]), "last_seen_at": o["last_seen_at"], "url": o["url"]})
+            add_edge(f"resource:{o['resource_id']}", nid, "supports", source="http_model")
+            for osrc in conn.execute("SELECT source,first_seen_at,last_seen_at,seen_count FROM operation_sources WHERE operation_id=?", (o["id"],)).fetchall():
+                src_name = str(osrc["source"])
+                sid = add_node(f"source:{src_name}", "source", src_name.replace("_", " "), meta={"source": src_name})
+                add_edge(sid, nid, "observed", source=src_name, evidence={"seen_count": osrc["seen_count"], "first_seen_at": osrc["first_seen_at"], "last_seen_at": osrc["last_seen_at"]})
+
+        exchanges = conn.execute("""SELECT e.*,o.method,o.resource_id,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id ORDER BY e.last_seen_at DESC LIMIT ?""", (max(10, min(exchange_limit, 500)),)).fetchall()
+        for e in exchanges:
+            label = f"#{e['id']} {e['method']} · {e['status_code'] or '—'}"
+            nid = add_node(f"exchange:{e['id']}", "request", label, meta={"id": e["id"], "source": e["source"], "tool": e["tool"], "status": e["status_code"], "seen_count": e["seen_count"], "request_size": e["request_size"], "response_size": e["response_size"], "last_seen_at": e["last_seen_at"], "path": e["path"]})
+            add_edge(f"operation:{e['operation_id']}", nid, "observed_in", source=e["source"], evidence={"seen_count": e["seen_count"], "last_seen_at": e["last_seen_at"]})
+
+        js_rows = conn.execute("SELECT * FROM js_assets ORDER BY discovered_at DESC LIMIT 150").fetchall()
+        for js in js_rows:
+            label = Path(urllib.parse.urlsplit(js["url"]).path).name or js["url"]
+            nid = add_node(f"js:{js['id']}", "javascript", label, state="tested" if js["analyzed_at"] else "untested", meta={"id": js["id"], "url": js["url"], "source": js["source"], "size_bytes": js["size_bytes"], "analyzed_at": js["analyzed_at"], "discovered_at": js["discovered_at"]})
+            add_edge(f"host:{js['host_id']}", nid, "contains", source=js["source"])
+
+        obs_rows = conn.execute("SELECT * FROM observations ORDER BY id DESC LIMIT ?", (max(10, min(observation_limit, 500)),)).fetchall()
+        for o in obs_rows:
+            state = "interesting" if (o["source"] == "cors_probe" and "cors" in str(o["kind"]).lower()) else "normal"
+            label = str(o["kind"]).replace("_", " ")
+            nid = add_node(f"observation:{o['id']}", "observation", label, state=state, meta={"id": o["id"], "source": o["source"], "kind": o["kind"], "value": o["value"], "observed_at": o["observed_at"]})
+            parent = f"{o['entity_type']}:{o['entity_id']}"
+            if parent in seen_nodes:
+                add_edge(parent, nid, "tested_by", source=o["source"])
+
+        # Hunter leads are already persistent investigation hypotheses/leads.
+        try:
+            lead_rows = conn.execute("SELECT * FROM leads_v2 ORDER BY updated_at DESC LIMIT 150").fetchall()
+        except Exception:
+            lead_rows = []
+        for l in lead_rows:
+            state = "tested" if l["status"] in ("discarded", "negative") else "finding" if l["status"] in ("confirmed",) else "interesting"
+            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href="intelligence#leads")
+            if l["resource_id"] and f"resource:{l['resource_id']}" in seen_nodes:
+                add_edge(f"resource:{l['resource_id']}", nid, "produced_lead", source="correlation_engine")
+            elif l["host_id"] and f"host:{l['host_id']}" in seen_nodes:
+                add_edge(f"host:{l['host_id']}", nid, "produced_lead", source="correlation_engine")
+
+        findings = conn.execute("SELECT * FROM findings ORDER BY updated_at DESC").fetchall()
+        for f in findings:
+            nid = add_node(f"finding:{f['id']}", "finding", f["title"], state="finding", meta={"id": f["id"], "severity": f["severity"], "status": f["status"], "description": f["description"], "updated_at": f["updated_at"]}, href=f"finding/{f['id']}")
+            for fe in conn.execute("SELECT * FROM finding_entities WHERE finding_id=?", (f["id"],)).fetchall():
+                parent = f"{fe['entity_type']}:{fe['entity_id']}"
+                if parent in seen_nodes:
+                    add_edge(parent, nid, fe["relation"] or "supports_finding", source="finding")
+
+        # Existing semantic relationships enrich the graph without replacing canonical entities.
+        try:
+            rel_rows = conn.execute("SELECT * FROM relationships ORDER BY id DESC LIMIT 250").fetchall()
+        except Exception:
+            rel_rows = []
+        for rel in rel_rows:
+            src = f"{rel['src_type']}:{rel['src_id']}" if rel["src_id"] is not None else None
+            if not src or src not in seen_nodes:
+                continue
+            dst = None
+            if rel["dst_type"] == "host":
+                dst = host_by_name.get(str(rel["dst_value"]).lower())
+            elif rel["dst_type"] == "url":
+                dst = resource_by_url.get(str(rel["dst_value"]))
+            if not dst:
+                safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(rel["dst_value"]))[:120]
+                dst = add_node(f"external:{rel['dst_type']}:{safe}", "external", str(rel["dst_value"]), meta={"type": rel["dst_type"], "value": rel["dst_value"]})
+            try:
+                evidence = json.loads(rel["evidence_json"] or "null")
+            except Exception:
+                evidence = rel["evidence_json"]
+            add_edge(src, dst, rel["relation"], source=rel["source"], evidence=evidence)
+
+    type_counts: dict[str, int] = {}
+    for n in nodes:
+        type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
+    return {"target": domain, "nodes": nodes, "edges": edges, "counts": type_counts, "generated_at": _now()}
+
+
 def create_app(default_domain: str, default_workspace: Path):
     if _WEB_IMPORT_ERROR is not None:
         raise RuntimeError("Faltan dependencias web. Ejecuta ./install-web.sh o instala requirements.txt") from _WEB_IMPORT_ERROR
@@ -706,6 +836,17 @@ def create_app(default_domain: str, default_workspace: Path):
         domain, workspace, paths = _target_context(target_key)
         data = _tree_data(paths, q, review, classification, priority)
         return render(request, "tree.html", target_key, domain, workspace, tree=data, q=q, review=review, classification=classification, priority=priority)
+
+    @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
+    def graph_page(request: Request, target_key: str):
+        domain, workspace, paths = _target_context(target_key)
+        data = _graph_data(paths, domain)
+        return render(request, "graph.html", target_key, domain, workspace, graph_counts=data["counts"], graph_generated=data["generated_at"])
+
+    @app.get("/api/t/{target_key}/graph", response_class=JSONResponse)
+    def graph_api(target_key: str, exchanges: int = 120, observations: int = 120):
+        domain, _, paths = _target_context(target_key)
+        return _graph_data(paths, domain, exchange_limit=exchanges, observation_limit=observations)
 
     @app.get("/t/{target_key}/host/{host_id}", response_class=HTMLResponse)
     def host_detail(request: Request, target_key: str, host_id: int):
