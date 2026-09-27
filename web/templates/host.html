@@ -6,14 +6,14 @@
   <div class="host-actions">
     <a class="button secondary" href="{{ host_https_url }}" target="_blank" rel="noopener noreferrer">Abrir HTTPS ↗</a>
     <a class="button ghost" href="{{ host_http_url }}" target="_blank" rel="noopener noreferrer">HTTP ↗</a>
-    <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit" data-inspect-button>Inspección básica</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form data-job-label="Pivot TLS SAN"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Pivot TLS SAN</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form data-job-label="Passive DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Passive DNS</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/web-recon" method="post" data-job-form data-job-label="Web recon"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Web recon + robots + well-known</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/crawl" method="post" data-job-form data-job-label="Crawling"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Crawler controlado</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/cors" method="post" data-job-form data-job-label="CORS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">CORS check</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/vhost" method="post" data-job-form data-job-label="Smart VHost" class="vhost-inline"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="base_url" placeholder="https://host/ o http://IP:puerto/" aria-label="Base URL VHost"><button class="button ghost" type="submit">Smart VHost</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form data-job-label="Descubriendo JavaScript"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Descubrir JS</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit" data-inspect-button data-tip="Confirma DNS, HTTP/HTTPS y TLS del host. Éxito: status/resolución/TLS observables.">Inspección básica</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form data-job-label="Pivot TLS SAN"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Lee SANs del certificado TLS para descubrir nombres relacionados. Éxito: nuevos hosts in-scope desde el certificado.">Pivot TLS SAN</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form data-job-label="Passive DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Consulta historial DNS pasivo cuando haya proveedor configurado. Éxito: nombres/IP históricos útiles para pivote.">Passive DNS</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/web-recon" method="post" data-job-form data-job-label="Web recon"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Revisa raíz, robots, sitemap y rutas .well-known. Éxito: nuevos endpoints, hosts o metadata OIDC/security.txt.">Web recon + robots + well-known</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/crawl" method="post" data-job-form data-job-label="Crawling"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Sigue enlaces navegables dentro del alcance. Éxito: rutas nuevas enlazadas por HTML.">Crawler controlado</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/cors" method="post" data-job-form data-job-label="CORS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Prueba la política CORS. En un recurso concreto es más preciso; éxito: Origin inseguro/reflejado o credenciales permisivas.">CORS check</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/vhost" method="post" data-job-form data-job-label="Smart VHost" class="vhost-inline"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="base_url" placeholder="https://host/ o http://IP:puerto/" aria-label="Base URL VHost"><button class="button ghost" type="submit" data-tip="Prueba candidatos de virtual host contra una base conocida. Éxito: respuestas diferenciadas que revelan vhosts.">Smart VHost</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form data-job-label="Descubriendo JavaScript"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit" data-tip="Descubre scripts cargados por la página para analizarlos después. Éxito: nuevos bundles/JS asociados al host.">Descubrir JS</button></form>
   </div>
 </section>
 <div class="inspect-status" data-inspect-status aria-live="polite"></div>
@@ -156,10 +156,14 @@
   <div class="resources">
   {% for item in resources %}
     {% set r=item.row %}
-    <details class="resource-card">
-      <summary><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
+    <details class="resource-card" id="resource-{{ r.id }}">
+      <summary><span class="resource-summary-main"><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><small class="resource-origin">{% if item.primary_source %}vía {{ item.primary_source }}{% endif %}{% if item.first_seen_at %} · {{ item.first_seen_at }}{% endif %}</small></span><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
       <div class="resource-body">
         <div><span class="muted small">URL</span><code class="break">{{ r.url }}</code>{% if item.open_url %}<div><a class="button ghost small-button resource-open" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a></div>{% endif %}</div>
+        <div class="resource-actions">
+          <form action="{{ target_base }}/resource/{{ r.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ r.path }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit" data-tip="Prueba CORS exactamente sobre esta URL. Caso de éxito: el servidor refleja un Origin no confiable o permite credenciales de forma insegura.">CORS check</button></form>
+          {% if r.path.endswith('.js') %}<a class="button ghost small-button" href="#javascript" data-tip="Este recurso es JavaScript. Ve al pipeline JS para análisis local, secretos/config y source maps.">Analizar JS ↓</a>{% endif %}
+        </div>
         <form class="inline-state" action="{{ target_base }}/resource/{{ r.id }}/send-repeater" method="post">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <label class="muted small">Enviar a Burp Repeater</label>
@@ -168,7 +172,7 @@
           </select>
           <button class="button ghost small-button" type="submit">Send to Repeater →</button>
         </form>
-        <div><span class="muted small">Sources</span><div class="chips">{% for s in item.sources %}<span class="chip">{{ s }}</span>{% endfor %}</div></div>
+        <div><span class="muted small">Procedencia del recurso</span><div class="chips">{% for src in item.source_details %}<span class="chip" title="Primera vez: {{ src.first_seen_at }}">{{ src.source }}</span>{% else %}<span class="muted small">Sin procedencia registrada</span>{% endfor %}</div></div>
         {% if item.operations %}
         <div><span class="muted small">Métodos observados · {{ item.operations|length }}</span>
           <div class="operation-grid">
@@ -193,6 +197,16 @@
         </form>
         <form class="note-form compact" action="{{ target_base }}/resource/{{ r.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="body" required placeholder="Nota sobre este recurso"><button class="button ghost small-button" type="submit">+ nota</button></form>
         {% for n in item.notes %}<div class="mini-note"><small>{{ n.created_at }}</small> {{ n.body }}</div>{% endfor %}
+        <div class="resource-evidence">
+          <div class="panel-head compact-head"><div><span class="muted small">Evidencia visual</span></div><span>{{ item.evidence|length }}</span></div>
+          <form class="evidence-form" action="{{ target_base }}/resource/{{ r.id }}/evidence" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required>
+            <input type="text" name="caption" maxlength="500" placeholder="Qué demuestra esta captura (opcional)">
+            <button class="button ghost small-button" type="submit" data-tip="Adjunta una captura al recurso para conservar evidencia de prueba, respuesta o hallazgo.">+ evidencia</button>
+          </form>
+          {% if item.evidence %}<div class="evidence-grid">{% for ev in item.evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank" rel="noopener noreferrer"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
+        </div>
       </div>
     </details>
   {% else %}<p class="empty">No hay recursos asociados todavía.</p>{% endfor %}

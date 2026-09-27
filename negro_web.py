@@ -22,14 +22,14 @@ from urllib.parse import urlsplit
 import negro_core as core
 
 try:
-    from fastapi import FastAPI, Form, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
     from fastapi.templating import Jinja2Templates
     _WEB_IMPORT_ERROR = None
 except ImportError as exc:  # CLI remains usable without web dependencies
-    FastAPI = Form = HTTPException = Request = None  # type: ignore
-    HTMLResponse = JSONResponse = RedirectResponse = StaticFiles = Jinja2Templates = None  # type: ignore
+    FastAPI = File = Form = HTTPException = Request = UploadFile = None  # type: ignore
+    FileResponse = HTMLResponse = JSONResponse = RedirectResponse = StaticFiles = Jinja2Templates = None  # type: ignore
     _WEB_IMPORT_ERROR = exc
 
 JOBS: dict[str, dict[str, Any]] = {}
@@ -272,10 +272,22 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                     (op["id"],),
                 ).fetchall()
                 op_data.append({"row": op, "sources": sources, "exchanges": exchanges})
+            source_details = conn.execute(
+                "SELECT source, first_seen_at FROM resource_sources WHERE resource_id=? ORDER BY first_seen_at, source",
+                (r["id"],),
+            ).fetchall()
+            evidence = conn.execute(
+                "SELECT * FROM evidence_attachments WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC",
+                (r["id"],),
+            ).fetchall()
             resource_data.append({
                 "row": r,
                 "sources": _sources(conn, "resource", r["id"]),
+                "source_details": source_details,
+                "primary_source": source_details[0]["source"] if source_details else None,
+                "first_seen_at": source_details[0]["first_seen_at"] if source_details else r["created_at"],
                 "notes": _notes(conn, "resource", r["id"]),
+                "evidence": evidence,
                 "open_url": _external_url(r["url"]),
                 "operations": op_data,
             })
@@ -631,6 +643,61 @@ def create_app(default_domain: str, default_workspace: Path):
         if body:
             core.mark_entity(paths, "resource", row["url"], None, None, None, body)
         return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
+
+    @app.post("/t/{target_key}/resource/{resource_id}/cors")
+    def resource_cors(request: Request, target_key: str, resource_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT host_id, path FROM resources WHERE id=?", (resource_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Recurso no encontrado")
+        job_id = _start_job(f"CORS {row['path']}", target_key, core.cors_check_resource, domain, paths, resource_id, 20)
+        refresh_url = f"/t/{target_key}/host/{row['host_id']}#resource-{resource_id}"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/resource/{resource_id}/evidence")
+    async def resource_evidence(target_key: str, resource_id: int, csrf: str = Form(...), caption: str = Form(""), evidence: UploadFile = File(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT host_id FROM resources WHERE id=?", (resource_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Recurso no encontrado")
+        allowed = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+        mime = (evidence.content_type or "").lower()
+        if mime not in allowed:
+            raise HTTPException(status_code=400, detail="La evidencia debe ser PNG, JPG, WEBP o GIF")
+        data = await evidence.read()
+        if not data or len(data) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="La evidencia debe pesar entre 1 byte y 8 MB")
+        ev_dir = Path(paths["notes"]) / "evidence"
+        ev_dir.mkdir(parents=True, exist_ok=True)
+        stored = f"resource-{resource_id}-{uuid.uuid4().hex[:12]}{allowed[mime]}"
+        dest = ev_dir / stored
+        dest.write_bytes(data)
+        with _db(paths) as conn:
+            cur = conn.execute(
+                "INSERT INTO evidence_attachments(entity_type,entity_id,kind,original_name,stored_path,mime_type,caption,created_at) VALUES('resource',?,?,?,?,?,?,?)",
+                (resource_id, "image", (evidence.filename or stored)[:255], str(dest), mime, caption.strip()[:500], _now()),
+            )
+            conn.commit()
+        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resource-{resource_id}", status_code=303)
+
+    @app.get("/t/{target_key}/evidence/{evidence_id}")
+    def evidence_file(target_key: str, evidence_id: int):
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT * FROM evidence_attachments WHERE id=?", (evidence_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+        path = Path(row["stored_path"]).resolve()
+        base = (Path(paths["notes"]) / "evidence").resolve()
+        if base not in path.parents or not path.exists():
+            raise HTTPException(status_code=404, detail="Archivo de evidencia no disponible")
+        return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream", filename=row["original_name"])
 
     @app.post("/t/{target_key}/resource/{resource_id}/send-repeater")
     def resource_send_repeater(target_key: str, resource_id: int, method: str = Form("GET"), csrf: str = Form(...)):

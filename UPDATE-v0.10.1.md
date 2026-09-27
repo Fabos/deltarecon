@@ -1,4 +1,4 @@
-# Negro Recon v0.10.1
+# Negro Recon v0.10.2
 
 Parche de instalación de la integración Burp.
 
@@ -21,5 +21,5 @@ cd burp-extension
 Salida esperada:
 
 ```text
-build/libs/negro-burp-bridge-0.10.1.jar
+build/libs/negro-burp-bridge-0.10.2.jar
 ```

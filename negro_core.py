@@ -236,6 +236,18 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS evidence_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'image',
+                original_name TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                mime_type TEXT,
+                caption TEXT,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source TEXT NOT NULL,
@@ -1962,6 +1974,28 @@ def cors_check_host(domain: str, paths: dict[str, Path], hostname: str, url: str
     result = hunter.cors_probe(target_url, timeout=min(12, max(4, timeout / 2)))
     with db_connect(paths) as conn:
         record_observation(conn, "host", host_id, "cors_probe", "cors_probe", target_url, result)
+    return result
+
+
+def cors_check_resource(domain: str, paths: dict[str, Path], resource_id: int, timeout: int = 20) -> dict:
+    """Run the CORS probe against one concrete resource and attach evidence to it."""
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        hunter.assert_policy(conn, "cors")
+        row = conn.execute(
+            "SELECT r.id, r.url, r.host_id, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",
+            (resource_id,),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("Recurso no encontrado")
+    parsed = canonicalize_url(row["url"], domain)
+    if not parsed:
+        raise RuntimeError("La URL del recurso está fuera del target")
+    result = hunter.cors_probe(row["url"], timeout=min(12, max(4, timeout / 2)))
+    with db_connect(paths) as conn:
+        record_observation(conn, "resource", int(row["id"]), "cors_probe", "cors_probe", row["url"], result)
+        record_observation(conn, "host", int(row["host_id"]), "cors_probe", "cors_probe", row["url"], {**result, "resource_id": int(row["id"])})
     return result
 
 
