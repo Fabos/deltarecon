@@ -8,6 +8,18 @@ DISCOVER → ASSOCIATE → INSPECT → CORRELATE → LEAD → VALIDATE → FINDI
 
 Negro separa **evidencia**, **hipótesis** e **impacto demostrado**. Nunca convierte una key, un source map, un parámetro `redirect` o un CNAME externo en vulnerabilidad sólo por existir.
 
+
+## Estado de investigación: Coverage vs Signal
+
+Negro registra dos dimensiones independientes:
+
+- **Coverage**: `untested → testing → tested` describe cuánto se ha revisado.
+- **Signal**: `normal → interesting → finding` describe qué tan importante es lo observado.
+
+Un endpoint puede ser `testing + interesting`, `tested + normal` o `tested + finding`. Un Finding es una entidad persistente relacionada con los assets y la evidencia; el Host/Resource no deja de ser un asset.
+
+Retests posteriores se registran sobre el Finding y pueden enlazar el HTTP Exchange exacto usado como evidencia.
+
 ## 1. Policy antes de tráfico
 
 Cada target tiene un perfil:

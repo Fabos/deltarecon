@@ -11,9 +11,11 @@ import base64
 import json
 import re
 import secrets
+import shutil
 import threading
 import traceback
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 import urllib.parse
@@ -132,6 +134,55 @@ def _external_url(value: str | None) -> str | None:
     return value
 
 
+def _coverage_state(review_state: str | None) -> str:
+    return {"pending": "untested", "in_progress": "testing", "reviewed": "tested"}.get(str(review_state or ""), "untested")
+
+
+def _entity_signal(conn, entity_type: str, entity_id: int, classification: str | None = None) -> tuple[str, int]:
+    """Return visual signal independently from coverage.
+
+    Real Finding links are authoritative. Legacy classification remains compatible,
+    and strong observations can lift an asset to Interesting without pretending a
+    vulnerability is confirmed.
+    """
+    finding_count = int(conn.execute(
+        "SELECT COUNT(DISTINCT finding_id) c FROM finding_entities WHERE entity_type=? AND entity_id=?",
+        (entity_type, entity_id),
+    ).fetchone()["c"] or 0)
+    if finding_count or classification == "finding":
+        return "finding", finding_count
+    if classification == "lead":
+        return "interesting", 0
+    try:
+        rows = conn.execute(
+            "SELECT source,kind,payload_json FROM observations WHERE entity_type=? AND entity_id=? ORDER BY id DESC LIMIT 50",
+            (entity_type, entity_id),
+        ).fetchall()
+        for row in rows:
+            payload = {}
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except Exception:
+                pass
+            if bool(payload.get("likely_credentialed_cors")) or bool(payload.get("interesting")):
+                return "interesting", 0
+    except Exception:
+        pass
+    return "normal", 0
+
+
+def _visual_state(coverage: str, signal: str) -> str:
+    if signal == "finding":
+        return "finding"
+    if signal == "interesting":
+        return "interesting"
+    if coverage == "tested":
+        return "tested"
+    if coverage == "untested":
+        return "untested"
+    return "normal"
+
+
 def _target_context(target_key: str) -> tuple[str, Path, dict[str, Path]]:
     target = core.get_target(target_key)
     if not target:
@@ -142,6 +193,50 @@ def _target_context(target_key: str) -> tuple[str, Path, dict[str, Path]]:
         raise HTTPException(status_code=500, detail="Target mal configurado")
     paths = core.ensure_workspace(workspace, domain)
     return domain, workspace, paths
+
+
+def _create_finding(conn, *, title: str, severity: str = "info", status: str = "confirmed", description: str = "", source: str = "manual") -> int:
+    now = _now()
+    severity = severity if severity in {"info","low","medium","high","critical"} else "info"
+    status = status if status in {"draft","confirmed","reported","retest_required","still_vulnerable","fixed","fix_verified","closed"} else "confirmed"
+    cur = conn.execute(
+        "INSERT INTO findings(title,severity,status,description,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        ((title or "Finding sin título").strip()[:240], severity, status, (description or "").strip(), source[:80], now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _link_finding(conn, finding_id: int, entity_type: str, entity_id: int, relation: str = "affected") -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)",
+        (finding_id, entity_type, int(entity_id), (relation or "affected").strip()[:80], _now()),
+    )
+    conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+
+
+def _ensure_finding_for_entity(conn, entity_type: str, entity_id: int, title: str, source: str = "manual_mark") -> int:
+    row = conn.execute(
+        "SELECT f.id FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id WHERE fe.entity_type=? AND fe.entity_id=? ORDER BY f.updated_at DESC LIMIT 1",
+        (entity_type, entity_id),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    fid = _create_finding(conn, title=title, status="confirmed", source=source)
+    _link_finding(conn, fid, entity_type, entity_id, "affected")
+    return fid
+
+
+def _safe_extract_zip(upload_path: Path, destination: Path) -> None:
+    destination = destination.resolve()
+    with zipfile.ZipFile(upload_path) as zf:
+        for info in zf.infolist():
+            name = info.filename.replace("\\", "/")
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise ValueError("Backup inválido: ruta insegura")
+            out = (destination / name).resolve()
+            if destination not in out.parents and out != destination:
+                raise ValueError("Backup inválido: ruta fuera del workspace")
+        zf.extractall(destination)
 
 
 def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
@@ -157,8 +252,7 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
                         + conn.execute("SELECT COUNT(*) c FROM resources WHERE review_state='reviewed'").fetchone()["c"],
             "leads": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='lead'").fetchone()["c"]
                     + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='lead'").fetchone()["c"],
-            "findings": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='finding'").fetchone()["c"]
-                       + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='finding'").fetchone()["c"],
+            "findings": conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"],
             "discarded": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='discarded'").fetchone()["c"]
                         + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='discarded'").fetchone()["c"],
             "informational": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='informational'").fetchone()["c"]
@@ -192,7 +286,7 @@ def _target_cards() -> list[dict[str, Any]]:
                 item["hosts"] = conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"]
                 item["resources"] = conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"]
                 item["leads"] = conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='lead'").fetchone()["c"] + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='lead'").fetchone()["c"]
-                item["findings"] = conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='finding'").fetchone()["c"] + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='finding'").fetchone()["c"]
+                item["findings"] = conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"]
         except BaseException as exc:
             item["error"] = str(exc)[:180]
         cards.append(item)
@@ -222,7 +316,20 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
     sql += " GROUP BY h.id ORDER BY CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, h.hostname LIMIT ?"
     params.append(max(1, min(limit, 2000)))
     with _db(paths) as conn:
-        return conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            coverage = _coverage_state(row["review_state"])
+            signal, direct_findings = _entity_signal(conn, "host", row["id"], row["classification"])
+            child_findings = conn.execute(
+                """SELECT COUNT(DISTINCT fe.finding_id) c FROM finding_entities fe
+                   JOIN resources r ON fe.entity_type='resource' AND fe.entity_id=r.id
+                   WHERE r.host_id=?""", (row["id"],)
+            ).fetchone()["c"] or 0
+            item.update({"coverage_state": coverage, "signal_state": signal, "finding_count": int(direct_findings), "child_finding_count": int(child_findings), "total_finding_count": int(direct_findings) + int(child_findings)})
+            out.append(item)
+        return out
 
 
 def _group_detections(analysis: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
@@ -293,8 +400,13 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                         cors_result["observed_at"] = cors_row["observed_at"]
                 except Exception:
                     cors_result = None
+            r_coverage = _coverage_state(r["review_state"])
+            r_signal, r_finding_count = _entity_signal(conn, "resource", r["id"], r["classification"])
             resource_data.append({
                 "row": r,
+                "coverage_state": r_coverage,
+                "signal_state": r_signal,
+                "finding_count": r_finding_count,
                 "sources": _sources(conn, "resource", r["id"]),
                 "source_details": source_details,
                 "primary_source": source_details[0]["source"] if source_details else None,
@@ -384,6 +496,10 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                 "ai": analyses,
             })
         tls_san_result = _latest_observation_payload(observation_data, "tls_san", "certificate_sans")
+        linked_findings = conn.execute("SELECT f.*,fe.relation FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id WHERE fe.entity_type='host' AND fe.entity_id=? ORDER BY f.updated_at DESC", (host_id,)).fetchall()
+        all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
+        coverage_state = _coverage_state(host["review_state"])
+        signal_state, finding_count = _entity_signal(conn, "host", host_id, host["classification"])
     return {
         "host": host,
         "host_https_url": f"https://{host['hostname']}/",
@@ -398,6 +514,11 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
         "js_assets": js_assets,
         "operation_count": sum(len(x["operations"]) for x in resource_data),
         "exchange_count": sum(sum(len(op["exchanges"]) for op in x["operations"]) for x in resource_data),
+        "linked_findings": linked_findings,
+        "all_findings": all_findings,
+        "coverage_state": coverage_state,
+        "signal_state": signal_state,
+        "finding_count": finding_count,
     }
 
 
@@ -483,6 +604,8 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
             (resource_id,),
         ).fetchall()
         all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
+        coverage = _coverage_state(row["review_state"])
+        signal, finding_count = _entity_signal(conn, "resource", resource_id, row["classification"])
         return {
             "resource": row,
             "source_details": source_details,
@@ -493,6 +616,9 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
             "observations": observations,
             "linked_findings": linked_findings,
             "all_findings": all_findings,
+            "coverage_state": coverage,
+            "signal_state": signal,
+            "finding_count": finding_count,
             "open_url": _external_url(row["url"]),
         }
 
@@ -520,7 +646,25 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
                 ex = conn.execute("SELECT id,status_code,source FROM http_exchanges WHERE id=?", (link["entity_id"],)).fetchone()
                 if ex: label = f"HTTP exchange #{ex['id']} · {ex['source']} · {ex['status_code'] or '—'}"
             links.append({"row": link, "label": label, "href": href})
-        retests = conn.execute("SELECT * FROM finding_retests WHERE finding_id=? ORDER BY tested_at DESC,id DESC", (finding_id,)).fetchall()
+        retests = []
+        for rr in conn.execute("SELECT * FROM finding_retests WHERE finding_id=? ORDER BY tested_at DESC,id DESC", (finding_id,)).fetchall():
+            rd = dict(rr)
+            rlinks = []
+            try:
+                rows = conn.execute("SELECT * FROM finding_retest_entities WHERE retest_id=? ORDER BY id", (rr["id"],)).fetchall()
+            except Exception:
+                rows = []
+            for link in rows:
+                label = f"{link['entity_type']} #{link['entity_id']}"
+                href = None
+                if link["entity_type"] == "exchange":
+                    ex = conn.execute("SELECT e.id,e.status_code,e.source,o.method,r.path,r.id AS resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?", (link["entity_id"],)).fetchone()
+                    if ex:
+                        label = f"Exchange #{ex['id']} · {ex['method']} {ex['path']} · HTTP {ex['status_code'] or '—'}"
+                        href = f"resource/{ex['resource_id']}#http"
+                rlinks.append({"row": link, "label": label, "href": href})
+            rd["entities"] = rlinks
+            retests.append(rd)
         evidence = conn.execute("SELECT * FROM evidence_attachments WHERE entity_type='finding' AND entity_id=? ORDER BY id DESC", (finding_id,)).fetchall()
         notes = _notes(conn, "finding", finding_id)
         return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes}
@@ -556,16 +700,20 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
         hosts = conn.execute("SELECT * FROM hosts ORDER BY hostname").fetchall()
         host_by_name: dict[str, str] = {}
         for h in hosts:
-            state = "finding" if h["classification"] == "finding" else "interesting" if h["classification"] == "lead" else "tested" if h["review_state"] == "reviewed" else "untested"
-            nid = add_node(f"host:{h['id']}", "host", h["hostname"], state=state, meta={"id": h["id"], "review": h["review_state"], "classification": h["classification"], "priority": h["priority"], "updated_at": h["updated_at"]}, href=f"host/{h['id']}")
+            coverage = _coverage_state(h["review_state"])
+            signal, finding_count = _entity_signal(conn, "host", h["id"], h["classification"])
+            state = _visual_state(coverage, signal)
+            nid = add_node(f"host:{h['id']}", "host", h["hostname"], state=state, meta={"id": h["id"], "coverage": coverage, "signal": signal, "review": h["review_state"], "classification": h["classification"], "finding_count": finding_count, "priority": h["priority"], "updated_at": h["updated_at"]}, href=f"host/{h['id']}")
             host_by_name[str(h["hostname"]).lower()] = nid
             add_edge(target_id, nid, "contains", source="inventory")
 
         resources = conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id ORDER BY r.id").fetchall()
         resource_by_url: dict[str, str] = {}
         for r in resources:
-            state = "finding" if r["classification"] == "finding" else "interesting" if r["classification"] == "lead" else "tested" if r["review_state"] == "reviewed" else "untested"
-            nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta={"id": r["id"], "url": r["url"], "host": r["hostname"], "review": r["review_state"], "classification": r["classification"], "priority": r["priority"], "updated_at": r["updated_at"]}, href=f"resource/{r['id']}")
+            coverage = _coverage_state(r["review_state"])
+            signal, finding_count = _entity_signal(conn, "resource", r["id"], r["classification"])
+            state = _visual_state(coverage, signal)
+            nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta={"id": r["id"], "url": r["url"], "host": r["hostname"], "coverage": coverage, "signal": signal, "review": r["review_state"], "classification": r["classification"], "finding_count": finding_count, "priority": r["priority"], "updated_at": r["updated_at"]}, href=f"resource/{r['id']}")
             resource_by_url[str(r["url"])] = nid
             add_edge(f"host:{r['host_id']}", nid, "contains", source="inventory")
             for rs in conn.execute("SELECT source,first_seen_at FROM resource_sources WHERE resource_id=? ORDER BY first_seen_at", (r["id"],)).fetchall():
@@ -598,7 +746,11 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
 
         obs_rows = conn.execute("SELECT * FROM observations ORDER BY id DESC LIMIT ?", (max(10, min(observation_limit, 500)),)).fetchall()
         for o in obs_rows:
-            state = "interesting" if (o["source"] == "cors_probe" and "cors" in str(o["kind"]).lower()) else "normal"
+            try:
+                opayload = json.loads(o["payload_json"] or "{}")
+            except Exception:
+                opayload = {}
+            state = "interesting" if bool(opayload.get("likely_credentialed_cors")) or bool(opayload.get("interesting")) else "normal"
             label = str(o["kind"]).replace("_", " ")
             nid = add_node(f"observation:{o['id']}", "observation", label, state=state, meta={"id": o["id"], "source": o["source"], "kind": o["kind"], "value": o["value"], "observed_at": o["observed_at"]})
             parent = f"{o['entity_type']}:{o['entity_id']}"
@@ -721,6 +873,68 @@ def create_app(default_domain: str, default_workspace: Path):
             print(f"[!] No pude crear target {domain}: {exc}")
             return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":str(exc), "workspace":str(target_workspace), "version":core.VERSION})
         return RedirectResponse(url=f"/t/{key}/", status_code=303)
+
+    @app.get("/t/{target_key}/backup")
+    def target_backup(target_key: str):
+        domain, workspace, paths = _target_context(target_key)
+        backup_dir = Path.home() / ".config" / "negro" / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        out = backup_dir / f"negro-backup-{core.target_key(domain)}-{stamp}.zip"
+        manifest = {"format": 1, "negro_version": core.VERSION, "domain": domain, "target_key": target_key, "created_at": _now()}
+        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+            for file in workspace.rglob("*"):
+                if file.is_file():
+                    try:
+                        rel = file.relative_to(workspace)
+                    except Exception:
+                        continue
+                    if any(part in {".git","__pycache__"} for part in rel.parts):
+                        continue
+                    zf.write(file, Path("workspace") / rel)
+        return FileResponse(path=str(out), filename=out.name, media_type="application/zip")
+
+    @app.post("/targets/restore")
+    async def target_restore(request: Request, backup: UploadFile = File(...), workspace: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if not (backup.filename or "").lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="Selecciona un backup .zip de Negro")
+        tmp_dir = Path.home() / ".config" / "negro" / "restore-tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp = tmp_dir / f"{uuid.uuid4().hex}.zip"
+        data = await backup.read()
+        if len(data) > 1024 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Backup demasiado grande")
+        tmp.write_bytes(data)
+        try:
+            with zipfile.ZipFile(tmp) as zf:
+                try:
+                    manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Backup sin manifest.json válido")
+                domain = str(manifest.get("domain") or "").strip().lower().rstrip(".")
+                if not DOMAIN_RE.fullmatch(domain):
+                    raise HTTPException(status_code=400, detail="Dominio inválido dentro del backup")
+            target_workspace = Path(workspace).expanduser() if workspace.strip() else core.suggested_workspace(domain)
+            if target_workspace.exists() and any(target_workspace.iterdir()):
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                target_workspace = target_workspace.parent / f"{target_workspace.name}-restore-{stamp}"
+            staging = target_workspace.parent / f".{target_workspace.name}.restore-{uuid.uuid4().hex[:8]}"
+            staging.mkdir(parents=True, exist_ok=False)
+            _safe_extract_zip(tmp, staging)
+            extracted = staging / "workspace"
+            if not extracted.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+                raise HTTPException(status_code=400, detail="Backup no contiene workspace/")
+            target_workspace.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(extracted), str(target_workspace))
+            shutil.rmtree(staging, ignore_errors=True)
+            core.ensure_workspace(target_workspace, domain)
+            key = core.register_target(domain, target_workspace, make_current=True)
+            return RedirectResponse(url=f"/t/{key}/?restored=1", status_code=303)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @app.get("/t/{target_key}/settings", response_class=HTMLResponse)
     def settings_page(request: Request, target_key: str):
@@ -929,15 +1143,19 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "findings.html", target_key, domain, workspace, findings=rows, finding_status=status, finding_severity=severity)
 
     @app.post("/t/{target_key}/findings/create")
-    def finding_create(target_key: str, title: str = Form(...), severity: str = Form("info"), status: str = Form("draft"), description: str = Form(""), resource_id: int | None = Form(None), csrf: str = Form(...)):
+    def finding_create(target_key: str, title: str = Form(...), severity: str = Form("info"), status: str = Form("draft"), description: str = Form(""), resource_id: int | None = Form(None), host_id: int | None = Form(None), exchange_id: int | None = Form(None), csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
-        now = _now()
         with _db(paths) as conn:
-            cur = conn.execute("INSERT INTO findings(title,severity,status,description,created_at,updated_at) VALUES(?,?,?,?,?,?)", (title.strip()[:240], severity, status, description.strip(), now, now))
-            fid = int(cur.lastrowid)
+            fid = _create_finding(conn, title=title, severity=severity, status=status, description=description, source="web")
             if resource_id:
-                conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?, 'resource', ?, 'affected', ?)", (fid, resource_id, now))
+                _link_finding(conn, fid, "resource", resource_id, "affected")
+                conn.execute("UPDATE resources SET classification='finding', updated_at=? WHERE id=?", (_now(), resource_id))
+            if host_id:
+                _link_finding(conn, fid, "host", host_id, "affected")
+                conn.execute("UPDATE hosts SET classification='finding', updated_at=? WHERE id=?", (_now(), host_id))
+            if exchange_id:
+                _link_finding(conn, fid, "exchange", exchange_id, "evidence")
         return RedirectResponse(url=f"/t/{target_key}/finding/{fid}", status_code=303)
 
     @app.get("/t/{target_key}/finding/{finding_id}", response_class=HTMLResponse)
@@ -957,13 +1175,18 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}", status_code=303)
 
     @app.post("/t/{target_key}/finding/{finding_id}/retest")
-    def finding_retest(target_key: str, finding_id: int, result: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
+    def finding_retest(target_key: str, finding_id: int, result: str = Form(...), notes: str = Form(""), exchange_id: int | None = Form(None), csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
+        if result not in {"still_vulnerable","fixed","fix_verified","inconclusive"}:
+            raise HTTPException(status_code=400, detail="Resultado de retest inválido")
         now = _now()
         status_map = {"still_vulnerable":"retest_required", "fixed":"fixed", "fix_verified":"closed", "inconclusive":"retest_required"}
         with _db(paths) as conn:
-            conn.execute("INSERT INTO finding_retests(finding_id,result,notes,tested_at,created_at) VALUES(?,?,?,?,?)", (finding_id, result, notes.strip(), now, now))
+            cur = conn.execute("INSERT INTO finding_retests(finding_id,result,notes,tested_at,created_at) VALUES(?,?,?,?,?)", (finding_id, result, notes.strip(), now, now))
+            retest_id = int(cur.lastrowid)
+            if exchange_id:
+                conn.execute("INSERT OR IGNORE INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?, 'exchange', ?, 'evidence', ?)", (retest_id, exchange_id, now))
             if result in status_map:
                 conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
         return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#retests", status_code=303)
@@ -1017,9 +1240,18 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
-            conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?, 'resource', ?, ?, ?)", (finding_id, resource_id, relation.strip()[:80] or "affected", _now()))
-            conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+            _link_finding(conn, finding_id, "resource", resource_id, relation.strip()[:80] or "affected")
+            conn.execute("UPDATE resources SET classification='finding', updated_at=? WHERE id=?", (_now(), resource_id))
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#findings", status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/finding-link")
+    def host_link_finding(target_key: str, host_id: int, finding_id: int = Form(...), relation: str = Form("affected"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            _link_finding(conn, finding_id, "host", host_id, relation.strip()[:80] or "affected")
+            conn.execute("UPDATE hosts SET classification='finding', updated_at=? WHERE id=?", (_now(), host_id))
+        return RedirectResponse(url=f"/t/{target_key}/host/{host_id}#findings", status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/state")
     def host_state(target_key: str, host_id: int, review_state: str = Form(...), classification: str = Form(...), priority: str = Form(...), csrf: str = Form(...)):
@@ -1030,6 +1262,9 @@ def create_app(default_domain: str, default_workspace: Path):
         if not row:
             raise HTTPException(status_code=404, detail="Host no encontrado")
         core.mark_entity(paths, "host", row["hostname"], review_state, classification, priority, None)
+        if classification == "finding":
+            with _db(paths) as conn:
+                _ensure_finding_for_entity(conn, "host", host_id, f"Finding en {row['hostname']}")
         return RedirectResponse(url=f"/t/{target_key}/host/{host_id}", status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/state")
@@ -1041,6 +1276,9 @@ def create_app(default_domain: str, default_workspace: Path):
         if not row:
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         core.mark_entity(paths, "resource", row["url"], review_state, classification, priority, None)
+        if classification == "finding":
+            with _db(paths) as conn:
+                _ensure_finding_for_entity(conn, "resource", resource_id, f"Finding en {row['url']}")
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/note")
@@ -1403,6 +1641,80 @@ def create_app(default_domain: str, default_workspace: Path):
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
         return {"accepted": True, "target_key": target_key, "target_domain": domain, **result}
+
+    @app.get("/api/bridge/findings/{target_key}", response_class=JSONResponse)
+    def bridge_findings(target_key: str):
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            rows = conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC,id DESC LIMIT 200").fetchall()
+        return {"target_key": target_key, "findings": [dict(r) for r in rows]}
+
+    @app.post("/api/bridge/action", response_class=JSONResponse)
+    async def bridge_action(request: Request):
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="JSON inválido")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload inválido")
+        target_key = str(payload.get("target_key") or "").strip()
+        action = str(payload.get("action") or "").strip()
+        if action not in {"open","interesting","create_finding","attach_finding","retest"}:
+            raise HTTPException(status_code=400, detail="Acción Burp inválida")
+        _, _, paths = _target_context(target_key)
+        resource_id = int(payload.get("resource_id") or 0)
+        operation_id = int(payload.get("operation_id") or 0)
+        exchange_id = int(payload.get("exchange_id") or 0)
+        with _db(paths) as conn:
+            if exchange_id and (not resource_id or not operation_id):
+                rr = conn.execute("SELECT o.id operation_id,o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?", (exchange_id,)).fetchone()
+                if rr:
+                    operation_id = int(rr["operation_id"]); resource_id = int(rr["resource_id"])
+            resource = conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?", (resource_id,)).fetchone() if resource_id else None
+            if not resource:
+                raise HTTPException(status_code=404, detail="Resource del tráfico no encontrado en Negro")
+            operation = conn.execute("SELECT * FROM resource_operations WHERE id=? AND resource_id=?", (operation_id, resource_id)).fetchone() if operation_id else None
+            if exchange_id:
+                ex = conn.execute("SELECT id FROM http_exchanges WHERE id=? AND operation_id=?", (exchange_id, operation_id)).fetchone()
+                if not ex:
+                    raise HTTPException(status_code=404, detail="Exchange no encontrado")
+            web_path = f"/t/{target_key}/resource/{resource_id}"
+            if action == "open":
+                return {"ok": True, "action": action, "web_path": web_path}
+            if action == "interesting":
+                conn.execute("UPDATE resources SET classification=CASE WHEN classification='finding' THEN classification ELSE 'lead' END, review_state=CASE WHEN review_state='pending' THEN 'in_progress' ELSE review_state END, updated_at=? WHERE id=?", (_now(), resource_id))
+                if exchange_id:
+                    conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('resource',?,?,?)", (resource_id, f"Marcado Interesting desde Burp · exchange #{exchange_id}", _now()))
+                return {"ok": True, "action": action, "target_key": target_key, "resource_id": resource_id, "web_path": web_path}
+            if action == "create_finding":
+                default_title = f"{operation['method'] if operation else 'HTTP'} {resource['path']}"
+                fid = _create_finding(conn, title=str(payload.get("title") or default_title), severity=str(payload.get("severity") or "info"), status="confirmed", description=str(payload.get("description") or ""), source="burp_context")
+                _link_finding(conn, fid, "resource", resource_id, "affected")
+                if operation_id: _link_finding(conn, fid, "operation", operation_id, "affected_operation")
+                if exchange_id: _link_finding(conn, fid, "exchange", exchange_id, "evidence")
+                conn.execute("UPDATE resources SET classification='finding', review_state=CASE WHEN review_state='pending' THEN 'in_progress' ELSE review_state END, updated_at=? WHERE id=?", (_now(), resource_id))
+                return {"ok": True, "action": action, "finding_id": fid, "web_path": f"/t/{target_key}/finding/{fid}"}
+            finding_id = int(payload.get("finding_id") or 0)
+            finding = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone() if finding_id else None
+            if not finding:
+                raise HTTPException(status_code=404, detail="Finding no encontrado")
+            if action == "attach_finding":
+                _link_finding(conn, finding_id, "resource", resource_id, "affected")
+                if operation_id: _link_finding(conn, finding_id, "operation", operation_id, "affected_operation")
+                if exchange_id: _link_finding(conn, finding_id, "exchange", exchange_id, "evidence")
+                conn.execute("UPDATE resources SET classification='finding', updated_at=? WHERE id=?", (_now(), resource_id))
+                return {"ok": True, "action": action, "finding_id": finding_id, "web_path": f"/t/{target_key}/finding/{finding_id}"}
+            result = str(payload.get("result") or "inconclusive")
+            if result not in {"still_vulnerable","fixed","fix_verified","inconclusive"}:
+                raise HTTPException(status_code=400, detail="Resultado de retest inválido")
+            now = _now()
+            cur = conn.execute("INSERT INTO finding_retests(finding_id,result,notes,tested_at,created_at) VALUES(?,?,?,?,?)", (finding_id, result, str(payload.get("notes") or "").strip(), now, now))
+            retest_id = int(cur.lastrowid)
+            if exchange_id:
+                conn.execute("INSERT OR IGNORE INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?, 'exchange', ?, 'evidence', ?)", (retest_id, exchange_id, now))
+            status_map = {"still_vulnerable":"retest_required","fixed":"fixed","fix_verified":"closed","inconclusive":"retest_required"}
+            conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
+            return {"ok": True, "action": action, "finding_id": finding_id, "retest_id": retest_id, "web_path": f"/t/{target_key}/finding/{finding_id}#retests"}
 
     @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
     def bridge_repeater_next():

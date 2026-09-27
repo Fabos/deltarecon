@@ -11,6 +11,10 @@ import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 
 import javax.swing.*;
 import java.awt.*;
@@ -21,6 +25,7 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.Executors;
@@ -31,7 +36,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.12
+ * Negro Burp Bridge v0.13
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -58,8 +63,9 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.12.2 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.13.0 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
+        api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
         bridgePoller.scheduleWithFixedDelay(this::pollRepeaterQueue, 1, 1, TimeUnit.SECONDS);
@@ -74,7 +80,7 @@ public class NegroBurpBridge implements BurpExtension {
         title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
         panel.add(title);
         panel.add(Box.createVerticalStrut(8));
-        panel.add(new JLabel("Envía tráfico HTTP observado por Burp a Negro en tiempo real."));
+        panel.add(new JLabel("Sincroniza tráfico con Negro y añade acciones contextuales desde cualquier request/response."));
         panel.add(Box.createVerticalStrut(12));
 
         JPanel endpoint = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
@@ -289,6 +295,234 @@ public class NegroBurpBridge implements BurpExtension {
                 kv("response_b64", responseB64) + "," +
                 kv("response_body_b64", responseBodyB64) +
                 "}";
+    }
+
+
+    private String toJson(HttpRequest request, HttpResponse response, String tool) {
+        boolean authenticated = request.hasHeader("Cookie") || request.hasHeader("Authorization");
+        String requestType = nullToEmpty(request.headerValue("Content-Type"));
+        String responseType = response == null ? "" : nullToEmpty(response.headerValue("Content-Type"));
+        String requestB64 = Base64.getEncoder().encodeToString(request.toByteArray().getBytes());
+        String responseB64 = response == null ? "" : Base64.getEncoder().encodeToString(response.toByteArray().getBytes());
+        String responseBodyB64 = response == null ? "" : Base64.getEncoder().encodeToString(response.body().getBytes());
+
+        return "{" +
+                kv("url", request.url()) + "," +
+                kv("method", request.method()) + "," +
+                kv("tool", tool) + "," +
+                "\"status_code\":" + (response == null ? "null" : Short.toString(response.statusCode())) + "," +
+                "\"authenticated\":" + authenticated + "," +
+                kv("request_content_type", requestType) + "," +
+                kv("response_content_type", responseType) + "," +
+                kv("query", nullToEmpty(request.query())) + "," +
+                "\"request_headers\":" + headersJson(request.headers()) + "," +
+                "\"response_headers\":" + (response == null ? "[]" : headersJson(response.headers())) + "," +
+                kv("request_b64", requestB64) + "," +
+                kv("response_b64", responseB64) + "," +
+                kv("response_body_b64", responseBodyB64) +
+                "}";
+    }
+
+    private record BridgeContext(String targetKey, long resourceId, long operationId, long exchangeId, String webPath) {}
+
+    private record FindingChoice(long id, String title, String severity, String status) {
+        @Override public String toString() { return "#" + id + " · " + title + " · " + severity + " · " + status; }
+    }
+
+    private final class NegroContextMenu implements ContextMenuItemsProvider {
+        @Override
+        public List<Component> provideMenuItems(ContextMenuEvent event) {
+            HttpRequestResponse rr = selectedRequestResponse(event);
+            if (rr == null || rr.request() == null || isNegroBridgeTraffic(rr.request().url())) return List.of();
+            JMenu menu = new JMenu("Negro");
+            JMenuItem open = new JMenuItem("Open in Negro");
+            JMenuItem interesting = new JMenuItem("Mark as Interesting");
+            JMenuItem createFinding = new JMenuItem("Create Finding…");
+            JMenuItem attachFinding = new JMenuItem("Attach to existing Finding…");
+            JMenuItem retest = new JMenuItem("Attach as Retest evidence…");
+            String tool = event.toolType() == null ? "OTHER" : event.toolType().name();
+            open.addActionListener(e -> runContextAction("open", () -> openInNegro(rr, tool)));
+            interesting.addActionListener(e -> runContextAction("interesting", () -> markInteresting(rr, tool)));
+            createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(rr, tool)));
+            attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(rr, tool)));
+            retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(rr, tool)));
+            menu.add(open); menu.add(interesting); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
+            return List.of(menu);
+        }
+    }
+
+    private HttpRequestResponse selectedRequestResponse(ContextMenuEvent event) {
+        List<HttpRequestResponse> selected = event.selectedRequestResponses();
+        if (selected != null && !selected.isEmpty()) return selected.get(0);
+        return event.messageEditorRequestResponse().map(x -> x.requestResponse()).orElse(null);
+    }
+
+    private void runContextAction(String name, Runnable action) {
+        Thread t = new Thread(() -> {
+            try { action.run(); }
+            catch (Exception ex) {
+                api.logging().logToError("Negro context " + name + ": " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+                showMessage("Negro", "No se pudo completar la acción: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()), JOptionPane.ERROR_MESSAGE);
+            }
+        }, "negro-context-" + name);
+        t.setDaemon(true); t.start();
+    }
+
+    private BridgeContext ingestContext(HttpRequestResponse rr, String tool) {
+        try {
+            String payload = toJson(rr.request(), rr.hasResponse() ? rr.response() : null, tool == null ? "OTHER" : tool);
+            java.net.http.HttpResponse<String> resp = postJson("/api/ingest/http", payload);
+            String body = resp.body();
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300) throw new IllegalStateException("Negro ingest HTTP " + resp.statusCode());
+            if (!body.contains("\"accepted\":true") && !body.contains("\"accepted\": true")) {
+                String reason = jsonString(body, "reason");
+                throw new IllegalStateException(reason == null ? "La request está fuera del scope de los targets de Negro" : reason);
+            }
+            String targetKey = jsonString(body, "target_key");
+            long resourceId = jsonLong(body, "resource_id");
+            long operationId = jsonLong(body, "operation_id");
+            long exchangeId = jsonLong(body, "exchange_id");
+            if (targetKey == null || resourceId <= 0) throw new IllegalStateException("Negro no devolvió contexto del resource");
+            return new BridgeContext(targetKey, resourceId, operationId, exchangeId, "/t/" + targetKey + "/resource/" + resourceId);
+        } catch (Exception ex) {
+            if (ex instanceof RuntimeException re) throw re;
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private java.net.http.HttpResponse<String> postJson(String path, String json) throws Exception {
+        java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                .uri(URI.create(negroBaseUrl + path)).timeout(Duration.ofSeconds(8))
+                .header("Content-Type", "application/json; charset=utf-8").header("Accept", "application/json")
+                .POST(BodyPublishers.ofByteArray(json.getBytes(StandardCharsets.UTF_8))).build();
+        return client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private String getText(String path) throws Exception {
+        java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder().uri(URI.create(negroBaseUrl + path)).timeout(Duration.ofSeconds(8)).GET().build();
+        java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (resp.statusCode() < 200 || resp.statusCode() >= 300) throw new IllegalStateException("Negro HTTP " + resp.statusCode());
+        return resp.body();
+    }
+
+    private String actionJson(BridgeContext ctx, String action, String extra) {
+        return "{" + kv("target_key", ctx.targetKey()) + "," + kv("action", action) +
+                ",\"resource_id\":" + ctx.resourceId() + ",\"operation_id\":" + ctx.operationId() + ",\"exchange_id\":" + ctx.exchangeId() +
+                (extra == null || extra.isBlank() ? "" : "," + extra) + "}";
+    }
+
+    private String postBridgeAction(BridgeContext ctx, String action, String extra) throws Exception {
+        java.net.http.HttpResponse<String> resp = postJson("/api/bridge/action", actionJson(ctx, action, extra));
+        if (resp.statusCode() < 200 || resp.statusCode() >= 300) throw new IllegalStateException("Negro action HTTP " + resp.statusCode() + ": " + resp.body());
+        return resp.body();
+    }
+
+    private void openInNegro(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        openBrowser(negroBaseUrl + ctx.webPath());
+    }
+
+    private void markInteresting(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        try {
+            postBridgeAction(ctx, "interesting", null);
+            showMessage("Negro", "Resource marcado como Interesting y enlazado al exchange #" + ctx.exchangeId(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createFindingFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        HttpRequest request = rr.request();
+        String path = "/";
+        try { path = URI.create(request.url()).getRawPath(); } catch (Exception ignored) {}
+        JTextField title = new JTextField(request.method() + " " + (path == null || path.isBlank() ? "/" : path), 34);
+        JComboBox<String> severity = new JComboBox<>(new String[]{"info","low","medium","high","critical"});
+        JTextArea description = new JTextArea(5, 34); description.setLineWrap(true); description.setWrapStyleWord(true);
+        JPanel form = formPanel(); form.add(new JLabel("Título")); form.add(title); form.add(new JLabel("Severidad")); form.add(severity); form.add(new JLabel("Descripción / impacto observado")); form.add(new JScrollPane(description));
+        int result = confirmDialog("Create Finding in Negro", form);
+        if (result != JOptionPane.OK_OPTION) return;
+        String t = title.getText().trim(); if (t.isEmpty()) return;
+        String extra = kv("title", t) + "," + kv("severity", String.valueOf(severity.getSelectedItem())) + "," + kv("description", description.getText().trim());
+        try {
+            String body = postBridgeAction(ctx, "create_finding", extra);
+            long fid = jsonLong(body, "finding_id");
+            String web = jsonString(body, "web_path");
+            showMessage("Negro", "Finding #" + fid + " creado con esta request/response como evidencia.", JOptionPane.INFORMATION_MESSAGE);
+            if (web != null && askYesNo("Negro", "¿Abrir el Finding en Negro?")) openBrowser(negroBaseUrl + web);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void attachFindingFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        FindingChoice finding = chooseFinding(ctx.targetKey(), "Attach to existing Finding"); if (finding == null) return;
+        try {
+            postBridgeAction(ctx, "attach_finding", "\"finding_id\":" + finding.id());
+            showMessage("Negro", "Exchange #" + ctx.exchangeId() + " agregado a Finding #" + finding.id(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void attachRetestFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        FindingChoice finding = chooseFinding(ctx.targetKey(), "Attach as Retest evidence"); if (finding == null) return;
+        JComboBox<String> result = new JComboBox<>(new String[]{"still_vulnerable","fixed","fix_verified","inconclusive"});
+        JTextArea notes = new JTextArea(4, 34); notes.setLineWrap(true); notes.setWrapStyleWord(true);
+        JPanel form = formPanel(); form.add(new JLabel("Resultado")); form.add(result); form.add(new JLabel("Notas del retest")); form.add(new JScrollPane(notes));
+        if (confirmDialog("Retest · Finding #" + finding.id(), form) != JOptionPane.OK_OPTION) return;
+        String extra = "\"finding_id\":" + finding.id() + "," + kv("result", String.valueOf(result.getSelectedItem())) + "," + kv("notes", notes.getText().trim());
+        try {
+            postBridgeAction(ctx, "retest", extra);
+            showMessage("Negro", "Retest registrado en Finding #" + finding.id() + " con exchange #" + ctx.exchangeId(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private List<FindingChoice> findings(String targetKey) {
+        try {
+            String json = getText("/api/bridge/findings/" + targetKey);
+            List<FindingChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\s*\\\"id\\\"\\s*:\\s*(\\d+).*?\\\"title\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\".*?\\\"severity\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"", Pattern.DOTALL);
+            Matcher m = p.matcher(json);
+            while (m.find()) out.add(new FindingChoice(Long.parseLong(m.group(1)), unescapeJson(m.group(2)), unescapeJson(m.group(3)), unescapeJson(m.group(4))));
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private FindingChoice chooseFinding(String targetKey, String title) {
+        List<FindingChoice> list = findings(targetKey);
+        if (list.isEmpty()) { showMessage("Negro", "Este target todavía no tiene Findings.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JComboBox<FindingChoice> combo = new JComboBox<>(list.toArray(new FindingChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Finding")); panel.add(combo);
+        return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (FindingChoice) combo.getSelectedItem() : null;
+    }
+
+    private JPanel formPanel() {
+        JPanel panel = new JPanel(); panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS)); panel.setPreferredSize(new Dimension(430, panel.getPreferredSize().height)); return panel;
+    }
+
+    private int confirmDialog(String title, Component body) {
+        final int[] result = {JOptionPane.CANCEL_OPTION};
+        try {
+            if (SwingUtilities.isEventDispatchThread()) return JOptionPane.showConfirmDialog(null, body, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            SwingUtilities.invokeAndWait(() -> result[0] = JOptionPane.showConfirmDialog(null, body, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE));
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+        return result[0];
+    }
+
+    private boolean askYesNo(String title, String message) {
+        final int[] result = {JOptionPane.NO_OPTION};
+        try { SwingUtilities.invokeAndWait(() -> result[0] = JOptionPane.showConfirmDialog(null, message, title, JOptionPane.YES_NO_OPTION)); }
+        catch (Exception ex) { return false; }
+        return result[0] == JOptionPane.YES_OPTION;
+    }
+
+    private void showMessage(String title, String message, int type) {
+        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null, message, title, type));
+    }
+
+    private void openBrowser(String url) {
+        try {
+            if (!Desktop.isDesktopSupported()) throw new IllegalStateException("Desktop API no disponible");
+            Desktop.getDesktop().browse(URI.create(url));
+        } catch (Exception ex) { throw new IllegalStateException("No se pudo abrir el navegador: " + ex.getMessage()); }
     }
 
     private String headersJson(List<HttpHeader> headers) {

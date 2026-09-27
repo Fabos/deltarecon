@@ -2,7 +2,7 @@
 {% block title %}{{ host.hostname }} · Negro{% endblock %}
 {% block content %}
 <section class="page-head host-head">
-  <div><p class="eyebrow">HOST</p><h1>{{ host.hostname }}</h1><div class="badges"><span class="badge review-{{ host.review_state }}">{{ host.review_state }}</span><span class="badge class-{{ host.classification }}">{{ host.classification }}</span><span class="badge priority-{{ host.priority }}">{{ host.priority }}</span></div></div>
+  <div><p class="eyebrow">HOST</p><h1>{{ host.hostname }}</h1><div class="badges"><span class="badge coverage-{{ coverage_state }}">Coverage · {{ coverage_state }}</span><span class="badge signal-{{ signal_state }}">Signal · {{ signal_state }}</span>{% if finding_count %}<span class="badge class-finding">{{ finding_count }} finding{% if finding_count != 1 %}s{% endif %}</span>{% endif %}<span class="badge priority-{{ host.priority }}">{{ host.priority }}</span></div></div>
   <div class="host-actions">
     <a class="button secondary" href="{{ host_https_url }}" target="_blank" rel="noopener noreferrer">Abrir HTTPS ↗</a>
     <a class="button ghost" href="{{ host_http_url }}" target="_blank" rel="noopener noreferrer">HTTP ↗</a>
@@ -20,10 +20,10 @@
 
 <div class="grid host-grid">
   <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">STATE</p><h2>Clasificación</h2></div></div>
+    <div class="panel-head"><div><p class="eyebrow">STATE</p><h2>Cobertura y señal</h2></div></div>
     <form class="state-form" action="{{ target_base }}/host/{{ host.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label>Revisión<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if host.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
-      <label>Clasificación<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if host.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+      <label>Coverage<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if host.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+      <label>Signal manual<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if host.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
       <label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if host.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
       <button class="button" type="submit">Guardar estado</button>
     </form>
@@ -46,6 +46,16 @@
     {% else %}<p class="empty">Todavía no hay inspecciones. Ejecuta una para obtener DNS, TLS y HTTP/HTTPS.</p>{% endif %}
   </section>
 </div>
+
+
+<section class="panel" id="findings">
+  <div class="panel-head"><div><p class="eyebrow">FINDINGS</p><h2>Hallazgos relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
+  {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ f.status }} · {{ f.relation }}</small></span><span class="badge">{{ f.severity }}</span></a>{% else %}<p class="empty">Este host todavía no tiene un Finding real asociado.</p>{% endfor %}
+  <div class="two-col-forms">
+    <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="host_id" value="{{ host.id }}"><label>Crear Finding<input name="title" required placeholder="Hallazgo confirmado en {{ host.hostname }}"></label><div class="form-row"><select name="severity"><option>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select><select name="status"><option value="confirmed">confirmed</option><option value="draft">draft</option><option value="reported">reported</option></select></div><textarea name="description" placeholder="Qué confirmaste y qué evidencia lo demuestra"></textarea><button class="button" type="submit">Crear y asociar</button></form>
+    {% if all_findings %}<form class="stack-form" action="{{ target_base }}/host/{{ host.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Agregar a Finding existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ f.status }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a cadena</button></form>{% endif %}
+  </div>
+</section>
 
 <section class="panel" id="notes">
   <div class="panel-head"><div><p class="eyebrow">MEMORY</p><h2>Notas</h2></div></div>
@@ -157,7 +167,7 @@
   {% for item in resources %}
     {% set r=item.row %}
     <details class="resource-card" id="resource-{{ r.id }}">
-      <summary><span class="resource-summary-main"><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><small class="resource-origin">{% if item.primary_source %}vía {{ item.primary_source }}{% endif %}{% if item.first_seen_at %} · {{ item.first_seen_at }}{% endif %}</small></span><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
+      <summary><span class="resource-summary-main"><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><small class="resource-origin">{% if item.primary_source %}vía {{ item.primary_source }}{% endif %}{% if item.first_seen_at %} · {{ item.first_seen_at }}{% endif %}</small></span><span class="badges"><span class="badge coverage-badge coverage-{{ item.coverage_state }}">{{ item.coverage_state }}</span><span class="badge signal-badge signal-{{ item.signal_state }}">{{ item.signal_state }}</span>{% if item.finding_count %}<span class="badge finding-count">{{ item.finding_count }} finding{% if item.finding_count != 1 %}s{% endif %}</span>{% endif %}<span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
       <div class="resource-body">
         <div><span class="muted small">URL</span><code class="break">{{ r.url }}</code>{% if item.open_url %}<div><a class="button ghost small-button resource-open" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a></div>{% endif %}</div>
         <div class="resource-actions"><a class="button small-button" href="{{ target_base }}/resource/{{ r.id }}">Abrir detalle →</a>

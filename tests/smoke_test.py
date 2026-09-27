@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.12. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.13. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -84,12 +84,24 @@ def main() -> None:
             get_id = conn.execute("SELECT id FROM resource_operations WHERE resource_id=? AND method='GET'", (rr["id"],)).fetchone()["id"]
             ex = conn.execute("SELECT seen_count FROM http_exchanges WHERE operation_id=?", (get_id,)).fetchall()
             assert len(ex) == 1 and ex[0]["seen_count"] == 2, ex
+            # v0.13: Findings are real entities, can record source and retest evidence.
+            now = core.now_iso()
+            cur = conn.execute("INSERT INTO findings(title,severity,status,source,created_at,updated_at) VALUES('Smoke finding','high','confirmed','selftest',?,?)", (now, now))
+            fid = int(cur.lastrowid)
+            conn.execute("INSERT INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (fid, 'resource', rr['id'], 'affected', now))
+            cur = conn.execute("INSERT INTO finding_retests(finding_id,result,notes,tested_at,created_at) VALUES(?,?,?,?,?)", (fid, 'still_vulnerable', 'reproduced', now, now))
+            retest_id = int(cur.lastrowid)
+            exchange_id = conn.execute("SELECT id FROM http_exchanges WHERE operation_id=? LIMIT 1", (get_id,)).fetchone()["id"]
+            conn.execute("INSERT INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (retest_id, 'exchange', exchange_id, 'evidence', now))
+            assert conn.execute("SELECT source FROM findings WHERE id=?", (fid,)).fetchone()["source"] == 'selftest'
+            assert conn.execute("SELECT COUNT(*) c FROM finding_retest_entities WHERE retest_id=?", (retest_id,)).fetchone()["c"] == 1
         print("[OK] schema + migration path")
         print("[OK] HTTP model: resource -> operations -> deduplicated exchanges")
         print("[OK] policy profile")
         print("[OK] correlation engine: Open Redirect / OIDC / CORS")
         print("[OK] target AI payload + evidence hash")
         print("[OK] search intelligence")
+        print("[OK] findings + retest evidence model")
 
 
 if __name__ == "__main__":

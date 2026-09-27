@@ -12,13 +12,13 @@
 </form>
 <section class="panel table-wrap">
 <table>
-<thead><tr><th>Host</th><th>Revisión</th><th>Clasificación</th><th>Prioridad</th><th>Resources</th><th>Inspecciones</th><th>Web</th></tr></thead>
+<thead><tr><th>Host</th><th>Coverage</th><th>Signal</th><th>Prioridad</th><th>Resources</th><th>Inspecciones</th><th>Web</th></tr></thead>
 <tbody>
 {% for h in hosts %}
-<tr class="{% if h.classification=='finding' %}host-row-finding{% elif h.classification=='lead' %}host-row-lead{% elif h.review_state=='reviewed' %}host-row-reviewed{% endif %}">
+<tr class="{% if h.signal_state=='finding' or h.total_finding_count %}host-row-finding{% elif h.signal_state=='interesting' %}host-row-lead{% elif h.coverage_state=='tested' %}host-row-reviewed{% endif %}">
   <td><a class="host-link" href="{{ target_base }}/host/{{ h.id }}">{{ h.hostname }}</a></td>
-  <td><span class="badge review-{{ h.review_state }}">{{ h.review_state }}</span></td>
-  <td><span class="badge class-{{ h.classification }}">{{ h.classification }}</span></td>
+  <td><span class="badge coverage-badge coverage-{{ h.coverage_state }}">{{ h.coverage_state }}</span></td>
+  <td><span class="badge signal-badge signal-{{ h.signal_state }}">{{ h.signal_state }}</span>{% if h.total_finding_count %} <span class="badge finding-count">{{ h.total_finding_count }} finding{% if h.total_finding_count != 1 %}s{% endif %}</span>{% endif %}</td>
   <td><span class="badge priority-{{ h.priority }}">{{ h.priority }}</span></td>
   <td>{{ h.resource_count }}</td><td>{{ h.inspection_count }}</td>
   <td><a class="open-link" href="https://{{ h.hostname }}/" target="_blank" rel="noopener noreferrer">Abrir ↗</a></td>

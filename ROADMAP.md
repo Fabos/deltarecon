@@ -1,5 +1,18 @@
 # Roadmap
 
+## v0.13 — Bug Bounty Pilot ✅
+- Burp contextual actions: Open / Interesting / Create Finding / Attach / Retest evidence
+- Real multi-entity Findings as source of truth
+- Coverage and Signal as independent visual dimensions
+- Workspace backup + restore
+- Pilot-ready workflow for real targets
+
+## Next — learn from real bounty usage
+- Identities / roles and cross-account coverage
+- Parameters and per-operation test coverage
+- Business objects and richer attack paths
+- Scale/performance tuning from large real targets
+
 ## v0.12 — Attack Knowledge Graph V1 ✅
 - Graph projection over existing entities
 - Semantic edges + provenance
@@ -8,12 +21,6 @@
 - Search / filters / 1-hop / 2-hop focus
 - Draggable nodes with per-perspective saved layout
 - Interactive visual investigation map
-
-## Next
-- Persistent Hypothesis lifecycle
-- AI Give me ideas / I'm stuck using structured graph context
-- Identities / roles
-- Business objects and richer attack paths
 
 # Negro Recon — Roadmap posterior a v0.9.0
 

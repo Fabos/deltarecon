@@ -22,7 +22,9 @@
     operation:'Métodos', cluster:'Groups', request:'Requests', observation:'Observaciones',
     lead:'Leads', finding:'Findings', external:'Relacionados'
   };
-  const stateLabel = {normal:'Normal',untested:'Untested',interesting:'Interesting',finding:'Finding',tested:'Tested'};
+  const stateLabel = {normal:'Normal',untested:'Untested',testing:'Testing',interesting:'Interesting',finding:'Finding',tested:'Tested'};
+  const coverageLabel = {untested:'Untested',testing:'Testing',tested:'Tested'};
+  const signalLabel = {normal:'Normal',interesting:'Interesting',finding:'Finding'};
 
   let graph = {nodes:[],edges:[]};
   let sceneNodes = [], sceneEdges = [], visibleNodes = [], visibleEdges = [];
@@ -36,7 +38,7 @@
   let suppressClick = false;
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-  const slugState = s => ['finding','interesting','tested','untested'].includes(s) ? s : 'normal';
+  const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
   const nodeRadius = t => t === 'target' ? 13 : t === 'host' ? 12 : t === 'resource' ? 11 : t === 'finding' ? 11 : t === 'cluster' ? 10 : 7;
   const labelLimit = t => ['resource','operation'].includes(t) ? 48 : 34;
   const edgeId = (a,b,r) => `virtual:${a}:${r}:${b}`;
@@ -331,6 +333,11 @@
       ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
+      if (n.meta?.coverage && ['host','resource'].includes(n.type)) {
+        const dot=document.createElementNS(NS,'circle');
+        dot.setAttribute('r','3.2'); dot.setAttribute('cx',String(-nodeRadius(n.type)+1)); dot.setAttribute('cy',String(-nodeRadius(n.type)+1));
+        dot.setAttribute('class',`graph-coverage-dot coverage-${esc(n.meta.coverage)}`); ng.appendChild(dot);
+      }
       if(n.type==='cluster'){
         const inner=document.createElementNS(NS,'circle');inner.setAttribute('r',Math.max(3,nodeRadius(n.type)-4));inner.setAttribute('class','graph-cluster-inner');ng.appendChild(inner);
       }
@@ -380,7 +387,10 @@
     const summary=summarizeNode(n);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting?'is-interesting':''}"><b>${summary.interesting}</b><span>Señales</span></div></div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2><span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span></div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explore relationships</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    const statusHtml=(meta.coverage||meta.signal)
+      ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Coverage · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Signal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} finding${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
+      : `<span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explore relationships</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
     detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));

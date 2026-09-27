@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.12.2
+Negro Recon v0.13.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.12.2"
+VERSION = "0.13.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -389,6 +389,7 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 description TEXT,
                 impact TEXT,
                 remediation TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -414,6 +415,17 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS finding_retest_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                retest_id INTEGER NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                relation TEXT NOT NULL DEFAULT 'evidence',
+                created_at TEXT NOT NULL,
+                UNIQUE(retest_id, entity_type, entity_id, relation),
+                FOREIGN KEY(retest_id) REFERENCES finding_retests(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_inspections_host ON host_inspections(host_id, observed_at);
             CREATE INDEX IF NOT EXISTS idx_resources_host ON resources(host_id);
@@ -428,6 +440,7 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, severity, updated_at);
             CREATE INDEX IF NOT EXISTS idx_finding_entities ON finding_entities(finding_id, entity_type, entity_id);
             CREATE INDEX IF NOT EXISTS idx_finding_retests ON finding_retests(finding_id, tested_at);
+            CREATE INDEX IF NOT EXISTS idx_finding_retest_entities ON finding_retest_entities(retest_id, entity_type, entity_id);
             """
         )
         # Conservative schema migration for workspaces created by v0.3/v0.4.
@@ -437,6 +450,10 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             conn.execute("ALTER TABLE hosts ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'")
         if "priority" not in resource_cols:
             conn.execute("ALTER TABLE resources ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'")
+        finding_cols = {row["name"] for row in conn.execute("PRAGMA table_info(findings)")}
+        if "source" not in finding_cols:
+            conn.execute("ALTER TABLE findings ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+
         js_cols = {row["name"] for row in conn.execute("PRAGMA table_info(js_assets)")}
         if "sourcemap_analysis_json" not in js_cols:
             conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analysis_json TEXT")

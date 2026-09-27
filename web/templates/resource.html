@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block title %}{{ resource.path }} · Negro{% endblock %}
 {% block content %}
-<section class="page-head resource-hero state-{{ resource.review_state }} class-hero-{{ resource.classification }}">
+<section class="page-head resource-hero coverage-{{ coverage_state }} signal-{{ signal_state }}">
   <div>
     <p class="eyebrow">RESOURCE · {{ resource.hostname }}</p>
     <h1><code>{{ resource.path }}{% if resource.query %}?{{ resource.query }}{% endif %}</code></h1>
     <div class="hero-meta">
       {% for src in source_details %}<span class="chip">{{ src.source }}</span>{% endfor %}
-      <span class="badge review-{{ resource.review_state }}">{{ resource.review_state }}</span>
-      <span class="badge class-{{ resource.classification }}">{{ resource.classification }}</span>
+      <span class="badge coverage-badge coverage-{{ coverage_state }}">Coverage · {{ coverage_state }}</span>
+      <span class="badge signal-badge signal-{{ signal_state }}">Signal · {{ signal_state }}</span>
+      {% if finding_count %}<span class="badge finding-count">{{ finding_count }} finding{% if finding_count != 1 %}s{% endif %}</span>{% endif %}
       <span class="badge priority-{{ resource.priority }}">{{ resource.priority }}</span>
     </div>
   </div>
@@ -54,6 +55,24 @@
           {% for ex in op.exchanges %}
           <details class="exchange-card" {% if loop.first %}open{% endif %}>
             <summary>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %} · HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</summary>
+            <div class="exchange-actions">
+              <details>
+                <summary>Finding / evidencia</summary>
+                <div class="exchange-finding-actions">
+                  <form class="compact-finding-form" action="{{ target_base }}/findings/create" method="post">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><input type="hidden" name="status" value="confirmed">
+                    <input name="title" required value="{{ o.method }} {{ resource.path }}" aria-label="Título del finding">
+                    <select name="severity" aria-label="Severidad"><option>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select>
+                    <button class="button small-button" type="submit">Crear finding con este exchange</button>
+                  </form>
+                  {% if all_findings %}<form class="compact-finding-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="relation" value="affected">
+                    <select name="finding_id" aria-label="Finding existente">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }}</option>{% endfor %}</select>
+                    <button class="button ghost small-button" type="submit">Relacionar resource</button>
+                  </form>{% endif %}
+                </div>
+              </details>
+            </div>
             <div class="http-split">
               <div><div class="http-label">REQUEST · {{ ex.request_size }} B</div><pre class="http-message">{{ ex.request_text or '[request no almacenado]' }}</pre></div>
               <div><div class="http-label">RESPONSE · {{ ex.response_size }} B</div><pre class="http-message">{{ ex.response_text or '[response no almacenada]' }}</pre></div>
@@ -84,8 +103,10 @@
   </div>
 
   <aside class="resource-side">
-    <section class="panel sticky-panel"><p class="eyebrow">STATE</p><h2>Investigación</h2>
-      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Revisión<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Clasificación<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><button class="button" type="submit">Guardar estado</button></form>
+    <section class="panel sticky-panel"><p class="eyebrow">STATE</p><h2>Cobertura y señal</h2>
+      <div class="state-summary"><span class="coverage-dot coverage-{{ coverage_state }}"></span><b>{{ coverage_state }}</b><span class="signal-dot signal-{{ signal_state }}"></span><b>{{ signal_state }}</b></div>
+      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Coverage<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Signal manual<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><button class="button" type="submit">Guardar estado</button></form>
+      <p class="muted small">Coverage indica cuánto has revisado. Signal indica si existe una pista interesante o un finding real. Crear un Finding lo enlaza al resource sin cambiar su identidad.</p>
       <hr><div class="side-kv"><span>URL</span><code>{{ resource.url }}</code><span>Creado</span><b>{{ resource.created_at }}</b><span>Actualizado</span><b>{{ resource.updated_at }}</b></div>
     </section>
   </aside>

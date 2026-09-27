@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.12.2
+# Negro Burp Bridge v0.13.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.12.2.jar
+build/libs/negro-burp-bridge-0.13.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,7 +42,19 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.12.2.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.13.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
+
+## Menú contextual v0.13
+
+Haz click derecho sobre una request/response en Burp y abre **Negro**:
+
+- `Open in Negro`
+- `Mark as Interesting`
+- `Create Finding…`
+- `Attach to existing Finding…`
+- `Attach as Retest evidence…`
+
+La acción sincroniza primero la request/response seleccionada con Negro para obtener su `Resource → Operation → Exchange`; después enlaza la acción al objeto correcto. Las requests fuera de scope no se convierten en Findings por accidente: Negro las rechaza durante el auto-route.
