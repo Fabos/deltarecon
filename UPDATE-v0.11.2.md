@@ -1,4 +1,4 @@
-# Negro v0.11.2
+# Negro v0.11.3
 
 Hotfix de diagnóstico y transporte para Burp Bridge.
 

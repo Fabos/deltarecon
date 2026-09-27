@@ -1,4 +1,4 @@
-# Negro Recon v0.11.1 — Burp ingest JSON hardening
+# Negro Recon v0.11.3 — Burp ingest JSON hardening
 
 Hotfix para el bridge Burp → Negro detectado durante pruebas reales.
 

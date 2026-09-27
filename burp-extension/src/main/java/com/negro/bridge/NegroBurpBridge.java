@@ -40,6 +40,11 @@ import java.util.stream.Collectors;
 public class NegroBurpBridge implements BurpExtension {
     private MontoyaApi api;
     private final HttpClient client = HttpClient.newBuilder()
+            // Negro local corre sobre HTTP claro (Uvicorn). Java HttpClient puede
+            // intentar negociar HTTP/2 mediante h2c/Upgrade; con algunos ASGI
+            // servers ese upgrade hace que el POST llegue sin body. Forzamos
+            // HTTP/1.1 para que el payload JSON se entregue de forma estable.
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(2))
             .build();
     private final AtomicLong accepted = new AtomicLong();
