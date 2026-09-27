@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.7.
+"""Local web workspace for Negro Recon v0.8.
 
-v0.7 adds a multi-target web workspace while keeping every target isolated in its
+v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
 the same core functions used by the CLI.
 """
@@ -33,6 +33,8 @@ except ImportError as exc:  # CLI remains usable without web dependencies
 
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
+JOB_MAX_CONCURRENCY = 3
+JOB_SLOTS = threading.Semaphore(JOB_MAX_CONCURRENCY)
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
@@ -53,19 +55,22 @@ def _start_job(label: str, target_key: str, fn, *args, **kwargs) -> str:
             "id": job_id,
             "target_key": target_key,
             "label": label,
-            "status": "running",
-            "started_at": _now(),
+            "status": "queued",
+            "queued_at": _now(),
+            "started_at": None,
             "finished_at": None,
             "error": None,
         }
 
     def runner() -> None:
-        try:
-            fn(*args, **kwargs)
-            _set_job(job_id, status="done", finished_at=_now())
-        except Exception as exc:  # surfaced in UI; traceback remains in server console
-            traceback.print_exc()
-            _set_job(job_id, status="error", finished_at=_now(), error=str(exc)[:1000])
+        with JOB_SLOTS:
+            _set_job(job_id, status="running", started_at=_now())
+            try:
+                fn(*args, **kwargs)
+                _set_job(job_id, status="done", finished_at=_now())
+            except Exception as exc:  # surfaced in UI; traceback remains in server console
+                traceback.print_exc()
+                _set_job(job_id, status="error", finished_at=_now(), error=str(exc)[:1000])
 
     thread = threading.Thread(target=runner, name=f"negro-{job_id}", daemon=True)
     thread.start()
@@ -187,6 +192,30 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
         return conn.execute(sql, params).fetchall()
 
 
+def _group_detections(analysis: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    groups = {"potential_secret": [], "public_client_config": [], "surface_config": []}
+    if not isinstance(analysis, dict):
+        return groups
+    for item in analysis.get("detections", []) or []:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "surface_config")
+        groups.setdefault(category, []).append(item)
+    return groups
+
+
+def _latest_observation_payload(observations: list[dict[str, Any]], source: str, kind: str, *, asset_id: int | None = None) -> dict[str, Any] | None:
+    for item in observations:
+        row = item.get("row")
+        payload = item.get("payload")
+        if not row or row["source"] != source or row["kind"] != kind or not isinstance(payload, dict):
+            continue
+        if asset_id is not None and int(payload.get("asset_id", -1)) != int(asset_id):
+            continue
+        return payload
+    return None
+
+
 def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
     with _db(paths) as conn:
         host = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
@@ -268,7 +297,23 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                 except Exception:
                     usage = None
                 analyses.append({"row": a, "result": result, "estimate": estimate, "usage": usage})
-            js_assets.append({"row": j, "local": local, "ai": analyses})
+            sourcemap = None
+            try:
+                sourcemap = json.loads(j["sourcemap_analysis_json"] or "null") if "sourcemap_analysis_json" in j.keys() else None
+            except Exception:
+                sourcemap = None
+            if not isinstance(sourcemap, dict):
+                sourcemap = _latest_observation_payload(observation_data, "sourcemap", "source_map", asset_id=int(j["id"]))
+            sm_local = sourcemap.get("analysis", {}) if isinstance(sourcemap, dict) and isinstance(sourcemap.get("analysis"), dict) else {}
+            js_assets.append({
+                "row": j,
+                "local": local,
+                "local_detection_groups": _group_detections(local),
+                "sourcemap": sourcemap,
+                "sourcemap_detection_groups": _group_detections(sm_local),
+                "ai": analyses,
+            })
+        tls_san_result = _latest_observation_payload(observation_data, "tls_san", "certificate_sans")
     return {
         "host": host,
         "host_https_url": f"https://{host['hostname']}/",
@@ -279,6 +324,7 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
         "inspections": inspection_data,
         "events": event_data,
         "observations": observation_data,
+        "tls_san_result": tls_san_result,
         "js_assets": js_assets,
     }
 

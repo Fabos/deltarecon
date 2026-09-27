@@ -33,6 +33,12 @@
       {% set p=inspections[0].payload %}
       <div class="kv"><span>A</span><code>{{ p.dns.a|join(', ') if p.dns and p.dns.a else '-' }}</code><span>AAAA</span><code>{{ p.dns.aaaa|join(', ') if p.dns and p.dns.aaaa else '-' }}</code><span>CNAME</span><code>{{ p.dns.cname|join(', ') if p.dns and p.dns.cname else '-' }}</code><span>TLS</span><code>{{ p.tls.status if p.tls else '-' }}</code><span>HTTP</span><code>{{ p.http.status if p.http and p.http.status else '-' }}</code><span>HTTPS</span><code>{{ p.https.status if p.https and p.https.status else '-' }}</code></div>
       {% if p.tls and p.tls.error %}<div class="callout warning"><strong>TLS:</strong> {{ p.tls.error }}</div>{% endif %}
+      {% if tls_san_result %}
+      <div class="tls-san-result">
+        <div><span class="muted small">Último TLS SAN pivot</span><strong>{{ tls_san_result.imported|length if tls_san_result.imported else 0 }} nombres in-scope</strong></div>
+        <div class="chips">{% for san in tls_san_result.imported or [] %}<span class="chip">{{ san }}</span>{% else %}<span class="muted small">El certificado no aportó nombres in-scope.</span>{% endfor %}</div>
+      </div>
+      {% endif %}
     {% else %}<p class="empty">Todavía no hay inspecciones. Ejecuta una para obtener DNS, TLS y HTTP/HTTPS.</p>{% endif %}
   </section>
 </div>
@@ -45,20 +51,27 @@
 
 <section class="panel" id="javascript">
   <div class="panel-head"><div><p class="eyebrow">JAVASCRIPT</p><h2>Bundles y análisis</h2></div><span>{{ js_assets|length }} assets</span></div>
-  <p class="muted">El análisis local extrae URLs, rutas, WebSockets, source maps y señales. La IA sólo recibe evidencia seleccionada después de mostrarte una estimación de costo.</p>
+  <div class="js-pipeline">
+    <span><b>1</b> Discovery <small>qué JS carga la página</small></span>
+    <span><b>2</b> Local Analysis <small>URLs, rutas y señales</small></span>
+    <span><b>3</b> Secrets &amp; Config <small>candidatos y client config</small></span>
+    <span><b>4</b> Source Map <small>código/estructura original</small></span>
+    <span><b>5</b> AI Analysis <small>correlación e interpretación</small></span>
+  </div>
+  <p class="muted">Negro procesa primero localmente. La IA recibe evidencia seleccionada y, si existe, el <code>source map</code> confirmado con prioridad para código de aplicación.</p>
   {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OpenAI no está configurado. Ve a <a href="{{ target_base }}/settings">Settings</a> para ver dónde poner la key.</div>{% endif %}
   {% if dependency_status and not dependency_status.openai %}<div class="callout warning"><strong>SDK OpenAI no instalado en este entorno.</strong> Ejecuta <code>./install-web.sh</code> y confirma que aparezca <code>✓ openai</code> antes de lanzar IA.</div>{% endif %}
   <div class="resources">
   {% for item in js_assets %}
     {% set j=item.row %}
     <details class="resource-card js-card" {% if loop.first %}open{% endif %}>
-      <summary><code class="break">{{ j.url }}</code><span class="badges">{% if j.analyzed_at %}<span class="badge review-reviewed">local ✓</span>{% else %}<span class="badge">sin analizar</span>{% endif %}{% if j.sourcemap_url %}<span class="badge class-informational">source map</span>{% endif %}{% if item.ai %}<span class="badge class-lead">AI {{ item.ai|length }}</span>{% endif %}</span></summary>
+      <summary><code class="break">{{ j.url }}</code><span class="badges">{% if j.analyzed_at %}<span class="badge review-reviewed">local ✓</span>{% else %}<span class="badge">sin analizar</span>{% endif %}{% if item.sourcemap %}<span class="badge review-reviewed">source map ✓</span>{% elif j.sourcemap_url %}<span class="badge class-informational">source map candidato</span>{% endif %}{% if item.ai %}<span class="badge class-lead">AI {{ item.ai|length }}</span>{% endif %}</span></summary>
       <div class="resource-body">
         <div class="js-meta"><span>Tamaño</span><code>{{ j.size_bytes if j.size_bytes else '-' }} bytes</code><span>SHA256</span><code>{{ j.sha256[:20] ~ '…' if j.sha256 else '-' }}</code></div>
         <div class="host-actions">
           <a class="button ghost small-button" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Abrir JS ↗</a>
           <form action="{{ target_base }}/js/{{ j.id }}/local-analyze" method="post" data-job-form data-job-label="Analizando JavaScript localmente"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button small-button" type="submit">Análisis local</button></form>
-          {% if j.sourcemap_url %}<form action="{{ target_base }}/js/{{ j.id }}/sourcemap" method="post" data-job-form data-job-label="Procesando source map"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">Source map</button></form>{% endif %}
+          {% if j.sourcemap_url %}<form action="{{ target_base }}/js/{{ j.id }}/sourcemap" method="post" data-job-form data-job-label="Procesando source map"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">{{ 'Reprocesar Source Map' if item.sourcemap else 'Source Map' }}</button></form>{% endif %}
         </div>
         {% if item.local %}
           <div class="js-stat-grid">
@@ -73,26 +86,62 @@
             <div class="candidate-list">{% for sm in item.local.source_maps %}<code class="break">{% if sm.startswith('data:') %}inline data: source map{% else %}{{ sm }}{% endif %}</code>{% endfor %}</div>
           </details>
           {% endif %}
+
+          {% set sec=item.local_detection_groups.potential_secret %}
+          {% set pub=item.local_detection_groups.public_client_config %}
+          {% set surf=item.local_detection_groups.surface_config %}
+          {% if sec or pub or surf %}
+          <div class="intel-detections">
+            <div class="section-title"><span>SECRETS &amp; CLIENT CONFIG</span><small>Detección ≠ vulnerabilidad. Los valores se muestran enmascarados.</small></div>
+            {% if sec %}<div class="detection-group danger-soft"><h4>Potential secret <span>{{ sec|length }}</span></h4>{% for d in sec %}<details class="detection-item"><summary><strong>{{ d.label }}</strong><code>{{ d.masked_value }}</code><span class="badge">{{ d.confidence }}</span></summary><div><p><b>Apariciones:</b> {{ d.occurrences }}</p><p><b>Validación:</b> {{ d.validation_hint }}</p><pre>{{ d.context }}</pre></div></details>{% endfor %}</div>{% endif %}
+            {% if pub %}<div class="detection-group"><h4>Public client config <span>{{ pub|length }}</span></h4><p class="muted small">Puede ser intencionalmente visible; requiere validar restricciones/uso antes de considerarlo hallazgo.</p>{% for d in pub %}<details class="detection-item"><summary><strong>{{ d.label }}</strong><code>{{ d.masked_value }}</code><span class="badge">{{ d.confidence }}</span></summary><div><p><b>Apariciones:</b> {{ d.occurrences }}</p><p><b>Validación:</b> {{ d.validation_hint }}</p><pre>{{ d.context }}</pre></div></details>{% endfor %}</div>{% endif %}
+            {% if surf %}<div class="detection-group"><h4>Surface / infrastructure config <span>{{ surf|length }}</span></h4>{% for d in surf %}<details class="detection-item"><summary><strong>{{ d.label }}</strong><code>{{ d.masked_value }}</code><span class="badge">{{ d.confidence }}</span></summary><div><p><b>Validación:</b> {{ d.validation_hint }}</p><pre>{{ d.context }}</pre></div></details>{% endfor %}</div>{% endif %}
+          </div>
+          {% endif %}
+
           {% if item.local.keywords %}
             {% set noisy=['export','import'] %}
             <div class="signal-block"><div class="signal-title">Señales para revisar</div><div class="chips signal-chips">{% for k,v in item.local.keywords.items() %}{% if k not in noisy %}<span class="chip">{{ k }} ×{{ v }}</span>{% endif %}{% endfor %}</div></div>
             <details class="low-signal"><summary>Ruido/lenguaje común</summary><div class="chips">{% for k,v in item.local.keywords.items() %}{% if k in noisy %}<span class="chip">{{ k }} ×{{ v }}</span>{% endif %}{% endfor %}</div></details>
           {% endif %}
+
+          {% if item.sourcemap %}
+            {% set sm=item.sourcemap %}
+            <div class="sourcemap-result">
+              <div class="section-title"><span>SOURCE MAP</span><small>✓ procesado · {{ sm.url or j.sourcemap_url }}</small></div>
+              <div class="sourcemap-stats">
+                <div><span>Fuentes totales</span><strong>{{ sm.sources_count or 0 }}</strong></div>
+                <div><span>Código de aplicación</span><strong>{{ sm.application_sources_count if sm.application_sources_count is defined else '—' }}</strong></div>
+                <div><span>Dependencias</span><strong>{{ sm.dependency_sources_count if sm.dependency_sources_count is defined else '—' }}</strong></div>
+                <div><span>Sources con contenido</span><strong>{{ sm.sources_content_count if sm.sources_content_count is defined else '—' }}</strong></div>
+                <div><span>App con contenido</span><strong>{{ sm.application_sources_with_content if sm.application_sources_with_content is defined else '—' }}</strong></div>
+              </div>
+              {% if sm.application_sources_sample %}<details class="source-list"><summary>Archivos de aplicación · muestra</summary><div>{% for src in sm.application_sources_sample[:80] %}<code>{{ src }}</code>{% endfor %}</div></details>{% elif sm.sources_sample %}<details class="source-list"><summary>Fuentes · resultado legacy</summary><div>{% for src in sm.sources_sample[:40] %}<code>{{ src }}</code>{% endfor %}</div><p class="muted small">Reprocesa Source Map para separar código de aplicación de <code>node_modules</code>.</p></details>{% endif %}
+              {% set smsec=item.sourcemap_detection_groups.potential_secret %}{% set smpub=item.sourcemap_detection_groups.public_client_config %}{% set smsurf=item.sourcemap_detection_groups.surface_config %}
+              {% if smsec or smpub or smsurf %}
+              <div class="sm-detection-summary"><strong>Detecciones en código recuperado:</strong> {{ smsec|length }} potential secret · {{ smpub|length }} public client config · {{ smsurf|length }} surface config</div>
+              <details class="source-map-detections"><summary>Ver detecciones del Source Map</summary><div>
+                {% for d in smsec + smpub + smsurf %}<article><div><strong>{{ d.label }}</strong> <span class="badge">{{ d.category }}</span> <span class="badge">{{ d.confidence }}</span></div><code>{{ d.masked_value }}</code><p>{{ d.validation_hint }}</p><pre>{{ d.context }}</pre></article>{% endfor %}
+              </div></details>
+              {% endif %}
+            </div>
+          {% endif %}
+
           <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/js/{{ j.id }}/ai-estimate" data-run-url="{{ target_base }}/js/{{ j.id }}/ai-run">
+            <div class="section-title"><span>AI ANALYSIS</span><small>Salida en español · términos técnicos en English cuando aportan contexto.</small></div>
             <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if intel_settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if intel_settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
             <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. No se enviará nada a OpenAI todavía.</div>
             <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar con IA</button></form>
           </div>
         {% endif %}
         {% for ai in item.ai %}
-          <div class="ai-result"><div class="panel-head"><strong>{{ ai.row.model }}</strong><small>{{ ai.row.created_at }}</small></div>{% if ai.result %}<p>{{ ai.result.summary }}</p>{% if ai.result.observations %}<div class="notes">{% for o in ai.result.observations[:10] %}<article><div class="badges"><span class="badge class-{{ 'lead' if o.signal=='high' else 'informational' }}">{{ o.signal }}</span></div><strong>{{ o.title }}</strong><p><b>Evidencia:</b> {{ o.evidence }}</p><p><b>Validación manual:</b> {{ o.manual_validation }}</p></article>{% endfor %}</div>{% endif %}{% endif %}</div>
+          <div class="ai-result"><div class="panel-head"><strong>{{ ai.row.model }}</strong><small>{{ ai.row.created_at }}</small></div>{% if ai.result %}<p>{{ ai.result.summary }}</p>{% if ai.result.observations %}<div class="notes">{% for o in ai.result.observations[:12] %}<article><div class="badges"><span class="badge class-{{ 'lead' if o.signal=='high' else 'informational' }}">Prioridad de revisión: {{ 'ALTA' if o.signal=='high' else ('MEDIA' if o.signal=='medium' else 'BAJA') }}</span></div><strong>{{ o.title }}</strong><p><b>Evidencia:</b> {{ o.evidence }}</p>{% if o.why_interesting %}<p><b>Por qué interesa:</b> {{ o.why_interesting }}</p>{% endif %}<p><b>Validación manual:</b> {{ o.manual_validation }}</p></article>{% endfor %}</div>{% endif %}{% endif %}</div>
         {% endfor %}
       </div>
     </details>
   {% else %}<p class="empty">No hay JS descubiertos todavía. Usa <b>Descubrir JS</b> arriba sobre este host.</p>{% endfor %}
   </div>
 </section>
-
 <section class="panel" id="observations">
   <div class="panel-head"><div><p class="eyebrow">INTELLIGENCE</p><h2>Observaciones</h2></div><span>{{ observations|length }} recientes</span></div>
   {% for o in observations[:30] %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ o.row.source }} · {{ o.row.kind }}</strong><small>{{ o.row.observed_at }}</small>{% if o.row.value %}<code class="break">{{ o.row.value }}</code>{% endif %}</div></div>{% else %}<p class="empty">Todavía no hay observaciones adicionales.</p>{% endfor %}

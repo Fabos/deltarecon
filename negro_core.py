@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.7.2
+Negro Recon v0.8.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -262,6 +262,9 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 local_path TEXT,
                 sourcemap_url TEXT,
                 local_analysis_json TEXT,
+                sourcemap_analysis_json TEXT,
+                sourcemap_path TEXT,
+                sourcemap_analyzed_at TEXT,
                 discovered_at TEXT NOT NULL,
                 analyzed_at TEXT,
                 FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE
@@ -296,6 +299,13 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             conn.execute("ALTER TABLE hosts ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'")
         if "priority" not in resource_cols:
             conn.execute("ALTER TABLE resources ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'")
+        js_cols = {row["name"] for row in conn.execute("PRAGMA table_info(js_assets)")}
+        if "sourcemap_analysis_json" not in js_cols:
+            conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analysis_json TEXT")
+        if "sourcemap_path" not in js_cols:
+            conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_path TEXT")
+        if "sourcemap_analyzed_at" not in js_cols:
+            conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analyzed_at TEXT")
 
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('domain', ?)", (domain,))
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('version', ?)", (VERSION,))
@@ -1172,9 +1182,6 @@ def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int
     if not candidates:
         raise RuntimeError("Este JS no tiene sourceMappingURL detectado")
 
-    # Prefer external .map URLs (usually the bundle's real map), then other
-    # external URLs, and finally inline data: maps. Try all instead of failing
-    # on the first sourceMappingURL embedded by a dependency.
     def rank(url: str) -> tuple[int, int]:
         low = url.lower()
         if low.startswith("data:"):
@@ -1189,7 +1196,9 @@ def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int
     final_url = ""
     data = None
     selected = None
+    attempted = 0
     for _, candidate in ordered:
+        attempted += 1
         try:
             raw_try, ctype_try, final_try = intel.http_bytes(candidate, timeout=timeout, max_bytes=25_000_000, insecure=True)
             parsed = json.loads(raw_try.decode("utf-8", errors="replace"))
@@ -1209,37 +1218,87 @@ def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"asset-{asset_id}.js.map"
     out.write_bytes(raw)
-    sources = data.get("sources", []) if isinstance(data, dict) else []
-    contents = data.get("sourcesContent", []) if isinstance(data, dict) else []
-    joined_parts = []
-    total_chars = 0
-    for content in contents if isinstance(contents, list) else []:
-        if not isinstance(content, str):
-            continue
-        if total_chars + len(content) > 4_000_000:
-            break
-        joined_parts.append(content)
-        total_chars += len(content)
-    local = intel.analyze_js_text("\n".join(joined_parts), row["url"], domain) if joined_parts else {"in_scope_urls": [], "websockets": [], "relative_paths": [], "keywords": {}, "contexts": [], "source_maps": []}
+    sm = intel.analyze_sourcemap_data(data, row["url"], domain)
     display_url = "inline:data:source-map" if selected.lower().startswith("data:") else final_url
+    sm.update({
+        "asset_id": asset_id,
+        "url": display_url,
+        "path": str(out),
+        "content_type": ctype,
+        "candidates_detected": len(candidates),
+        "candidates_attempted": attempted,
+        "candidate_errors": errors[:10],
+    })
+    sm_local = sm.get("analysis", {}) if isinstance(sm.get("analysis"), dict) else {}
     with db_connect(paths) as conn:
-        for url in local.get("in_scope_urls", []):
+        for url in sm_local.get("in_scope_urls", []):
             upsert_resource(conn, url, "sourcemap", domain)
-        record_observation(conn, "host", int(row["host_id"]), "sourcemap", "source_map", display_url, {
-            "asset_id": asset_id, "path": str(out), "content_type": ctype,
-            "sources_count": len(sources) if isinstance(sources, list) else 0,
-            "sources_sample": sources[:100] if isinstance(sources, list) else [],
-            "extracted_urls": local.get("in_scope_urls", [])[:500],
-            "candidates_detected": len(candidates), "candidate_errors": errors[:10],
-        })
+        conn.execute(
+            "UPDATE js_assets SET sourcemap_url=?, sourcemap_analysis_json=?, sourcemap_path=?, sourcemap_analyzed_at=? WHERE id=?",
+            (display_url, json.dumps(sm, ensure_ascii=False), str(out), now_iso(), asset_id),
+        )
+        record_observation(conn, "host", int(row["host_id"]), "sourcemap", "source_map", display_url, sm)
     rebuild_inventory(paths, domain)
-    return {
-        "url": display_url, "path": str(out),
-        "sources_count": len(sources) if isinstance(sources, list) else 0,
-        "candidates_detected": len(candidates), "candidate_errors": errors,
-        "analysis": local,
-    }
+    return sm
 
+
+def _load_saved_sourcemap_analysis(paths: dict[str, Path], row, domain: str) -> dict | None:
+    import negro_intel as intel
+    raw_json = row["sourcemap_analysis_json"] if "sourcemap_analysis_json" in row.keys() else None
+    if raw_json:
+        try:
+            data = json.loads(raw_json)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    # Backward compatibility for v0.7.x workspaces: reuse the already downloaded
+    # map from the latest observation and enrich it locally without new network traffic.
+    saved_path = row["sourcemap_path"] if "sourcemap_path" in row.keys() else None
+    observed_payload = None
+    with db_connect(paths) as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM observations WHERE entity_type='host' AND entity_id=? AND source='sourcemap' AND kind='source_map' ORDER BY id DESC LIMIT 20",
+            (int(row["host_id"]),),
+        ).fetchall()
+        for obs in rows:
+            try:
+                payload = json.loads(obs["payload_json"] or "{}")
+            except Exception:
+                continue
+            if int(payload.get("asset_id", -1)) == int(row["id"]):
+                observed_payload = payload
+                saved_path = saved_path or payload.get("path")
+                break
+    if not saved_path:
+        return observed_payload if isinstance(observed_payload, dict) else None
+    path = Path(str(saved_path))
+    if not path.exists():
+        return observed_payload if isinstance(observed_payload, dict) else None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        if not isinstance(parsed, dict):
+            return observed_payload if isinstance(observed_payload, dict) else None
+        sm = intel.analyze_sourcemap_data(parsed, row["url"], domain)
+        sm.update({
+            "asset_id": int(row["id"]),
+            "url": (observed_payload or {}).get("url") or row["sourcemap_url"],
+            "path": str(path),
+            "content_type": (observed_payload or {}).get("content_type", "application/json"),
+            "candidates_detected": (observed_payload or {}).get("candidates_detected", 0),
+            "candidates_attempted": (observed_payload or {}).get("candidates_attempted", 0),
+            "candidate_errors": (observed_payload or {}).get("candidate_errors", []),
+            "recovered_from_v07": True,
+        })
+        with db_connect(paths) as conn:
+            conn.execute(
+                "UPDATE js_assets SET sourcemap_analysis_json=?, sourcemap_path=?, sourcemap_analyzed_at=COALESCE(sourcemap_analyzed_at, ?) WHERE id=?",
+                (json.dumps(sm, ensure_ascii=False), str(path), now_iso(), int(row["id"])),
+            )
+        return sm
+    except Exception:
+        return observed_payload if isinstance(observed_payload, dict) else None
 
 def ai_estimate_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = None) -> dict:
     import negro_intel as intel
@@ -1248,15 +1307,23 @@ def ai_estimate_js_asset(paths: dict[str, Path], asset_id: int, model: str | Non
         raise RuntimeError("JS asset no encontrado")
     if not row["local_analysis_json"]:
         raise RuntimeError("Primero ejecuta análisis local del JS")
+    with db_connect(paths) as conn:
+        meta = conn.execute("SELECT value FROM meta WHERE key='domain'").fetchone()
+    domain = meta["value"] if meta else (row["hostname"].split('.',1)[-1] if '.' in row["hostname"] else row["hostname"])
     settings = intel.load_settings()
     selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
     output_tokens = int(settings.get("ai_output_tokens", 3000))
     local = json.loads(row["local_analysis_json"])
-    payload = intel.ai_payload(local, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    sourcemap = _load_saved_sourcemap_analysis(paths, row, domain)
+    payload = intel.ai_payload(local, sourcemap, max_chars=int(settings.get("js_ai_max_chars", 650000)))
     estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
     estimate["payload_chars"] = len(payload)
     estimate["asset_id"] = asset_id
     estimate["fx_rate_date"] = settings.get("usd_cop_rate_date")
+    estimate["source_map_included"] = bool(sourcemap)
+    if sourcemap:
+        estimate["source_map_application_sources"] = sourcemap.get("application_sources_count", 0)
+        estimate["source_map_sources_with_content"] = sourcemap.get("application_sources_with_content", 0)
     return estimate
 
 
@@ -1267,19 +1334,24 @@ def ai_run_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = N
         raise RuntimeError("JS asset no encontrado")
     if not row["local_analysis_json"]:
         raise RuntimeError("Primero ejecuta análisis local del JS")
+    with db_connect(paths) as conn:
+        meta = conn.execute("SELECT value FROM meta WHERE key='domain'").fetchone()
+    domain = meta["value"] if meta else (row["hostname"].split('.',1)[-1] if '.' in row["hostname"] else row["hostname"])
     settings = intel.load_settings()
     selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
     output_tokens = int(settings.get("ai_output_tokens", 3000))
     local = json.loads(row["local_analysis_json"])
-    payload = intel.ai_payload(local, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    sourcemap = _load_saved_sourcemap_analysis(paths, row, domain)
+    payload = intel.ai_payload(local, sourcemap, max_chars=int(settings.get("js_ai_max_chars", 650000)))
     estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
+    estimate["source_map_included"] = bool(sourcemap)
     result, usage = intel.run_openai_js_analysis(payload, model=selected_model, output_tokens=output_tokens)
     with db_connect(paths) as conn:
         conn.execute(
             "INSERT INTO ai_analyses(js_asset_id, model, status, estimate_json, usage_json, result_json, created_at) VALUES(?, ?, 'done', ?, ?, ?, ?)",
             (asset_id, selected_model, json.dumps(estimate), json.dumps(usage), json.dumps(result, ensure_ascii=False), now_iso()),
         )
-        record_observation(conn, "host", int(row["host_id"]), "ai_js", "ai_analysis", row["url"], {"asset_id": asset_id, "model": selected_model, "summary": result.get("summary"), "observation_count": len(result.get("observations", [])) if isinstance(result, dict) else 0})
+        record_observation(conn, "host", int(row["host_id"]), "ai_js", "ai_analysis", row["url"], {"asset_id": asset_id, "model": selected_model, "summary": result.get("summary"), "observation_count": len(result.get("observations", [])) if isinstance(result, dict) else 0, "source_map_included": bool(sourcemap)})
     return {"asset_id": asset_id, "model": selected_model, "estimate": estimate, "usage": usage, "result": result}
 
 def print_inspection_history(paths: dict[str, Path], hostname: str, limit: int = 5) -> None:

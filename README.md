@@ -1,8 +1,35 @@
-# Negro Recon 🐕 — v0.7.2
+# Negro Recon 🐕 — v0.8.0
 
 > **Olfatea donde otros no miran.**
 
 Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/inspecciones y la Web UI organiza targets, hosts, resources, provenance, estados, notas, JavaScript y análisis asistido por IA.
+
+
+## v0.8.0 — Secrets & Client Config + Source Map intelligence
+
+Esta versión convierte el pipeline JavaScript en cinco fases visibles: **Discovery → Local Analysis → Secrets & Config → Source Map → AI Analysis**.
+
+Cambios principales:
+
+- detector local de credenciales/configuración con valores **enmascarados** y deduplicados por fingerprint;
+- antes de enviar contextos a OpenAI, Negro vuelve a enmascarar candidatos sensibles; el valor completo permanece sólo en el archivo JS/source map local original;
+- categorías separadas: `potential_secret`, `public_client_config` y `surface_config`;
+- reconoce familias de alta señal como Google API key, AWS keys, GitHub/GitLab/npm/SendGrid tokens, Slack/Discord webhooks, JWT, OAuth `client_secret`, Bearer literal, private keys, database URLs, signed URLs, Stripe/Mapbox/Sentry/Firebase y storage endpoints;
+- detectar una key/config **no la convierte en vulnerabilidad** y Negro no prueba credenciales automáticamente;
+- Source Map muestra fuentes totales, código de aplicación, `node_modules`, runtime, `sourcesContent` y muestra de archivos de aplicación;
+- el análisis de Source Map filtra `node_modules`/Webpack runtime antes de extraer señales, endpoints y candidatos;
+- la IA recibe el análisis local **más el Source Map confirmado** cuando existe; los workspaces v0.7.x pueden reutilizar el `.map` ya guardado sin nueva descarga al estimar/ejecutar IA;
+- prompt de IA en español, manteniendo términos técnicos útiles en inglés;
+- la UI usa `Prioridad de revisión` en vez de presentar `high/medium/low` como severidad de vulnerabilidad;
+- TLS SAN muestra en la ficha el último conjunto de nombres in-scope observado;
+- `install-web.sh` instala un launcher `/usr/local/bin/negro` que fuerza el Python de `.venv`, evitando que Web use por accidente el Python global.
+- la Web limita a **3 jobs simultáneos**; los adicionales quedan en cola para evitar lanzar demasiados análisis a la vez sobre el mismo target/equipo.
+
+### Qué significa Secrets & Config
+
+`public_client_config` incluye valores que muchas aplicaciones necesitan exponer al navegador (por ejemplo una Google API key para Maps, Firebase config, OAuth Client ID o Sentry DSN). Su presencia es una pista para revisar restricciones/configuración, **no un finding por sí sola**.
+
+`potential_secret` indica material que merece revisión manual porque podría actuar como credencial. Negro lo muestra enmascarado y no lo usa automáticamente.
 
 
 ## v0.7.2 — JS/AI UX + dependency hardening + source-map hotfix
@@ -115,7 +142,7 @@ Configuración local:
 ~/.config/negro/settings.json
 ```
 
-Defaults de v0.7:
+Defaults de v0.8:
 
 ```text
 model = gpt-6-luna
@@ -177,19 +204,25 @@ Negro primero trabaja localmente:
 ```text
 HTML del host
    ↓
-<script src=...>
+Discovery de <script src=...>
    ↓
 JS in-scope
    ↓
-Análisis local
-   ├── URLs absolutas
-   ├── rutas API
-   ├── WebSockets
+Local Analysis
+   ├── URLs / rutas / WebSockets
    ├── sourceMappingURL
-   ├── keywords/señales
-   └── chunks de contexto
+   └── señales/chunks
    ↓
-AI opcional
+Secrets & Client Config
+   ├── potential_secret
+   ├── public_client_config
+   └── surface_config
+   ↓
+Source Map
+   ├── separa app / node_modules / runtime
+   └── analiza sourcesContent de aplicación
+   ↓
+AI opcional (evidencia consolidada)
 ```
 
 Scripts de terceros se registran como observación, pero Negro no los descarga automáticamente como objetivo de análisis.

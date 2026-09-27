@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.7.2
+# Negro Recon — Metodología v0.8.0
 
 ## Filosofía
 
@@ -97,3 +97,14 @@ Cuando una herramienta no expone progreso determinista, Negro muestra actividad 
 ## Costos de IA
 
 La estimación debe leerse como un máximo presupuestado: entrada estimada + tope de salida. La UI muestra COP de forma explícita, USD como referencia y la tasa usada. La llamada facturable sólo ocurre tras confirmación del usuario.
+
+
+## JavaScript v0.8 — lectura por capas
+
+1. **Discovery**: inventariar scripts cargados por una página.
+2. **Local Analysis**: extraer URLs, rutas, WebSockets, `sourceMappingURL` y contexto.
+3. **Secrets & Client Config**: clasificar candidatos sin asumir vulnerabilidad; los valores se enmascaran.
+4. **Source Map**: separar código de aplicación de dependencias/runtime y analizar `sourcesContent` cuando esté disponible.
+5. **AI Analysis**: correlacionar únicamente evidencia seleccionada; salida en español; nunca auto-promover a finding.
+
+Una Google API key, Firebase config, OAuth Client ID, Sentry DSN o Stripe publishable key puede ser intencionalmente pública. La pregunta útil es si su configuración/restricciones producen impacto dentro del scope, no si el valor aparece en JavaScript. Negro no usa automáticamente tokens/keys detectados.

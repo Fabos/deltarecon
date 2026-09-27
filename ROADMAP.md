@@ -1,6 +1,6 @@
 # Negro Recon — Roadmap
 
-## Implementado hasta v0.7.2
+## Implementado hasta v0.8.0
 
 - crt.sh
 - Subfinder
@@ -18,6 +18,11 @@
 - local JS extraction
 - source maps
 - OpenAI JS analysis con estimación previa USD/COP
+- Secrets & Client Config con valores enmascarados
+- Source Map app/dependencies/runtime + sourcesContent
+- correlación Source Map + bundle antes de IA
+- IA en español con términos técnicos preservados
+- launcher fijo sobre `.venv`
 
 ## Siguiente aprendizaje antes de automatizar más
 
@@ -27,7 +32,7 @@ Aprender manualmente `ffuf` / `feroxbuster` y reglas/rates por programa. Luego i
 
 ### Análisis JavaScript v2
 
-- AST real / separación de módulos webpack/Vite;
+- AST real / separación más precisa de módulos webpack/Vite;
 - correlación entre múltiples bundles;
 - operaciones GraphQL;
 - detección de métodos HTTP con contexto;
@@ -50,3 +55,11 @@ Comparar DNS/TLS/HTTP entre inspecciones.
 - tarjetas JS más legibles;
 - verificación/diagnóstico del SDK `openai`;
 - hotfix consolidado de source maps inline Base64.
+
+
+### Después de v0.8.0
+
+- Job Center persistente con cola y límite de concurrencia configurable;
+- progreso por etapas cuando una herramienta exponga progreso real;
+- validadores dirigidos y explícitos para client config sólo cuando el programa lo permita (nunca uso automático de credenciales);
+- correlación entre múltiples bundles/source maps por aplicación.

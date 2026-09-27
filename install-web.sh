@@ -35,4 +35,36 @@ if failed:
 print(f"\n[+] Entorno correcto: {sys.executable}")
 PY
 
+# Instala un launcher estable. No dependemos del shebang /usr/bin/env python3:
+# `negro` siempre ejecuta el Python del .venv de ESTE checkout.
+LAUNCHER_CONTENT="$(cat <<LAUNCHER
+#!/bin/sh
+REPO=\"$ROOT\"
+exec \"\$REPO/.venv/bin/python\" \"\$REPO/negro.py\" \"\$@\"
+LAUNCHER
+)"
+
+install_launcher() {
+  local dest="/usr/local/bin/negro"
+  # Importante: si la versión vieja era un symlink a negro.py, elimínalo
+  # antes de escribir para no sobrescribir el archivo real del repo.
+  rm -f "$dest"
+  printf '%s\n' "$LAUNCHER_CONTENT" > "$dest"
+  chmod +x "$dest"
+}
+
+if [ -w /usr/local/bin ]; then
+  install_launcher
+  echo "[+] Launcher actualizado: /usr/local/bin/negro -> $ROOT/.venv/bin/python"
+elif command -v sudo >/dev/null 2>&1; then
+  echo "[+] Actualizando launcher /usr/local/bin/negro (puede pedir sudo)..."
+  sudo rm -f /usr/local/bin/negro
+  printf '%s\n' "$LAUNCHER_CONTENT" | sudo tee /usr/local/bin/negro >/dev/null
+  sudo chmod +x /usr/local/bin/negro
+  echo "[+] Launcher actualizado: /usr/local/bin/negro -> $ROOT/.venv/bin/python"
+else
+  echo "[!] No pude escribir /usr/local/bin/negro. Crea manualmente un launcher que use:"
+  echo "    $ROOT/.venv/bin/python $ROOT/negro.py"
+fi
+
 printf '\n[+] Negro listo. Ejecuta:\n    negro web\n\n'

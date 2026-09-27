@@ -20,7 +20,7 @@
         const data = await res.json();
         const jobs = data.jobs || [];
         if (!jobs.length) return;
-        jobsRoot.innerHTML = jobs.map(j => `<div class="job"><span class="status-dot ${esc(j.status)}"></span><div><strong>${esc(j.label)}</strong><small>${esc(j.status)} · ${esc(j.started_at)}</small>${j.error ? `<small class="error">${esc(j.error)}</small>` : ''}</div></div>`).join('');
+        jobsRoot.innerHTML = jobs.map(j => `<div class="job"><span class="status-dot ${esc(j.status)}"></span><div><strong>${esc(j.label)}</strong><small>${esc(j.status)} · ${esc(j.started_at || j.queued_at)}</small>${j.error ? `<small class="error">${esc(j.error)}</small>` : ''}</div></div>`).join('');
       } catch (_) {}
     };
     refreshJobs();
@@ -164,7 +164,11 @@
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const job = await res.json();
           const label = job.label || 'Trabajo';
-          setProgressMessage(progressRoot, `${label} · en ejecución`);
+          if (job.status === 'queued') {
+            setProgressMessage(progressRoot, `${label} · en cola (máximo 3 trabajos simultáneos)`);
+          } else {
+            setProgressMessage(progressRoot, `${label} · en ejecución`);
+          }
           if (job.status === 'done') {
             setProgressMessage(progressRoot, 'Terminado. Actualizando resultados…', 'done');
             stopped = true;
@@ -264,7 +268,8 @@
             <div class="ai-cost-detail"><span>Entrada estimada</span><strong>${Number(data.input_tokens_est).toLocaleString('es-CO')} tokens</strong></div>
             <div class="ai-cost-detail"><span>Salida presupuestada</span><strong>máx. ${Number(data.output_tokens_budget).toLocaleString('es-CO')} tokens</strong></div>
           </div>
-          <div class="ai-cost-foot">Es un <b>tope estimado</b>; el costo real puede ser menor. Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>`;
+          <div class="ai-cost-foot">Es un <b>tope estimado</b>; el costo real puede ser menor. Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>
+          <div class="ai-evidence-note">${data.source_map_included ? `✓ La evidencia de IA incluirá el <b>source map confirmado</b>${data.source_map_application_sources !== undefined ? ` · ${Number(data.source_map_application_sources).toLocaleString('es-CO')} fuentes de aplicación` : ''}${data.source_map_sources_with_content !== undefined ? ` · ${Number(data.source_map_sources_with_content).toLocaleString('es-CO')} con contenido` : ''}.` : 'La estimación usa sólo el análisis local del bundle; no hay source map confirmado asociado.'}</div>`;
         runModel.value = data.model;
         runForm.action = box.dataset.runUrl;
         runForm.hidden = false;

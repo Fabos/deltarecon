@@ -32,6 +32,7 @@ DEFAULT_SETTINGS = {
     "usd_cop_rate_date": "2026-09-26",
     "js_max_download_mb": 8,
     "js_ai_max_chars": 650000,
+    "job_max_workers": 3,
     "urlscan_detail_limit": 8,
     "wayback_limit": 5000,
 }
@@ -57,6 +58,66 @@ REL_PATH_RE = re.compile(
     re.I,
 )
 SOURCEMAP_RE = re.compile(r"(?:sourceMappingURL=)([^\s*]+)")
+
+
+DETECTION_RULES = [
+    {"id":"google_api_key","label":"Google API key","category":"public_client_config","confidence":"high","pattern":r"\bAIza[0-9A-Za-z_-]{35}\b"},
+    {"id":"google_oauth_client_id","label":"Google OAuth Client ID","category":"public_client_config","confidence":"high","pattern":r"\b[0-9]{6,}-[0-9A-Za-z_-]{20,}\.apps\.googleusercontent\.com\b"},
+    {"id":"stripe_publishable_key","label":"Stripe publishable key","category":"public_client_config","confidence":"high","pattern":r"\bpk_(?:live|test)_[0-9A-Za-z]{16,}\b"},
+    {"id":"mapbox_public_token","label":"Mapbox public token","category":"public_client_config","confidence":"medium","pattern":r"\bpk\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b"},
+    {"id":"sentry_dsn","label":"Sentry DSN","category":"public_client_config","confidence":"high","pattern":r"https://[0-9A-Za-z]+@[0-9A-Za-z.-]+(?:\:\d+)?/\d+"},
+    {"id":"aws_access_key_id","label":"AWS Access Key ID","category":"potential_secret","confidence":"high","pattern":r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"},
+    {"id":"aws_secret_access_key","label":"AWS Secret Access Key","category":"potential_secret","confidence":"high","pattern":r"(?i)(?:aws_secret_access_key|secretAccessKey)\s*[:=]\s*[\"']([A-Za-z0-9/+=]{40})[\"']"},
+    {"id":"github_token","label":"GitHub token","category":"potential_secret","confidence":"high","pattern":r"\b(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|gh[ousr]_[A-Za-z0-9]{30,})\b"},
+    {"id":"gitlab_token","label":"GitLab token","category":"potential_secret","confidence":"high","pattern":r"\bglpat-[A-Za-z0-9_-]{20,}\b"},
+    {"id":"npm_token","label":"npm token","category":"potential_secret","confidence":"high","pattern":r"\bnpm_[A-Za-z0-9]{30,}\b"},
+    {"id":"sendgrid_api_key","label":"SendGrid API key","category":"potential_secret","confidence":"high","pattern":r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{32,}\b"},
+    {"id":"slack_webhook","label":"Slack webhook","category":"potential_secret","confidence":"high","pattern":r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]{20,}"},
+    {"id":"stripe_secret_key","label":"Stripe secret key","category":"potential_secret","confidence":"high","pattern":r"\bsk_(?:live|test)_[0-9A-Za-z]{16,}\b"},
+    {"id":"jwt","label":"JWT token","category":"potential_secret","confidence":"medium","pattern":r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"},
+    {"id":"private_key","label":"Private key","category":"potential_secret","confidence":"high","pattern":r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"},
+    {"id":"oauth_client_secret","label":"OAuth client_secret","category":"potential_secret","confidence":"high","pattern":r"(?i)(?:client_secret|clientSecret)\s*[:=]\s*[\"']([A-Za-z0-9._~+\-/=]{12,})[\"']"},
+    {"id":"literal_bearer_token","label":"Bearer token literal","category":"potential_secret","confidence":"medium","pattern":r"(?i)Bearer\s+([A-Za-z0-9._~+\-/=]{20,})"},
+    {"id":"database_url","label":"Database connection URL","category":"potential_secret","confidence":"high","pattern":r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s\"'<>]{8,}"},
+    {"id":"basic_auth_url","label":"URL con Basic Auth embebido","category":"potential_secret","confidence":"high","pattern":r"https?://[^\s:/@]+:[^\s/@]+@[^\s\"'<>]+"},
+    {"id":"presigned_url","label":"Signed / presigned URL","category":"potential_secret","confidence":"high","pattern":r"https?://[^\s\"'<>]+(?:X-Amz-Signature|X-Goog-Signature|[?&]sig=)[^\s\"'<>]+"},
+    {"id":"discord_webhook","label":"Discord webhook","category":"potential_secret","confidence":"high","pattern":r"https://(?:discord(?:app)?\.com)/api/webhooks/\d+/[A-Za-z0-9._-]{20,}"},
+    {"id":"s3_bucket_url","label":"S3 bucket / endpoint","category":"surface_config","confidence":"medium","pattern":r"https?://[A-Za-z0-9._-]+\.s3(?:[.-][A-Za-z0-9-]+)?\.amazonaws\.com(?:/[^\s\"'<>]*)?"},
+    {"id":"azure_blob_url","label":"Azure Blob endpoint","category":"surface_config","confidence":"medium","pattern":r"https?://[A-Za-z0-9-]+\.blob\.core\.windows\.net(?:/[^\s\"'<>]*)?"},
+]
+
+DETECTION_CATEGORY_LABELS = {
+    "potential_secret": "Potential secret",
+    "public_client_config": "Public client config",
+    "surface_config": "Surface / infrastructure config",
+}
+
+DETECTION_VALIDATION_HINTS = {
+    "google_api_key": "Revisar a qué API se usa y si tiene restricciones de HTTP referrer, IP o API. Que sea visible en frontend no implica exposición.",
+    "google_oauth_client_id": "Un OAuth Client ID suele ser público. Revisar redirect URIs y configuración del flujo, no tratarlo como secreto.",
+    "stripe_publishable_key": "La publishable key está diseñada para cliente. Revisar sólo el contexto y endpoints asociados; no confundirla con una secret key.",
+    "mapbox_public_token": "Los public tokens de Mapbox pueden ser client-side. Revisar scopes/restricciones y uso previsto.",
+    "sentry_dsn": "Un Sentry DSN suele ser visible. Revisar si expone metadata útil o configuración inesperada, sin asumir que es credencial privada.",
+    "firebase_config": "Firebase client config suele ser pública. Revisar reglas de acceso/servicios asociados con cuentas y acciones autorizadas.",
+    "aws_access_key_id": "Un Access Key ID por sí solo no autentica. Buscar contexto/pareja Secret Access Key; no usar credenciales automáticamente.",
+    "aws_secret_access_key": "Candidato de alta señal. Confirmar contexto y scope antes de cualquier validación; Negro no lo usa automáticamente.",
+    "github_token": "Candidato de alta señal. Verificar origen/contexto y scope del programa antes de cualquier uso.",
+    "gitlab_token": "Candidato de alta señal. Verificar origen/contexto y scope del programa antes de cualquier uso.",
+    "npm_token": "Candidato de alta señal. Verificar si es real/activo sólo mediante una validación permitida por el programa.",
+    "sendgrid_api_key": "Candidato de alta señal. No enviar correo ni consumir servicios automáticamente; validar sólo de forma permitida.",
+    "slack_webhook": "Un webhook puede permitir acciones. No enviar mensajes automáticamente; validar contexto y ownership primero.",
+    "discord_webhook": "Un webhook puede permitir acciones. No enviar mensajes automáticamente; validar contexto y ownership primero.",
+    "stripe_secret_key": "Candidato a secret key. No realizar cobros/acciones; validar alcance y exposición de forma segura.",
+    "jwt": "Un JWT embebido puede estar expirado, ser de prueba o público. Revisar claims/contexto sin asumir validez actual.",
+    "private_key": "Material criptográfico privado es alta señal. Confirmar que no sea fixture/test antes de escalar la revisión.",
+    "oauth_client_secret": "Un client_secret en frontend es inusual. Confirmar que sea un valor real y no placeholder antes de considerarlo finding.",
+    "literal_bearer_token": "Revisar si es token real, fixture o ejemplo. No reutilizarlo automáticamente.",
+    "database_url": "Revisar si incluye credenciales reales y si corresponde a producción; no conectar automáticamente.",
+    "basic_auth_url": "Revisar si usuario/password son reales o de ejemplo; no autenticar automáticamente.",
+    "presigned_url": "Las signed URLs pueden ser temporales. Revisar expiración, recurso y sensibilidad sin ampliar el acceso fuera de scope.",
+    "s3_bucket_url": "Útil para surface mapping. La URL del bucket no implica bucket público ni misconfiguration.",
+    "azure_blob_url": "Útil para surface mapping. Validar políticas de acceso sólo con requests de bajo impacto permitidas por scope.",
+}
 
 
 def now_iso() -> str:
@@ -122,7 +183,7 @@ def runtime_dependency_status() -> dict[str, bool]:
 
 
 def http_json(url: str, *, headers: dict[str, str] | None = None, timeout: int = 30, max_bytes: int = 25_000_000) -> Any:
-    req_headers = {"User-Agent": "Negro-Recon/0.7.2", "Accept": "application/json"}
+    req_headers = {"User-Agent": "Negro-Recon/0.8.0", "Accept": "application/json"}
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, headers=req_headers)
@@ -164,7 +225,7 @@ def _decode_data_url(url: str, *, max_bytes: int) -> tuple[bytes, str, str]:
 def http_bytes(url: str, *, timeout: int = 25, max_bytes: int = 8_000_000, insecure: bool = True) -> tuple[bytes, str, str]:
     if url.lower().startswith("data:"):
         return _decode_data_url(url, max_bytes=max_bytes)
-    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.7.2", "Accept": "*/*"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.8.0", "Accept": "*/*"})
     context = ssl._create_unverified_context() if insecure and url.lower().startswith("https://") else None
     with urllib.request.urlopen(req, timeout=timeout, context=context) as response:
         raw = response.read(max_bytes + 1)
@@ -376,6 +437,92 @@ def beautify_js(text: str) -> str:
         return text
 
 
+def _mask_value(value: str) -> str:
+    value = value or ""
+    if len(value) <= 8:
+        return "•" * max(4, len(value))
+    if value.startswith("-----BEGIN"):
+        return value.splitlines()[0] + " …"
+    keep = 4 if len(value) < 32 else 6
+    return f"{value[:keep]}…{value[-keep:]}"
+
+
+def detect_credentials_and_config(text: str, *, max_unique_per_rule: int = 8, context_radius: int = 220) -> list[dict[str, Any]]:
+    """Detecta credenciales/config cliente con valores enmascarados.
+
+    La detección es una pista, no una vulnerabilidad. Nunca devuelve el valor completo
+    del candidato; conserva un hash corto para deduplicación y contexto enmascarado.
+    """
+    findings: list[dict[str, Any]] = []
+    raw_masks: dict[str, str] = {}
+    pending: list[tuple[dict[str, Any], int, int]] = []
+    for rule in DETECTION_RULES:
+        regex = re.compile(rule["pattern"])
+        seen: dict[str, dict[str, Any]] = {}
+        for match in regex.finditer(text):
+            value = match.group(1) if match.lastindex else match.group(0)
+            if not value:
+                continue
+            digest = hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            item = seen.get(digest)
+            if item is None:
+                if len(seen) >= max_unique_per_rule:
+                    continue
+                masked = _mask_value(value)
+                raw_masks[value] = masked
+                item = {
+                    "type": rule["id"],
+                    "label": rule["label"],
+                    "category": rule["category"],
+                    "category_label": DETECTION_CATEGORY_LABELS.get(rule["category"], rule["category"]),
+                    "confidence": rule["confidence"],
+                    "masked_value": masked,
+                    "fingerprint": digest,
+                    "occurrences": 0,
+                    "context": "",
+                    "validation_hint": DETECTION_VALIDATION_HINTS.get(rule["id"], "Revisar el contexto y validar manualmente sin asumir impacto."),
+                }
+                seen[digest] = item
+                pending.append((item, match.start(), match.end()))
+            item["occurrences"] += 1
+        findings.extend(seen.values())
+
+    # Build contexts only after all candidates are known so a nearby second secret
+    # cannot leak unmasked inside another finding's context.
+    for item, start_pos, end_pos in pending:
+        a = max(0, start_pos - context_radius)
+        b = min(len(text), end_pos + context_radius)
+        context = text[a:b]
+        for raw_value, masked in sorted(raw_masks.items(), key=lambda kv: len(kv[0]), reverse=True):
+            context = context.replace(raw_value, masked)
+        item["context"] = context
+
+    lower = text.lower()
+    firebase_terms = sum(1 for term in ("firebaseconfig", "authdomain", "projectid", "storagebucket", "messagingsenderid") if term in lower)
+    if firebase_terms >= 2:
+        findings.append({
+            "type":"firebase_config", "label":"Firebase client configuration",
+            "category":"public_client_config", "category_label":DETECTION_CATEGORY_LABELS["public_client_config"],
+            "confidence":"medium", "masked_value":"config object", "fingerprint":"firebase-config",
+            "occurrences":firebase_terms, "context":"Se detectaron múltiples campos típicos de Firebase client configuration.",
+            "validation_hint": DETECTION_VALIDATION_HINTS["firebase_config"]
+        })
+    return findings
+
+def redact_sensitive_literals(text: str) -> str:
+    """Enmascara candidatos antes de enviar contextos a servicios externos."""
+    out = text
+    for rule in DETECTION_RULES:
+        regex = re.compile(rule["pattern"])
+        def repl(match):
+            value = match.group(1) if match.lastindex else match.group(0)
+            if not value:
+                return match.group(0)
+            return match.group(0).replace(value, _mask_value(value))
+        out = regex.sub(repl, out)
+    return out
+
+
 def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int = 120) -> dict[str, Any]:
     absolute = sorted(set(m.group("url").rstrip(",);]") for m in ABS_URL_RE.finditer(text)))
     relative = sorted(set(m.group("path") for m in REL_PATH_RE.finditer(text)))
@@ -426,6 +573,11 @@ def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int 
         else:
             external_urls.append(url)
 
+    detections = detect_credentials_and_config(text)
+    detection_counts: dict[str, int] = {}
+    for item in detections:
+        detection_counts[item["category"]] = detection_counts.get(item["category"], 0) + 1
+
     return {
         "absolute_urls": absolute,
         "relative_paths": relative,
@@ -435,8 +587,61 @@ def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int 
         "source_maps": source_maps,
         "keywords": keywords,
         "contexts": contexts,
+        "detections": detections,
+        "detection_counts": detection_counts,
     }
 
+
+def classify_sourcemap_source(path: str) -> str:
+    low = (path or "").lower()
+    if "/node_modules/" in low or low.startswith("webpack://node_modules/"):
+        return "dependency"
+    if "webpack/runtime/" in low or low.endswith("webpack/bootstrap") or "/webpack/bootstrap" in low:
+        return "runtime"
+    return "application"
+
+
+def analyze_sourcemap_data(data: dict[str, Any], base_url: str, domain: str, *, max_source_chars: int = 4_000_000) -> dict[str, Any]:
+    sources = data.get("sources", []) if isinstance(data.get("sources"), list) else []
+    contents = data.get("sourcesContent", []) if isinstance(data.get("sourcesContent"), list) else []
+    counts = {"application":0, "dependency":0, "runtime":0}
+    app_sources: list[str] = []
+    app_parts: list[str] = []
+    content_count = 0
+    app_content_count = 0
+    total_chars = 0
+    for idx, source in enumerate(sources):
+        source_name = source if isinstance(source, str) else f"source-{idx}"
+        kind = classify_sourcemap_source(source_name)
+        counts[kind] = counts.get(kind, 0) + 1
+        if kind == "application":
+            app_sources.append(source_name)
+        content = contents[idx] if idx < len(contents) else None
+        if isinstance(content, str) and content.strip():
+            content_count += 1
+            if kind == "application" and total_chars < max_source_chars:
+                remaining = max_source_chars - total_chars
+                piece = f"\n/* NEGRO_SOURCE: {source_name} */\n{content[:remaining]}\n"
+                app_parts.append(piece)
+                total_chars += len(piece)
+                app_content_count += 1
+
+    app_text = "".join(app_parts)
+    analysis = analyze_js_text(app_text, base_url, domain, max_contexts=160) if app_text else {
+        "in_scope_urls": [], "external_urls": [], "websockets": [], "relative_paths": [],
+        "keywords": {}, "contexts": [], "source_maps": [], "detections": [], "detection_counts": {}
+    }
+    return {
+        "sources_count": len(sources),
+        "sources_content_count": content_count,
+        "application_sources_count": counts.get("application",0),
+        "dependency_sources_count": counts.get("dependency",0),
+        "runtime_sources_count": counts.get("runtime",0),
+        "application_sources_with_content": app_content_count,
+        "application_sources_sample": app_sources[:120],
+        "analysis": analysis,
+        "application_text_chars_analyzed": len(app_text),
+    }
 
 def estimate_tokens(text: str) -> tuple[int, str]:
     try:
@@ -448,25 +653,46 @@ def estimate_tokens(text: str) -> tuple[int, str]:
         return max(1, int(len(text.encode("utf-8")) / 3.2)), "heuristic_bytes/3.2"
 
 
-def ai_payload(local_analysis: dict[str, Any], *, max_chars: int = 650000) -> str:
+def ai_payload(local_analysis: dict[str, Any], sourcemap_analysis: dict[str, Any] | None = None, *, max_chars: int = 650000) -> str:
     compact = {
         "urls_in_scope": local_analysis.get("in_scope_urls", [])[:1000],
         "external_urls": local_analysis.get("external_urls", [])[:300],
         "websockets": local_analysis.get("websockets", [])[:200],
         "relative_paths": local_analysis.get("relative_paths", [])[:1500],
-        "source_maps": local_analysis.get("source_maps", [])[:100],
+        "source_maps_candidates": local_analysis.get("source_maps", [])[:100],
         "keyword_counts": local_analysis.get("keywords", {}),
+        "credentials_and_config": local_analysis.get("detections", [])[:80],
     }
-    parts = ["LOCAL_EXTRACTION\n" + json.dumps(compact, ensure_ascii=False, indent=2), "\nCODE_CONTEXTS\n"]
+    envelope: dict[str, Any] = {"bundle_local_analysis": compact, "source_map_confirmed": bool(sourcemap_analysis)}
+    sm_local: dict[str, Any] = {}
+    if sourcemap_analysis:
+        sm_local = sourcemap_analysis.get("analysis", {}) if isinstance(sourcemap_analysis.get("analysis"), dict) else {}
+        envelope["source_map"] = {
+            "selected_url": sourcemap_analysis.get("url"),
+            "sources_count": sourcemap_analysis.get("sources_count", 0),
+            "sources_content_count": sourcemap_analysis.get("sources_content_count", 0),
+            "application_sources_count": sourcemap_analysis.get("application_sources_count", 0),
+            "dependency_sources_count": sourcemap_analysis.get("dependency_sources_count", 0),
+            "runtime_sources_count": sourcemap_analysis.get("runtime_sources_count", 0),
+            "application_sources_with_content": sourcemap_analysis.get("application_sources_with_content", 0),
+            "application_sources_sample": sourcemap_analysis.get("application_sources_sample", [])[:120],
+            "urls_in_scope": sm_local.get("in_scope_urls", [])[:500],
+            "relative_paths": sm_local.get("relative_paths", [])[:1000],
+            "websockets": sm_local.get("websockets", [])[:100],
+            "credentials_and_config": sm_local.get("detections", [])[:100],
+            "keyword_counts": sm_local.get("keywords", {}),
+        }
+    parts = ["NEGRO_EVIDENCE\n" + json.dumps(envelope, ensure_ascii=False, indent=2), "\nCODE_CONTEXTS\n"]
     remaining = max_chars - sum(len(x) for x in parts)
-    for item in local_analysis.get("contexts", []):
-        block = f"\n--- signal={item.get('signal','')} ---\n{item.get('context','')}\n"
-        if len(block) > remaining:
-            break
-        parts.append(block)
-        remaining -= len(block)
+    for origin, analysis in (("bundle", local_analysis), ("source_map_application_code", sm_local)):
+        for item in analysis.get("contexts", []) if isinstance(analysis, dict) else []:
+            safe_context = redact_sensitive_literals(str(item.get('context','')))
+            block = f"\n--- origin={origin} signal={item.get('signal','')} ---\n{safe_context}\n"
+            if len(block) > remaining:
+                return "".join(parts)
+            parts.append(block)
+            remaining -= len(block)
     return "".join(parts)
-
 
 def estimate_ai_cost(payload: str, model: str, output_tokens: int, usd_cop_rate: float) -> dict[str, Any]:
     if model not in OPENAI_PRICING:
@@ -515,9 +741,19 @@ def run_openai_js_analysis(payload: str, *, model: str, output_tokens: int) -> t
             "Ejecuta ./install-web.sh para reparar/actualizar las dependencias."
         ) from exc
 
-    system = """You analyze JavaScript evidence from an explicitly authorized bug-bounty target.
-Do not claim a vulnerability from client-side code alone. Reconstruct application behavior and identify high-signal items for manual validation. Use only the supplied evidence; if evidence is insufficient, say so. Never invent endpoints, methods, roles, secrets, impact, or findings.
-Return ONLY valid JSON with this schema:
+    system = """Analizas evidencia JavaScript de un target de Bug Bounty explícitamente autorizado.
+Responde SIEMPRE en español. Mantén en inglés únicamente términos técnicos útiles para pentesting y código, por ejemplo: API key, endpoint, source map, localStorage, WebSocket, Authorization, Bearer token, OAuth, SSO, JWT, role, payload y nombres exactos observados en código.
+
+No declares una vulnerabilidad sólo por aparecer algo en el cliente. Reconstruye comportamiento y señala pistas para validación manual. Usa únicamente la evidencia suministrada; si falta evidencia, dilo. Nunca inventes endpoints, métodos, roles, secretos, impacto ni findings.
+
+Distingue especialmente:
+- potential_secret: candidato que podría ser credencial/secreto y requiere validación;
+- public_client_config: configuración que normalmente puede ser visible en frontend (por ejemplo Google API key, Firebase config, OAuth Client ID, Sentry DSN, Stripe publishable key); visible NO implica vulnerable;
+- surface_config: configuración útil para reconstruir superficie/infraestructura.
+
+Si la evidencia indica source_map_confirmed=true, trátalo como confirmado y usa sus métricas/archivos; no digas que su disponibilidad está sin confirmar. Prioriza código de aplicación y evita convertir node_modules/librerías conocidas en hallazgos.
+
+Return ONLY valid JSON con este schema exacto (los valores textuales deben estar en español):
 {
   "summary": "...",
   "architecture": {"api_bases": [], "websockets": [], "graphql": [], "roles": [], "feature_flags": [], "storage_keys": []},
@@ -528,7 +764,7 @@ Return ONLY valid JSON with this schema:
     {"url_or_path":"...", "method":"unknown|GET|POST|PUT|PATCH|DELETE", "auth_context":"...", "evidence":"..."}
   ]
 }
-Keep evidence excerpts short and traceable to the supplied contexts."""
+Mantén los excerpts de evidencia cortos y trazables al contexto suministrado."""
     client = OpenAI(api_key=key)
     response = client.responses.create(
         model=model,

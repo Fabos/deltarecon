@@ -42,11 +42,11 @@
   </section>
 
   <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD</p><h2>Trabajos de esta sesión</h2></div></div>
+    <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD</p><h2>Trabajos de esta sesión</h2></div><span class="muted small">máx. 3 simultáneos · el resto queda en cola</span></div>
     <div id="jobs" data-jobs data-jobs-url="/api/t/{{ target_key }}/jobs">
       {% if jobs %}
         {% for job in jobs %}
-          <div class="job"><span class="status-dot {{ job.status }}"></span><div><strong>{{ job.label }}</strong><small>{{ job.status }} · {{ job.started_at }}</small>{% if job.error %}<small class="error">{{ job.error }}</small>{% endif %}</div></div>
+          <div class="job"><span class="status-dot {{ job.status }}"></span><div><strong>{{ job.label }}</strong><small>{{ job.status }} · {{ job.started_at or job.queued_at }}</small>{% if job.error %}<small class="error">{{ job.error }}</small>{% endif %}</div></div>
         {% endfor %}
       {% else %}
         <p class="empty">No hay trabajos iniciados desde la UI para este target.</p>
