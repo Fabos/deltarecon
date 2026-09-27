@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.negro'
+version = '0.10.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.7'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+jar {
+    archiveBaseName = 'negro-burp-bridge'
+    manifest {
+        attributes 'Implementation-Title': 'Negro Burp Bridge', 'Implementation-Version': version
+    }
+}

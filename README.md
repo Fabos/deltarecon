@@ -1,9 +1,14 @@
-# Negro Recon 🐕 — v0.9.0
+# Negro Recon 🐕 — v0.10.0
 
 > **Olfatea donde otros no miran.**
 
 Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/inspecciones y la Web UI organiza targets, hosts, resources, provenance, estados, notas, JavaScript y análisis asistido por IA.
 
+
+
+## v0.10.0 — Burp Bridge + HTTP Operations
+
+La v0.10 conecta el trabajo manual de Burp con la memoria de Negro. El tráfico observado se organiza como `Host → Resource → Operation → Exchange`, conserva métodos y evidencia, promueve JavaScript al pipeline local y permite enviar recursos desde Negro hacia Burp Repeater. También añade resúmenes visuales al terminar jobs. Consulta `UPDATE-v0.10.0.md`.
 
 ## v0.9.0 — Hunter Intelligence MVP
 

@@ -152,7 +152,7 @@
 </section>
 
 <section class="panel" id="resources">
-  <div class="panel-head"><div><p class="eyebrow">RESOURCES</p><h2>Endpoints y URLs</h2></div><span>{{ resources|length }} mostrados</span></div>
+  <div class="panel-head"><div><p class="eyebrow">RESOURCES</p><h2>Endpoints y URLs</h2></div><span>{{ resources|length }} recursos · {{ operation_count }} métodos · {{ exchange_count }} exchanges recientes</span></div>
   <div class="resources">
   {% for item in resources %}
     {% set r=item.row %}
@@ -160,7 +160,31 @@
       <summary><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
       <div class="resource-body">
         <div><span class="muted small">URL</span><code class="break">{{ r.url }}</code>{% if item.open_url %}<div><a class="button ghost small-button resource-open" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a></div>{% endif %}</div>
+        <form class="inline-state" action="{{ target_base }}/resource/{{ r.id }}/send-repeater" method="post">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label class="muted small">Enviar a Burp Repeater</label>
+          <select name="method">
+            {% if item.operations %}{% for op in item.operations %}<option value="{{ op.row.method }}">{{ op.row.method }}{% if op.row.last_status is not none %} · {{ op.row.last_status }}{% endif %}</option>{% endfor %}{% else %}<option value="GET">GET</option>{% endif %}
+          </select>
+          <button class="button ghost small-button" type="submit">Send to Repeater →</button>
+        </form>
         <div><span class="muted small">Sources</span><div class="chips">{% for s in item.sources %}<span class="chip">{{ s }}</span>{% endfor %}</div></div>
+        {% if item.operations %}
+        <div><span class="muted small">Métodos observados · {{ item.operations|length }}</span>
+          <div class="operation-grid">
+          {% for op in item.operations %}{% set o=op.row %}
+            <div class="operation-row">
+              <span class="method-badge">{{ o.method }}</span>
+              <span class="http-stat">{{ o.last_status if o.last_status is not none else '—' }}</span>
+              <span>{{ o.seen_count }}× visto</span>
+              <span class="op-sources">{% for src in op.sources %}<span class="chip">{{ src.source }}</span>{% endfor %}{% if o.authenticated_observed %}<span class="chip op-auth">auth</span>{% endif %}</span>
+              <span class="op-last muted">{{ o.last_seen_at }}</span>
+            </div>
+            {% if op.exchanges %}<div class="exchange-list">{% for ex in op.exchanges %}<small>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %} · status {{ ex.status_code if ex.status_code is not none else '—' }} · req {{ ex.request_size }} B · resp {{ ex.response_size }} B · visto {{ ex.seen_count }}×</small>{% endfor %}</div>{% endif %}
+          {% endfor %}
+          </div>
+        </div>
+        {% else %}<div><span class="muted small">Métodos observados</span><p class="empty">Todavía ninguno. El tráfico de Burp aparecerá aquí como operaciones GET/POST/PUT/DELETE/etc.</p></div>{% endif %}
         <form class="inline-state" action="{{ target_base }}/resource/{{ r.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
           <select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if r.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select>
           <select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if r.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select>

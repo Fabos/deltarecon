@@ -1,5 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Settings · {{ domain }} · Negro{% endblock %}
+{% block title %}Settings · {{ domain }} · Negro
+<section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · REAL TIME</p><h2>Negro Bridge</h2></div><span class="badge class-informational">v0.10</span></div>
+<p>La extensión de Burp envía requests/responses observados a Negro en tiempo real. Negro enruta automáticamente cada host al target más específico que ya tengas creado.</p>
+<div class="kv"><span>Health</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingest</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Host → Resource → Operation → Exchange</code></div>
+<div class="callout"><strong>No se filtran JS ni assets por tipo.</strong> El tráfico se conserva estructurado; requests/responses idénticos se deduplican con <code>seen_count</code>. Los JS observados por Burp entran automáticamente al pipeline JavaScript de Negro.</div>
+<p class="muted small">Proyecto de extensión incluido en <code>burp-extension/</code>. Por defecto apunta a <code>http://127.0.0.1:8765</code>.</p>
+</section>
+{% endblock %}
 {% block content %}
 <section class="page-head"><div><p class="eyebrow">SETTINGS</p><h1>Integraciones y costos</h1><p class="muted">Las claves nunca se muestran ni se guardan en la base del target.</p></div></section>
 {% if saved %}<div class="callout success">Configuración guardada.</div>{% endif %}
@@ -21,4 +28,11 @@ GITHUB_TOKEN=...</pre></div>
 <button class="button" type="submit">Guardar</button></form>
 <p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · fecha {{ settings.usd_cop_rate_date }}. La UI la usa sólo para estimar; OpenAI factura en USD.</p>
 </section></div>
+
+<section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · REAL TIME</p><h2>Negro Bridge</h2></div><span class="badge class-informational">v0.10</span></div>
+<p>La extensión de Burp envía requests/responses observados a Negro en tiempo real. Negro enruta automáticamente cada host al target más específico que ya tengas creado.</p>
+<div class="kv"><span>Health</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingest</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Host → Resource → Operation → Exchange</code></div>
+<div class="callout"><strong>No se filtran JS ni assets por tipo.</strong> El tráfico se conserva estructurado; requests/responses idénticos se deduplican con <code>seen_count</code>. Los JS observados por Burp entran automáticamente al pipeline JavaScript de Negro.</div>
+<p class="muted small">Proyecto de extensión incluido en <code>burp-extension/</code>. Por defecto apunta a <code>http://127.0.0.1:8765</code>.</p>
+</section>
 {% endblock %}

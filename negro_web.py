@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.9.
+"""Local web workspace for Negro Recon v0.10.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -49,6 +49,31 @@ def _set_job(job_id: str, **values: Any) -> None:
             JOBS[job_id].update(values)
 
 
+def _snapshot_target(target_key: str) -> dict[str, int]:
+    target = core.get_target(target_key)
+    if not target:
+        return {}
+    try:
+        domain = str(target.get("domain", "")).strip().lower().rstrip(".")
+        workspace = Path(str(target.get("workspace", ""))).expanduser()
+        paths = core.ensure_workspace(workspace, domain)
+        with core.db_connect(paths) as conn:
+            return {
+                "hosts": int(conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"]),
+                "resources": int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"]),
+                "operations": int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"]),
+                "http_exchanges": int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"]),
+                "js_assets": int(conn.execute("SELECT COUNT(*) c FROM js_assets").fetchone()["c"]),
+                "observations": int(conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]),
+            }
+    except Exception:
+        return {}
+
+
+def _diff_snapshot(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    return {k: int(after.get(k, 0)) - int(before.get(k, 0)) for k in sorted(set(before) | set(after))}
+
+
 def _start_job(label: str, target_key: str, fn, *args, **kwargs) -> str:
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
@@ -61,14 +86,18 @@ def _start_job(label: str, target_key: str, fn, *args, **kwargs) -> str:
             "started_at": None,
             "finished_at": None,
             "error": None,
+            "summary": None,
         }
+
+    before = _snapshot_target(target_key)
 
     def runner() -> None:
         with JOB_SLOTS:
             _set_job(job_id, status="running", started_at=_now())
             try:
-                fn(*args, **kwargs)
-                _set_job(job_id, status="done", finished_at=_now())
+                result = fn(*args, **kwargs)
+                after = _snapshot_target(target_key)
+                _set_job(job_id, status="done", finished_at=_now(), summary={"delta": _diff_snapshot(before, after), "before": before, "after": after, "result": result if isinstance(result, (str, int, float, bool, dict, list, type(None))) else None})
             except Exception as exc:  # surfaced in UI; traceback remains in server console
                 traceback.print_exc()
                 _set_job(job_id, status="error", finished_at=_now(), error=str(exc)[:1000])
@@ -133,6 +162,8 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
                         + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='discarded'").fetchone()["c"],
             "informational": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='informational'").fetchone()["c"]
                             + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='informational'").fetchone()["c"],
+            "operations": conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"],
+            "http_exchanges": conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"],
         }
         priority = conn.execute(
             """
@@ -230,11 +261,23 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
         host_notes = _notes(conn, "host", host_id)
         resource_data = []
         for r in resources:
+            operations = conn.execute(
+                "SELECT * FROM resource_operations WHERE resource_id=? ORDER BY method", (r["id"],)
+            ).fetchall()
+            op_data = []
+            for op in operations:
+                sources = conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()
+                exchanges = conn.execute(
+                    "SELECT id, source, tool, status_code, request_size, response_size, first_seen_at, last_seen_at, seen_count FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 5",
+                    (op["id"],),
+                ).fetchall()
+                op_data.append({"row": op, "sources": sources, "exchanges": exchanges})
             resource_data.append({
                 "row": r,
                 "sources": _sources(conn, "resource", r["id"]),
                 "notes": _notes(conn, "resource", r["id"]),
                 "open_url": _external_url(r["url"]),
+                "operations": op_data,
             })
         inspections = conn.execute(
             "SELECT id, observed_at, payload_json FROM host_inspections WHERE host_id=? ORDER BY id DESC LIMIT 10",
@@ -327,6 +370,8 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
         "observations": observation_data,
         "tls_san_result": tls_san_result,
         "js_assets": js_assets,
+        "operation_count": sum(len(x["operations"]) for x in resource_data),
+        "exchange_count": sum(sum(len(op["exchanges"]) for op in x["operations"]) for x in resource_data),
     }
 
 
@@ -587,6 +632,25 @@ def create_app(default_domain: str, default_workspace: Path):
             core.mark_entity(paths, "resource", row["url"], None, None, None, body)
         return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
 
+    @app.post("/t/{target_key}/resource/{resource_id}/send-repeater")
+    def resource_send_repeater(target_key: str, resource_id: int, method: str = Form("GET"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        method = (method or "GET").upper().strip()[:24]
+        with _db(paths) as conn:
+            row = conn.execute("SELECT id, url, host_id, path FROM resources WHERE id=?", (resource_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Recurso no encontrado")
+            op = conn.execute("SELECT id FROM resource_operations WHERE resource_id=? AND method=?", (resource_id, method)).fetchone()
+            request_b64 = None
+            if op:
+                ex = conn.execute("SELECT request_b64 FROM http_exchanges WHERE operation_id=? AND request_b64 IS NOT NULL ORDER BY last_seen_at DESC LIMIT 1", (op["id"],)).fetchone()
+                if ex:
+                    request_b64 = ex["request_b64"]
+            caption = f"Negro · {method} {row['path']}"
+            conn.execute("INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)", (resource_id, method, row["url"], request_b64, caption, _now()))
+        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
+
     @app.post("/t/{target_key}/host/{host_id}/inspect")
     def host_inspect(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
         verify_csrf(csrf)
@@ -777,6 +841,105 @@ def create_app(default_domain: str, default_workspace: Path):
             timeout = 7200 if source == "amass" else 900
             _start_job(f"scan {source}", target_key, core.collect_source, source, domain, paths, timeout)
         return RedirectResponse(url=f"/t/{target_key}/?scan=started", status_code=303)
+
+    def _matching_target_for_host(hostname: str):
+        host = (hostname or "").strip().lower().rstrip(".")
+        candidates = []
+        for target in core.list_targets():
+            domain = str(target.get("domain", "")).strip().lower().rstrip(".")
+            if host == domain or host.endswith("." + domain):
+                candidates.append((len(domain), target))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    @app.get("/api/ingest/health", response_class=JSONResponse)
+    def ingest_health():
+        return {"ok": True, "version": core.VERSION, "targets": len(core.list_targets()), "mode": "auto-route"}
+
+    @app.post("/api/ingest/http", response_class=JSONResponse)
+    async def ingest_http(request: Request):
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="JSON inválido")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload inválido")
+        url = str(payload.get("url") or "").strip()
+        try:
+            parsed = urllib.parse.urlsplit(url)
+        except Exception:
+            parsed = None
+        if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise HTTPException(status_code=400, detail="url HTTP(S) requerida")
+        target = _matching_target_for_host(parsed.hostname)
+        if not target:
+            return JSONResponse({"accepted": False, "reason": "host_out_of_scope", "host": parsed.hostname}, status_code=202)
+        domain = str(target["domain"])
+        target_key = str(target["key"])
+        paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+        tool = str(payload.get("tool") or "OTHER").upper()
+        source = "burp_proxy" if tool == "PROXY" else ("burp_repeater" if tool == "REPEATER" else "burp_other")
+        try:
+            result = core.upsert_http_observation(
+                paths, domain,
+                url=url,
+                method=str(payload.get("method") or "GET"),
+                source=source,
+                status_code=int(payload["status_code"]) if payload.get("status_code") is not None else None,
+                authenticated=bool(payload.get("authenticated")),
+                request_content_type=str(payload.get("request_content_type") or "") or None,
+                response_content_type=str(payload.get("response_content_type") or "") or None,
+                tool=tool,
+                request_b64=payload.get("request_b64"),
+                response_b64=payload.get("response_b64"),
+                request_headers=payload.get("request_headers") if isinstance(payload.get("request_headers"), list) else None,
+                response_headers=payload.get("response_headers") if isinstance(payload.get("response_headers"), list) else None,
+                query=payload.get("query"),
+                response_body_b64=payload.get("response_body_b64"),
+            )
+        except ValueError as exc:
+            return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
+        return {"accepted": True, "target_key": target_key, "target_domain": domain, **result}
+
+    @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
+    def bridge_repeater_next():
+        pending = []
+        for target in core.list_targets():
+            try:
+                domain = str(target["domain"])
+                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+                with _db(paths) as conn:
+                    row = conn.execute("SELECT * FROM burp_repeater_queue WHERE status='pending' ORDER BY created_at, id LIMIT 1").fetchone()
+                    if row:
+                        pending.append((row["created_at"], str(target["key"]), domain, paths, dict(row)))
+            except Exception:
+                continue
+        if not pending:
+            return {"pending": False}
+        pending.sort(key=lambda x: x[0])
+        _, target_key, domain, paths, item = pending[0]
+        with _db(paths) as conn:
+            conn.execute("UPDATE burp_repeater_queue SET status='claimed', claimed_at=? WHERE id=? AND status='pending'", (_now(), item["id"]))
+            row = conn.execute("SELECT * FROM burp_repeater_queue WHERE id=?", (item["id"],)).fetchone()
+            if not row or row["status"] != "claimed":
+                return {"pending": False}
+            item = dict(row)
+        return {"pending": True, "target_key": target_key, "domain": domain, **item}
+
+    @app.post("/api/bridge/repeater/{target_key}/{queue_id}/ack", response_class=JSONResponse)
+    async def bridge_repeater_ack(target_key: str, queue_id: int, request: Request):
+        _, _, paths = _target_context(target_key)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        ok = bool(payload.get("ok")) if isinstance(payload, dict) else False
+        error = str(payload.get("error") or "")[:1000] if isinstance(payload, dict) else ""
+        with _db(paths) as conn:
+            conn.execute("UPDATE burp_repeater_queue SET status=?, finished_at=?, error=? WHERE id=?", ("done" if ok else "error", _now(), error or None, queue_id))
+        return {"ok": True}
 
     @app.get("/api/t/{target_key}/jobs", response_class=JSONResponse)
     def jobs_api(target_key: str):

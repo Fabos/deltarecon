@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.9.0
+Negro Recon v0.10.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -62,6 +62,9 @@ HOST_SOURCE_ORDER = [
     "vhost",
     "web_recon",
     "crawler",
+    "burp_proxy",
+    "burp_repeater",
+    "burp_other",
 ]
 
 GAU_PROVIDERS = {
@@ -98,6 +101,9 @@ SOURCE_INFO = {
     "vhost": ("ACTIVA LIMITADA", "Smart VHost discovery", "Fuzzing Host header sólo con candidatos pequeños y baseline."),
     "web_recon": ("DIRIGIDA", "Web recon", "Redirects, fingerprint, robots.txt y .well-known sobre un host."),
     "crawler": ("ACTIVA LIMITADA", "Controlled crawler", "BFS acotado, same-scope, sin submit de forms ni métodos destructivos."),
+    "burp_proxy": ("TIEMPO REAL", "Burp Proxy", "Tráfico HTTP observado en Burp Proxy e ingerido por Negro."),
+    "burp_repeater": ("TIEMPO REAL", "Burp Repeater", "Requests/responses probados manualmente en Burp Repeater."),
+    "burp_other": ("TIEMPO REAL", "Burp traffic", "Tráfico observado por otras herramientas de Burp."),
     "lead_engine": ("LOCAL", "Correlation & Lead Engine", "Correlaciona evidencia para generar hipótesis accionables; no confirma findings."),
     "ai_target": ("OPCIONAL", "AI target triage", "Prioriza leads y explica pruebas concretas; requiere estimación y confirmación de costo."),
 }
@@ -298,6 +304,71 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 FOREIGN KEY(js_asset_id) REFERENCES js_assets(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS resource_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL,
+                method TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                last_status INTEGER,
+                authenticated_observed INTEGER NOT NULL DEFAULT 0,
+                request_content_type TEXT,
+                response_content_type TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(resource_id, method),
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_sources (
+                operation_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (operation_id, source),
+                FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS http_exchanges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                tool TEXT,
+                status_code INTEGER,
+                request_hash TEXT NOT NULL,
+                response_hash TEXT,
+                fingerprint TEXT NOT NULL,
+                request_b64 TEXT,
+                response_b64 TEXT,
+                request_size INTEGER NOT NULL DEFAULT 0,
+                response_size INTEGER NOT NULL DEFAULT 0,
+                request_headers_json TEXT,
+                response_headers_json TEXT,
+                query_json TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(operation_id, fingerprint),
+                FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS burp_repeater_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL,
+                method TEXT NOT NULL DEFAULT 'GET',
+                url TEXT NOT NULL,
+                request_b64 TEXT,
+                caption TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                claimed_at TEXT,
+                finished_at TEXT,
+                error TEXT,
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_inspections_host ON host_inspections(host_id, observed_at);
             CREATE INDEX IF NOT EXISTS idx_resources_host ON resources(host_id);
@@ -306,6 +377,9 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations(entity_type, entity_id, observed_at);
             CREATE INDEX IF NOT EXISTS idx_js_assets_host ON js_assets(host_id, discovered_at);
             CREATE INDEX IF NOT EXISTS idx_ai_asset ON ai_analyses(js_asset_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_operations_resource ON resource_operations(resource_id, method);
+            CREATE INDEX IF NOT EXISTS idx_http_exchanges_operation ON http_exchanges(operation_id, last_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_burp_queue_status ON burp_repeater_queue(status, created_at);
             """
         )
         # Conservative schema migration for workspaces created by v0.3/v0.4.
@@ -428,6 +502,144 @@ def upsert_resource(conn: sqlite3.Connection, raw_url: str, source: str, domain:
         (resource_id, source, ts),
     )
     return host_created, resource_created
+
+
+def upsert_http_observation(
+    paths: dict[str, Path],
+    domain: str,
+    *,
+    url: str,
+    method: str,
+    source: str,
+    status_code: int | None = None,
+    authenticated: bool = False,
+    request_content_type: str | None = None,
+    response_content_type: str | None = None,
+    tool: str | None = None,
+    request_b64: str | None = None,
+    response_b64: str | None = None,
+    request_headers: list[dict] | None = None,
+    response_headers: list[dict] | None = None,
+    query: dict | list | str | None = None,
+    response_body_b64: str | None = None,
+) -> dict:
+    """Ingesta HTTP sin duplicar el recurso por método.
+
+    Para tráfico Burp, el recurso se modela por scheme+host+path. Los métodos
+    observados viven como operaciones hijas y los intercambios exactos se
+    deduplican conservando first/last seen y seen_count.
+    """
+    import base64
+    import hashlib
+
+    method = (method or "GET").strip().upper()[:24]
+    source = (source or "burp_other").strip()[:64]
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL HTTP inválida")
+    host = normalize_host(parsed.hostname, domain)
+    if not host:
+        raise ValueError(f"Host fuera de scope para {domain}")
+    netloc = host + (f":{parsed.port}" if parsed.port else "")
+    path = parsed.path or "/"
+    resource_url = urllib.parse.urlunsplit((parsed.scheme.lower(), netloc, path, "", ""))
+    ts = now_iso()
+
+    def raw_bytes(value: str | None) -> bytes:
+        if not value:
+            return b""
+        try:
+            return base64.b64decode(value, validate=False)
+        except Exception:
+            return b""
+
+    req = raw_bytes(request_b64)
+    resp = raw_bytes(response_b64)
+    req_hash = hashlib.sha256(req).hexdigest() if req else hashlib.sha256((method + " " + resource_url).encode()).hexdigest()
+    resp_hash = hashlib.sha256(resp).hexdigest() if resp else ""
+    fingerprint = hashlib.sha256((req_hash + ":" + resp_hash + ":" + str(status_code or "")).encode()).hexdigest()
+
+    with db_connect(paths) as conn:
+        _, created_resource = upsert_resource(conn, resource_url, source, domain)
+        r = conn.execute("SELECT id, host_id FROM resources WHERE url=?", (resource_url,)).fetchone()
+        resource_id = int(r["id"])
+        host_id = int(r["host_id"])
+        op = conn.execute("SELECT * FROM resource_operations WHERE resource_id=? AND method=?", (resource_id, method)).fetchone()
+        operation_created = op is None
+        if op is None:
+            cur = conn.execute(
+                """INSERT INTO resource_operations(resource_id, method, first_seen_at, last_seen_at, seen_count, last_status, authenticated_observed, request_content_type, response_content_type, created_at, updated_at)
+                   VALUES(?,?,?,?,1,?,?,?,?,?,?)""",
+                (resource_id, method, ts, ts, status_code, 1 if authenticated else 0, request_content_type, response_content_type, ts, ts),
+            )
+            operation_id = int(cur.lastrowid)
+        else:
+            operation_id = int(op["id"])
+            conn.execute(
+                """UPDATE resource_operations SET last_seen_at=?, seen_count=seen_count+1,
+                   last_status=COALESCE(?, last_status), authenticated_observed=MAX(authenticated_observed, ?),
+                   request_content_type=COALESCE(?, request_content_type), response_content_type=COALESCE(?, response_content_type), updated_at=?
+                   WHERE id=?""",
+                (ts, status_code, 1 if authenticated else 0, request_content_type, response_content_type, ts, operation_id),
+            )
+        src = conn.execute("SELECT seen_count FROM operation_sources WHERE operation_id=? AND source=?", (operation_id, source)).fetchone()
+        if src:
+            conn.execute("UPDATE operation_sources SET last_seen_at=?, seen_count=seen_count+1 WHERE operation_id=? AND source=?", (ts, operation_id, source))
+        else:
+            conn.execute("INSERT INTO operation_sources(operation_id, source, first_seen_at, last_seen_at, seen_count) VALUES(?,?,?,?,1)", (operation_id, source, ts, ts))
+
+        ex = conn.execute("SELECT id FROM http_exchanges WHERE operation_id=? AND fingerprint=?", (operation_id, fingerprint)).fetchone()
+        exchange_created = ex is None
+        if ex:
+            exchange_id = int(ex["id"])
+            conn.execute("UPDATE http_exchanges SET last_seen_at=?, seen_count=seen_count+1, status_code=COALESCE(?,status_code) WHERE id=?", (ts, status_code, exchange_id))
+        else:
+            cur = conn.execute(
+                """INSERT INTO http_exchanges(operation_id, source, tool, status_code, request_hash, response_hash, fingerprint, request_b64, response_b64, request_size, response_size, request_headers_json, response_headers_json, query_json, first_seen_at, last_seen_at, seen_count)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                (operation_id, source, tool, status_code, req_hash, resp_hash or None, fingerprint, request_b64, response_b64, len(req), len(resp),
+                 json.dumps(request_headers or [], ensure_ascii=False), json.dumps(response_headers or [], ensure_ascii=False), json.dumps(query if query is not None else parsed.query, ensure_ascii=False), ts, ts),
+            )
+            exchange_id = int(cur.lastrowid)
+
+        ctype = (response_content_type or "").lower()
+        is_js = path.lower().endswith((".js", ".mjs")) or "javascript" in ctype or "ecmascript" in ctype
+        js_created = False
+        if is_js and response_body_b64:
+            try:
+                body = base64.b64decode(response_body_b64, validate=False)
+            except Exception:
+                body = b""
+            if body:
+                js_dir = paths["raw"] / "burp_js"
+                js_dir.mkdir(parents=True, exist_ok=True)
+                sha = hashlib.sha256(body).hexdigest()
+                local = js_dir / f"{sha[:20]}.js"
+                if not local.exists():
+                    local.write_bytes(body)
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO js_assets(host_id, url, source, size_bytes, sha256, local_path, discovered_at) VALUES(?,?,?,?,?,?,?)""",
+                    (host_id, resource_url, source, len(body), sha, str(local), ts),
+                )
+                js_created = cur.rowcount == 1
+
+        conn.execute("UPDATE resources SET updated_at=? WHERE id=?", (ts, resource_id))
+        conn.execute("UPDATE hosts SET updated_at=? WHERE id=?", (ts, host_id))
+
+    return {
+        "host_id": host_id, "resource_id": resource_id, "operation_id": operation_id, "exchange_id": exchange_id,
+        "resource_created": created_resource, "operation_created": operation_created, "exchange_created": exchange_created, "js_created": js_created,
+        "resource_url": resource_url, "method": method, "source": source,
+    }
+
+
+def http_inventory_stats(paths: dict[str, Path]) -> dict[str, int]:
+    with db_connect(paths) as conn:
+        return {
+            "operations": conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"],
+            "http_exchanges": conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"],
+            "js_assets": conn.execute("SELECT COUNT(*) c FROM js_assets").fetchone()["c"],
+        }
 
 
 def migrate_existing_workspace(paths: dict[str, Path], domain: str) -> None:

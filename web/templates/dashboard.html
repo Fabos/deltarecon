@@ -13,6 +13,8 @@
 <section class="stats" data-summary-url="/api/t/{{ target_key }}/summary">
   <a class="stat" href="{{ target_base }}/hosts"><span>Hosts</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong></a>
   <div class="stat"><span>Resources</span><strong data-stat-key="resources">{{ stats.resources }}</strong></div>
+  <div class="stat"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong></div>
+  <div class="stat"><span>HTTP exchanges</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong></div>
   <a class="stat" href="{{ target_base }}/hosts?review=pending"><span>Pendientes</span><strong data-stat-key="pending">{{ stats.pending }}</strong></a>
   <a class="stat" href="{{ target_base }}/hosts?review=in_progress"><span>En revisión</span><strong data-stat-key="in_progress">{{ stats.in_progress }}</strong></a>
   <a class="stat warning" href="{{ target_base }}/hosts?classification=lead"><span>Leads</span><strong data-stat-key="leads">{{ stats.leads }}</strong></a>

@@ -1,6 +1,28 @@
 (() => {
   const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
+  const showJobToast = (payload) => {
+    if (!payload) return;
+    const root = document.createElement('div');
+    root.className = 'negro-toast';
+    const delta = payload.summary?.delta || payload.delta || {};
+    const labels = {hosts:'hosts',resources:'resources',operations:'métodos',http_exchanges:'HTTP exchanges',js_assets:'JS',observations:'observaciones'};
+    const changes = Object.entries(labels).filter(([k]) => Number(delta[k] || 0) !== 0).map(([k,l]) => `+${delta[k]} ${l}`);
+    const result = changes.length ? changes.join(' · ') : 'Sin elementos nuevos';
+    root.innerHTML = `<button type="button" aria-label="Cerrar">×</button><strong>${esc(payload.label || 'Trabajo terminado')}</strong><span>${esc(result)}</span>`;
+    root.querySelector('button')?.addEventListener('click', () => root.remove());
+    document.body.appendChild(root);
+    window.setTimeout(() => root.remove(), 9000);
+  };
+
+  try {
+    const pendingToast = JSON.parse(sessionStorage.getItem('negroJobToast') || 'null');
+    if (pendingToast) {
+      sessionStorage.removeItem('negroJobToast');
+      window.setTimeout(() => showJobToast(pendingToast), 150);
+    }
+  } catch (_) {}
+
   const targetSwitch = document.querySelector('[data-target-switch]');
   if (targetSwitch) {
     targetSwitch.addEventListener('change', () => {
@@ -12,6 +34,8 @@
   const jobsRoot = document.querySelector('[data-jobs]');
   if (jobsRoot) {
     const jobsUrl = jobsRoot.dataset.jobsUrl;
+    const knownJobStatus = new Map();
+    let jobsInitialized = false;
     const refreshJobs = async () => {
       if (!jobsUrl) return;
       try {
@@ -20,6 +44,12 @@
         const data = await res.json();
         const jobs = data.jobs || [];
         if (!jobs.length) return;
+        for (const j of jobs) {
+          const previous = knownJobStatus.get(j.id);
+          if (jobsInitialized && previous && previous !== 'done' && j.status === 'done') showJobToast(j);
+          knownJobStatus.set(j.id, j.status);
+        }
+        jobsInitialized = true;
         jobsRoot.innerHTML = jobs.map(j => `<div class="job"><span class="status-dot ${esc(j.status)}"></span><div><strong>${esc(j.label)}</strong><small>${esc(j.status)} · ${esc(j.started_at || j.queued_at)}</small>${j.error ? `<small class="error">${esc(j.error)}</small>` : ''}</div></div>`).join('');
       } catch (_) {}
     };
@@ -66,6 +96,7 @@
           const job = await res.json();
           if (job.status === 'done') {
             setStatus('Inspección terminada. Actualizando resultados…', 'done');
+            sessionStorage.setItem('negroJobToast', JSON.stringify({label: job.label || 'Inspección básica', summary: job.summary || {delta:{}}}));
             window.setTimeout(() => window.location.assign(refreshUrl), 350);
             return;
           }
@@ -171,6 +202,7 @@
           }
           if (job.status === 'done') {
             setProgressMessage(progressRoot, 'Terminado. Actualizando resultados…', 'done');
+            sessionStorage.setItem('negroJobToast', JSON.stringify({label, summary: job.summary || {delta:{}}}));
             stopped = true;
             window.clearInterval(timer);
             window.setTimeout(() => window.location.assign(refreshUrl), 500);
