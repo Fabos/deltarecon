@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Hosts · Negro{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">INVENTORY</p><h1>Hosts</h1></div><span class="count">{{ hosts|length }} mostrados</span></section>
+<form class="filters panel" method="get">
+  <label>Buscar<input name="q" value="{{ q }}" placeholder="internal, auth, dev..."></label>
+  <label>Revisión<select name="review"><option value="">Todas</option>{% for x in review_states %}<option value="{{ x }}" {% if review==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+  <label>Clasificación<select name="classification"><option value="">Todas</option>{% for x in classifications %}<option value="{{ x }}" {% if classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+  <label>Prioridad<select name="priority"><option value="">Todas</option>{% for x in priorities %}<option value="{{ x }}" {% if priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+  <button class="button" type="submit">Filtrar</button>
+  <a class="button ghost" href="{{ target_base }}/hosts">Limpiar</a>
+</form>
+<section class="panel table-wrap">
+<table>
+<thead><tr><th>Host</th><th>Revisión</th><th>Clasificación</th><th>Prioridad</th><th>Resources</th><th>Inspecciones</th><th>Web</th></tr></thead>
+<tbody>
+{% for h in hosts %}
+<tr>
+  <td><a class="host-link" href="{{ target_base }}/host/{{ h.id }}">{{ h.hostname }}</a></td>
+  <td><span class="badge review-{{ h.review_state }}">{{ h.review_state }}</span></td>
+  <td><span class="badge class-{{ h.classification }}">{{ h.classification }}</span></td>
+  <td><span class="badge priority-{{ h.priority }}">{{ h.priority }}</span></td>
+  <td>{{ h.resource_count }}</td><td>{{ h.inspection_count }}</td>
+  <td><a class="open-link" href="https://{{ h.hostname }}/" target="_blank" rel="noopener noreferrer">Abrir ↗</a></td>
+</tr>
+{% else %}<tr><td colspan="7" class="empty">No hay hosts con esos filtros.</td></tr>{% endfor %}
+</tbody></table>
+</section>
+{% endblock %}
