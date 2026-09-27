@@ -1,40 +1,48 @@
-# Negro Burp Bridge v0.10
+# Negro Burp Bridge v0.10.1
 
-Extensión Java/Montoya para alimentar Negro con el tráfico HTTP que Burp observa en tiempo real.
+Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
-## Qué envía
+## Compilar — Linux/macOS/Kali (recomendado)
 
-- URL, método y herramienta de Burp (`PROXY`, `REPEATER`, etc.)
-- Status code y Content-Type
-- Indicador de request autenticada (Cookie/Authorization presentes)
-- Headers completos
-- Request/response completos en Base64
-- Response body por separado para promover `.js` al pipeline JavaScript de Negro
+No necesitas Gradle instalado.
 
-No descarta JS, imágenes, fuentes ni otros assets por tipo. Negro auto-enruta únicamente hosts que estén dentro de un target ya creado; el resto se responde como `host_out_of_scope`.
+```bash
+cd burp-extension
+./build-extension.sh
+```
 
-## Compilar
+La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y lo deja en `.deps/`. Las siguientes compilaciones reutilizan esa copia.
 
-Requiere Java 21 y Gradle. El proyecto usa Montoya API `2026.7`.
+Resultado:
+
+```text
+build/libs/negro-burp-bridge-0.10.1.jar
+```
+
+Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
+
+## Windows PowerShell
+
+```powershell
+cd burp-extension
+.\build-extension.ps1
+```
+
+## Gradle (opcional)
+
+El proyecto conserva `build.gradle` para desarrollo. Si ya tienes Gradle puedes usar:
 
 ```bash
 gradle jar
 ```
 
-El JAR queda en:
+Gradle ya no es requisito para instalar la extensión.
 
-```text
-build/libs/negro-burp-bridge-0.10.0.jar
-```
+## Cargar en Burp
 
-En Burp: **Extensions → Installed → Add → Java → selecciona el JAR**.
+1. `Extensions` → `Installed` → `Add`.
+2. Tipo: `Java`.
+3. Selecciona `build/libs/negro-burp-bridge-0.10.1.jar`.
+4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
-Por defecto conecta a `http://127.0.0.1:8765`. La pestaña **Negro** dentro de Burp permite cambiar esa URL y muestra contadores de tráfico aceptado/fuera de scope/errores.
-
-## Negro → Repeater
-
-La extensión consulta una cola local una vez por segundo. En Negro, abre un host → Resource → **Send to Repeater →**. Si Negro ya vio ese método en Burp, reutiliza la request real más reciente; para recursos descubiertos por otras fuentes crea una request base desde la URL.
-
-## Nota de seguridad
-
-v0.10 prioriza no perder evidencia: request/response completos pueden contener cookies, tokens o Authorization. El API de Negro debe mantenerse en localhost salvo que deliberadamente agregues una capa de autenticación/red segura.
+Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
