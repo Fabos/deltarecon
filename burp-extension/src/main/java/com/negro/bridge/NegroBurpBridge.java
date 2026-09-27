@@ -53,7 +53,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.11 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.11.1 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
@@ -273,16 +273,22 @@ public class NegroBurpBridge implements BurpExtension {
     }
 
     private String escape(String value) {
-        StringBuilder b = new StringBuilder(value.length() + 16);
+        // Emit ASCII-only JSON strings. Burp can expose header/body metadata with
+        // Unicode code points that are valid in Java strings but may become invalid
+        // UTF-8/JSON when manually concatenated. Escaping every non-ASCII UTF-16
+        // code unit keeps the wire payload deterministic and standards-compliant.
+        StringBuilder b = new StringBuilder(value.length() + 32);
         for (char c : value.toCharArray()) {
             switch (c) {
                 case '\\' -> b.append("\\\\");
                 case '"' -> b.append("\\\"");
+                case '\b' -> b.append("\\b");
+                case '\f' -> b.append("\\f");
                 case '\n' -> b.append("\\n");
                 case '\r' -> b.append("\\r");
                 case '\t' -> b.append("\\t");
                 default -> {
-                    if (c < 0x20) b.append(String.format("\\u%04x", (int)c));
+                    if (c < 0x20 || c > 0x7e) b.append(String.format("\\u%04x", (int) c));
                     else b.append(c);
                 }
             }

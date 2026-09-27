@@ -1164,7 +1164,12 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.post("/api/ingest/http", response_class=JSONResponse)
     async def ingest_http(request: Request):
         try:
-            payload = await request.json()
+            raw_body = await request.body()
+            payload = json.loads(raw_body.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"JSON inválido: UTF-8 en byte {exc.start}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"JSON inválido: {exc.msg} en posición {exc.pos}")
         except Exception:
             raise HTTPException(status_code=400, detail="JSON inválido")
         if not isinstance(payload, dict):
