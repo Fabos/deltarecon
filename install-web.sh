@@ -1,17 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+required_files=(
+  "negro.py"
+  "negro_core.py"
+  "negro_intel.py"
+  "negro_web.py"
+  "requirements.txt"
+  "web/static/app.js"
+  "web/static/style.css"
+  "web/templates/base.html"
+  "web/templates/dashboard.html"
+  "web/templates/host.html"
+  "web/templates/hosts.html"
+  "web/templates/settings.html"
+  "web/templates/target_error.html"
+  "web/templates/tree.html"
+)
+
+missing=()
+for rel in "${required_files[@]}"; do
+  [[ -f "$ROOT/$rel" ]] || missing+=("$rel")
+done
+
+if (( ${#missing[@]} )); then
+  echo "[!] Instalación incompleta: faltan archivos del proyecto:" >&2
+  printf '    - %s\n' "${missing[@]}" >&2
+  echo "[!] Usa el ZIP completo de Negro y vuelve a ejecutar ./install-web.sh" >&2
+  exit 1
+fi
+
+echo "[+] Estructura del proyecto: OK"
+
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   echo "[+] Creando virtualenv local en $ROOT/.venv"
-  python3 -m venv .venv
+  python3 -m venv "$ROOT/.venv"
 else
   echo "[+] Reutilizando virtualenv existente en $ROOT/.venv"
 fi
 
 "$ROOT/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-"$ROOT/.venv/bin/python" -m pip install -r requirements.txt
+"$ROOT/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
 
 echo "[+] Verificando dependencias de Negro..."
 "$ROOT/.venv/bin/python" - <<'PY'
@@ -35,8 +67,29 @@ if failed:
 print(f"\n[+] Entorno correcto: {sys.executable}")
 PY
 
-# Instala un launcher estable. No dependemos del shebang /usr/bin/env python3:
-# `negro` siempre ejecuta el Python del .venv de ESTE checkout.
+echo "[+] Verificando Python y templates..."
+"$ROOT/.venv/bin/python" -m py_compile \
+  "$ROOT/negro.py" "$ROOT/negro_core.py" "$ROOT/negro_intel.py" "$ROOT/negro_web.py"
+
+ROOT="$ROOT" "$ROOT/.venv/bin/python" - <<'PY'
+import os
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader
+root = Path(os.environ["ROOT"])
+templates = root / "web" / "templates"
+env = Environment(loader=FileSystemLoader(str(templates)))
+for path in sorted(templates.glob("*.html")):
+    env.get_template(path.name)
+print("    ✓ Python compila")
+print("    ✓ Templates Jinja cargan")
+PY
+
+if command -v node >/dev/null 2>&1; then
+  node --check "$ROOT/web/static/app.js"
+  echo "    ✓ JavaScript syntax"
+fi
+
+# Launcher estable: `negro` siempre usa el Python del .venv de ESTE checkout.
 LAUNCHER_CONTENT="$(cat <<LAUNCHER
 #!/bin/sh
 REPO="$ROOT"
@@ -46,8 +99,6 @@ LAUNCHER
 
 install_launcher() {
   local dest="/usr/local/bin/negro"
-  # Importante: si la versión vieja era un symlink a negro.py, elimínalo
-  # antes de escribir para no sobrescribir el archivo real del repo.
   rm -f "$dest"
   printf '%s\n' "$LAUNCHER_CONTENT" > "$dest"
   chmod +x "$dest"
@@ -55,16 +106,25 @@ install_launcher() {
 
 if [ -w /usr/local/bin ]; then
   install_launcher
-  echo "[+] Launcher actualizado: /usr/local/bin/negro -> $ROOT/.venv/bin/python"
 elif command -v sudo >/dev/null 2>&1; then
   echo "[+] Actualizando launcher /usr/local/bin/negro (puede pedir sudo)..."
   sudo rm -f /usr/local/bin/negro
   printf '%s\n' "$LAUNCHER_CONTENT" | sudo tee /usr/local/bin/negro >/dev/null
   sudo chmod +x /usr/local/bin/negro
-  echo "[+] Launcher actualizado: /usr/local/bin/negro -> $ROOT/.venv/bin/python"
 else
-  echo "[!] No pude escribir /usr/local/bin/negro. Crea manualmente un launcher que use:"
-  echo "    $ROOT/.venv/bin/python $ROOT/negro.py"
+  echo "[!] No pude escribir /usr/local/bin/negro." >&2
+  echo "    Ejecuta Negro con:" >&2
+  echo "    $ROOT/.venv/bin/python $ROOT/negro.py" >&2
+  exit 1
 fi
 
+echo "[+] Verificando launcher..."
+if ! /usr/local/bin/negro --help >/dev/null 2>&1; then
+  echo "[!] El launcher se creó, pero la prueba 'negro --help' falló." >&2
+  echo "    Contenido actual:" >&2
+  sed 's/^/    /' /usr/local/bin/negro >&2 || true
+  exit 1
+fi
+
+echo "    ✓ /usr/local/bin/negro usa $ROOT/.venv/bin/python"
 printf '\n[+] Negro listo. Ejecuta:\n    negro web\n\n'

@@ -183,7 +183,7 @@ def runtime_dependency_status() -> dict[str, bool]:
 
 
 def http_json(url: str, *, headers: dict[str, str] | None = None, timeout: int = 30, max_bytes: int = 25_000_000) -> Any:
-    req_headers = {"User-Agent": "Negro-Recon/0.8.0", "Accept": "application/json"}
+    req_headers = {"User-Agent": "Negro-Recon/0.8.1", "Accept": "application/json"}
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, headers=req_headers)
@@ -225,7 +225,7 @@ def _decode_data_url(url: str, *, max_bytes: int) -> tuple[bytes, str, str]:
 def http_bytes(url: str, *, timeout: int = 25, max_bytes: int = 8_000_000, insecure: bool = True) -> tuple[bytes, str, str]:
     if url.lower().startswith("data:"):
         return _decode_data_url(url, max_bytes=max_bytes)
-    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.8.0", "Accept": "*/*"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.8.1", "Accept": "*/*"})
     context = ssl._create_unverified_context() if insecure and url.lower().startswith("https://") else None
     with urllib.request.urlopen(req, timeout=timeout, context=context) as response:
         raw = response.read(max_bytes + 1)

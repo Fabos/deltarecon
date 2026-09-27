@@ -1,9 +1,13 @@
-# Negro Recon 🐕 — v0.8.0
+# Negro Recon 🐕 — v0.8.1
 
 > **Olfatea donde otros no miran.**
 
 Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/inspecciones y la Web UI organiza targets, hosts, resources, provenance, estados, notas, JavaScript y análisis asistido por IA.
 
+
+## v0.8.1 — build completo y endurecido
+
+Incluye todas las mejoras funcionales de v0.8.0 y corrige el launcher del `.venv`. El instalador valida estructura, dependencias, Python, templates Jinja y JavaScript antes de crear `/usr/local/bin/negro`.
 
 ## v0.8.0 — Secrets & Client Config + Source Map intelligence
 

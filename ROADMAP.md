@@ -1,6 +1,6 @@
 # Negro Recon — Roadmap
 
-## Implementado hasta v0.8.0
+## Implementado hasta v0.8.1
 
 - crt.sh
 - Subfinder

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.8.0
+# Negro Recon — Metodología v0.8.1
 
 ## Filosofía
 
