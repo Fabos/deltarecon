@@ -39,8 +39,8 @@ PY
 # `negro` siempre ejecuta el Python del .venv de ESTE checkout.
 LAUNCHER_CONTENT="$(cat <<LAUNCHER
 #!/bin/sh
-REPO=\"$ROOT\"
-exec \"\$REPO/.venv/bin/python\" \"\$REPO/negro.py\" \"\$@\"
+REPO="$ROOT"
+exec "\$REPO/.venv/bin/python" "\$REPO/negro.py" "\$@"
 LAUNCHER
 )"
 
