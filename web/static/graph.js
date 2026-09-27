@@ -1,124 +1,443 @@
 (() => {
   const root = document.querySelector('[data-graph-root]');
   if (!root) return;
+
   const svg = root.querySelector('[data-graph-canvas]');
   const detail = root.querySelector('[data-graph-detail]');
   const search = root.querySelector('[data-graph-search]');
   const typeWrap = root.querySelector('[data-graph-types]');
   const empty = root.querySelector('[data-graph-empty]');
+  const statusEl = root.querySelector('[data-graph-layout-status]');
   const api = root.dataset.api;
   const base = root.dataset.base;
+  const targetKey = root.dataset.target || 'target';
   const NS = 'http://www.w3.org/2000/svg';
-  const typeOrder = ['target','host','resource','operation','request','javascript','observation','lead','finding','source','external'];
-  const typeLabel = {target:'Target',host:'Hosts',resource:'Resources',operation:'Métodos',request:'Requests',javascript:'JavaScript',observation:'Observaciones',lead:'Leads',finding:'Findings',source:'Sources',external:'Relacionados'};
+
+  const typeOrder = ['source','target','host','javascript','resource','operation','cluster','request','observation','lead','finding','external'];
+  const typeLabel = {
+    source:'Sources', target:'Target', host:'Hosts', javascript:'JavaScript', resource:'Resources',
+    operation:'Métodos', cluster:'Groups', request:'Requests', observation:'Observaciones',
+    lead:'Leads', finding:'Findings', external:'Relacionados'
+  };
+  const stateLabel = {normal:'Normal',untested:'Untested',interesting:'Interesting',finding:'Finding',tested:'Tested'};
+
   let graph = {nodes:[],edges:[]};
-  let visibleNodes = [], visibleEdges = [], selected = null, preset = 'all';
+  let sceneNodes = [], sceneEdges = [], visibleNodes = [], visibleEdges = [];
+  let selected = null;
+  let preset = 'surface';
   let activeTypes = new Set();
+  let expandedClusters = new Set();
   let view = {x:0,y:0,k:1};
-  let drag = null;
+  let panDrag = null;
+  let nodeDrag = null;
+  let suppressClick = false;
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','untested'].includes(s) ? s : 'normal';
-  const nodeRadius = t => t === 'target' ? 18 : t === 'host' ? 14 : t === 'finding' ? 13 : t === 'resource' ? 11 : 8;
+  const nodeRadius = t => t === 'target' ? 13 : t === 'host' ? 12 : t === 'resource' ? 11 : t === 'finding' ? 11 : t === 'cluster' ? 10 : 7;
+  const labelLimit = t => ['resource','operation'].includes(t) ? 48 : 34;
+  const edgeId = (a,b,r) => `virtual:${a}:${r}:${b}`;
+  const byId = () => new Map(graph.nodes.map(n => [n.id,n]));
+  const sceneById = () => new Map(sceneNodes.map(n => [n.id,n]));
+  const edgesOf = id => graph.edges.filter(e => e.source === id || e.target === id);
+  const opposite = (e,id) => e.source === id ? e.target : e.source;
 
-  function load() {
-    fetch(api, {headers:{'Accept':'application/json'}}).then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(data => {
-      graph = data; buildTypeFilters(); layout(); applyFilters(); fit();
-    }).catch(err => { detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`; });
+  function layoutStorageKey(){ return `negro.graph.layout.v2:${targetKey}:${preset}`; }
+  function readSavedLayout(){
+    try { return JSON.parse(localStorage.getItem(layoutStorageKey()) || '{}') || {}; }
+    catch (_) { return {}; }
+  }
+  function writeSavedLayout(){
+    const payload = {};
+    sceneNodes.forEach(n => {
+      if (n.manual) payload[n.id] = {x:Math.round(n.x), y:Math.round(n.y)};
+    });
+    try { localStorage.setItem(layoutStorageKey(), JSON.stringify(payload)); }
+    catch (_) {}
+    setLayoutStatus(Object.keys(payload).length ? 'Disposición personalizada guardada' : 'Layout automático');
+  }
+  function clearSavedLayout(){
+    try { localStorage.removeItem(layoutStorageKey()); } catch (_) {}
+    sceneNodes.forEach(n => { n.manual = false; });
+    setLayoutStatus('Layout automático');
+  }
+  function setLayoutStatus(text){ if (statusEl) statusEl.textContent = text; }
+
+  function load(){
+    fetch(api, {headers:{'Accept':'application/json'}})
+      .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => {
+        graph = data;
+        buildScene();
+        buildTypeFilters();
+        applyFilters({fitAfter:true});
+      })
+      .catch(err => {
+        detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`;
+      });
+  }
+
+  function cloneNode(n){ return {...n, meta:{...(n.meta||{})}, x:0, y:0, manual:false}; }
+
+  function findParent(id, preferredTypes=[]){
+    const map = byId();
+    const rels = edgesOf(id);
+    for (const t of preferredTypes) {
+      const hit = rels.map(e => map.get(opposite(e,id))).find(n => n && n.type === t);
+      if (hit) return hit;
+    }
+    return rels.map(e => map.get(opposite(e,id))).find(Boolean) || null;
+  }
+
+  function makeCluster(parentId, kind, children, relation='contains'){
+    const parent = graph.nodes.find(n => n.id === parentId);
+    const id = `cluster:${preset}:${kind}:${parentId}`;
+    const labelMap = {requests:'Burp requests', observations:'Observaciones', javascript:'JavaScript'};
+    const interesting = children.filter(n => ['interesting','finding'].includes(slugState(n.state))).length;
+    const node = {
+      id, type:'cluster', label:`${labelMap[kind] || kind} · ${children.length}`, state: interesting ? 'interesting' : 'normal',
+      virtual:true, clusterKind:kind, childIds:children.map(n=>n.id), parentId,
+      meta:{count:children.length, interesting, parent:parent?.label || parentId}
+    };
+    const edge = {id:edgeId(parentId,id,relation), source:parentId, target:id, relation, meta:{source:'presentation_cluster'}};
+    return {node,edge};
+  }
+
+  function buildScene(){
+    const rawMap = byId();
+    const nodes = [];
+    const edges = [];
+    const include = new Set();
+
+    const addNode = n => { if (n && !include.has(n.id)) { include.add(n.id); nodes.push(cloneNode(n)); } };
+    const addEdge = e => { if (e && !edges.some(x=>x.id===e.id)) edges.push({...e}); };
+    const addWithAncestors = (id, depth=4) => {
+      const start = rawMap.get(id); if(!start) return;
+      addNode(start);
+      let frontier = new Set([id]);
+      const seen = new Set(frontier);
+      for(let hop=0; hop<depth; hop++){
+        const next = new Set();
+        graph.edges.forEach(e => {
+          if(frontier.has(e.target)){
+            const n = rawMap.get(e.source);
+            if(n && ['target','host','resource','operation','source','javascript'].includes(n.type)){
+              addNode(n); addEdge(e); if(!seen.has(n.id)){seen.add(n.id);next.add(n.id);}
+            }
+          }
+          if(frontier.has(e.source) && ['contains','supports','discovered','observed'].includes(e.relation)){
+            const n = rawMap.get(e.target);
+            if(n && ['host','resource','operation'].includes(n.type)){
+              addNode(n); addEdge(e); if(!seen.has(n.id)){seen.add(n.id);next.add(n.id);}
+            }
+          }
+        });
+        frontier = next;
+      }
+    };
+
+    if (preset === 'surface' || preset === 'resources') {
+      graph.nodes.filter(n => ['target','host','resource','operation'].includes(n.type)).forEach(addNode);
+      graph.edges.filter(e => include.has(e.source) && include.has(e.target) && ['contains','supports'].includes(e.relation)).forEach(addEdge);
+
+      // JavaScript matters, but it should not flood the initial map. Group it per host.
+      graph.nodes.filter(n => n.type === 'host').forEach(host => {
+        const js = graph.edges
+          .filter(e => e.source === host.id)
+          .map(e => rawMap.get(e.target))
+          .filter(n => n?.type === 'javascript');
+        if (!js.length) return;
+        addNode(host);
+        if (js.length === 1) {
+          addNode(js[0]);
+          const e = graph.edges.find(x => x.source===host.id && x.target===js[0].id); if(e) addEdge(e);
+        } else {
+          const c = makeCluster(host.id,'javascript',js,'contains'); nodes.push(c.node); include.add(c.node.id); edges.push(c.edge);
+          if(expandedClusters.has(c.node.id)) js.forEach(child => { addNode(child); edges.push({id:edgeId(c.node.id,child.id,'contains'),source:c.node.id,target:child.id,relation:'contains',meta:{source:'expanded_cluster'}}); });
+        }
+      });
+    } else if (preset === 'burp') {
+      const burpRequests = graph.nodes.filter(n => n.type==='request' && /burp/i.test(String(n.meta?.source||'')));
+      const opIds = new Set();
+      burpRequests.forEach(r => edgesOf(r.id).forEach(e => { const n=rawMap.get(opposite(e,r.id)); if(n?.type==='operation') opIds.add(n.id); }));
+      opIds.forEach(id => addWithAncestors(id,3));
+      graph.nodes.filter(n=>n.type==='source' && /burp/i.test(n.label)).forEach(addNode);
+      graph.edges.filter(e=>include.has(e.source)&&include.has(e.target)).forEach(addEdge);
+      opIds.forEach(opId => {
+        const requests = burpRequests.filter(r => edgesOf(r.id).some(e => opposite(e,r.id)===opId));
+        if(!requests.length) return;
+        const c=makeCluster(opId,'requests',requests,'observed_in'); nodes.push(c.node); include.add(c.node.id); edges.push(c.edge);
+        if(expandedClusters.has(c.node.id)) requests.forEach(child=>{addNode(child);edges.push({id:edgeId(c.node.id,child.id,'observed_in'),source:c.node.id,target:child.id,relation:'observed_in',meta:{source:'expanded_cluster'}});});
+      });
+    } else if (preset === 'untested') {
+      graph.nodes.filter(n => n.state === 'untested' && ['resource','operation','javascript'].includes(n.type)).forEach(n => addWithAncestors(n.id,4));
+      graph.edges.filter(e => include.has(e.source)&&include.has(e.target)).forEach(addEdge);
+    } else if (preset === 'interesting' || preset === 'attack') {
+      const seeds = graph.nodes.filter(n => n.type!=='observation' && (n.type==='finding' || n.type==='lead' || n.state==='finding' || n.state==='interesting'));
+      seeds.forEach(n => addWithAncestors(n.id,5));
+      // An interesting observation seeds the path through its parent without forcing every raw observation onto the canvas.
+      graph.nodes.filter(n=>n.type==='observation' && ['interesting','finding'].includes(slugState(n.state))).forEach(obs=>{
+        const parentEdge=graph.edges.find(e=>e.target===obs.id);
+        if(parentEdge) addWithAncestors(parentEdge.source,5);
+      });
+      // Include test observations connected to already-visible entities; group noisy repetitions.
+      const obsByParent = new Map();
+      graph.nodes.filter(n=>n.type==='observation').forEach(obs=>{
+        const rel = graph.edges.find(e=>e.target===obs.id && include.has(e.source));
+        if(!rel) return;
+        const key=rel.source; const arr=obsByParent.get(key)||[];arr.push(obs);obsByParent.set(key,arr);
+      });
+      obsByParent.forEach((obs,parentId)=>{
+        const strong=obs.filter(o=>['interesting','finding'].includes(slugState(o.state)));
+        const chosen = preset==='attack' && strong.length ? strong : obs;
+        if(chosen.length===1){ addNode(chosen[0]); const e=graph.edges.find(x=>x.target===chosen[0].id&&x.source===parentId); if(e)addEdge(e); }
+        else if(chosen.length>1){ const c=makeCluster(parentId,'observations',chosen,'tested_by');nodes.push(c.node);include.add(c.node.id);edges.push(c.edge);if(expandedClusters.has(c.node.id))chosen.forEach(child=>{addNode(child);edges.push({id:edgeId(c.node.id,child.id,'tested_by'),source:c.node.id,target:child.id,relation:'tested_by',meta:{source:'expanded_cluster'}});}); }
+      });
+      graph.edges.filter(e => include.has(e.source)&&include.has(e.target)).forEach(addEdge);
+    } else { // all
+      graph.nodes.filter(n => !['request','observation','javascript'].includes(n.type)).forEach(addNode);
+      graph.edges.filter(e => include.has(e.source)&&include.has(e.target)).forEach(addEdge);
+      // JavaScript stays available without turning the default overview into a wall of bundles.
+      graph.nodes.filter(n=>n.type==='host').forEach(host=>{
+        const js=graph.edges.filter(e=>e.source===host.id).map(e=>rawMap.get(e.target)).filter(n=>n?.type==='javascript');
+        if(!js.length)return;
+        const c=makeCluster(host.id,'javascript',js,'contains');nodes.push(c.node);include.add(c.node.id);edges.push(c.edge);
+        if(expandedClusters.has(c.node.id))js.forEach(child=>{addNode(child);edges.push({id:edgeId(c.node.id,child.id,'contains'),source:c.node.id,target:child.id,relation:'contains',meta:{source:'expanded_cluster'}});});
+      });
+      // Requests and observations are grouped until the investigator explicitly expands them.
+      graph.nodes.filter(n=>n.type==='operation').forEach(op=>{
+        const reqs=graph.nodes.filter(r=>r.type==='request'&&edgesOf(r.id).some(e=>opposite(e,r.id)===op.id));
+        if(reqs.length){const c=makeCluster(op.id,'requests',reqs,'observed_in');nodes.push(c.node);include.add(c.node.id);edges.push(c.edge);if(expandedClusters.has(c.node.id))reqs.forEach(child=>{addNode(child);edges.push({id:edgeId(c.node.id,child.id,'observed_in'),source:c.node.id,target:child.id,relation:'observed_in',meta:{source:'expanded_cluster'}});});}
+      });
+      const parentObs=new Map();
+      graph.nodes.filter(n=>n.type==='observation').forEach(obs=>{const e=graph.edges.find(x=>x.target===obs.id);if(!e)return;const arr=parentObs.get(e.source)||[];arr.push(obs);parentObs.set(e.source,arr);});
+      parentObs.forEach((obs,p)=>{if(!include.has(p))return;const c=makeCluster(p,'observations',obs,'tested_by');nodes.push(c.node);include.add(c.node.id);edges.push(c.edge);if(expandedClusters.has(c.node.id))obs.forEach(child=>{addNode(child);edges.push({id:edgeId(c.node.id,child.id,'tested_by'),source:c.node.id,target:child.id,relation:'tested_by',meta:{source:'expanded_cluster'}});});});
+    }
+
+    sceneNodes = nodes;
+    sceneEdges = edges.filter(e => include.has(e.source) && include.has(e.target));
+    autoLayout();
+  }
+
+  function laneFor(n){
+    if (preset === 'surface' || preset === 'resources') {
+      return {target:0,host:1,javascript:2,resource:2,operation:3,cluster:4}[n.type] ?? 4;
+    }
+    if (preset === 'burp') return {source:0,target:0,host:1,resource:2,operation:3,cluster:4,request:5}[n.type] ?? 5;
+    if (preset === 'interesting' || preset === 'attack') return {source:0,target:0,host:1,javascript:2,resource:2,operation:3,cluster:4,observation:4,lead:5,finding:5,external:5}[n.type] ?? 5;
+    return {source:0,target:0,host:1,javascript:2,resource:2,operation:3,cluster:4,request:5,observation:5,lead:6,finding:6,external:6}[n.type] ?? 6;
+  }
+
+  function autoLayout(){
+    const width=Math.max(980,svg.clientWidth||1100), height=Math.max(620,svg.clientHeight||680);
+    const lanes = new Map();
+    sceneNodes.forEach(n=>{const lane=laneFor(n);const arr=lanes.get(lane)||[];arr.push(n);lanes.set(lane,arr);});
+    const maxLane = Math.max(1,...lanes.keys());
+    const left=78,right=Math.max(760,width-110), laneGap=(right-left)/Math.max(1,maxLane);
+    const sceneMap = sceneById();
+
+    const parentKey = n => {
+      const rels=sceneEdges.filter(e=>e.target===n.id||e.source===n.id);
+      const parents=rels.map(e=>sceneMap.get(e.target===n.id?e.source:e.target)).filter(Boolean).filter(x=>laneFor(x)<laneFor(n));
+      return parents.map(x=>x.label).sort().join('|')+'|'+n.label;
+    };
+
+    lanes.forEach((arr,lane)=>{
+      arr.sort((a,b)=>parentKey(a).localeCompare(parentKey(b)));
+      const gap=Math.max(54,Math.min(88,(height-100)/Math.max(1,arr.length)));
+      const total=(arr.length-1)*gap;
+      const start=Math.max(55,(height-total)/2);
+      arr.forEach((n,i)=>{n.x=left+lane*laneGap;n.y=start+i*gap;n.manual=false;});
+    });
+
+    // Barycentric passes reduce edge crossings while keeping semantic lanes intact.
+    for(let pass=0; pass<4; pass++){
+      [...lanes.entries()].sort((a,b)=>a[0]-b[0]).forEach(([lane,arr])=>{
+        if(lane===0)return;
+        arr.forEach(n=>{
+          const prev=sceneEdges.filter(e=>e.target===n.id||e.source===n.id)
+            .map(e=>sceneMap.get(e.target===n.id?e.source:e.target)).filter(x=>x&&laneFor(x)<lane);
+          if(prev.length)n.y=n.y*.45+(prev.reduce((s,x)=>s+x.y,0)/prev.length)*.55;
+        });
+        arr.sort((a,b)=>a.y-b.y);
+        let y=45; arr.forEach(n=>{n.y=Math.max(n.y,y);y=n.y+58;});
+      });
+    }
+
+    const saved=readSavedLayout();
+    sceneNodes.forEach(n=>{ if(saved[n.id] && Number.isFinite(saved[n.id].x) && Number.isFinite(saved[n.id].y)){ n.x=saved[n.id].x;n.y=saved[n.id].y;n.manual=true; } });
+    setLayoutStatus(Object.keys(saved).length ? 'Disposición personalizada guardada' : 'Layout automático');
   }
 
   function buildTypeFilters(){
-    const present = new Set(graph.nodes.map(n=>n.type));
-    activeTypes = new Set(present);
-    typeWrap.innerHTML = '';
+    const present=new Set(sceneNodes.map(n=>n.type).filter(t=>t!=='cluster'));
+    activeTypes=new Set(present);
+    typeWrap.innerHTML='';
     typeOrder.filter(t=>present.has(t)).forEach(t=>{
-      const b=document.createElement('button'); b.type='button'; b.className='graph-type active'; b.dataset.type=t; b.textContent=`${typeLabel[t]||t} · ${graph.nodes.filter(n=>n.type===t).length}`;
-      b.addEventListener('click',()=>{ activeTypes.has(t)?activeTypes.delete(t):activeTypes.add(t); b.classList.toggle('active',activeTypes.has(t)); applyFilters(); });
+      const b=document.createElement('button');b.type='button';b.className='graph-type active';b.dataset.type=t;
+      b.textContent=`${typeLabel[t]||t} · ${sceneNodes.filter(n=>n.type===t).length}`;
+      b.addEventListener('click',()=>{activeTypes.has(t)?activeTypes.delete(t):activeTypes.add(t);b.classList.toggle('active',activeTypes.has(t));applyFilters();});
       typeWrap.appendChild(b);
     });
   }
 
-  function layout(){
-    const width = Math.max(1000, svg.clientWidth || 1200), height = Math.max(680, svg.clientHeight || 760);
-    const lanes = {}; typeOrder.forEach((t,i)=>lanes[t]=i);
-    const byType = {}; graph.nodes.forEach(n=>(byType[n.type] ||= []).push(n));
-    graph.nodes.forEach(n=>{ n.x=width/2; n.y=height/2; n.vx=0; n.vy=0; });
-    Object.entries(byType).forEach(([t,nodes])=>{
-      const lane = lanes[t] ?? typeOrder.length;
-      const angleBase = (lane/typeOrder.length)*Math.PI*2;
-      const ring = t==='target'?0:150 + lane*32;
-      nodes.forEach((n,i)=>{
-        const a=angleBase + (i-Math.floor(nodes.length/2))*0.16;
-        n.x=width/2 + Math.cos(a)*ring + (i%3)*24;
-        n.y=height/2 + Math.sin(a)*ring + (i%5)*18;
-      });
-    });
-    // Deterministic, bounded force relaxation. Good enough for hundreds of nodes without another framework.
-    const map = new Map(graph.nodes.map(n=>[n.id,n]));
-    for(let iter=0;iter<70;iter++){
-      graph.edges.forEach(e=>{ const a=map.get(e.source),b=map.get(e.target); if(!a||!b)return; const dx=b.x-a.x,dy=b.y-a.y,d=Math.max(24,Math.hypot(dx,dy)),desired=110; const f=(d-desired)*0.008; a.vx+=dx/d*f;a.vy+=dy/d*f;b.vx-=dx/d*f;b.vy-=dy/d*f; });
-      for(let i=0;i<graph.nodes.length;i++) for(let j=i+1;j<graph.nodes.length;j++){ const a=graph.nodes[i],b=graph.nodes[j]; const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy; if(d2>0&&d2<130*130){ const d=Math.sqrt(d2),f=(130-d)*0.002; a.vx-=dx/d*f;a.vy-=dy/d*f;b.vx+=dx/d*f;b.vy+=dy/d*f; }}
-      graph.nodes.forEach(n=>{ if(n.type==='target'){n.x=width/2;n.y=height/2;n.vx=n.vy=0;return;} n.vx*=.75;n.vy*=.75;n.x+=n.vx;n.y+=n.vy; });
-    }
-  }
-
-  function presetMatch(n){
-    if(preset==='untested') return n.state==='untested';
-    if(preset==='interesting') return n.state==='interesting'||n.state==='finding'||n.type==='lead'||n.type==='finding';
-    if(preset==='burp') return n.type==='source' && n.id.includes('burp') || (n.meta && String(n.meta.source||'').includes('burp')) || n.type==='request';
-    if(preset==='resources') return ['host','resource','operation','javascript'].includes(n.type);
-    return true;
-  }
-
-  function applyFilters(){
+  function applyFilters({fitAfter=false}={}){
     const q=(search.value||'').trim().toLowerCase();
-    const base = graph.nodes.filter(n=>activeTypes.has(n.type)&&presetMatch(n)&&(!q||n.label.toLowerCase().includes(q)||JSON.stringify(n.meta||{}).toLowerCase().includes(q)));
-    const ids=new Set(base.map(n=>n.id));
-    // Perspective presets keep one-hop context so the map remains explanatory, not a set of isolated dots.
-    if(['burp','interesting'].includes(preset)){
+    const baseNodes=sceneNodes.filter(n => (n.type==='cluster'||activeTypes.has(n.type)) && (!q || n.label.toLowerCase().includes(q) || JSON.stringify(n.meta||{}).toLowerCase().includes(q)));
+    const ids=new Set(baseNodes.map(n=>n.id));
+    if(q){
       const seed=new Set(ids);
-      graph.edges.forEach(e=>{ if(seed.has(e.source)) ids.add(e.target); if(seed.has(e.target)) ids.add(e.source); });
+      sceneEdges.forEach(e=>{if(seed.has(e.source))ids.add(e.target);if(seed.has(e.target))ids.add(e.source);});
     }
-    visibleNodes=graph.nodes.filter(n=>ids.has(n.id)&&activeTypes.has(n.type));
-    visibleEdges=graph.edges.filter(e=>ids.has(e.source)&&ids.has(e.target));
+    visibleNodes=sceneNodes.filter(n=>ids.has(n.id) && (n.type==='cluster'||activeTypes.has(n.type)));
+    const visIds=new Set(visibleNodes.map(n=>n.id));
+    visibleEdges=sceneEdges.filter(e=>visIds.has(e.source)&&visIds.has(e.target));
     empty.hidden=visibleNodes.length>0;
     render();
+    if(fitAfter) fit();
+  }
+
+  function relationIsHighlight(e){
+    if(preset!=='attack' && preset!=='interesting')return false;
+    const m=sceneById(),a=m.get(e.source),b=m.get(e.target);
+    return [a,b].some(n=>n && (n.state==='interesting'||n.state==='finding'||n.type==='lead'||n.type==='finding'||n.type==='observation'));
+  }
+
+  function labelVisible(n){
+    if(selected===n.id)return true;
+    if(['target','host','resource','operation','finding','lead','cluster'].includes(n.type))return true;
+    return view.k>=1.15;
   }
 
   function render(){
     svg.innerHTML='';
-    const g=document.createElementNS(NS,'g'); g.setAttribute('class','graph-scene'); g.setAttribute('transform',`translate(${view.x} ${view.y}) scale(${view.k})`); svg.appendChild(g);
+    const g=document.createElementNS(NS,'g');g.setAttribute('class','graph-scene');g.setAttribute('transform',`translate(${view.x} ${view.y}) scale(${view.k})`);svg.appendChild(g);
     const nodeMap=new Map(visibleNodes.map(n=>[n.id,n]));
-    visibleEdges.forEach(e=>{ const a=nodeMap.get(e.source),b=nodeMap.get(e.target); if(!a||!b)return; const path=document.createElementNS(NS,'path'); const mx=(a.x+b.x)/2, bend=((a.y+b.y)%2?1:-1)*18; path.setAttribute('d',`M ${a.x} ${a.y} Q ${mx+bend} ${(a.y+b.y)/2-bend} ${b.x} ${b.y}`); path.setAttribute('class','graph-edge'); path.dataset.id=e.id; path.addEventListener('click',ev=>{ev.stopPropagation();showEdge(e)}); g.appendChild(path); });
-    visibleNodes.forEach(n=>{ const ng=document.createElementNS(NS,'g'); ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}`); ng.setAttribute('transform',`translate(${n.x} ${n.y})`); ng.dataset.id=n.id;
-      const circle=document.createElementNS(NS,'circle'); circle.setAttribute('r',nodeRadius(n.type)); ng.appendChild(circle);
-      const label=document.createElementNS(NS,'text'); label.setAttribute('x',nodeRadius(n.type)+7); label.setAttribute('y','4'); label.textContent=n.label.length>42?n.label.slice(0,39)+'…':n.label; ng.appendChild(label);
-      ng.addEventListener('click',ev=>{ev.stopPropagation();selected=n.id;showNode(n);render();});
-      ng.addEventListener('dblclick',ev=>{ev.stopPropagation();focusNeighborhood(n.id,1)});
+
+    visibleEdges.forEach(e=>{
+      const a=nodeMap.get(e.source),b=nodeMap.get(e.target);if(!a||!b)return;
+      const path=document.createElementNS(NS,'path');
+      const dx=Math.max(45,Math.abs(b.x-a.x)*.48), c1x=a.x+Math.sign(b.x-a.x||1)*dx, c2x=b.x-Math.sign(b.x-a.x||1)*dx;
+      path.setAttribute('d',`M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`);
+      path.setAttribute('class',`graph-edge${relationIsHighlight(e)?' graph-edge-highlight':''}`);path.dataset.id=e.id;
+      path.addEventListener('click',ev=>{ev.stopPropagation();showEdge(e)});g.appendChild(path);
+    });
+
+    visibleNodes.forEach(n=>{
+      const ng=document.createElementNS(NS,'g');
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}`);
+      ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
+      const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
+      if(n.type==='cluster'){
+        const inner=document.createElementNS(NS,'circle');inner.setAttribute('r',Math.max(3,nodeRadius(n.type)-4));inner.setAttribute('class','graph-cluster-inner');ng.appendChild(inner);
+      }
+      if(labelVisible(n)){
+        const label=document.createElementNS(NS,'text');label.setAttribute('x',nodeRadius(n.type)+7);label.setAttribute('y','4');label.setAttribute('class','graph-node-label');
+        const limit=labelLimit(n.type);label.textContent=n.label.length>limit?n.label.slice(0,limit-1)+'…':n.label;ng.appendChild(label);
+      }
+      ng.addEventListener('pointerdown',ev=>startNodeDrag(ev,n));
+      ng.addEventListener('click',ev=>{ev.stopPropagation();if(suppressClick){suppressClick=false;return;}selected=n.id;showNode(n);render();});
+      ng.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='cluster')toggleCluster(n);else focusNeighborhood(n.id,1);});
       g.appendChild(ng);
     });
-    svg.onclick=()=>{selected=null;detail.innerHTML='<div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Selecciona un nodo</h3><p>Verás procedencia, estado, relaciones y accesos directos a la evidencia real.</p></div>';render();};
+
+    svg.onclick=()=>{if(suppressClick){suppressClick=false;return;}selected=null;detail.innerHTML=emptyDetail();render();};
   }
 
-  function relationsFor(id){ return graph.edges.filter(e=>e.source===id||e.target===id); }
+  function emptyDetail(){return '<div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Selecciona un nodo</h3><p>Abre un endpoint, revisa su cobertura o aísla su vecindario para entender el camino.</p></div>';}
+
+  function summarizeNode(n){
+    const rawMap=byId();
+    const summary={methods:0,requests:0,tests:0,interesting:0,sources:new Set()};
+    const ids=new Set([n.id]);
+    if(n.type==='resource'){
+      graph.edges.filter(e=>e.source===n.id).forEach(e=>{const x=rawMap.get(e.target);if(x?.type==='operation')ids.add(x.id);});
+    }
+    ids.forEach(id=>{
+      graph.edges.forEach(e=>{
+        if(e.source!==id&&e.target!==id)return;
+        const x=rawMap.get(opposite(e,id));if(!x)return;
+        if(x.type==='operation')summary.methods++;
+        if(x.type==='request')summary.requests+=Number(x.meta?.seen_count||1);
+        if(x.type==='observation'){summary.tests++;if(['interesting','finding'].includes(slugState(x.state)))summary.interesting++;}
+        if(x.type==='source')summary.sources.add(x.label);
+      });
+    });
+    return summary;
+  }
+
   function showNode(n){
-    const rels=relationsFor(n.id); const meta=n.meta||{};
-    const metaRows=Object.entries(meta).filter(([,v])=>v!==null&&v!==''&&typeof v!=='object').slice(0,12).map(([k,v])=>`<div><span>${esc(k.replaceAll('_',' '))}</span><b>${esc(v)}</b></div>`).join('');
-    const relationRows=rels.slice(0,18).map(e=>{ const other=graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source)); return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(e.relation)}</span><b>${esc(other?.label||'')}</b></button>`; }).join('');
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2><span class="state-chip state-${slugState(n.state)}">${esc(n.state)}</span></div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
-    detail.querySelectorAll('[data-focus]').forEach(b=>b.addEventListener('click',()=>{ const x=graph.nodes.find(n=>n.id===b.dataset.focus); if(x){selected=x.id;showNode(x);render();} }));
+    const rels=(n.virtual?sceneEdges:graph.edges).filter(e=>e.source===n.id||e.target===n.id);
+    const meta=n.meta||{};
+    const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(k.replaceAll('_',' '))}</span><b>${esc(v)}</b></div>`).join('');
+    const sourceGraph=n.virtual?sceneNodes:graph.nodes;
+    const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
+    const summary=summarizeNode(n);
+    const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting?'is-interesting':''}"><b>${summary.interesting}</b><span>Señales</span></div></div>`:'';
+    const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2><span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span></div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}</div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
+    detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
+    detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));
+    detail.querySelectorAll('[data-focus]').forEach(b=>b.addEventListener('click',()=>{const x=sceneNodes.find(n=>n.id===b.dataset.focus)||graph.nodes.find(n=>n.id===b.dataset.focus);if(x){selected=x.id;showNode(x);render();}}));
   }
-  function showEdge(e){ const a=graph.nodes.find(n=>n.id===e.source),b=graph.nodes.find(n=>n.id===e.target),m=e.meta||{}; detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELATIONSHIP</span><h2>${esc(e.relation)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(e.relation)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>source</span><b>${esc(m.source||'—')}</b></div></div>${m.evidence?`<div class="graph-detail-section"><h3>Evidence</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`:''}`; }
 
-  function focusNeighborhood(id,hops=1){ const ids=new Set([id]); for(let h=0;h<hops;h++){ const frontier=new Set(ids); graph.edges.forEach(e=>{if(frontier.has(e.source))ids.add(e.target);if(frontier.has(e.target))ids.add(e.source);}); } visibleNodes=graph.nodes.filter(n=>ids.has(n.id)); visibleEdges=graph.edges.filter(e=>ids.has(e.source)&&ids.has(e.target)); render(); fit(); }
-  function fit(){ if(!visibleNodes.length)return; const box=svg.getBoundingClientRect(); const minX=Math.min(...visibleNodes.map(n=>n.x))-80,maxX=Math.max(...visibleNodes.map(n=>n.x))+180,minY=Math.min(...visibleNodes.map(n=>n.y))-80,maxY=Math.max(...visibleNodes.map(n=>n.y))+80; const w=maxX-minX,h=maxY-minY; const k=Math.max(.22,Math.min(1.2,Math.min(box.width/w,box.height/h))); view.k=k;view.x=box.width/2-(minX+w/2)*k;view.y=box.height/2-(minY+h/2)*k;render(); }
+  function showEdge(e){
+    const map=sceneById(),a=map.get(e.source)||graph.nodes.find(n=>n.id===e.source),b=map.get(e.target)||graph.nodes.find(n=>n.id===e.target),m=e.meta||{};
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELATIONSHIP</span><h2>${esc(e.relation)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(e.relation)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>source</span><b>${esc(m.source||'—')}</b></div></div>${m.evidence?`<div class="graph-detail-section"><h3>Por qué existe</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`:''}`;
+  }
 
-  svg.addEventListener('wheel',e=>{e.preventDefault(); const rect=svg.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top,old=view.k,next=Math.max(.18,Math.min(2.4,old*(e.deltaY<0?1.1:.9))); view.x=mx-(mx-view.x)*(next/old);view.y=my-(my-view.y)*(next/old);view.k=next;render();},{passive:false});
-  svg.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};svg.setPointerCapture(e.pointerId)}); svg.addEventListener('pointermove',e=>{if(!drag)return;view.x=drag.vx+e.clientX-drag.x;view.y=drag.vy+e.clientY-drag.y;render()}); svg.addEventListener('pointerup',()=>drag=null); svg.addEventListener('pointercancel',()=>drag=null);
-  search.addEventListener('input',applyFilters);
-  root.querySelectorAll('[data-graph-preset]').forEach(b=>b.addEventListener('click',()=>{root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.remove('active'));b.classList.add('active');preset=b.dataset.graphPreset;applyFilters();fit();}));
-  root.querySelector('[data-graph-fit]').addEventListener('click',fit);
-  root.querySelector('[data-graph-all]').addEventListener('click',()=>{preset='all';search.value='';activeTypes=new Set(graph.nodes.map(n=>n.type));buildTypeFilters();applyFilters();fit();});
-  root.querySelector('[data-graph-neighborhood]').addEventListener('click',()=>selected&&focusNeighborhood(selected,1));
+  function toggleCluster(n){
+    if(!n || n.type!=='cluster')return;
+    expandedClusters.has(n.id)?expandedClusters.delete(n.id):expandedClusters.add(n.id);
+    const keepSelected=n.id;buildScene();buildTypeFilters();applyFilters();selected=keepSelected;const x=sceneNodes.find(a=>a.id===keepSelected);if(x)showNode(x);fit();
+  }
+
+  function focusNeighborhood(id,hops=1){
+    const ids=new Set([id]);let frontier=new Set([id]);
+    for(let h=0;h<hops;h++){
+      const next=new Set();sceneEdges.forEach(e=>{if(frontier.has(e.source)&&!ids.has(e.target)){ids.add(e.target);next.add(e.target);}if(frontier.has(e.target)&&!ids.has(e.source)){ids.add(e.source);next.add(e.source);}});frontier=next;
+    }
+    visibleNodes=sceneNodes.filter(n=>ids.has(n.id));visibleEdges=sceneEdges.filter(e=>ids.has(e.source)&&ids.has(e.target));render();fit();
+  }
+
+  function fit(){
+    if(!visibleNodes.length)return;
+    const box=svg.getBoundingClientRect();
+    const minX=Math.min(...visibleNodes.map(n=>n.x))-70,maxX=Math.max(...visibleNodes.map(n=>n.x))+200,minY=Math.min(...visibleNodes.map(n=>n.y))-65,maxY=Math.max(...visibleNodes.map(n=>n.y))+65;
+    const w=Math.max(220,maxX-minX),h=Math.max(180,maxY-minY);const k=Math.max(.26,Math.min(1.25,Math.min(box.width/w,box.height/h)));
+    view.k=k;view.x=box.width/2-(minX+w/2)*k;view.y=box.height/2-(minY+h/2)*k;render();
+  }
+
+  function clientToGraph(clientX,clientY){const rect=svg.getBoundingClientRect();return {x:(clientX-rect.left-view.x)/view.k,y:(clientY-rect.top-view.y)/view.k};}
+  function startNodeDrag(e,n){
+    e.stopPropagation();e.preventDefault();const p=clientToGraph(e.clientX,e.clientY);nodeDrag={id:n.id,pointerId:e.pointerId,dx:n.x-p.x,dy:n.y-p.y,startX:e.clientX,startY:e.clientY,moved:false};svg.setPointerCapture?.(e.pointerId);
+  }
+
+  svg.addEventListener('pointermove',e=>{
+    if(nodeDrag){const n=sceneNodes.find(x=>x.id===nodeDrag.id);if(!n)return;const p=clientToGraph(e.clientX,e.clientY);if(Math.hypot(e.clientX-nodeDrag.startX,e.clientY-nodeDrag.startY)>4)nodeDrag.moved=true;n.x=p.x+nodeDrag.dx;n.y=p.y+nodeDrag.dy;n.manual=true;render();return;}
+    if(!panDrag)return;view.x=panDrag.vx+e.clientX-panDrag.x;view.y=panDrag.vy+e.clientY-panDrag.y;render();
+  });
+  svg.addEventListener('pointerup',e=>{
+    if(nodeDrag){suppressClick=nodeDrag.moved;if(nodeDrag.moved)writeSavedLayout();nodeDrag=null;return;}panDrag=null;
+  });
+  svg.addEventListener('pointercancel',()=>{nodeDrag=null;panDrag=null;});
+  svg.addEventListener('pointerdown',e=>{if(e.target.closest?.('.graph-node'))return;panDrag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};svg.setPointerCapture?.(e.pointerId);});
+  svg.addEventListener('wheel',e=>{e.preventDefault();const rect=svg.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top,old=view.k,next=Math.max(.2,Math.min(2.6,old*(e.deltaY<0?1.1:.9)));view.x=mx-(mx-view.x)*(next/old);view.y=my-(my-view.y)*(next/old);view.k=next;render();},{passive:false});
+
+  function setPreset(next,button){
+    preset=next;selected=null;expandedClusters=new Set();
+    root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===button));
+    detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();search.value='';applyFilters({fitAfter:true});
+  }
+
+  search.addEventListener('input',()=>applyFilters());
+  root.querySelectorAll('[data-graph-preset]').forEach(b=>b.addEventListener('click',()=>setPreset(b.dataset.graphPreset,b)));
+  root.querySelector('[data-graph-fit]')?.addEventListener('click',fit);
+  root.querySelector('[data-graph-reset-layout]')?.addEventListener('click',()=>{clearSavedLayout();autoLayout();applyFilters({fitAfter:true});});
+  root.querySelector('[data-graph-neighborhood]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,1));
+  root.querySelector('[data-graph-two-hop]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,2));
+  root.querySelector('[data-graph-all]')?.addEventListener('click',()=>{search.value='';activeTypes=new Set(sceneNodes.map(n=>n.type).filter(t=>t!=='cluster'));buildTypeFilters();applyFilters({fitAfter:true});});
+
   load();
 })();

@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.12.3
+# Negro Recon 🐕 — v0.12.1
 
 > **Olfatea donde otros no miran.**
 
@@ -7,9 +7,9 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.12.0 — Attack Knowledge Graph V1
+## v0.12.1 — Knowledge Graph UX
 
-Nueva vista **Mapa** por target: una proyección interactiva de Hosts, Resources, métodos HTTP, Burp exchanges, JavaScript, observaciones, leads, findings y provenance. Incluye zoom/pan, búsqueda, filtros, selección de nodos/relaciones, focus 1-hop y navegación a las entidades reales. Consulta `UPDATE-v0.12.0.md`.
+La vista **Mapa** deja de mostrar la base de datos como un hairball: incorpora layout semántico por flujo, perspectivas `Attack Surface`, `Untested`, `Interesting`, `Burp`, `Attack Paths` y `All`, agrupación progresiva de requests/observaciones/JavaScript, focus 1-hop/2-hops, panel lateral de cobertura y nodos arrastrables cuya posición se recuerda por target y perspectiva. Consulta `UPDATE-v0.12.1.md`.
 
 ## v0.11.3 — Investigation Workspace
 

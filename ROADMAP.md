@@ -3,7 +3,10 @@
 ## v0.12 — Attack Knowledge Graph V1 ✅
 - Graph projection over existing entities
 - Semantic edges + provenance
-- Search / filters / 1-hop focus
+- Semantic lane layout + progressive disclosure
+- Perspectives: Attack Surface / Untested / Interesting / Burp / Attack Paths
+- Search / filters / 1-hop / 2-hop focus
+- Draggable nodes with per-perspective saved layout
 - Interactive visual investigation map
 
 ## Next

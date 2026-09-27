@@ -1,4 +1,4 @@
-# Negro Recon v0.12.0 — Attack Knowledge Graph V1
+# Negro Recon v0.12.1 — Attack Knowledge Graph V1
 
 Esta versión agrega una nueva proyección visual de la investigación sin duplicar el modelo de datos existente.
 
