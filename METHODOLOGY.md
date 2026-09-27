@@ -1,110 +1,189 @@
-# Negro Recon — Metodología v0.8.1
+# Negro Recon — Metodología v0.9.0
 
-## Filosofía
+## Principio
 
 ```text
-ASSET → OBSERVATION → LEAD → MANUAL VALIDATION → FINDING / DISCARDED
+DISCOVER → ASSOCIATE → INSPECT → CORRELATE → LEAD → VALIDATE → FINDING / DISCARDED
 ```
 
-## Capa 1 — superficie pasiva
+Negro separa **evidencia**, **hipótesis** e **impacto demostrado**. Nunca convierte una key, un source map, un parámetro `redirect` o un CNAME externo en vulnerabilidad sólo por existir.
 
-1. crt.sh — CT/SANs públicos.
-2. Subfinder — agregador multi-source.
-3. Amass passive — correlación OSINT.
-4. GAU providers — URLs históricas/observadas.
-5. Wayback CDX direct — snapshots + timestamp/MIME/status.
-6. URLScan direct — scans y requests observados.
-7. SecurityTrails — subdominios/DNS histórico (si hay key).
-8. GitHub code search — arquitectura pública (si hay token).
+## 1. Policy antes de tráfico
 
-## Capa 2 — un host que decidimos investigar
+Cada target tiene un perfil:
+
+- `conservative`: bounty general, bajo volumen;
+- `mercadolibre`: límites aún más estrictos para un programa que prohíbe scans automatizados masivos;
+- `lab`: HTB/labs explícitamente autorizados para enumeración activa.
+
+La policy limita Active DNS, VHost discovery y crawling. Los forms nunca se envían automáticamente.
+
+## 2. Discovery / history
+
+Pasivo primero:
+
+- crt.sh / CT intelligence;
+- Subfinder / Amass passive;
+- GAU / Wayback / Common Crawl / OTX / URLScan;
+- Wayback CDX directo;
+- URLScan directo;
+- SecurityTrails opcional;
+- GitHub public code search opcional;
+- Search Intelligence como query generator.
+
+Dirigido después:
+
+- DNS infrastructure;
+- reverse PTR;
+- TLS SAN pivot;
+- AXFR por NS;
+- Smart DNS candidates + wildcard detection;
+- Smart VHost + random baseline.
+
+## 3. Host → HTTP intelligence
+
+Sobre un host seleccionado:
 
 ```text
 Basic Inspect
   A / AAAA / CNAME
-  TLS subject / issuer / dates / SAN
-  HTTP / HTTPS headers
+  TLS
+  HTTP / HTTPS
+
+Web Recon
+  redirect chain
+  fingerprints
+  robots.txt
+  selected .well-known
+  forms/comments/meta
 ```
 
-Luego, según señal:
+Fingerprinting conserva `technology + category + confidence + evidence`.
 
-- TLS SAN pivot;
-- Passive DNS history;
-- JavaScript discovery;
-- recursos históricos ya asociados.
+OIDC Discovery importa `issuer`, `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri` y hosts relacionados. `assetlinks.json` conserva relación con paquetes Android.
 
-## Capa 3 — aplicación / JavaScript
+## 4. Crawling controlado
 
-Primero determinístico/local:
+BFS, bounded y same-scope:
 
-- guardar RAW;
-- calcular SHA-256;
-- beautify cuando la dependencia está disponible;
-- extraer URLs/rutas/WebSockets;
-- detectar `sourceMappingURL`;
-- contar señales de auth, roles, feature flags, admin/internal, etc.;
-- recortar sólo contextos relevantes.
+- max URLs/depth por policy;
+- respeta `robots.txt` y `Crawl-delay`;
+- lee sitemaps XML;
+- no sigue externos;
+- no envía forms;
+- no usa POST/PUT/DELETE;
+- dedup/canonicalización de URLs.
 
-Después IA opcional:
+Extrae:
 
-- se estima tokens/costo antes de enviar;
-- se envían extracción + chunks, no el bundle completo por defecto;
-- la IA reconstruye comportamiento y propone validaciones manuales;
-- no puede declarar finding ni inventar endpoints/impacto.
+- pages/links;
+- JS;
+- documents/archives;
+- forms + fields;
+- HTML comments;
+- emails;
+- external relationships;
+- nuevos hosts in-scope;
+- directory listing.
 
-## Source maps
+## 5. JavaScript / Source Maps
 
-Si el JS declara un source map público:
+Determinístico primero:
 
-1. descarga explícita;
-2. conserva `.map` en RAW;
-3. lista `sources`;
-4. si existe `sourcesContent`, analiza sólo un límite local;
-5. endpoints in-scope derivados se asocian con provenance `sourcemap`.
+```text
+JS → hash → URLs/routes/WebSockets → sourceMappingURL → secrets/config → code-flow contexts
+```
 
-## Estados
+Source Maps:
 
-Review:
+- prueba múltiples candidatos;
+- tolera inline Base64 sin padding;
+- separa application / node_modules / webpack runtime;
+- analiza `sourcesContent` de aplicación;
+- enmascara candidatos sensibles antes de IA.
 
-- `pending`
-- `in_progress`
-- `reviewed`
+## 6. Historical intelligence
 
-Classification:
+Wayback no es sólo `urls.txt`:
 
-- `unknown`
-- `informational`
-- `lead`
-- `discarded`
-- `finding`
+- first/last capture;
+- count/status/MIME;
+- historical-only vs observado por otras fuentes;
+- contexto para legacy APIs, endpoints eliminados y JS antiguo.
 
-Priority:
+CT añade first/last certificate sighting, cert count, issuers y wildcard indicator.
 
-- `none`
-- `low`
-- `medium`
-- `high`
+## 7. Correlation Engine
 
-## Límites
+El motor une múltiples fuentes antes de pedir atención humana.
 
-Negro sigue siendo passive-first. Content discovery/fuzzing activo no se ejecuta sobre todo el inventario. Cuando se integre, será sólo sobre un host seleccionado y con rate explícito.
+Ejemplo:
 
+```text
+crawler: /login?next=
+JS: location.search → location.assign()
+Wayback: endpoint histórico
+OIDC: auth surface
+         ↓
+Open Redirect lead
+confidence HIGH / review_priority HIGH
+```
 
-## Progreso de tareas largas
+Cada lead debe responder:
 
-Cuando una herramienta no expone progreso determinista, Negro muestra actividad indeterminada y tiempo transcurrido. No se presenta un porcentaje ficticio. El job termina en `done` o `error` y la ficha se refresca automáticamente.
+1. ¿Qué evidencia existe?
+2. ¿Por qué puede importar?
+3. ¿Qué única prueba manual de bajo impacto hago?
+4. ¿Qué confirma la hipótesis?
+5. ¿Qué la descarta?
 
-## Costos de IA
+## 8. Lead families
 
-La estimación debe leerse como un máximo presupuestado: entrada estimada + tope de salida. La UI muestra COP de forma explícita, USD como referencia y la tasa usada. La llamada facturable sólo ocurre tras confirmación del usuario.
+Primera generación:
 
+- Open Redirect;
+- Source Map exposure;
+- Secrets / API keys / client config;
+- OAuth/OIDC surface;
+- CORS;
+- directory listing;
+- cloud storage;
+- Subdomain Takeover candidate.
 
-## JavaScript v0.8 — lectura por capas
+Heurísticas adicionales:
 
-1. **Discovery**: inventariar scripts cargados por una página.
-2. **Local Analysis**: extraer URLs, rutas, WebSockets, `sourceMappingURL` y contexto.
-3. **Secrets & Client Config**: clasificar candidatos sin asumir vulnerabilidad; los valores se enmascaran.
-4. **Source Map**: separar código de aplicación de dependencias/runtime y analizar `sourcesContent` cuando esté disponible.
-5. **AI Analysis**: correlacionar únicamente evidencia seleccionada; salida en español; nunca auto-promover a finding.
+- DOM XSS source→sink;
+- SSRF URL-fetch surface;
+- IDOR/BOLA object surface.
 
-Una Google API key, Firebase config, OAuth Client ID, Sentry DSN o Stripe publishable key puede ser intencionalmente pública. La pregunta útil es si su configuración/restricciones producen impacto dentro del scope, no si el valor aparece en JavaScript. Negro no usa automáticamente tokens/keys detectados.
+Estas últimas son **superficies de revisión**, no explotación automática.
+
+## 9. IA
+
+La IA no reemplaza parsers/regex/DNS/HTTP. Entra cuando hay que comprender/correlacionar mucho contexto.
+
+```text
+local deterministic filter
+        ↓
+small evidence payload
+        ↓
+AI triage / deep analysis
+```
+
+Requisitos:
+
+- salida en español;
+- términos técnicos útiles en inglés;
+- no inventar endpoint/impacto;
+- costo estimado COP/USD antes;
+- usage/costo real después;
+- cache por evidence hash/model;
+- `why / next_test / confirm_if / discard_if`.
+
+## 10. Regla de oro
+
+```text
+DISCOVERY != CONFIRMATION
+CONFIRMATION != VULNERABILITY
+VULNERABILITY != IMPACT UNTIL DEMONSTRATED
+```

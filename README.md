@@ -1,9 +1,160 @@
-# Negro Recon 🐕 — v0.8.1
+# Negro Recon 🐕 — v0.9.0
 
 > **Olfatea donde otros no miran.**
 
 Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/inspecciones y la Web UI organiza targets, hosts, resources, provenance, estados, notas, JavaScript y análisis asistido por IA.
 
+
+## v0.9.0 — Hunter Intelligence MVP
+
+Esta versión convierte lo aprendido en **HTB Information Gathering - Web Edition** en un pipeline de recon con memoria, policy y leads accionables. La meta no es "escanear todo": es **reducir ruido y decirte qué merece una prueba manual y por qué**.
+
+### Nuevo pipeline
+
+```text
+DISCOVERY / HISTORY
+        ↓
+INVENTORY + PROVENANCE
+        ↓
+DNS / HTTP / CRAWL / JS
+        ↓
+EVIDENCE + RELATIONSHIPS
+        ↓
+CORRELATION ENGINE
+        ↓
+ACTIONABLE LEADS
+        ↓
+AI TRIAGE opcional
+        ↓
+SAFE MANUAL VALIDATION
+```
+
+### Intelligence + policy
+
+La nueva vista **Intelligence** añade:
+
+- perfiles `conservative`, `mercadolibre` y `lab`;
+- límites de candidatos y tráfico activo por target;
+- DNS infrastructure (`A/AAAA/NS/MX/SOA/TXT/SRV/PTR`);
+- AXFR dirigido por nameserver;
+- Smart DNS con naming observado + wildcard detection;
+- Smart VHost con baseline aleatorio para reducir falsos positivos;
+- Certificate Transparency intelligence (`first_seen`, `last_seen`, cert count, issuer, wildcard);
+- Search Intelligence: genera pocas queries/dorks contextuales, **no automatiza búsquedas masivas**;
+- Wayback como historical intelligence;
+- Correlation Engine y Target AI Triage.
+
+### HTTP intelligence por host
+
+- redirect chain;
+- fingerprinting por headers/content;
+- fingerprints pasivos de WAF/CDN cuando hay evidencia;
+- `robots.txt` parseado;
+- selected `.well-known`: `security.txt`, `openid-configuration`, `assetlinks.json`, `change-password`, `mta-sts.txt`;
+- OIDC endpoints/hosts importados con relaciones;
+- crawler BFS controlado con scope estricto, `robots.txt`, sitemap XML, links, JS, documents, forms, comments, emails y hosts relacionados;
+- forms se descubren, **nunca se envían automáticamente**;
+- CORS probe único y explícito;
+- Smart VHost permite base URL/puerto manual para labs.
+
+### Correlation Engine — lead families
+
+La v0.9 genera hipótesis, no findings automáticos:
+
+- Open Redirect (parámetros/forms + JS navigation sinks);
+- exposed Source Maps;
+- Secrets / API keys / client config;
+- OAuth/OIDC surface;
+- CORS candidates;
+- directory listing / exposed files surface;
+- cloud storage endpoints;
+- dangling DNS / Subdomain Takeover candidates;
+- DOM XSS source→sink candidates;
+- SSRF URL-fetch surfaces;
+- IDOR/BOLA object-authorization surfaces.
+
+Cada lead incluye:
+
+```text
+confidence
+review_priority
+evidence
+why_interesting
+next_test
+confirm_if
+discard_if
+```
+
+`confidence` y `review_priority` **no son severidad**. Un finding sólo existe después de validación humana con impacto.
+
+### IA como motor de análisis, no chatbot
+
+Negro mantiene análisis determinístico/local primero. La IA recibe sólo evidencia reducida y enmascarada.
+
+Antes de ejecutar IA muestra:
+
+```text
+input tokens estimados
+output budget
+costo máximo estimado COP
+costo máximo estimado USD
+evidence hash / cache hit
+```
+
+Después guarda usage y costo real estimado. Target AI y JS AI usan cache por `evidence_hash`; si la misma evidencia/modelo ya fue analizada, se reutiliza y el costo de la nueva ejecución es COP $0.
+
+La salida Target AI está obligada a explicar en español:
+
+- qué evidencia sostiene el lead;
+- por qué importa;
+- una prueba manual de bajo impacto;
+- qué resultado lo confirma;
+- qué resultado lo descarta;
+- qué señales son ruido o bajo valor.
+
+### Seguridad operativa
+
+Negro v0.9 **no** hace por defecto:
+
+- credential brute force;
+- wordlists masivas DNS/VHost en bounty;
+- port sweep;
+- Nikto/full vulnerability scanning;
+- submit automático de forms;
+- uso automático de tokens/keys;
+- claim automático de recursos dangling;
+- explotación destructiva.
+
+El perfil `mercadolibre` impone límites bajos para evitar trasladar al bounty real la agresividad de un lab. Revisa siempre la policy vigente del programa.
+
+### Comandos nuevos
+
+```bash
+negro TARGET -w WORKSPACE policy --profile conservative|mercadolibre|lab
+negro TARGET -w WORKSPACE dns-recon
+negro TARGET -w WORKSPACE axfr
+negro TARGET -w WORKSPACE smart-candidates --limit 20
+negro TARGET -w WORKSPACE active-dns
+negro TARGET -w WORKSPACE vhost http://TARGET:PORT/
+negro TARGET -w WORKSPACE web-recon HOST
+negro TARGET -w WORKSPACE crawl HOST --max-urls 120 --max-depth 2
+negro TARGET -w WORKSPACE cors-check HOST --url https://HOST/path
+negro TARGET -w WORKSPACE historical
+negro TARGET -w WORKSPACE search-intel
+negro TARGET -w WORKSPACE generate-leads
+negro TARGET -w WORKSPACE ai-target-estimate
+negro TARGET -w WORKSPACE ai-target
+```
+
+### Smoke test offline
+
+```bash
+PYTHONPATH=. python tests/smoke_test.py
+```
+
+No toca Internet ni consume OpenAI.
+
+---
 
 ## v0.8.1 — build completo y endurecido
 

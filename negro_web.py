@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.8.
+"""Local web workspace for Negro Recon v0.9.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -15,6 +15,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+import urllib.parse
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -430,6 +431,93 @@ def create_app(default_domain: str, default_workspace: Path):
             jobs = [j for j in JOBS.values() if j.get("target_key") == target_key][-8:][::-1]
         return render(request, "dashboard.html", target_key, domain, workspace, **data, jobs=jobs, target_cards=_target_cards())
 
+    @app.get("/t/{target_key}/intelligence", response_class=HTMLResponse)
+    def intelligence_page(request: Request, target_key: str):
+        import negro_intel as intel
+        domain, workspace, paths = _target_context(target_key)
+        return render(
+            request, "intelligence.html", target_key, domain, workspace,
+            policy=core.policy_get(paths),
+            leads=core.get_hunter_leads(paths, 250),
+            historical=core.historical_intelligence(paths),
+            ct=core.ct_intelligence(paths),
+            search=core.search_intelligence(domain, paths),
+            latest_ai=core.latest_target_ai(paths),
+            settings=intel.load_settings(),
+            secret_status=intel.secret_status(),
+        )
+
+    @app.post("/t/{target_key}/policy")
+    def set_policy(target_key: str, profile: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        core.policy_set(paths, profile)
+        return RedirectResponse(url=f"/t/{target_key}/intelligence", status_code=303)
+
+    @app.post("/t/{target_key}/intel/dns")
+    def intel_dns(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        job_id = _start_job("DNS infrastructure", target_key, core.dns_recon, domain, paths, 30)
+        refresh_url = f"/t/{target_key}/intelligence"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/intel/axfr")
+    def intel_axfr(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        job_id = _start_job("AXFR check", target_key, core.axfr_recon, domain, paths, 45)
+        refresh_url = f"/t/{target_key}/intelligence"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/intel/active-dns")
+    def intel_active_dns(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        job_id = _start_job("Smart DNS candidates", target_key, core.active_dns_smart, domain, paths, None)
+        refresh_url = f"/t/{target_key}/intelligence"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/intel/leads")
+    def intel_leads(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        job_id = _start_job("Correlation Engine", target_key, core.generate_hunter_leads, domain, paths)
+        refresh_url = f"/t/{target_key}/intelligence#leads"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.get("/api/t/{target_key}/ai-target-estimate", response_class=JSONResponse)
+    def ai_target_estimate(target_key: str, model: str = ""):
+        domain, _, paths = _target_context(target_key)
+        try:
+            return core.ai_estimate_target(domain, paths, model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/t/{target_key}/ai-target-run")
+    def ai_target_run(request: Request, target_key: str, model: str = Form(""), confirm_cost: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if confirm_cost != "yes":
+            raise HTTPException(status_code=400, detail="Debes estimar y confirmar el costo antes de enviar a IA")
+        domain, _, paths = _target_context(target_key)
+        try:
+            estimate = core.ai_estimate_target(domain, paths, model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        job_id = _start_job(f"AI target · {estimate['model']}", target_key, core.ai_run_target, domain, paths, model or None)
+        refresh_url = f"/t/{target_key}/intelligence#ai-target"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url,"estimate":estimate})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
     @app.get("/t/{target_key}/hosts", response_class=HTMLResponse)
     def hosts(request: Request, target_key: str, q: str = "", review: str = "", classification: str = "", priority: str = ""):
         domain, workspace, paths = _target_context(target_key)
@@ -539,6 +627,65 @@ def create_app(default_domain: str, default_workspace: Path):
         refresh_url = f"/t/{target_key}/host/{host_id}"
         if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
             return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/web-recon")
+    def host_web_recon(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"Web recon {row['hostname']}", target_key, core.web_recon_host, domain, paths, row["hostname"], 30)
+        refresh_url = f"/t/{target_key}/host/{host_id}#observations"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/crawl")
+    def host_crawl(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"Crawl {row['hostname']}", target_key, core.crawl_host, domain, paths, row["hostname"], None, None, 45)
+        refresh_url = f"/t/{target_key}/host/{host_id}#observations"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/cors")
+    def host_cors(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Host no encontrado")
+        job_id = _start_job(f"CORS {row['hostname']}", target_key, core.cors_check_host, domain, paths, row["hostname"], None, 20)
+        refresh_url = f"/t/{target_key}/host/{host_id}#observations"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
+    @app.post("/t/{target_key}/host/{host_id}/vhost")
+    def host_vhost(request: Request, target_key: str, host_id: int, csrf: str = Form(...), base_url: str = Form("")):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT hostname FROM hosts WHERE id=?", (host_id,)).fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Host no encontrado")
+        base_url = (base_url or "").strip() or f"https://{row['hostname']}/"
+        try:
+            parsed = urllib.parse.urlsplit(base_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError
+        except Exception:
+            raise HTTPException(status_code=400, detail="Base URL VHost inválida. Usa http(s)://host[:puerto]/")
+        job_id = _start_job(f"Smart VHost {row['hostname']}", target_key, core.vhost_smart, domain, paths, base_url, None)
+        refresh_url = f"/t/{target_key}/host/{host_id}#observations"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
         return RedirectResponse(url=refresh_url, status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/js-discover")

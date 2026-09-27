@@ -1,65 +1,72 @@
-# Negro Recon — Roadmap
+# Negro Recon — Roadmap posterior a v0.9.0
 
-## Implementado hasta v0.8.1
+## Implementado en el Hunter Intelligence MVP
 
-- crt.sh
-- Subfinder
-- Amass passive
-- GAU por provider
-- Wayback CDX direct
-- URLScan direct
-- SecurityTrails subdomains + DNS history opcional
-- TLS SAN pivot
-- GitHub public code search opcional
-- Basic Inspect
-- multi-target Web UI
-- states/notes/provenance/tree
-- JavaScript discovery
-- local JS extraction
-- source maps
-- OpenAI JS analysis con estimación previa USD/COP
-- Secrets & Client Config con valores enmascarados
-- Source Map app/dependencies/runtime + sourcesContent
-- correlación Source Map + bundle antes de IA
-- IA en español con términos técnicos preservados
-- launcher fijo sobre `.venv`
+- policy profiles;
+- DNS infrastructure + PTR;
+- AXFR;
+- Smart DNS + wildcard detection;
+- Smart VHost + baseline;
+- CT intelligence;
+- fingerprinting + passive WAF/CDN hints;
+- robots.txt;
+- selected `.well-known` + OIDC relationships;
+- bounded crawler + sitemap XML + forms/comments/docs;
+- Search Intelligence query generator;
+- Wayback historical intelligence;
+- JS/source maps/secrets/config;
+- Correlation Engine;
+- actionable leads;
+- Target AI triage;
+- JS/Target AI cost estimate + actual cost + evidence-hash cache;
+- offline smoke test;
+- conservative DB migration from v0.8.x.
 
-## Siguiente aprendizaje antes de automatizar más
+## Próximas mejoras después de probar v0.9 en labs
 
-### Content discovery dirigido
+### 1. Temporal diff v2
 
-Aprender manualmente `ffuf` / `feroxbuster` y reglas/rates por programa. Luego integrar sólo ejecución dirigida/importación por host.
+- comparar contenido JS histórico vs actual;
+- detectar endpoints/hosts/config removidos;
+- validación explícita y bounded de una shortlist histórica;
+- snapshot diff visual.
 
-### Análisis JavaScript v2
+### 2. Document Intelligence
 
-- AST real / separación más precisa de módulos webpack/Vite;
-- correlación entre múltiples bundles;
-- operaciones GraphQL;
-- detección de métodos HTTP con contexto;
-- cache por SHA-256 para no pagar dos veces por el mismo JS;
-- segunda pasada IA sólo cuando la primera marque señal alta.
+- PDF/DOCX/XLSX local extraction;
+- metadata + URLs/hosts/config;
+- AI triage sólo sobre texto relevante;
+- costo/cache igual al pipeline JS.
 
-### Passive DNS providers adicionales
+### 3. Code Intelligence v2
 
-Adaptadores opcionales según cuentas disponibles, sin acoplar Negro a un único proveedor.
+- AST JavaScript/TypeScript;
+- data-flow más preciso para DOM XSS/Open Redirect;
+- correlation entre bundles/chunks;
+- GraphQL operations;
+- HTTP method/body extraction.
 
-### Snapshot diffs
+### 4. Lead validation helpers
 
-Comparar DNS/TLS/HTTP entre inspecciones.
+Sólo helpers de una prueba mínima y reversible, siempre explícitos:
 
+- Open Redirect controlled-domain check;
+- CORS browser-readable evidence;
+- provider-specific dangling DNS confirmation;
+- public storage anonymous-read check.
 
-### v0.7.2 — UX del análisis JS/IA
+No auto-exploitation.
 
-- costo IA claro en COP/USD;
-- barra de actividad + tiempo transcurrido para jobs largos;
-- tarjetas JS más legibles;
-- verificación/diagnóstico del SDK `openai`;
-- hotfix consolidado de source maps inline Base64.
+### 5. Better relationships UI
 
+- grafo Host → Page → Resource → Endpoint → Host;
+- auth clusters;
+- legacy clusters;
+- provenance timeline;
+- “why this lead exists” interactivo.
 
-### Después de v0.8.0
+## Criterio de éxito
 
-- Job Center persistente con cola y límite de concurrencia configurable;
-- progreso por etapas cuando una herramienta exponga progreso real;
-- validadores dirigidos y explícitos para client config sólo cuando el programa lo permita (nunca uso automático de credenciales);
-- correlación entre múltiples bundles/source maps por aplicación.
+No medir Negro por cantidad de módulos. Medirlo por:
+
+> ¿redujo cientos/miles de observaciones a pocos leads que llevaron a una validación útil más rápido que el análisis manual?

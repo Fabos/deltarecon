@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Intelligence · {{ domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><p class="eyebrow">HUNTER INTELLIGENCE</p><h1>Leads, historia y siguiente acción</h1><p class="muted">Correlación determinística primero; IA sólo sobre evidencia seleccionada y con costo visible.</p></div>
+  <a class="button secondary" href="{{ target_base }}/tree">Ver superficie</a>
+</section>
+
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">POLICY</p><h2>{{ policy.label }}</h2></div><span class="badge">{{ policy.profile }}</span></div>
+  <p class="muted">{{ policy.description }}</p>
+  <div class="kv"><span>Active DNS máx.</span><code>{{ policy.active_dns_max_candidates }}</code><span>VHost máx.</span><code>{{ policy.vhost_max_candidates }}</code><span>Crawl</span><code>{{ policy.crawl_max_urls }} URLs · depth {{ policy.crawl_max_depth }}</code><span>Forms</span><code>NO submit</code></div>
+  <form action="{{ target_base }}/policy" method="post" class="inline-state"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="profile"><option value="conservative" {% if policy.profile=='conservative' %}selected{% endif %}>Conservador / bounty</option><option value="mercadolibre" {% if policy.profile=='mercadolibre' %}selected{% endif %}>Mercado Libre / bajo impacto</option><option value="lab" {% if policy.profile=='lab' %}selected{% endif %}>Lab autorizado</option></select><button class="button small-button" type="submit">Cambiar perfil</button></form>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">RECON PLAN</p><h2>Acciones globales</h2></div><span class="muted small">explícitas</span></div>
+  <div class="scan-grid">
+    <form action="{{ target_base }}/intel/dns" method="post" data-job-form data-job-label="DNS infrastructure"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">DNS Recon</button></form>
+    <form action="{{ target_base }}/intel/axfr" method="post" data-job-form data-job-label="AXFR"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">AXFR check</button></form>
+    <form action="{{ target_base }}/intel/active-dns" method="post" data-job-form data-job-label="Smart DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Smart DNS</button></form>
+    <form action="{{ target_base }}/intel/leads" method="post" data-job-form data-job-label="Correlation Engine"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Generar leads</button></form>
+  </div>
+  <p class="muted small">Smart DNS usa naming observado + wildcard detection y respeta el máximo del perfil. No ejecuta wordlists masivas.</p>
+</section>
+</div>
+
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">CERTIFICATE TRANSPARENCY</p><h2>CT intelligence</h2></div><span>{{ ct.total }} hosts</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Wildcard names</span><strong>{{ ct.wildcards }}</strong></div></div>
+  {% for h in ct.hosts[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.hostname }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.certificate_count }} certs{% if h.wildcard %} · wildcard{% endif %}</small>{% if h.issuers %}<small>{{ h.issuers[0] }}</small>{% endif %}</div></div>{% else %}<p class="empty">Ejecuta crt.sh para poblar historia de certificados.</p>{% endfor %}
+</section>
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">SEARCH INTELLIGENCE</p><h2>Queries sugeridas</h2></div><span>{{ search.queries|length }}</span></div>
+  {% for q in search.queries %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ q.label }}</strong><code class="break">{{ q.query }}</code></div></div>{% else %}<p class="empty">Sin queries.</p>{% endfor %}
+  <p class="muted small">Negro las genera; no automatiza búsquedas masivas en Google.</p>
+</section>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">WAYBACK</p><h2>Historical intelligence</h2></div><span>{{ historical.total }} resources</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Historical only</span><strong>{{ historical.historical_only_count }}</strong></div></div>
+  {% for h in historical.resources[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.url }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.captures }} captures {% if h.historical_only %}· historical-only{% endif %}</small></div></div>{% else %}<p class="empty">Ejecuta Wayback CDX para poblar historia.</p>{% endfor %}
+</section>
+
+<section class="panel" id="ai-target">
+  <div class="panel-head"><div><p class="eyebrow">AI TRIAGE</p><h2>Mano derecha sobre evidencia correlacionada</h2></div><span class="muted small">cache por evidence hash</span></div>
+  {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. La parte determinística sigue funcionando.</div>{% endif %}
+  <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/ai-target-estimate" data-run-url="{{ target_base }}/ai-target-run">
+    <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
+    <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. Verás tokens y costo máximo en COP/USD antes de enviar evidencia.</div>
+    <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar target</button></form>
+  </div>
+  {% if latest_ai %}
+  <div class="ai-result"><div class="panel-head"><strong>{{ latest_ai.row.model }}</strong><small>{{ latest_ai.row.created_at }}{% if latest_ai.usage.actual_cost_cop is defined %} · costo real ≈ COP {{ '%.2f'|format(latest_ai.usage.actual_cost_cop) }}{% endif %}</small></div>
+    <p>{{ latest_ai.result.summary }}</p>
+    {% for l in latest_ai.result.top_leads or [] %}<article class="mini-note"><strong>{{ l.title }}</strong><p>{{ l.assessment }}</p><p><b>Por qué:</b> {{ l.why }}</p><p><b>Prueba:</b> {{ l.manual_test }}</p><p><b>Confirma si:</b> {{ l.confirm_if }}</p><p><b>Descarta si:</b> {{ l.discard_if }}</p></article>{% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel" id="leads">
+  <div class="panel-head"><div><p class="eyebrow">CORRELATION ENGINE</p><h2>Leads accionables</h2></div><span>{{ leads|length }}</span></div>
+  {% for l in leads %}
+  <details class="resource-card" {% if loop.index <= 5 %}open{% endif %}>
+    <summary><span><strong>{{ l.title }}</strong>{% if l.hostname %}<small> · {{ l.hostname }}</small>{% endif %}</span><span class="badges"><span class="badge priority-{{ l.review_priority }}">{{ l.review_priority }}</span><span class="badge">confidence {{ l.confidence }}</span><span class="badge">{{ l.lead_type }}</span></span></summary>
+    <div class="resource-body">
+      {% if l.resource_url %}<code class="break">{{ l.resource_url }}</code>{% endif %}
+      <p><b>Por qué importa:</b> {{ l.why_interesting }}</p>
+      <p><b>Siguiente prueba:</b> {{ l.next_test }}</p>
+      <p><b>Confirma si:</b> {{ l.confirm_if }}</p>
+      <p><b>Descarta si:</b> {{ l.discard_if }}</p>
+      <details><summary>Evidencia</summary><pre>{{ l.evidence | tojson(indent=2) }}</pre></details>
+    </div>
+  </details>
+  {% else %}<p class="empty">Aún no hay leads v0.9. Ejecuta <b>Generar leads</b> después de recolectar evidencia.</p>{% endfor %}
+</section>
+{% endblock %}

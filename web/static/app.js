@@ -257,19 +257,22 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
         const cop = Number(data.max_total_cop_est || 0);
+        const cacheHit = Boolean(data.cached);
+        const effectiveCop = cacheHit ? 0 : cop;
+        const effectiveUsd = cacheHit ? 0 : Number(data.max_total_usd_est || 0);
         output.innerHTML = `
           <div class="ai-cost-grid">
             <div class="ai-cost-main">
-              <span>Costo máximo estimado</span>
-              <strong>${formatCop(cop)}</strong>
-              <small>≈ ${roundedCopWords(cop)}</small>
+              <span>${cacheHit ? 'Costo nueva ejecución (cache)' : 'Costo máximo estimado'}</span>
+              <strong>${formatCop(effectiveCop)}</strong>
+              <small>${cacheHit ? 'resultado ya analizado' : `≈ ${roundedCopWords(effectiveCop)}`}</small>
             </div>
-            <div class="ai-cost-detail"><span>Equivalente USD</span><strong>${formatUsd(data.max_total_usd_est)}</strong></div>
+            <div class="ai-cost-detail"><span>Equivalente USD</span><strong>${formatUsd(effectiveUsd)}</strong></div>
             <div class="ai-cost-detail"><span>Entrada estimada</span><strong>${Number(data.input_tokens_est).toLocaleString('es-CO')} tokens</strong></div>
             <div class="ai-cost-detail"><span>Salida presupuestada</span><strong>máx. ${Number(data.output_tokens_budget).toLocaleString('es-CO')} tokens</strong></div>
           </div>
-          <div class="ai-cost-foot">Es un <b>tope estimado</b>; el costo real puede ser menor. Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>
-          <div class="ai-evidence-note">${data.source_map_included ? `✓ La evidencia de IA incluirá el <b>source map confirmado</b>${data.source_map_application_sources !== undefined ? ` · ${Number(data.source_map_application_sources).toLocaleString('es-CO')} fuentes de aplicación` : ''}${data.source_map_sources_with_content !== undefined ? ` · ${Number(data.source_map_sources_with_content).toLocaleString('es-CO')} con contenido` : ''}.` : 'La estimación usa sólo el análisis local del bundle; no hay source map confirmado asociado.'}</div>`;
+          <div class="ai-cost-foot">${cacheHit ? `Cache hit: no se hará una nueva llamada billable. El análisis original tendría un tope teórico de ${formatCop(cop)}.` : 'Es un <b>tope estimado</b>; el costo real puede ser menor.'} Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>
+          <div class="ai-evidence-note">${data.task_type === 'target_triage' ? (data.cached ? `✓ Cache hit: esta evidencia ya fue analizada con ${esc(data.model)}. Se reutilizará el resultado con costo estimado COP $0.` : `✓ Triage global: Negro enviará sólo leads/evidencia correlacionada, fingerprints e histórico filtrado. Evidence hash: ${esc((data.evidence_hash || '').slice(0,12))}…`) : (data.source_map_included ? `✓ La evidencia de IA incluirá el <b>source map confirmado</b>${data.source_map_application_sources !== undefined ? ` · ${Number(data.source_map_application_sources).toLocaleString('es-CO')} fuentes de aplicación` : ''}${data.source_map_sources_with_content !== undefined ? ` · ${Number(data.source_map_sources_with_content).toLocaleString('es-CO')} con contenido` : ''}.` : 'La estimación usa sólo el análisis local del bundle; no hay source map confirmado asociado.')}</div>`;
         runModel.value = data.model;
         runForm.action = box.dataset.runUrl;
         runForm.hidden = false;

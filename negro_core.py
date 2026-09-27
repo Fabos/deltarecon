@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.8.1
+Negro Recon v0.9.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -15,15 +15,17 @@ Core model:
   SOURCE -> RAW -> NORMALIZED -> DELTA -> INVENTORY -> SQLITE GRAPH
   HOST -> BASIC TRIAGE -> REVIEW/CLASSIFICATION
 
-Negro does NOT perform port scanning, brute force, directory fuzzing,
-vulnerability scanning, exploitation, or credential attacks.
-Basic host inspection is single-host and low-impact: DNS, TLS and one HTTP/HTTPS request.
+Negro is passive-first and policy-aware. v0.9 adds bounded, explicit active recon
+(AXFR checks, smart DNS/VHost candidates, controlled crawling/CORS checks) plus a
+deterministic lead engine. It never performs credential attacks, form submission,
+resource claiming, destructive exploitation, DoS, or mass scanning by default.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -34,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -54,6 +56,12 @@ HOST_SOURCE_ORDER = [
     "js_discovery",
     "js_local",
     "sourcemap",
+    "dns_recon",
+    "axfr",
+    "active_dns",
+    "vhost",
+    "web_recon",
+    "crawler",
 ]
 
 GAU_PROVIDERS = {
@@ -84,6 +92,14 @@ SOURCE_INFO = {
     "js_local": ("DIRIGIDA", "JavaScript local analysis", "Endpoints, URLs, source maps y señales extraídas localmente."),
     "sourcemap": ("DIRIGIDA", "Source maps", "Sources/sourcesContent públicos y endpoints derivados."),
     "ai_js": ("OPCIONAL", "AI JavaScript analysis", "Analiza sólo evidencia/chunks relevantes; requiere OPENAI_API_KEY."),
+    "dns_recon": ("DIRIGIDA", "DNS infrastructure", "NS/MX/SOA/TXT/SRV/PTR con pocas consultas."),
+    "axfr": ("DIRIGIDA", "AXFR check", "Prueba una transferencia por nameserver; no recurre ni fuerza si falla."),
+    "active_dns": ("ACTIVA LIMITADA", "Smart DNS candidates", "Valida sólo candidatos inteligentes dentro del presupuesto de política."),
+    "vhost": ("ACTIVA LIMITADA", "Smart VHost discovery", "Fuzzing Host header sólo con candidatos pequeños y baseline."),
+    "web_recon": ("DIRIGIDA", "Web recon", "Redirects, fingerprint, robots.txt y .well-known sobre un host."),
+    "crawler": ("ACTIVA LIMITADA", "Controlled crawler", "BFS acotado, same-scope, sin submit de forms ni métodos destructivos."),
+    "lead_engine": ("LOCAL", "Correlation & Lead Engine", "Correlaciona evidencia para generar hipótesis accionables; no confirma findings."),
+    "ai_target": ("OPCIONAL", "AI target triage", "Prioriza leads y explica pruebas concretas; requiere estimación y confirmación de costo."),
 }
 
 
@@ -307,6 +323,10 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         if "sourcemap_analyzed_at" not in js_cols:
             conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analyzed_at TEXT")
 
+        # v0.9 intelligence schema is additive and conservative.
+        import negro_hunter as hunter
+        hunter.init_schema(conn)
+
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('domain', ?)", (domain,))
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('version', ?)", (VERSION,))
 
@@ -486,11 +506,45 @@ def fetch_crtsh(domain: str, paths: dict[str, Path], timeout: int) -> list[str]:
     (paths["raw"] / "crtsh.json").write_bytes(raw)
     data = json.loads(raw.decode("utf-8"))
     hosts: list[str] = []
+    intel: dict[str, dict[str, object]] = {}
     for entry in data:
+        names: list[str] = []
         for field in ("name_value", "common_name"):
             value = entry.get(field)
             if isinstance(value, str):
-                hosts.extend(value.splitlines())
+                raw_names = [x.strip() for x in value.splitlines() if x.strip()]
+                hosts.extend(raw_names)
+                names.extend(raw_names)
+        entry_seen = str(entry.get("entry_timestamp") or entry.get("not_before") or "")
+        not_before = str(entry.get("not_before") or "")
+        not_after = str(entry.get("not_after") or "")
+        issuer = str(entry.get("issuer_name") or "").strip()
+        cert_id = str(entry.get("id") or entry.get("min_cert_id") or entry.get("serial_number") or "")
+        for original in names:
+            cleaned = original.lstrip("*.").lower().rstrip(".")
+            host = normalize_host(cleaned, domain)
+            if not host:
+                continue
+            item = intel.setdefault(host, {"hostname":host,"first_seen":None,"last_seen":None,"not_before_min":None,"not_after_max":None,"certificate_ids":set(),"issuers":set(),"wildcard":False})
+            if original.startswith("*."):
+                item["wildcard"] = True
+            for key, value, fn in (("first_seen", entry_seen, min), ("last_seen", entry_seen, max), ("not_before_min", not_before, min), ("not_after_max", not_after, max)):
+                if value:
+                    current = item.get(key)
+                    item[key] = value if not current else fn(str(current), value)
+            if cert_id:
+                item["certificate_ids"].add(cert_id)
+            if issuer:
+                item["issuers"].add(issuer)
+    serializable: list[dict[str, object]] = []
+    for host, item in sorted(intel.items()):
+        certs = sorted(item.pop("certificate_ids"))
+        issuers = sorted(item.pop("issuers"))
+        item["certificate_count"] = len(certs)
+        item["certificate_ids_sample"] = certs[:20]
+        item["issuers"] = issuers[:20]
+        serializable.append(item)
+    (paths["raw"] / "crtsh-intelligence.json").write_text(json.dumps({"domain":domain,"hosts":serializable,"generated_at":now_iso()}, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
     return normalize_hosts(hosts, domain)
 
 
@@ -603,6 +657,47 @@ def persist_host_source(source: str, hosts: list[str], domain: str, paths: dict[
     return total, counts.get(source, 0)
 
 
+def persist_crtsh_intelligence(domain: str, paths: dict[str, Path]) -> int:
+    path = paths["raw"] / "crtsh-intelligence.json"
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    count = 0
+    with db_connect(paths) as conn:
+        for item in data.get("hosts", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            host = normalize_host(str(item.get("hostname") or ""), domain)
+            if not host:
+                continue
+            host_id, _ = upsert_host(conn, host, "crtsh")
+            record_observation(conn, "host", host_id, "crtsh", "ct_intelligence", host, item)
+            count += 1
+    return count
+
+
+def ct_intelligence(paths: dict[str, Path], limit: int = 500) -> dict:
+    rows: list[dict] = []
+    with db_connect(paths) as conn:
+        for row in conn.execute("SELECT o.payload_json FROM observations o WHERE o.kind='ct_intelligence' ORDER BY o.id DESC LIMIT ?", (limit,)):
+            try:
+                p = json.loads(row["payload_json"] or "{}")
+            except Exception:
+                continue
+            if isinstance(p, dict) and p.get("hostname"):
+                rows.append(p)
+    # Last observation for a hostname wins, then show newest CT sightings first.
+    merged: dict[str, dict] = {}
+    for item in rows:
+        merged.setdefault(str(item.get("hostname")), item)
+    items = list(merged.values())
+    items.sort(key=lambda x: str(x.get("last_seen") or ""), reverse=True)
+    return {"hosts":items,"total":len(items),"wildcards":sum(1 for x in items if x.get("wildcard"))}
+
+
 def collect_source(source: str, domain: str, paths: dict[str, Path], timeout: int) -> None:
     started = now_iso()
     try:
@@ -623,6 +718,8 @@ def collect_source(source: str, domain: str, paths: dict[str, Path], timeout: in
             raise RuntimeError(f"Fuente no soportada: {source}")
 
         total, delta_count = persist_host_source(source, hosts, domain, paths)
+        if source == "crtsh":
+            persist_crtsh_intelligence(domain, paths)
         log_run(paths, source, "ok" if hosts else "empty", len(hosts), None, started)
         print(f"[+] {source}: {len(hosts)} hosts normalizados")
         print(f"[+] Delta lógico {source}: {delta_count}")
@@ -1022,6 +1119,8 @@ def collect_securitytrails(domain: str, paths: dict[str, Path], timeout: int = 4
         raw_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         hosts = normalize_hosts(result.get("hosts", []), domain)
         total, delta_count = persist_host_source(source, hosts, domain, paths)
+        if source == "crtsh":
+            persist_crtsh_intelligence(domain, paths)
         log_run(paths, source, "ok" if hosts else "empty", len(hosts), None, started)
         return {"source": source, "hosts": len(hosts), "delta": delta_count, "inventory": total, "raw": str(raw_path)}
     except Exception as exc:
@@ -1316,8 +1415,20 @@ def ai_estimate_js_asset(paths: dict[str, Path], asset_id: int, model: str | Non
     local = json.loads(row["local_analysis_json"])
     sourcemap = _load_saved_sourcemap_analysis(paths, row, domain)
     payload = intel.ai_payload(local, sourcemap, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    evidence_hash = __import__("hashlib").sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
     estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
     estimate["payload_chars"] = len(payload)
+    estimate["evidence_hash"] = evidence_hash
+    estimate["task_type"] = "js_triage"
+    with db_connect(paths) as conn:
+        try:
+            import negro_hunter as hunter
+            hunter.init_schema(conn)
+            cached = conn.execute("SELECT created_at FROM ai_tasks WHERE task_type='js_triage' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+        except Exception:
+            cached = None
+    estimate["cached"] = bool(cached)
+    estimate["cache_created_at"] = cached["created_at"] if cached else None
     estimate["asset_id"] = asset_id
     estimate["fx_rate_date"] = settings.get("usd_cop_rate_date")
     estimate["source_map_included"] = bool(sourcemap)
@@ -1343,16 +1454,399 @@ def ai_run_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = N
     local = json.loads(row["local_analysis_json"])
     sourcemap = _load_saved_sourcemap_analysis(paths, row, domain)
     payload = intel.ai_payload(local, sourcemap, max_chars=int(settings.get("js_ai_max_chars", 650000)))
+    evidence_hash = __import__("hashlib").sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
     estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 0) or 0))
     estimate["source_map_included"] = bool(sourcemap)
+    estimate["evidence_hash"] = evidence_hash
+    estimate["task_type"] = "js_triage"
+    try:
+        import negro_hunter as hunter
+        with db_connect(paths) as conn:
+            hunter.init_schema(conn)
+            cached = conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type='js_triage' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+        if cached:
+            result = json.loads(cached["result_json"] or "{}")
+            original_usage = json.loads(cached["usage_json"] or "{}")
+            usage = {**original_usage, "cache_hit": True, "cache_created_at": cached["created_at"], "actual_cost_usd": 0.0, "actual_cost_cop": 0.0}
+            estimate["cached"] = True
+            return {"asset_id": asset_id, "model": selected_model, "estimate": estimate, "usage": usage, "result": result, "cached": True}
+    except Exception:
+        pass
     result, usage = intel.run_openai_js_analysis(payload, model=selected_model, output_tokens=output_tokens)
+    try:
+        import negro_hunter as hunter
+        usage.update(hunter.actual_ai_cost(usage, selected_model, float(settings.get("usd_cop_rate", 0) or 0)))
+    except Exception:
+        pass
     with db_connect(paths) as conn:
+        try:
+            import negro_hunter as hunter
+            hunter.init_schema(conn)
+            conn.execute("INSERT INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('js_triage',?,?, 'done',?,?,?,?) ON CONFLICT(task_type,evidence_hash,model) DO UPDATE SET status='done',estimate_json=excluded.estimate_json,usage_json=excluded.usage_json,result_json=excluded.result_json,created_at=excluded.created_at", (evidence_hash, selected_model, json.dumps(estimate), json.dumps(usage), json.dumps(result, ensure_ascii=False), now_iso()))
+        except Exception:
+            pass
         conn.execute(
             "INSERT INTO ai_analyses(js_asset_id, model, status, estimate_json, usage_json, result_json, created_at) VALUES(?, ?, 'done', ?, ?, ?, ?)",
             (asset_id, selected_model, json.dumps(estimate), json.dumps(usage), json.dumps(result, ensure_ascii=False), now_iso()),
         )
         record_observation(conn, "host", int(row["host_id"]), "ai_js", "ai_analysis", row["url"], {"asset_id": asset_id, "model": selected_model, "summary": result.get("summary"), "observation_count": len(result.get("observations", [])) if isinstance(result, dict) else 0, "source_map_included": bool(sourcemap)})
     return {"asset_id": asset_id, "model": selected_model, "estimate": estimate, "usage": usage, "result": result}
+
+def policy_get(paths: dict[str, Path]) -> dict:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        return hunter.policy_summary(conn)
+
+
+def policy_set(paths: dict[str, Path], profile: str) -> dict:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        result = hunter.set_policy(conn, profile)
+        conn.commit()
+        return result
+
+
+def dns_recon(domain: str, paths: dict[str, Path], timeout: int = 20) -> dict:
+    import negro_hunter as hunter
+    started = now_iso()
+    result = hunter.dns_infrastructure(domain, timeout=min(6, max(2, timeout / 5)))
+    raw = paths["raw"] / "dns-recon.json"
+    raw.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        root_id, _ = upsert_host(conn, domain, "dns_recon")
+        record_observation(conn, "host", root_id, "dns_recon", "dns_infrastructure", None, result)
+        for _, ptr_host in (result.get("records", {}).get("PTR", {}) or {}).items():
+            normalized = normalize_host(str(ptr_host), domain)
+            if normalized:
+                upsert_host(conn, normalized, "reverse_dns")
+                hunter.relationship(conn, "host", root_id, "reverse_ptr", "host", normalized, "dns_recon", {"ptr": ptr_host})
+    rebuild_inventory(paths, domain)
+    log_run(paths, "dns_recon", "ok", sum(len(v) if isinstance(v, list) else len(v) if isinstance(v, dict) else 0 for v in result.get("records", {}).values()), None, started)
+    return {**result, "raw": str(raw)}
+
+
+def axfr_recon(domain: str, paths: dict[str, Path], timeout: int = 25) -> dict:
+    import negro_hunter as hunter
+    started = now_iso()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        hunter.assert_policy(conn, "axfr")
+    infra = hunter.dns_infrastructure(domain, timeout=min(5, max(2, timeout / 5)))
+    nameservers = infra.get("records", {}).get("NS", []) or []
+    result = hunter.axfr_check(domain, nameservers, timeout=min(8, max(3, timeout / max(1, len(nameservers)))))
+    raw = paths["raw"] / "axfr.json"
+    raw.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    imported: set[str] = set()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        root_id, _ = upsert_host(conn, domain, "axfr")
+        record_observation(conn, "host", root_id, "axfr", "zone_transfer", None, result)
+        for nsres in result.get("results", []):
+            if nsres.get("status") != "success":
+                continue
+            for rec in nsres.get("records", []):
+                name = normalize_host(str(rec.get("name", "")), domain)
+                if name:
+                    upsert_host(conn, name, "axfr")
+                    imported.add(name)
+                # Hostnames embedded in CNAME/MX/NS/SRV values are also useful.
+                value = str(rec.get("value", ""))
+                for token in re.findall(r"(?:[A-Za-z0-9_-]+\.)+%s" % re.escape(domain), value, re.I):
+                    n = normalize_host(token, domain)
+                    if n:
+                        upsert_host(conn, n, "axfr")
+                        imported.add(n)
+    total, _ = rebuild_inventory(paths, domain)
+    successes = sum(1 for x in result.get("results", []) if x.get("status") == "success")
+    log_run(paths, "axfr", "ok" if successes else "empty", len(imported), None, started)
+    return {**result, "nameservers": nameservers, "successful_nameservers": successes, "imported_hosts": sorted(imported), "inventory": total, "raw": str(raw)}
+
+
+def smart_host_candidates(domain: str, paths: dict[str, Path], requested_limit: int | None = None) -> dict:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        policy = hunter.policy_summary(conn)
+        known = [r["hostname"] for r in conn.execute("SELECT hostname FROM hosts ORDER BY hostname").fetchall()]
+    limit = requested_limit or int(policy.get("active_dns_max_candidates", 25))
+    limit = min(limit, int(policy.get("active_dns_max_candidates", limit)))
+    candidates = hunter.generate_smart_host_candidates(domain, known, max_candidates=limit)
+    return {"policy": policy, "known_hosts": len(known), "candidates": candidates, "count": len(candidates)}
+
+
+def active_dns_smart(domain: str, paths: dict[str, Path], candidates: list[str] | None = None) -> dict:
+    import negro_hunter as hunter
+    started = now_iso()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        policy = hunter.policy_summary(conn)
+        if candidates is None:
+            known = [r["hostname"] for r in conn.execute("SELECT hostname FROM hosts ORDER BY hostname").fetchall()]
+            candidates = hunter.generate_smart_host_candidates(domain, known, int(policy.get("active_dns_max_candidates", 25)))
+        hunter.assert_policy(conn, "active_dns", len(candidates))
+    result = hunter.active_dns_validate(domain, candidates, delay_s=float(policy.get("active_dns_delay_s", 0.35)))
+    found_hosts = [x.get("hostname") for x in result.get("found", []) if x.get("hostname")]
+    total, delta = persist_host_source("active_dns", normalize_hosts(found_hosts, domain), domain, paths)
+    with db_connect(paths) as conn:
+        root_id, _ = upsert_host(conn, domain, "active_dns")
+        record_observation(conn, "host", root_id, "active_dns", "smart_candidates", None, result)
+    log_run(paths, "active_dns", "ok" if found_hosts else "empty", len(found_hosts), None, started)
+    return {**result, "delta": delta, "inventory": total, "policy": policy}
+
+
+def vhost_smart(domain: str, paths: dict[str, Path], base_url: str, candidates: list[str] | None = None) -> dict:
+    import negro_hunter as hunter
+    started = now_iso()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        policy = hunter.policy_summary(conn)
+        if candidates is None:
+            known = [r["hostname"] for r in conn.execute("SELECT hostname FROM hosts ORDER BY hostname").fetchall()]
+            candidates = hunter.generate_smart_host_candidates(domain, known, int(policy.get("vhost_max_candidates", 25)))
+        candidates = [x for x in candidates if normalize_host(x, domain)]
+        hunter.assert_policy(conn, "vhost", len(candidates))
+    result = hunter.vhost_discover(base_url, candidates, delay_s=float(policy.get("vhost_delay_s", 0.45)))
+    found = [x.get("hostname") for x in result.get("found", []) if x.get("hostname") and not x.get("error")]
+    total, delta = persist_host_source("vhost", normalize_hosts(found, domain), domain, paths)
+    with db_connect(paths) as conn:
+        root_id, _ = upsert_host(conn, domain, "vhost")
+        record_observation(conn, "host", root_id, "vhost", "smart_vhost", base_url, result)
+    log_run(paths, "vhost", "ok" if found else "empty", len(found), None, started)
+    return {**result, "delta": delta, "inventory": total, "policy": policy}
+
+
+def web_recon_host(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 30) -> dict:
+    import negro_hunter as hunter
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    started = now_iso()
+    result = hunter.web_recon(hostname, timeout=min(12, max(4, timeout / 3)))
+    out_dir = paths["raw"] / "web-recon"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raw = out_dir / f"{hostname}.json"
+    raw.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    imported_urls: list[str] = []
+    imported_hosts: set[str] = set()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        host_id, _ = upsert_host(conn, hostname, "web_recon")
+        record_observation(conn, "host", host_id, "web_recon", "web_recon", result.get("final_url"), result)
+        final = urllib.parse.urlsplit(result.get("final_url") or f"https://{hostname}/")
+        origin = urllib.parse.urlunsplit((final.scheme or "https", final.netloc or hostname, "", "", ""))
+        robots = result.get("robots", {}) or {}
+        for group in robots.get("groups", []) or []:
+            for rule in group.get("rules", []) or []:
+                path = str(rule.get("path") or "")
+                if not path or path == "/":
+                    continue
+                url = urllib.parse.urljoin(origin + "/", path)
+                if canonicalize_url(url, domain):
+                    upsert_resource(conn, url, "robots", domain)
+                    imported_urls.append(url)
+        for sm in robots.get("sitemaps", []) or []:
+            if canonicalize_url(str(sm), domain):
+                upsert_resource(conn, str(sm), "robots_sitemap", domain)
+                imported_urls.append(str(sm))
+        for wk_path, wk in (result.get("well_known", {}) or {}).items():
+            wk_url = urllib.parse.urljoin(origin + "/", wk_path)
+            if canonicalize_url(wk_url, domain):
+                upsert_resource(conn, wk_url, "well_known", domain)
+                imported_urls.append(wk_url)
+            data = wk.get("json") if isinstance(wk, dict) else None
+            if isinstance(data, dict):
+                # OpenID endpoints/issuer/JWKS are structured, high-value relationships.
+                for key in ("issuer", "authorization_endpoint", "token_endpoint", "userinfo_endpoint", "jwks_uri", "registration_endpoint", "end_session_endpoint"):
+                    value = data.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    parsed = canonicalize_url(value, domain)
+                    if parsed:
+                        upsert_resource(conn, value, "well_known_oidc", domain)
+                        imported_urls.append(value)
+                        imported_hosts.add(parsed[1])
+                        hunter.relationship(conn, "host", host_id, f"oidc_{key}", "url", value, "well_known", {"path":wk_path})
+                # assetlinks.json shape is a list, handled below separately.
+            if wk_path.endswith("assetlinks.json") and isinstance(data, list):
+                for entry in data[:100]:
+                    try:
+                        package = entry.get("target", {}).get("package_name")
+                    except Exception:
+                        package = None
+                    if package:
+                        hunter.relationship(conn, "host", host_id, "android_package", "package", str(package), "assetlinks", entry)
+        for new_host in imported_hosts:
+            upsert_host(conn, new_host, "well_known_oidc")
+    rebuild_inventory(paths, domain)
+    log_run(paths, "web_recon", "ok", len(imported_urls), None, started)
+    return {**result, "imported_urls": len(set(imported_urls)), "imported_hosts": sorted(imported_hosts), "raw": str(raw)}
+
+
+def crawl_host(domain: str, paths: dict[str, Path], hostname: str, max_urls: int | None = None, max_depth: int | None = None, timeout: int = 30) -> dict:
+    import negro_hunter as hunter
+    started = now_iso()
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        policy = hunter.policy_summary(conn)
+    cap_urls = int(policy.get("crawl_max_urls", 200))
+    cap_depth = int(policy.get("crawl_max_depth", 2))
+    use_urls = min(max_urls or cap_urls, cap_urls)
+    use_depth = min(max_depth if max_depth is not None else cap_depth, cap_depth)
+    result = hunter.crawl(hostname, domain=domain, max_urls=use_urls, max_depth=use_depth, delay_s=float(policy.get("crawl_delay_s", 0.35)), respect_robots=True, timeout=min(12, max(4, timeout / 3)))
+    out_dir = paths["raw"] / "crawl"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raw = out_dir / f"{hostname}.json"
+    raw.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    source = "crawler"
+    all_urls = list(result.get("links", [])) + list(result.get("documents", [])) + list(result.get("js_files", []))
+    new_hosts, new_resources, total = _persist_url_list(domain, paths, source, all_urls)
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        host_id, _ = upsert_host(conn, hostname, source)
+        # Store a bounded summary as observation; full output remains in raw/.
+        summary = dict(result)
+        summary["external_urls"] = (summary.get("external_urls") or [])[:300]
+        summary["comments"] = (summary.get("comments") or [])[:300]
+        summary["forms"] = (summary.get("forms") or [])[:300]
+        summary["pages"] = (summary.get("pages") or [])[:500]
+        record_observation(conn, "host", host_id, source, "crawl_result", result.get("seed"), summary)
+        for url in result.get("js_files", []) or []:
+            parsed = canonicalize_url(url, domain)
+            if parsed:
+                conn.execute("INSERT OR IGNORE INTO js_assets(host_id,url,source,discovered_at) VALUES(?,?,?,?)", (host_id, url, source, now_iso()))
+        for item in result.get("external_urls", [])[:300]:
+            record_observation(conn, "host", host_id, source, "external_url", item, None)
+        for email in result.get("emails", [])[:100]:
+            record_observation(conn, "host", host_id, source, "email", email, None)
+        for nh in result.get("new_hosts", []) or []:
+            n = normalize_host(nh, domain)
+            if n:
+                upsert_host(conn, n, source)
+                hunter.relationship(conn, "host", host_id, "links_to_host", "host", n, source, None)
+    rebuild_inventory(paths, domain)
+    log_run(paths, source, "ok", int(result.get("visited", 0)), None, started)
+    return {**result, "new_hosts_count": new_hosts, "new_resources": new_resources, "inventory": total, "policy": policy, "raw": str(raw)}
+
+
+def cors_check_host(domain: str, paths: dict[str, Path], hostname: str, url: str | None = None, timeout: int = 20) -> dict:
+    import negro_hunter as hunter
+    hostname = normalize_host(hostname, domain) or ""
+    if not hostname:
+        raise RuntimeError("Host fuera del target")
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        hunter.assert_policy(conn, "cors")
+        host_id, _ = upsert_host(conn, hostname, "cors_probe")
+    target_url = url or f"https://{hostname}/"
+    parsed = canonicalize_url(target_url, domain)
+    if not parsed:
+        raise RuntimeError("La URL de CORS debe estar dentro del target")
+    result = hunter.cors_probe(target_url, timeout=min(12, max(4, timeout / 2)))
+    with db_connect(paths) as conn:
+        record_observation(conn, "host", host_id, "cors_probe", "cors_probe", target_url, result)
+    return result
+
+
+def historical_intelligence(paths: dict[str, Path]) -> dict:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        return hunter.historical_intelligence(conn)
+
+
+def search_intelligence(domain: str, paths: dict[str, Path]) -> dict:
+    import negro_hunter as hunter
+    tech: list[str] = []
+    keywords: set[str] = set()
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        for row in conn.execute("SELECT payload_json FROM observations WHERE kind='web_recon' ORDER BY id DESC LIMIT 50"):
+            try:
+                p = json.loads(row["payload_json"] or "{}")
+                tech += [str(x.get("technology")) for x in p.get("fingerprints", []) if isinstance(x, dict) and x.get("technology")]
+            except Exception:
+                pass
+        for h in conn.execute("SELECT hostname FROM hosts ORDER BY hostname LIMIT 500"):
+            left = h["hostname"].replace("." + domain, "")
+            for token in re.split(r"[-_.]", left):
+                if 3 <= len(token) <= 24 and token not in {"www", "com", "net", "org"}:
+                    keywords.add(token)
+    return {"domain": domain, "queries": hunter.search_queries(domain, tech, sorted(keywords)[:10]), "technologies": sorted(set(tech))[:30], "keywords": sorted(keywords)[:20]}
+
+
+def generate_hunter_leads(domain: str, paths: dict[str, Path]) -> dict:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        result = hunter.generate_leads(conn, domain)
+        conn.commit()
+        result["leads"] = hunter.list_leads(conn, 200)
+        return result
+
+
+def get_hunter_leads(paths: dict[str, Path], limit: int = 200) -> list[dict]:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        return hunter.list_leads(conn, limit)
+
+
+def ai_estimate_target(domain: str, paths: dict[str, Path], model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    settings = __import__("negro_intel").load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = int(settings.get("ai_output_tokens", 3000))
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        payload, evidence_hash = hunter.build_target_ai_payload(conn, domain, max_chars=int(settings.get("target_ai_max_chars", 500000)))
+        cached = conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type='target_triage' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+    estimate = __import__("negro_intel").estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 3344.62)))
+    estimate.update({"task_type":"target_triage", "evidence_hash": evidence_hash, "payload_chars": len(payload), "cached": bool(cached), "cache_created_at": cached["created_at"] if cached else None})
+    if cached:
+        estimate["max_total_usd_est"] = 0.0
+        estimate["max_total_cop_est"] = 0.0
+        estimate["cache_note"] = "La misma evidencia ya fue analizada con este modelo; se reutilizará sin costo." 
+    return estimate
+
+
+def ai_run_target(domain: str, paths: dict[str, Path], model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    import negro_intel as intel
+    settings = intel.load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = int(settings.get("ai_output_tokens", 3000))
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        payload, evidence_hash = hunter.build_target_ai_payload(conn, domain, max_chars=int(settings.get("target_ai_max_chars", 500000)))
+        cached = conn.execute("SELECT * FROM ai_tasks WHERE task_type='target_triage' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+        if cached:
+            return {"cached": True, "model": selected_model, "evidence_hash": evidence_hash, "result": json.loads(cached["result_json"] or "{}"), "usage": json.loads(cached["usage_json"] or "{}"), "created_at": cached["created_at"]}
+    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 3344.62)))
+    result, usage = hunter.run_openai_target_analysis(payload, model=selected_model, output_tokens=output_tokens)
+    usage.update(hunter.actual_ai_cost(usage, selected_model, float(settings.get("usd_cop_rate", 3344.62))))
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('target_triage',?,?,?,?,?,?,?)", (evidence_hash, selected_model, "done", json.dumps(estimate, ensure_ascii=False), json.dumps(usage, ensure_ascii=False), json.dumps(result, ensure_ascii=False), now_iso()))
+    return {"cached": False, "model": selected_model, "evidence_hash": evidence_hash, "estimate": estimate, "usage": usage, "result": result}
+
+
+def latest_target_ai(paths: dict[str, Path]) -> dict | None:
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        row = conn.execute("SELECT * FROM ai_tasks WHERE task_type='target_triage' AND status='done' ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        return None
+    def load(v, default):
+        try: return json.loads(v or "")
+        except Exception: return default
+    return {"row": dict(row), "estimate": load(row["estimate_json"], {}), "usage": load(row["usage_json"], {}), "result": load(row["result_json"], {})}
 
 def print_inspection_history(paths: dict[str, Path], hostname: str, limit: int = 5) -> None:
     hostname = hostname.strip().lower().rstrip(".")
@@ -1865,6 +2359,43 @@ def build_parser() -> argparse.ArgumentParser:
     aiap.add_argument("asset_id", type=int)
     aiap.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
 
+    polp = subs.add_parser("policy", help="Ver/cambiar perfil de política del target")
+    polp.add_argument("--profile", choices=["conservative", "mercadolibre", "lab"])
+
+    subs.add_parser("dns-recon", help="DNS infrastructure: A/AAAA/NS/MX/SOA/TXT/SRV/PTR")
+    subs.add_parser("axfr", help="Probar AXFR contra nameservers autoritativos")
+
+    candp = subs.add_parser("smart-candidates", help="Generar candidatos DNS/VHost a partir de naming observado")
+    candp.add_argument("--limit", type=int)
+
+    adp = subs.add_parser("active-dns", help="Validar candidatos DNS inteligentes con wildcard detection")
+    adp.add_argument("--candidate", action="append", default=[])
+
+    vhp = subs.add_parser("vhost", help="VHost discovery dirigido con pocos candidatos")
+    vhp.add_argument("base_url", help="URL real del servidor, p.ej. http://host:8080")
+    vhp.add_argument("--candidate", action="append", default=[])
+
+    wrp = subs.add_parser("web-recon", help="Redirect chain + fingerprint + robots.txt + .well-known")
+    wrp.add_argument("host")
+
+    crp = subs.add_parser("crawl", help="Crawler BFS controlado, same-scope, sin submit de forms")
+    crp.add_argument("host")
+    crp.add_argument("--max-urls", type=int)
+    crp.add_argument("--max-depth", type=int)
+
+    corp = subs.add_parser("cors-check", help="Una prueba CORS de bajo impacto con Origin controlado")
+    corp.add_argument("host")
+    corp.add_argument("--url")
+
+    subs.add_parser("historical", help="Resumir inteligencia temporal de Wayback ya importada")
+    subs.add_parser("search-intel", help="Generar dorks/queries dirigidas sin ejecutarlas automáticamente")
+    subs.add_parser("generate-leads", help="Correlacionar evidencia y generar leads accionables")
+
+    atp = subs.add_parser("ai-target-estimate", help="Estimar IA para triage global del target")
+    atp.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
+    arp = subs.add_parser("ai-target", help="Ejecutar IA global del target; usa cache por evidence hash")
+    arp.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
+
     inspectp = subs.add_parser("inspect", help="Triage básico de un host: DNS, TLS y HTTP/HTTPS")
     inspectp.add_argument("host")
 
@@ -1940,6 +2471,36 @@ def cli_main(args: argparse.Namespace) -> None:
         print(json.dumps(ai_estimate_js_asset(paths, args.asset_id, args.model), indent=2, ensure_ascii=False))
     elif args.command == "ai-analyze":
         print(json.dumps(ai_run_js_asset(paths, args.asset_id, args.model), indent=2, ensure_ascii=False))
+    elif args.command == "policy":
+        print(json.dumps(policy_set(paths, args.profile) if args.profile else policy_get(paths), indent=2, ensure_ascii=False))
+    elif args.command == "dns-recon":
+        print(json.dumps(dns_recon(domain, paths, min(args.timeout, 60)), indent=2, ensure_ascii=False))
+    elif args.command == "axfr":
+        print(json.dumps(axfr_recon(domain, paths, min(args.timeout, 90)), indent=2, ensure_ascii=False))
+    elif args.command == "smart-candidates":
+        print(json.dumps(smart_host_candidates(domain, paths, args.limit), indent=2, ensure_ascii=False))
+    elif args.command == "active-dns":
+        candidates = args.candidate or None
+        print(json.dumps(active_dns_smart(domain, paths, candidates), indent=2, ensure_ascii=False))
+    elif args.command == "vhost":
+        candidates = args.candidate or None
+        print(json.dumps(vhost_smart(domain, paths, args.base_url, candidates), indent=2, ensure_ascii=False))
+    elif args.command == "web-recon":
+        print(json.dumps(web_recon_host(domain, paths, args.host, min(args.timeout, 60)), indent=2, ensure_ascii=False))
+    elif args.command == "crawl":
+        print(json.dumps(crawl_host(domain, paths, args.host, args.max_urls, args.max_depth, min(args.timeout, 120)), indent=2, ensure_ascii=False))
+    elif args.command == "cors-check":
+        print(json.dumps(cors_check_host(domain, paths, args.host, args.url, min(args.timeout, 45)), indent=2, ensure_ascii=False))
+    elif args.command == "historical":
+        print(json.dumps(historical_intelligence(paths), indent=2, ensure_ascii=False))
+    elif args.command == "search-intel":
+        print(json.dumps(search_intelligence(domain, paths), indent=2, ensure_ascii=False))
+    elif args.command == "generate-leads":
+        print(json.dumps(generate_hunter_leads(domain, paths), indent=2, ensure_ascii=False))
+    elif args.command == "ai-target-estimate":
+        print(json.dumps(ai_estimate_target(domain, paths, args.model), indent=2, ensure_ascii=False))
+    elif args.command == "ai-target":
+        print(json.dumps(ai_run_target(domain, paths, args.model), indent=2, ensure_ascii=False))
     elif args.command == "inspect":
         inspect_host(domain, paths, args.host, min(args.timeout, 60))
     elif args.command == "inspect-history":

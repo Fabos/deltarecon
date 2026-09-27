@@ -32,13 +32,14 @@ DEFAULT_SETTINGS = {
     "usd_cop_rate_date": "2026-09-26",
     "js_max_download_mb": 8,
     "js_ai_max_chars": 650000,
+    "target_ai_max_chars": 500000,
     "job_max_workers": 3,
     "urlscan_detail_limit": 8,
     "wayback_limit": 5000,
 }
 
 OPENAI_PRICING = {
-    # Standard processing prices per 1M text tokens, snapshot 2026-09-26.
+    # Standard processing prices per 1M text tokens, snapshot 2026-09-27.
     "gpt-6-luna": {"input": 0.10, "output": 0.50, "long_input": 0.20, "long_output": 0.75},
     "gpt-6-sol": {"input": 2.00, "output": 10.00, "long_input": 4.00, "long_output": 15.00},
 }
@@ -50,6 +51,11 @@ SIGNAL_KEYWORDS = [
     "openapi", "upload", "download", "export", "import", "role", "permission",
     "featureflag", "feature_flag", "localstorage", "sessionstorage", "oauth", "sso",
     "password", "secret", "privatekey", "client_secret", "bucket", "s3", "firebase",
+    # Flujo de datos / navegación: señales baratas que alimentan correlación y AI triage.
+    "redirect_uri", "returnurl", "return_url", "window.location", "location.href",
+    "location.assign", "location.replace", "location.search", "location.hash",
+    "document.url", "postmessage", "innerhtml", "outerhtml", "insertadjacenthtml",
+    "document.write",
 ]
 
 ABS_URL_RE = re.compile(r"(?P<url>(?:https?|wss?)://[^\s\"'<>\\]+)", re.I)
@@ -179,6 +185,8 @@ def runtime_dependency_status() -> dict[str, bool]:
         "openai": importlib.util.find_spec("openai") is not None,
         "tiktoken": importlib.util.find_spec("tiktoken") is not None,
         "jsbeautifier": importlib.util.find_spec("jsbeautifier") is not None,
+        "requests": importlib.util.find_spec("requests") is not None,
+        "dnspython": importlib.util.find_spec("dns") is not None,
     }
 
 
@@ -717,7 +725,7 @@ def estimate_ai_cost(payload: str, model: str, output_tokens: int, usd_cop_rate:
         "max_total_usd_est": total_usd_max,
         "usd_cop_rate": usd_cop_rate,
         "max_total_cop_est": total_usd_max * usd_cop_rate,
-        "pricing_snapshot": "2026-09-26",
+        "pricing_snapshot": "2026-09-27",
     }
 
 
@@ -758,7 +766,7 @@ Return ONLY valid JSON con este schema exacto (los valores textuales deben estar
   "summary": "...",
   "architecture": {"api_bases": [], "websockets": [], "graphql": [], "roles": [], "feature_flags": [], "storage_keys": []},
   "observations": [
-    {"signal":"high|medium|low", "title":"...", "evidence":"...", "why_interesting":"...", "manual_validation":"..."}
+    {"signal":"high|medium|low", "title":"...", "evidence":"...", "why_interesting":"...", "manual_validation":"...", "confirm_if":"...", "discard_if":"..."}
   ],
   "resources": [
     {"url_or_path":"...", "method":"unknown|GET|POST|PUT|PATCH|DELETE", "auth_context":"...", "evidence":"..."}

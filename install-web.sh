@@ -8,6 +8,7 @@ required_files=(
   "negro.py"
   "negro_core.py"
   "negro_intel.py"
+  "negro_hunter.py"
   "negro_web.py"
   "requirements.txt"
   "web/static/app.js"
@@ -19,6 +20,7 @@ required_files=(
   "web/templates/settings.html"
   "web/templates/target_error.html"
   "web/templates/tree.html"
+  "web/templates/intelligence.html"
 )
 
 missing=()
@@ -48,7 +50,7 @@ fi
 echo "[+] Verificando dependencias de Negro..."
 "$ROOT/.venv/bin/python" - <<'PY'
 import sys
-mods = ["fastapi", "uvicorn", "jinja2", "multipart", "openai", "tiktoken", "jsbeautifier"]
+mods = ["fastapi", "uvicorn", "jinja2", "multipart", "openai", "tiktoken", "jsbeautifier", "requests", "dns"]
 failed = []
 for name in mods:
     try:
@@ -69,7 +71,7 @@ PY
 
 echo "[+] Verificando Python y templates..."
 "$ROOT/.venv/bin/python" -m py_compile \
-  "$ROOT/negro.py" "$ROOT/negro_core.py" "$ROOT/negro_intel.py" "$ROOT/negro_web.py"
+  "$ROOT/negro.py" "$ROOT/negro_core.py" "$ROOT/negro_intel.py" "$ROOT/negro_hunter.py" "$ROOT/negro_web.py"
 
 ROOT="$ROOT" "$ROOT/.venv/bin/python" - <<'PY'
 import os
