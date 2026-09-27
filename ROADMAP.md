@@ -1,6 +1,6 @@
 # Negro Recon — Roadmap
 
-## Implementado hasta v0.7
+## Implementado hasta v0.7.2
 
 - crt.sh
 - Subfinder
@@ -41,3 +41,12 @@ Adaptadores opcionales según cuentas disponibles, sin acoplar Negro a un único
 ### Snapshot diffs
 
 Comparar DNS/TLS/HTTP entre inspecciones.
+
+
+### v0.7.2 — UX del análisis JS/IA
+
+- costo IA claro en COP/USD;
+- barra de actividad + tiempo transcurrido para jobs largos;
+- tarjetas JS más legibles;
+- verificación/diagnóstico del SDK `openai`;
+- hotfix consolidado de source maps inline Base64.

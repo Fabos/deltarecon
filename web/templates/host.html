@@ -7,9 +7,9 @@
     <a class="button secondary" href="{{ host_https_url }}" target="_blank" rel="noopener noreferrer">Abrir HTTPS ↗</a>
     <a class="button ghost" href="{{ host_http_url }}" target="_blank" rel="noopener noreferrer">HTTP ↗</a>
     <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit" data-inspect-button>Inspección básica</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Pivot TLS SAN</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Passive DNS</button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Descubrir JS</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form data-job-label="Pivot TLS SAN"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Pivot TLS SAN</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form data-job-label="Passive DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Passive DNS</button></form>
+    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form data-job-label="Descubriendo JavaScript"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Descubrir JS</button></form>
   </div>
 </section>
 <div class="inspect-status" data-inspect-status aria-live="polite"></div>
@@ -47,6 +47,7 @@
   <div class="panel-head"><div><p class="eyebrow">JAVASCRIPT</p><h2>Bundles y análisis</h2></div><span>{{ js_assets|length }} assets</span></div>
   <p class="muted">El análisis local extrae URLs, rutas, WebSockets, source maps y señales. La IA sólo recibe evidencia seleccionada después de mostrarte una estimación de costo.</p>
   {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OpenAI no está configurado. Ve a <a href="{{ target_base }}/settings">Settings</a> para ver dónde poner la key.</div>{% endif %}
+  {% if dependency_status and not dependency_status.openai %}<div class="callout warning"><strong>SDK OpenAI no instalado en este entorno.</strong> Ejecuta <code>./install-web.sh</code> y confirma que aparezca <code>✓ openai</code> antes de lanzar IA.</div>{% endif %}
   <div class="resources">
   {% for item in js_assets %}
     {% set j=item.row %}
@@ -56,12 +57,27 @@
         <div class="js-meta"><span>Tamaño</span><code>{{ j.size_bytes if j.size_bytes else '-' }} bytes</code><span>SHA256</span><code>{{ j.sha256[:20] ~ '…' if j.sha256 else '-' }}</code></div>
         <div class="host-actions">
           <a class="button ghost small-button" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Abrir JS ↗</a>
-          <form action="{{ target_base }}/js/{{ j.id }}/local-analyze" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button small-button" type="submit">Análisis local</button></form>
-          {% if j.sourcemap_url %}<form action="{{ target_base }}/js/{{ j.id }}/sourcemap" method="post" data-job-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">Source map</button></form>{% endif %}
+          <form action="{{ target_base }}/js/{{ j.id }}/local-analyze" method="post" data-job-form data-job-label="Analizando JavaScript localmente"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button small-button" type="submit">Análisis local</button></form>
+          {% if j.sourcemap_url %}<form action="{{ target_base }}/js/{{ j.id }}/sourcemap" method="post" data-job-form data-job-label="Procesando source map"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">Source map</button></form>{% endif %}
         </div>
         {% if item.local %}
-          <div class="kv js-summary"><span>URLs in-scope</span><code>{{ item.local.in_scope_urls|length }}</code><span>Rutas</span><code>{{ item.local.relative_paths|length }}</code><span>WebSockets</span><code>{{ item.local.websockets|length }}</code><span>Source maps</span><code>{{ item.local.source_maps|length }}</code></div>
-          {% if item.local.keywords %}<div class="chips">{% for k,v in item.local.keywords.items() %}<span class="chip">{{ k }} ×{{ v }}</span>{% endfor %}</div>{% endif %}
+          <div class="js-stat-grid">
+            <div class="js-stat"><span>URLs in scope</span><strong>{{ item.local.in_scope_urls|length }}</strong></div>
+            <div class="js-stat"><span>Rutas</span><strong>{{ item.local.relative_paths|length }}</strong></div>
+            <div class="js-stat"><span>WebSockets</span><strong>{{ item.local.websockets|length }}</strong></div>
+            <div class="js-stat"><span>Source maps</span><strong>{{ item.local.source_maps|length }}</strong></div>
+          </div>
+          {% if item.local.source_maps %}
+          <details class="sourcemap-candidates">
+            <summary>Source map candidates · {{ item.local.source_maps|length }}</summary>
+            <div class="candidate-list">{% for sm in item.local.source_maps %}<code class="break">{% if sm.startswith('data:') %}inline data: source map{% else %}{{ sm }}{% endif %}</code>{% endfor %}</div>
+          </details>
+          {% endif %}
+          {% if item.local.keywords %}
+            {% set noisy=['export','import'] %}
+            <div class="signal-block"><div class="signal-title">Señales para revisar</div><div class="chips signal-chips">{% for k,v in item.local.keywords.items() %}{% if k not in noisy %}<span class="chip">{{ k }} ×{{ v }}</span>{% endif %}{% endfor %}</div></div>
+            <details class="low-signal"><summary>Ruido/lenguaje común</summary><div class="chips">{% for k,v in item.local.keywords.items() %}{% if k in noisy %}<span class="chip">{{ k }} ×{{ v }}</span>{% endif %}{% endfor %}</div></details>
+          {% endif %}
           <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/js/{{ j.id }}/ai-estimate" data-run-url="{{ target_base }}/js/{{ j.id }}/ai-run">
             <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if intel_settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if intel_settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
             <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. No se enviará nada a OpenAI todavía.</div>

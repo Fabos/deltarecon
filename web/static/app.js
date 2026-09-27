@@ -109,32 +109,87 @@
 })();
 
 // v0.7 directed intelligence actions + AI cost confirmation
+// v0.7.2 directed intelligence actions + clear AI cost + honest activity progress
 (() => {
+  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const pollJob = async (jobUrl, refreshUrl, statusNode, button) => {
-    for (;;) {
-      try {
-        const res = await fetch(jobUrl, {headers:{'Accept':'application/json'}});
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const job = await res.json();
-        if (statusNode) statusNode.textContent = `${job.label || 'Trabajo'} · ${job.status}`;
-        if (job.status === 'done') {
-          if (statusNode) statusNode.textContent = 'Terminado. Actualizando…';
-          window.setTimeout(() => window.location.assign(refreshUrl), 350);
-          return;
-        }
-        if (job.status === 'error') {
-          if (statusNode) statusNode.textContent = `Error: ${job.error || 'desconocido'}`;
+  const formatElapsed = (seconds) => {
+    const s = Math.max(0, Math.floor(seconds));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}m ${String(r).padStart(2,'0')}s`;
+  };
+
+  const progressMarkup = (message) => `
+    <div class="job-progress-top">
+      <strong data-job-message>${esc(message)}</strong>
+      <span data-job-elapsed>0s</span>
+    </div>
+    <div class="job-progress-track" aria-hidden="true"><span class="job-progress-bar"></span></div>
+    <small class="job-progress-note">Actividad indeterminada: Negro sigue trabajando; no mostramos un porcentaje falso.</small>`;
+
+  const ensureProgress = (form, label='Procesando…') => {
+    let root = form.nextElementSibling;
+    if (!root || !root.classList.contains('inline-job-progress')) {
+      root = document.createElement('div');
+      root.className = 'inline-job-progress';
+      root.setAttribute('aria-live','polite');
+      form.insertAdjacentElement('afterend', root);
+    }
+    root.classList.remove('done','error');
+    root.innerHTML = progressMarkup(label);
+    return root;
+  };
+
+  const setProgressMessage = (root, message, kind='') => {
+    if (!root) return;
+    root.classList.toggle('done', kind === 'done');
+    root.classList.toggle('error', kind === 'error');
+    const node = root.querySelector('[data-job-message]');
+    if (node) node.textContent = message;
+  };
+
+  const pollJob = async (jobUrl, refreshUrl, progressRoot, button, startedAt=Date.now()) => {
+    let stopped = false;
+    const elapsedNode = progressRoot?.querySelector('[data-job-elapsed]');
+    const timer = window.setInterval(() => {
+      if (!stopped && elapsedNode) elapsedNode.textContent = formatElapsed((Date.now() - startedAt) / 1000);
+    }, 1000);
+    try {
+      for (;;) {
+        try {
+          const res = await fetch(jobUrl, {headers:{'Accept':'application/json'}});
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const job = await res.json();
+          const label = job.label || 'Trabajo';
+          setProgressMessage(progressRoot, `${label} · en ejecución`);
+          if (job.status === 'done') {
+            setProgressMessage(progressRoot, 'Terminado. Actualizando resultados…', 'done');
+            stopped = true;
+            window.clearInterval(timer);
+            window.setTimeout(() => window.location.assign(refreshUrl), 500);
+            return;
+          }
+          if (job.status === 'error') {
+            setProgressMessage(progressRoot, `Error: ${job.error || 'desconocido'}`, 'error');
+            stopped = true;
+            window.clearInterval(timer);
+            if (button) button.disabled = false;
+            return;
+          }
+        } catch (err) {
+          setProgressMessage(progressRoot, `Error consultando job: ${err.message}`, 'error');
+          stopped = true;
+          window.clearInterval(timer);
           if (button) button.disabled = false;
           return;
         }
-      } catch (err) {
-        if (statusNode) statusNode.textContent = `Error consultando job: ${err.message}`;
-        if (button) button.disabled = false;
-        return;
+        await sleep(1400);
       }
-      await sleep(1400);
+    } finally {
+      if (!stopped) window.clearInterval(timer);
     }
   };
 
@@ -144,13 +199,9 @@
       const button = form.querySelector('button[type="submit"]');
       if (button?.disabled) return;
       if (button) button.disabled = true;
-      let statusNode = form.parentElement?.querySelector('.inline-job-status');
-      if (!statusNode) {
-        statusNode = document.createElement('span');
-        statusNode.className = 'inline-job-status muted small';
-        form.insertAdjacentElement('afterend', statusNode);
-      }
-      statusNode.textContent = 'Iniciando…';
+      const label = form.dataset.jobLabel || button?.textContent?.trim() || 'Procesando';
+      const progressRoot = ensureProgress(form, `${label}: iniciando…`);
+      const startedAt = Date.now();
       try {
         const res = await fetch(form.action, {
           method:'POST', body:new FormData(form),
@@ -162,18 +213,28 @@
           throw new Error(detail);
         }
         const data = await res.json();
-        await pollJob(data.job_url, data.refresh_url, statusNode, button);
+        await pollJob(data.job_url, data.refresh_url, progressRoot, button, startedAt);
       } catch (err) {
-        statusNode.textContent = `No pude iniciar: ${err.message}`;
+        setProgressMessage(progressRoot, `No pude iniciar: ${err.message}`, 'error');
         if (button) button.disabled = false;
       }
     });
   });
 
-  const money = (value, currency) => {
+  const formatUsd = (value) => {
     const n = Number(value || 0);
-    if (currency === 'COP') return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(n);
-    return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:4,maximumFractionDigits:4}).format(n);
+    return `USD $${n.toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:6})}`;
+  };
+
+  const formatCop = (value) => {
+    const n = Number(value || 0);
+    const digits = Math.abs(n) < 100 ? 2 : 0;
+    return `COP $${n.toLocaleString('es-CO',{minimumFractionDigits:digits,maximumFractionDigits:2})}`;
+  };
+
+  const roundedCopWords = (value) => {
+    const rounded = Math.round(Number(value || 0));
+    return `${rounded.toLocaleString('es-CO')} ${rounded === 1 ? 'peso colombiano' : 'pesos colombianos'}`;
   };
 
   document.querySelectorAll('[data-ai-box]').forEach(box => {
@@ -185,13 +246,25 @@
 
     estimateButton?.addEventListener('click', async () => {
       estimateButton.disabled = true;
-      output.textContent = 'Estimando tokens y costo localmente…';
+      output.innerHTML = '<div class="ai-estimate-loading">Estimando tokens y costo localmente…</div>';
       try {
         const url = `${box.dataset.estimateUrl}?model=${encodeURIComponent(modelSelect.value)}`;
         const res = await fetch(url, {headers:{'Accept':'application/json'}});
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-        output.innerHTML = `≈ <b>${Number(data.input_tokens_est).toLocaleString('es-CO')}</b> tokens de entrada · tope salida <b>${Number(data.output_tokens_budget).toLocaleString('es-CO')}</b> · máximo estimado <b>${money(data.max_total_usd_est,'USD')}</b> ≈ <b>${money(data.max_total_cop_est,'COP')}</b> <span class="muted">(USD/COP ${Number(data.usd_cop_rate).toLocaleString('es-CO')}, precios ${data.pricing_snapshot}${data.long_context ? ', contexto largo' : ''})</span>`;
+        const cop = Number(data.max_total_cop_est || 0);
+        output.innerHTML = `
+          <div class="ai-cost-grid">
+            <div class="ai-cost-main">
+              <span>Costo máximo estimado</span>
+              <strong>${formatCop(cop)}</strong>
+              <small>≈ ${roundedCopWords(cop)}</small>
+            </div>
+            <div class="ai-cost-detail"><span>Equivalente USD</span><strong>${formatUsd(data.max_total_usd_est)}</strong></div>
+            <div class="ai-cost-detail"><span>Entrada estimada</span><strong>${Number(data.input_tokens_est).toLocaleString('es-CO')} tokens</strong></div>
+            <div class="ai-cost-detail"><span>Salida presupuestada</span><strong>máx. ${Number(data.output_tokens_budget).toLocaleString('es-CO')} tokens</strong></div>
+          </div>
+          <div class="ai-cost-foot">Es un <b>tope estimado</b>; el costo real puede ser menor. Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>`;
         runModel.value = data.model;
         runForm.action = box.dataset.runUrl;
         runForm.hidden = false;
@@ -207,7 +280,11 @@
       event.preventDefault();
       const button = runForm.querySelector('button[type="submit"]');
       if (button) button.disabled = true;
-      output.textContent = 'Enviando únicamente la evidencia seleccionada a OpenAI…';
+      const progressRoot = document.createElement('div');
+      progressRoot.className = 'inline-job-progress ai-job-progress';
+      progressRoot.innerHTML = progressMarkup('OpenAI: preparando evidencia seleccionada…');
+      output.replaceChildren(progressRoot);
+      const startedAt = Date.now();
       try {
         const res = await fetch(runForm.action, {
           method:'POST', body:new FormData(runForm),
@@ -215,9 +292,9 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-        await pollJob(data.job_url, data.refresh_url, output, button);
+        await pollJob(data.job_url, data.refresh_url, progressRoot, button, startedAt);
       } catch (err) {
-        output.textContent = `No pude iniciar IA: ${err.message}`;
+        setProgressMessage(progressRoot, `No pude iniciar IA: ${err.message}`, 'error');
         if (button) button.disabled = false;
       }
     });

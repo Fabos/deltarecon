@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.7
+# Negro Recon — Metodología v0.7.2
 
 ## Filosofía
 
@@ -88,3 +88,12 @@ Priority:
 ## Límites
 
 Negro sigue siendo passive-first. Content discovery/fuzzing activo no se ejecuta sobre todo el inventario. Cuando se integre, será sólo sobre un host seleccionado y con rate explícito.
+
+
+## Progreso de tareas largas
+
+Cuando una herramienta no expone progreso determinista, Negro muestra actividad indeterminada y tiempo transcurrido. No se presenta un porcentaje ficticio. El job termina en `done` o `error` y la ficha se refresca automáticamente.
+
+## Costos de IA
+
+La estimación debe leerse como un máximo presupuestado: entrada estimada + tope de salida. La UI muestra COP de forma explícita, USD como referencia y la tasa usada. La llamada facturable sólo ocurre tras confirmación del usuario.

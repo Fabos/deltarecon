@@ -1,8 +1,21 @@
-# Negro Recon 🐕 — v0.7
+# Negro Recon 🐕 — v0.7.2
 
 > **Olfatea donde otros no miran.**
 
 Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/inspecciones y la Web UI organiza targets, hosts, resources, provenance, estados, notas, JavaScript y análisis asistido por IA.
+
+
+## v0.7.2 — JS/AI UX + dependency hardening + source-map hotfix
+
+Esta versión consolida los ajustes de v0.7.1 y los nuevos cambios de UX:
+
+- source maps inline Base64 toleran padding omitido y se prueban todos los candidatos;
+- presentación de JavaScript más legible: URL, tamaño, hash, métricas y señales con tipografía/tarjetas mayores;
+- la estimación IA muestra primero el valor **COP** de forma inequívoca (por ejemplo `COP $9,70 ≈ 10 pesos colombianos`) y después USD/tokens;
+- el costo mostrado es un **máximo estimado** según el presupuesto de salida; el costo real puede ser menor;
+- jobs como Descubrir JS, análisis local, Source Map, TLS SAN, Passive DNS e IA muestran una barra de actividad indeterminada y tiempo transcurrido; no se inventa un porcentaje cuando la operación no expone progreso real;
+- `install-web.sh` reutiliza/repara `.venv`, actualiza pip/setuptools/wheel, instala requirements y verifica explícitamente `openai`, `tiktoken`, `jsbeautifier` y dependencias Web;
+- si el SDK OpenAI no está disponible, la ficha JS lo avisa antes de lanzar IA y el error indica el Python exacto que está ejecutando Negro.
 
 ## v0.7 — Intelligence + JavaScript + AI
 

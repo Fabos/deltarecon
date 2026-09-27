@@ -111,8 +111,18 @@ def secret_status() -> dict[str, bool]:
     return {k: bool(secrets.get(k)) for k in ("OPENAI_API_KEY", "URLSCAN_API_KEY", "SECURITYTRAILS_API_KEY", "GITHUB_TOKEN")}
 
 
+def runtime_dependency_status() -> dict[str, bool]:
+    """Report optional local analysis/AI dependencies without exposing secrets."""
+    import importlib.util
+    return {
+        "openai": importlib.util.find_spec("openai") is not None,
+        "tiktoken": importlib.util.find_spec("tiktoken") is not None,
+        "jsbeautifier": importlib.util.find_spec("jsbeautifier") is not None,
+    }
+
+
 def http_json(url: str, *, headers: dict[str, str] | None = None, timeout: int = 30, max_bytes: int = 25_000_000) -> Any:
-    req_headers = {"User-Agent": "Negro-Recon/0.7", "Accept": "application/json"}
+    req_headers = {"User-Agent": "Negro-Recon/0.7.2", "Accept": "application/json"}
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, headers=req_headers)
@@ -123,8 +133,38 @@ def http_json(url: str, *, headers: dict[str, str] | None = None, timeout: int =
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 
+def _decode_data_url(url: str, *, max_bytes: int) -> tuple[bytes, str, str]:
+    """Decode RFC2397 data URLs, tolerating omitted Base64 padding.
+
+    Some JS bundlers emit inline source maps without the trailing '=' padding.
+    urllib's data: handler is stricter and raises binascii.Error: Incorrect padding.
+    """
+    if not url.lower().startswith("data:") or "," not in url:
+        raise RuntimeError("data URL inválida")
+    header, payload = url.split(",", 1)
+    meta = header[5:]
+    parts = meta.split(";") if meta else []
+    content_type = parts[0] if parts and "/" in parts[0] else "text/plain"
+    is_b64 = any(part.lower() == "base64" for part in parts[1:] if part)
+    try:
+        if is_b64:
+            encoded = urllib.parse.unquote_to_bytes(payload)
+            encoded = b"".join(encoded.split())
+            encoded += b"=" * ((-len(encoded)) % 4)
+            raw = base64.b64decode(encoded, validate=False)
+        else:
+            raw = urllib.parse.unquote_to_bytes(payload)
+    except Exception as exc:
+        raise RuntimeError(f"No pude decodificar source map inline: {exc}") from exc
+    if len(raw) > max_bytes:
+        raise RuntimeError(f"Recurso demasiado grande (> {max_bytes} bytes)")
+    return raw, content_type, "data:inline-source-map"
+
+
 def http_bytes(url: str, *, timeout: int = 25, max_bytes: int = 8_000_000, insecure: bool = True) -> tuple[bytes, str, str]:
-    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.7", "Accept": "*/*"})
+    if url.lower().startswith("data:"):
+        return _decode_data_url(url, max_bytes=max_bytes)
+    req = urllib.request.Request(url, headers={"User-Agent": "Negro-Recon/0.7.2", "Accept": "*/*"})
     context = ssl._create_unverified_context() if insecure and url.lower().startswith("https://") else None
     with urllib.request.urlopen(req, timeout=timeout, context=context) as response:
         raw = response.read(max_bytes + 1)
@@ -339,7 +379,7 @@ def beautify_js(text: str) -> str:
 def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int = 120) -> dict[str, Any]:
     absolute = sorted(set(m.group("url").rstrip(",);]") for m in ABS_URL_RE.finditer(text)))
     relative = sorted(set(m.group("path") for m in REL_PATH_RE.finditer(text)))
-    source_maps = sorted(set(m.group(1).strip().strip('"\'') for m in SOURCEMAP_RE.finditer(text)))
+    source_maps = list(dict.fromkeys(m.group(1).strip().strip('"\'') for m in SOURCEMAP_RE.finditer(text)))
 
     keywords: dict[str, int] = {}
     lower = text.lower()
@@ -461,8 +501,19 @@ def run_openai_js_analysis(payload: str, *, model: str, output_tokens: int) -> t
         raise RuntimeError(f"Falta OPENAI_API_KEY en {SECRETS_PATH}")
     try:
         from openai import OpenAI  # type: ignore
+    except ModuleNotFoundError as exc:
+        import sys
+        raise RuntimeError(
+            "El SDK de OpenAI no está instalado en el Python que ejecuta Negro. "
+            f"Python actual: {sys.executable}. Ejecuta ./install-web.sh y verifica que aparezca '✓ openai'."
+        ) from exc
     except ImportError as exc:
-        raise RuntimeError("Falta el paquete openai. Ejecuta ./install-web.sh") from exc
+        import sys
+        raise RuntimeError(
+            "El paquete openai existe pero falló al importarse. "
+            f"Python actual: {sys.executable}. Detalle: {exc}. "
+            "Ejecuta ./install-web.sh para reparar/actualizar las dependencias."
+        ) from exc
 
     system = """You analyze JavaScript evidence from an explicitly authorized bug-bounty target.
 Do not claim a vulnerability from client-side code alone. Reconstruct application behavior and identify high-signal items for manual validation. Use only the supplied evidence; if evidence is insufficient, say so. Never invent endpoints, methods, roles, secrets, impact, or findings.

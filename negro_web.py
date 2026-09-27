@@ -403,7 +403,7 @@ def create_app(default_domain: str, default_workspace: Path):
         detail = _host_detail(paths, host_id)
         if not detail:
             raise HTTPException(status_code=404, detail="Host no encontrado")
-        return render(request, "host.html", target_key, domain, workspace, **detail, intel_settings=intel.load_settings(), secret_status=intel.secret_status())
+        return render(request, "host.html", target_key, domain, workspace, **detail, intel_settings=intel.load_settings(), secret_status=intel.secret_status(), dependency_status=intel.runtime_dependency_status())
 
     @app.post("/t/{target_key}/host/{host_id}/state")
     def host_state(target_key: str, host_id: int, review_state: str = Form(...), classification: str = Form(...), priority: str = Form(...), csrf: str = Form(...)):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.7
+Negro Recon v0.7.2
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.7.0"
+VERSION = "0.7.2"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -1125,7 +1125,12 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
     local = intel.analyze_js_text(analysis_text, final_url, domain)
     sourcemap_url = None
     if local.get("source_maps"):
-        sourcemap_url = urllib.parse.urljoin(final_url, local["source_maps"][0])
+        # Keep one representative value for compatibility. fetch_sourcemap_for_asset
+        # now tries every detected candidate and handles inline data: maps separately.
+        candidates = list(local["source_maps"])
+        external = [x for x in candidates if not str(x).lower().startswith("data:")]
+        chosen = external[-1] if external else candidates[-1]
+        sourcemap_url = chosen if str(chosen).lower().startswith("data:") else urllib.parse.urljoin(final_url, chosen)
     with db_connect(paths) as conn:
         conn.execute(
             "UPDATE js_assets SET size_bytes=?, sha256=?, local_path=?, sourcemap_url=?, local_analysis_json=?, analyzed_at=? WHERE id=?",
@@ -1146,13 +1151,60 @@ def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int
     row = _js_asset_row(paths, asset_id)
     if not row:
         raise RuntimeError("JS asset no encontrado")
-    if not row["sourcemap_url"]:
-        raise RuntimeError("Este JS no tiene sourceMappingURL detectado")
-    raw, ctype, final_url = intel.http_bytes(row["sourcemap_url"], timeout=timeout, max_bytes=25_000_000, insecure=True)
+
+    local_analysis = {}
     try:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
-    except Exception as exc:
-        raise RuntimeError(f"Source map no es JSON válido: {exc}")
+        local_analysis = json.loads(row["local_analysis_json"] or "{}")
+    except Exception:
+        local_analysis = {}
+
+    detected = local_analysis.get("source_maps", []) if isinstance(local_analysis, dict) else []
+    candidates: list[str] = []
+    for candidate in detected if isinstance(detected, list) else []:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        candidate = candidate.strip()
+        resolved = candidate if candidate.lower().startswith("data:") else urllib.parse.urljoin(row["url"], candidate)
+        if resolved not in candidates:
+            candidates.append(resolved)
+    if row["sourcemap_url"] and row["sourcemap_url"] not in candidates:
+        candidates.append(row["sourcemap_url"])
+    if not candidates:
+        raise RuntimeError("Este JS no tiene sourceMappingURL detectado")
+
+    # Prefer external .map URLs (usually the bundle's real map), then other
+    # external URLs, and finally inline data: maps. Try all instead of failing
+    # on the first sourceMappingURL embedded by a dependency.
+    def rank(url: str) -> tuple[int, int]:
+        low = url.lower()
+        if low.startswith("data:"):
+            return (2, 0)
+        path = urllib.parse.urlsplit(url).path.lower()
+        return (0 if path.endswith(".map") else 1, 0)
+
+    ordered = sorted(enumerate(candidates), key=lambda item: (rank(item[1]), -item[0]))
+    errors: list[str] = []
+    raw = b""
+    ctype = ""
+    final_url = ""
+    data = None
+    selected = None
+    for _, candidate in ordered:
+        try:
+            raw_try, ctype_try, final_try = intel.http_bytes(candidate, timeout=timeout, max_bytes=25_000_000, insecure=True)
+            parsed = json.loads(raw_try.decode("utf-8", errors="replace"))
+            if not isinstance(parsed, dict):
+                raise ValueError("JSON raíz no es objeto")
+            raw, ctype, final_url, data, selected = raw_try, ctype_try, final_try, parsed, candidate
+            break
+        except Exception as exc:
+            label = "inline data: source map" if candidate.lower().startswith("data:") else candidate[:220]
+            errors.append(f"{label}: {str(exc)[:260]}")
+
+    if data is None or selected is None:
+        detail = " | ".join(errors[:6])
+        raise RuntimeError(f"Ninguno de los {len(candidates)} source maps detectados fue válido. {detail}")
+
     out_dir = paths["raw"] / "js" / row["hostname"]
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"asset-{asset_id}.js.map"
@@ -1169,12 +1221,24 @@ def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int
         joined_parts.append(content)
         total_chars += len(content)
     local = intel.analyze_js_text("\n".join(joined_parts), row["url"], domain) if joined_parts else {"in_scope_urls": [], "websockets": [], "relative_paths": [], "keywords": {}, "contexts": [], "source_maps": []}
+    display_url = "inline:data:source-map" if selected.lower().startswith("data:") else final_url
     with db_connect(paths) as conn:
         for url in local.get("in_scope_urls", []):
             upsert_resource(conn, url, "sourcemap", domain)
-        record_observation(conn, "host", int(row["host_id"]), "sourcemap", "source_map", final_url, {"asset_id": asset_id, "path": str(out), "content_type": ctype, "sources_count": len(sources) if isinstance(sources, list) else 0, "sources_sample": sources[:100] if isinstance(sources, list) else [], "extracted_urls": local.get("in_scope_urls", [])[:500]})
+        record_observation(conn, "host", int(row["host_id"]), "sourcemap", "source_map", display_url, {
+            "asset_id": asset_id, "path": str(out), "content_type": ctype,
+            "sources_count": len(sources) if isinstance(sources, list) else 0,
+            "sources_sample": sources[:100] if isinstance(sources, list) else [],
+            "extracted_urls": local.get("in_scope_urls", [])[:500],
+            "candidates_detected": len(candidates), "candidate_errors": errors[:10],
+        })
     rebuild_inventory(paths, domain)
-    return {"url": final_url, "path": str(out), "sources_count": len(sources) if isinstance(sources, list) else 0, "analysis": local}
+    return {
+        "url": display_url, "path": str(out),
+        "sources_count": len(sources) if isinstance(sources, list) else 0,
+        "candidates_detected": len(candidates), "candidate_errors": errors,
+        "analysis": local,
+    }
 
 
 def ai_estimate_js_asset(paths: dict[str, Path], asset_id: int, model: str | None = None) -> dict:
