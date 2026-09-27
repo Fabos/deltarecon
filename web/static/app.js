@@ -8,7 +8,14 @@
     const delta = payload.summary?.delta || payload.delta || {};
     const labels = {hosts:'hosts',resources:'resources',operations:'métodos',http_exchanges:'HTTP exchanges',js_assets:'JS',observations:'observaciones'};
     const changes = Object.entries(labels).filter(([k]) => Number(delta[k] || 0) !== 0).map(([k,l]) => `+${delta[k]} ${l}`);
-    const result = changes.length ? changes.join(' · ') : 'Sin elementos nuevos';
+    let result = changes.length ? changes.join(' · ') : 'Sin elementos nuevos';
+    const detail = payload.summary?.result || payload.result || {};
+    if (detail && typeof detail === 'object') {
+      if (detail.error) result = `Error de prueba: ${detail.error}`;
+      else if (detail.likely_credentialed_cors) result = `⚠ CORS interesante: Origin reflejado + credenciales · HTTP ${detail.status ?? '—'}`;
+      else if (detail.origin_reflected) result = `CORS: Origin reflejado · HTTP ${detail.status ?? '—'}`;
+      else if (Object.prototype.hasOwnProperty.call(detail, 'allow_origin')) result = `CORS sin reflexión detectada · HTTP ${detail.status ?? '—'} · ACAO ${detail.allow_origin || '—'}`;
+    }
     root.innerHTML = `<button type="button" aria-label="Cerrar">×</button><strong>${esc(payload.label || 'Trabajo terminado')}</strong><span>${esc(result)}</span>`;
     root.querySelector('button')?.addEventListener('click', () => root.remove());
     document.body.appendChild(root);
@@ -202,7 +209,12 @@
           }
           if (job.status === 'done') {
             setProgressMessage(progressRoot, 'Terminado. Actualizando resultados…', 'done');
-            sessionStorage.setItem('negroJobToast', JSON.stringify({label, summary: job.summary || {delta:{}}}));
+            try {
+              sessionStorage.setItem('negroJobToast', JSON.stringify({label, summary: job.summary || {delta:{}}}));
+            } catch (_) {
+              // A full job result may exceed browser storage. Never leave the UI stuck
+              // just because the completion toast could not be persisted.
+            }
             stopped = true;
             window.clearInterval(timer);
             window.setTimeout(() => window.location.assign(refreshUrl), 500);

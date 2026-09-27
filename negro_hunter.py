@@ -799,24 +799,47 @@ def crawl(hostname: str, *, domain: str | None = None, max_urls: int = 200, max_
     }
 
 
-def cors_probe(url: str, timeout: float = 8.0) -> dict[str, Any]:
+def cors_probe(url: str, timeout: float = 8.0, replay_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    """Low-impact CORS probe.
+
+    When replay_headers are supplied (for example from a Burp exchange), Negro
+    preserves the authenticated browsing context while replacing Origin with a
+    controlled value. This is important for endpoints that only expose their
+    CORS policy after login.
+    """
     session = _session()
     origin = "https://negro-validation.invalid"
+    headers: dict[str, str] = {}
+    blocked = {"host", "content-length", "connection", "proxy-connection", "origin", ":authority", ":method", ":path", ":scheme"}
+    for name, value in (replay_headers or {}).items():
+        if str(name).lower().strip() in blocked:
+            continue
+        headers[str(name)] = str(value)
+    headers["Origin"] = origin
     try:
-        r = _safe_request(session, "GET", url, timeout=timeout, headers={"Origin": origin}, allow_redirects=False)
+        r = _safe_request(session, "GET", url, timeout=timeout, headers=headers, allow_redirects=False)
+        allow_origin = r.headers.get("Access-Control-Allow-Origin")
+        allow_credentials = r.headers.get("Access-Control-Allow-Credentials")
+        reflected = bool(allow_origin and allow_origin.strip() == origin)
+        credentials = str(allow_credentials or "").strip().lower() == "true"
         return {
             "url": url,
             "status": r.status_code,
             "origin_sent": origin,
-            "allow_origin": r.headers.get("Access-Control-Allow-Origin"),
-            "allow_credentials": r.headers.get("Access-Control-Allow-Credentials"),
+            "allow_origin": allow_origin,
+            "allow_credentials": allow_credentials,
+            "origin_reflected": reflected,
+            "credentials_allowed": credentials,
+            "interesting": bool(reflected or allow_origin == "*"),
+            "likely_credentialed_cors": bool(reflected and credentials),
+            "replayed_context": bool(replay_headers),
             "vary": r.headers.get("Vary"),
             "content_type": r.headers.get("Content-Type"),
             "body_size": len(r.content),
             "observed_at": now_iso(),
         }
     except Exception as exc:
-        return {"url": url, "error": str(exc)[:400], "observed_at": now_iso()}
+        return {"url": url, "error": str(exc)[:400], "replayed_context": bool(replay_headers), "observed_at": now_iso()}
 
 
 def search_queries(domain: str, technologies: Iterable[str] = (), keywords: Iterable[str] = ()) -> list[dict[str, str]]:

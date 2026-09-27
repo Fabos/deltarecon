@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.10
+ * Negro Burp Bridge v0.11
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -53,7 +53,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.10 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.11 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.10.
+"""Local web workspace for Negro Recon v0.11.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -7,6 +7,7 @@ the same core functions used by the CLI.
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import secrets
@@ -280,6 +281,18 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                 "SELECT * FROM evidence_attachments WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC",
                 (r["id"],),
             ).fetchall()
+            cors_row = conn.execute(
+                "SELECT payload_json, observed_at FROM observations WHERE entity_type='resource' AND entity_id=? AND source='cors_probe' AND kind='cors_probe' ORDER BY id DESC LIMIT 1",
+                (r["id"],),
+            ).fetchone()
+            cors_result = None
+            if cors_row:
+                try:
+                    cors_result = json.loads(cors_row["payload_json"] or "{}")
+                    if isinstance(cors_result, dict):
+                        cors_result["observed_at"] = cors_row["observed_at"]
+                except Exception:
+                    cors_result = None
             resource_data.append({
                 "row": r,
                 "sources": _sources(conn, "resource", r["id"]),
@@ -290,6 +303,7 @@ def _host_detail(paths: dict[str, Path], host_id: int) -> dict[str, Any] | None:
                 "evidence": evidence,
                 "open_url": _external_url(r["url"]),
                 "operations": op_data,
+                "cors_result": cors_result,
             })
         inspections = conn.execute(
             "SELECT id, observed_at, payload_json FROM host_inspections WHERE host_id=? ORDER BY id DESC LIMIT 10",
@@ -404,6 +418,112 @@ def _tree_data(paths: dict[str, Path], q: str = "", review: str = "", classifica
             })
     return result
 
+
+
+def _decode_http_blob(value: str | None, limit: int = 300000) -> str:
+    if not value:
+        return ""
+    try:
+        raw = base64.b64decode(value)
+        if len(raw) > limit:
+            raw = raw[:limit] + b"\n\n[... truncated by Negro UI ...]"
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return "[No se pudo decodificar el mensaje HTTP]"
+
+
+def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any] | None:
+    with _db(paths) as conn:
+        row = conn.execute(
+            """SELECT r.*, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?""",
+            (resource_id,),
+        ).fetchone()
+        if not row:
+            return None
+        source_details = conn.execute(
+            "SELECT source, first_seen_at FROM resource_sources WHERE resource_id=? ORDER BY first_seen_at, source",
+            (resource_id,),
+        ).fetchall()
+        notes = _notes(conn, "resource", resource_id)
+        evidence = conn.execute(
+            "SELECT * FROM evidence_attachments WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC",
+            (resource_id,),
+        ).fetchall()
+        cors_row = conn.execute(
+            "SELECT payload_json, observed_at FROM observations WHERE entity_type='resource' AND entity_id=? AND source='cors_probe' AND kind='cors_probe' ORDER BY id DESC LIMIT 1",
+            (resource_id,),
+        ).fetchone()
+        cors_result = None
+        if cors_row:
+            try:
+                cors_result = json.loads(cors_row["payload_json"] or "{}")
+                if isinstance(cors_result, dict):
+                    cors_result["observed_at"] = cors_row["observed_at"]
+            except Exception:
+                pass
+        operations = []
+        for op in conn.execute("SELECT * FROM resource_operations WHERE resource_id=? ORDER BY method", (resource_id,)).fetchall():
+            sources = conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()
+            exchanges = []
+            for ex in conn.execute("SELECT * FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 30", (op["id"],)).fetchall():
+                exd = dict(ex)
+                exd["request_text"] = _decode_http_blob(ex["request_b64"])
+                exd["response_text"] = _decode_http_blob(ex["response_b64"])
+                exchanges.append(exd)
+            operations.append({"row": op, "sources": sources, "exchanges": exchanges})
+        observations = []
+        for o in conn.execute("SELECT * FROM observations WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC LIMIT 50", (resource_id,)).fetchall():
+            d = dict(o)
+            try: d["payload"] = json.loads(o["payload_json"] or "null")
+            except Exception: d["payload"] = None
+            observations.append(d)
+        linked_findings = conn.execute(
+            """SELECT f.*, fe.relation FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id
+               WHERE fe.entity_type='resource' AND fe.entity_id=? ORDER BY f.updated_at DESC""",
+            (resource_id,),
+        ).fetchall()
+        all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
+        return {
+            "resource": row,
+            "source_details": source_details,
+            "notes": notes,
+            "evidence": evidence,
+            "cors_result": cors_result,
+            "operations": operations,
+            "observations": observations,
+            "linked_findings": linked_findings,
+            "all_findings": all_findings,
+            "open_url": _external_url(row["url"]),
+        }
+
+
+def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] | None:
+    with _db(paths) as conn:
+        finding = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
+        if not finding:
+            return None
+        links = []
+        for link in conn.execute("SELECT * FROM finding_entities WHERE finding_id=? ORDER BY id", (finding_id,)).fetchall():
+            label = f"{link['entity_type']} #{link['entity_id']}"
+            href = None
+            if link["entity_type"] == "resource":
+                r = conn.execute("SELECT path,host_id FROM resources WHERE id=?", (link["entity_id"],)).fetchone()
+                if r:
+                    label = r["path"]
+                    href = f"resource/{link['entity_id']}"
+            elif link["entity_type"] == "host":
+                h = conn.execute("SELECT hostname FROM hosts WHERE id=?", (link["entity_id"],)).fetchone()
+                if h:
+                    label = h["hostname"]
+                    href = f"host/{link['entity_id']}"
+            elif link["entity_type"] == "exchange":
+                ex = conn.execute("SELECT id,status_code,source FROM http_exchanges WHERE id=?", (link["entity_id"],)).fetchone()
+                if ex: label = f"HTTP exchange #{ex['id']} · {ex['source']} · {ex['status_code'] or '—'}"
+            links.append({"row": link, "label": label, "href": href})
+        retests = conn.execute("SELECT * FROM finding_retests WHERE finding_id=? ORDER BY tested_at DESC,id DESC", (finding_id,)).fetchall()
+        evidence = conn.execute("SELECT * FROM evidence_attachments WHERE entity_type='finding' AND entity_id=? ORDER BY id DESC", (finding_id,)).fetchall()
+        notes = _notes(conn, "finding", finding_id)
+        return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes}
 
 def create_app(default_domain: str, default_workspace: Path):
     if _WEB_IMPORT_ERROR is not None:
@@ -596,6 +716,122 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Host no encontrado")
         return render(request, "host.html", target_key, domain, workspace, **detail, intel_settings=intel.load_settings(), secret_status=intel.secret_status(), dependency_status=intel.runtime_dependency_status())
 
+
+    @app.get("/t/{target_key}/resource/{resource_id}", response_class=HTMLResponse)
+    def resource_detail(request: Request, target_key: str, resource_id: int):
+        domain, workspace, paths = _target_context(target_key)
+        detail = _resource_detail(paths, resource_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Recurso no encontrado")
+        return render(request, "resource.html", target_key, domain, workspace, **detail)
+
+    @app.get("/t/{target_key}/findings", response_class=HTMLResponse)
+    def findings(request: Request, target_key: str, status: str = "", severity: str = ""):
+        domain, workspace, paths = _target_context(target_key)
+        sql = "SELECT f.*, (SELECT COUNT(*) FROM finding_entities fe WHERE fe.finding_id=f.id) entity_count, (SELECT COUNT(*) FROM finding_retests fr WHERE fr.finding_id=f.id) retest_count FROM findings f WHERE 1=1"
+        params = []
+        if status:
+            sql += " AND status=?"; params.append(status)
+        if severity:
+            sql += " AND severity=?"; params.append(severity)
+        sql += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, updated_at DESC"
+        with _db(paths) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return render(request, "findings.html", target_key, domain, workspace, findings=rows, finding_status=status, finding_severity=severity)
+
+    @app.post("/t/{target_key}/findings/create")
+    def finding_create(target_key: str, title: str = Form(...), severity: str = Form("info"), status: str = Form("draft"), description: str = Form(""), resource_id: int | None = Form(None), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        now = _now()
+        with _db(paths) as conn:
+            cur = conn.execute("INSERT INTO findings(title,severity,status,description,created_at,updated_at) VALUES(?,?,?,?,?,?)", (title.strip()[:240], severity, status, description.strip(), now, now))
+            fid = int(cur.lastrowid)
+            if resource_id:
+                conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?, 'resource', ?, 'affected', ?)", (fid, resource_id, now))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{fid}", status_code=303)
+
+    @app.get("/t/{target_key}/finding/{finding_id}", response_class=HTMLResponse)
+    def finding_detail(request: Request, target_key: str, finding_id: int):
+        domain, workspace, paths = _target_context(target_key)
+        detail = _finding_detail(paths, finding_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Finding no encontrado")
+        return render(request, "finding.html", target_key, domain, workspace, **detail)
+
+    @app.post("/t/{target_key}/finding/{finding_id}/update")
+    def finding_update(target_key: str, finding_id: int, title: str = Form(...), severity: str = Form(...), status: str = Form(...), description: str = Form(""), impact: str = Form(""), remediation: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            conn.execute("UPDATE findings SET title=?,severity=?,status=?,description=?,impact=?,remediation=?,updated_at=? WHERE id=?", (title.strip()[:240], severity, status, description.strip(), impact.strip(), remediation.strip(), _now(), finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}", status_code=303)
+
+    @app.post("/t/{target_key}/finding/{finding_id}/retest")
+    def finding_retest(target_key: str, finding_id: int, result: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        now = _now()
+        status_map = {"still_vulnerable":"retest_required", "fixed":"fixed", "fix_verified":"closed", "inconclusive":"retest_required"}
+        with _db(paths) as conn:
+            conn.execute("INSERT INTO finding_retests(finding_id,result,notes,tested_at,created_at) VALUES(?,?,?,?,?)", (finding_id, result, notes.strip(), now, now))
+            if result in status_map:
+                conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#retests", status_code=303)
+
+
+    @app.post("/t/{target_key}/finding/{finding_id}/note")
+    def finding_note(target_key: str, finding_id: int, body: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        body = body.strip()
+        if body:
+            with _db(paths) as conn:
+                conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('finding',?,?,?)", (finding_id, body, _now()))
+                conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#evidence", status_code=303)
+
+    @app.post("/t/{target_key}/finding/{finding_id}/evidence")
+    async def finding_evidence(target_key: str, finding_id: int, csrf: str = Form(...), caption: str = Form(""), evidence: UploadFile = File(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        allowed = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+        mime = (evidence.content_type or "").lower()
+        if mime not in allowed:
+            raise HTTPException(status_code=400, detail="La evidencia debe ser PNG, JPG, WEBP o GIF")
+        data = await evidence.read()
+        if not data or len(data) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="La evidencia debe pesar entre 1 byte y 8 MB")
+        ev_dir = Path(paths["notes"]) / "evidence"
+        ev_dir.mkdir(parents=True, exist_ok=True)
+        stored = f"finding-{finding_id}-{uuid.uuid4().hex[:12]}{allowed[mime]}"
+        dest = ev_dir / stored
+        dest.write_bytes(data)
+        with _db(paths) as conn:
+            conn.execute("INSERT INTO evidence_attachments(entity_type,entity_id,kind,original_name,stored_path,mime_type,caption,created_at) VALUES('finding',?,?,?,?,?,?,?)", (finding_id, "image", (evidence.filename or stored)[:255], str(dest), mime, caption.strip()[:500], _now()))
+            conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#evidence", status_code=303)
+
+    @app.post("/t/{target_key}/finding/{finding_id}/entity")
+    def finding_add_entity(target_key: str, finding_id: int, entity_type: str = Form(...), entity_id: int = Form(...), relation: str = Form("affected"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        if entity_type not in {"resource","host","exchange","operation","js_asset","observation"}:
+            raise HTTPException(status_code=400, detail="Tipo de entidad no permitido")
+        with _db(paths) as conn:
+            conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (finding_id, entity_type, entity_id, relation.strip()[:80] or "affected", _now()))
+            conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#chain", status_code=303)
+
+    @app.post("/t/{target_key}/resource/{resource_id}/finding-link")
+    def resource_link_finding(target_key: str, resource_id: int, finding_id: int = Form(...), relation: str = Form("affected"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?, 'resource', ?, ?, ?)", (finding_id, resource_id, relation.strip()[:80] or "affected", _now()))
+            conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#findings", status_code=303)
+
     @app.post("/t/{target_key}/host/{host_id}/state")
     def host_state(target_key: str, host_id: int, review_state: str = Form(...), classification: str = Form(...), priority: str = Form(...), csrf: str = Form(...)):
         verify_csrf(csrf)
@@ -616,7 +852,7 @@ def create_app(default_domain: str, default_workspace: Path):
         if not row:
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         core.mark_entity(paths, "resource", row["url"], review_state, classification, priority, None)
-        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/note")
     def host_note(target_key: str, host_id: int, body: str = Form(...), csrf: str = Form(...)):
@@ -642,7 +878,7 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         if body:
             core.mark_entity(paths, "resource", row["url"], None, None, None, body)
-        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/cors")
     def resource_cors(request: Request, target_key: str, resource_id: int, csrf: str = Form(...)):
@@ -653,7 +889,7 @@ def create_app(default_domain: str, default_workspace: Path):
         if not row:
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         job_id = _start_job(f"CORS {row['path']}", target_key, core.cors_check_resource, domain, paths, resource_id, 20)
-        refresh_url = f"/t/{target_key}/host/{row['host_id']}#resource-{resource_id}"
+        refresh_url = f"/t/{target_key}/resource/{resource_id}"
         if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
             return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": refresh_url})
         return RedirectResponse(url=refresh_url, status_code=303)
@@ -684,7 +920,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 (resource_id, "image", (evidence.filename or stored)[:255], str(dest), mime, caption.strip()[:500], _now()),
             )
             conn.commit()
-        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resource-{resource_id}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#evidence", status_code=303)
 
     @app.get("/t/{target_key}/evidence/{evidence_id}")
     def evidence_file(target_key: str, evidence_id: int):
@@ -716,7 +952,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     request_b64 = ex["request_b64"]
             caption = f"Negro · {method} {row['path']}"
             conn.execute("INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)", (resource_id, method, row["url"], request_b64, caption, _now()))
-        return RedirectResponse(url=f"/t/{target_key}/host/{row['host_id']}#resources", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/inspect")
     def host_inspect(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):

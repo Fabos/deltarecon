@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Findings · Negro{% endblock %}
+{% block content %}
+<section class="page-head"><div><p class="eyebrow">DOCUMENTATION</p><h1>Findings</h1><p class="muted">Hallazgos persistentes, cadenas multi-recurso y retests.</p></div><span class="count">{{ findings|length }}</span></section>
+<form class="filters panel" method="get"><label>Estado<select name="status"><option value="">Todos</option>{% for x in ['draft','confirmed','reported','retest_required','fixed','closed'] %}<option value="{{ x }}" {% if finding_status==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Severidad<select name="severity"><option value="">Todas</option>{% for x in ['critical','high','medium','low','info'] %}<option value="{{ x }}" {% if finding_severity==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><button class="button">Filtrar</button><a class="button ghost" href="{{ target_base }}/findings">Limpiar</a></form>
+<section class="finding-board">
+{% for f in findings %}<a class="finding-card severity-{{ f.severity }} status-{{ f.status }}" href="{{ target_base }}/finding/{{ f.id }}"><div class="finding-accent"></div><div><div class="badges"><span class="badge">{{ f.severity }}</span><span class="badge">{{ f.status }}</span></div><h3>#{{ f.id }} · {{ f.title }}</h3><p>{{ f.description or 'Sin descripción todavía.' }}</p><small>{{ f.entity_count }} entidades · {{ f.retest_count }} retests · actualizado {{ f.updated_at }}</small></div></a>{% else %}<section class="panel"><p class="empty">Todavía no hay findings. Puedes crear uno directamente desde un Resource y asociar varias piezas de la cadena.</p></section>{% endfor %}
+</section>
+{% endblock %}

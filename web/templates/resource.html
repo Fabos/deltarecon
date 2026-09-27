@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ resource.path }} · Negro{% endblock %}
+{% block content %}
+<section class="page-head resource-hero state-{{ resource.review_state }} class-hero-{{ resource.classification }}">
+  <div>
+    <p class="eyebrow">RESOURCE · {{ resource.hostname }}</p>
+    <h1><code>{{ resource.path }}{% if resource.query %}?{{ resource.query }}{% endif %}</code></h1>
+    <div class="hero-meta">
+      {% for src in source_details %}<span class="chip">{{ src.source }}</span>{% endfor %}
+      <span class="badge review-{{ resource.review_state }}">{{ resource.review_state }}</span>
+      <span class="badge class-{{ resource.classification }}">{{ resource.classification }}</span>
+      <span class="badge priority-{{ resource.priority }}">{{ resource.priority }}</span>
+    </div>
+  </div>
+  <div class="hero-actions">
+    {% if open_url %}<a class="button ghost" href="{{ open_url }}" target="_blank" rel="noopener noreferrer">Abrir URL ↗</a>{% endif %}
+    <a class="button ghost" href="{{ target_base }}/host/{{ resource.host_id }}#resource-{{ resource.id }}">Host ←</a>
+  </div>
+</section>
+
+<section class="resource-layout">
+  <div class="resource-main">
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">ACTIONS</p><h2>Pruebas contextuales</h2></div></div>
+      <div class="tool-grid">
+        <form action="{{ target_base }}/resource/{{ resource.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ resource.path }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="tool-action" type="submit" data-tip="Qué hace: modifica Origin sobre este endpoint. Qué busca: confianza cross-origin insegura. Caso útil: Origin arbitrario reflejado, especialmente con credenciales."><b>CORS check</b><small>Origin reflection + credentials</small></button>
+        </form>
+        <div class="tool-action passive" data-tip="La inspección HTTP usa los exchanges reales capturados por Burp. Abre HTTP para comparar request/response sin perder el contexto autenticado."><b>HTTP evidence</b><small>{{ operations|length }} métodos observados</small></div>
+        {% if resource.path.endswith('.js') %}<a class="tool-action" href="{{ target_base }}/host/{{ resource.host_id }}#javascript" data-tip="Busca URLs, rutas, configuración, secretos candidatos y source maps dentro del JavaScript."><b>JS analysis</b><small>Rutas, config y señales</small></a>{% endif %}
+      </div>
+      {% if cors_result %}
+      <div class="resource-test-result {% if cors_result.likely_credentialed_cors %}result-alert{% elif cors_result.interesting %}result-warn{% else %}result-ok{% endif %}">
+        <div><strong>Último CORS check</strong><small>{{ cors_result.observed_at }}</small></div>
+        {% if cors_result.error %}<p>Error: {{ cors_result.error }}</p>{% else %}
+        <p>HTTP {{ cors_result.status }} · ACAO <code>{{ cors_result.allow_origin or '—' }}</code> · Credentials <code>{{ cors_result.allow_credentials or '—' }}</code></p>
+        <p>{% if cors_result.likely_credentialed_cors %}<b>⚠ Señal fuerte:</b> Origin controlado reflejado + credenciales.{% elif cors_result.interesting %}<b>Señal interesante:</b> requiere validación manual.{% else %}No se observó reflexión insegura con esta prueba.{% endif %}{% if cors_result.replayed_context %} Se reutilizó contexto HTTP observado{% if cors_result.replay_source %} desde {{ cors_result.replay_source }}{% endif %}.{% endif %}</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="panel" id="http">
+      <div class="panel-head"><div><p class="eyebrow">HTTP</p><h2>Requests & responses</h2></div><span>{{ operations|length }} métodos</span></div>
+      {% for op in operations %}{% set o=op.row %}
+      <details class="operation-card" {% if loop.first %}open{% endif %}>
+        <summary><span><span class="method-badge">{{ o.method }}</span> <b>{{ o.last_status if o.last_status is not none else '—' }}</b> · {{ o.seen_count }}× visto {% if o.authenticated_observed %}<span class="chip op-auth">auth</span>{% endif %}</span><span class="muted">{{ o.last_seen_at }}</span></summary>
+        <div class="operation-detail">
+          <div class="operation-toolbar">
+            <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Send to Repeater →</button></form>
+            <span class="muted">Sources: {% for src in op.sources %}<span class="chip">{{ src.source }}</span>{% endfor %}</span>
+          </div>
+          {% for ex in op.exchanges %}
+          <details class="exchange-card" {% if loop.first %}open{% endif %}>
+            <summary>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %} · HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</summary>
+            <div class="http-split">
+              <div><div class="http-label">REQUEST · {{ ex.request_size }} B</div><pre class="http-message">{{ ex.request_text or '[request no almacenado]' }}</pre></div>
+              <div><div class="http-label">RESPONSE · {{ ex.response_size }} B</div><pre class="http-message">{{ ex.response_text or '[response no almacenada]' }}</pre></div>
+            </div>
+          </details>
+          {% else %}<p class="empty">No hay exchanges guardados para este método.</p>{% endfor %}
+        </div>
+      </details>
+      {% else %}<p class="empty">Este recurso aún no tiene métodos observados. Navega con Burp para alimentarlo.</p>{% endfor %}
+    </section>
+
+    <section class="panel" id="findings">
+      <div class="panel-head"><div><p class="eyebrow">INVESTIGATION</p><h2>Findings relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
+      {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ f.relation }} · {{ f.status }}</small></span><span class="badge">{{ f.severity }}</span></a>{% else %}<p class="empty">Este endpoint todavía no pertenece a ningún finding.</p>{% endfor %}
+      <div class="two-col-forms">
+        <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><label>Nuevo finding<input name="title" required placeholder="Ej. Broken authorization on order update"></label><div class="form-row"><select name="severity"><option>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select><select name="status"><option value="draft">draft</option><option value="confirmed">confirmed</option><option value="reported">reported</option></select></div><textarea name="description" placeholder="Qué observamos y por qué importa"></textarea><button class="button" type="submit">Crear y asociar</button></form>
+        {% if all_findings %}<form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Agregar a finding existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ f.status }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a cadena</button></form>{% endif %}
+      </div>
+    </section>
+
+    <section class="panel" id="evidence">
+      <div class="panel-head"><div><p class="eyebrow">EVIDENCE</p><h2>Notas y capturas</h2></div><span>{{ evidence|length }} imágenes</span></div>
+      <form class="note-form" action="{{ target_base }}/resource/{{ resource.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" required placeholder="Qué probaste, qué pasó, qué falta..."></textarea><button class="button" type="submit">Agregar nota</button></form>
+      {% for n in notes %}<div class="mini-note"><small>{{ n.created_at }}</small><p>{{ n.body }}</p></div>{% endfor %}
+      <form class="evidence-form" action="{{ target_base }}/resource/{{ resource.id }}/evidence" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required><input type="text" name="caption" maxlength="500" placeholder="Qué demuestra la captura"><button class="button ghost" type="submit">+ evidencia</button></form>
+      {% if evidence %}<div class="evidence-grid">{% for ev in evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
+    </section>
+  </div>
+
+  <aside class="resource-side">
+    <section class="panel sticky-panel"><p class="eyebrow">STATE</p><h2>Investigación</h2>
+      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Revisión<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Clasificación<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><button class="button" type="submit">Guardar estado</button></form>
+      <hr><div class="side-kv"><span>URL</span><code>{{ resource.url }}</code><span>Creado</span><b>{{ resource.created_at }}</b><span>Actualizado</span><b>{{ resource.updated_at }}</b></div>
+    </section>
+  </aside>
+</section>
+{% endblock %}

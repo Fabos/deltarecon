@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.10.0
+Negro Recon v0.11.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -381,6 +381,39 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'info',
+                status TEXT NOT NULL DEFAULT 'draft',
+                description TEXT,
+                impact TEXT,
+                remediation TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS finding_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id INTEGER NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                relation TEXT NOT NULL DEFAULT 'affected',
+                created_at TEXT NOT NULL,
+                UNIQUE(finding_id, entity_type, entity_id, relation),
+                FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS finding_retests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id INTEGER NOT NULL,
+                result TEXT NOT NULL,
+                notes TEXT,
+                tested_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_inspections_host ON host_inspections(host_id, observed_at);
             CREATE INDEX IF NOT EXISTS idx_resources_host ON resources(host_id);
@@ -392,6 +425,9 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_operations_resource ON resource_operations(resource_id, method);
             CREATE INDEX IF NOT EXISTS idx_http_exchanges_operation ON http_exchanges(operation_id, last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_burp_queue_status ON burp_repeater_queue(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, severity, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_finding_entities ON finding_entities(finding_id, entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_finding_retests ON finding_retests(finding_id, tested_at);
             """
         )
         # Conservative schema migration for workspaces created by v0.3/v0.4.
@@ -1992,7 +2028,35 @@ def cors_check_resource(domain: str, paths: dict[str, Path], resource_id: int, t
     parsed = canonicalize_url(row["url"], domain)
     if not parsed:
         raise RuntimeError("La URL del recurso está fuera del target")
-    result = hunter.cors_probe(row["url"], timeout=min(12, max(4, timeout / 2)))
+    # Prefer the latest real Burp request for this resource so authenticated
+    # cookies/Authorization and other useful browsing context are preserved.
+    replay_headers: dict[str, str] = {}
+    replay_source = None
+    replay_method = None
+    with db_connect(paths) as conn:
+        ex = conn.execute(
+            """SELECT e.request_headers_json, e.source, o.method
+               FROM http_exchanges e
+               JOIN resource_operations o ON o.id=e.operation_id
+               WHERE o.resource_id=? AND e.request_headers_json IS NOT NULL
+               ORDER BY CASE WHEN o.method='GET' THEN 0 ELSE 1 END, e.last_seen_at DESC
+               LIMIT 1""",
+            (resource_id,),
+        ).fetchone()
+        if ex:
+            try:
+                raw_headers = json.loads(ex["request_headers_json"] or "[]")
+            except Exception:
+                raw_headers = []
+            if isinstance(raw_headers, list):
+                for h in raw_headers:
+                    if isinstance(h, dict) and h.get("name") and h.get("value") is not None:
+                        replay_headers[str(h["name"])] = str(h["value"])
+            replay_source = ex["source"]
+            replay_method = ex["method"]
+    result = hunter.cors_probe(row["url"], timeout=min(12, max(4, timeout / 2)), replay_headers=replay_headers or None)
+    result["replay_source"] = replay_source
+    result["replay_method"] = replay_method
     with db_connect(paths) as conn:
         record_observation(conn, "resource", int(row["id"]), "cors_probe", "cors_probe", row["url"], result)
         record_observation(conn, "host", int(row["host_id"]), "cors_probe", "cors_probe", row["url"], {**result, "resource_id": int(row["id"])})

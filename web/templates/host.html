@@ -160,10 +160,19 @@
       <summary><span class="resource-summary-main"><code>{{ r.path }}{% if r.query %}?{{ r.query }}{% endif %}</code><small class="resource-origin">{% if item.primary_source %}vía {{ item.primary_source }}{% endif %}{% if item.first_seen_at %} · {{ item.first_seen_at }}{% endif %}</small></span><span class="badges"><span class="badge review-{{ r.review_state }}">{{ r.review_state }}</span><span class="badge class-{{ r.classification }}">{{ r.classification }}</span><span class="badge priority-{{ r.priority }}">{{ r.priority }}</span>{% if item.open_url %}<a class="open-link" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer" title="Abrir recurso">↗</a>{% endif %}</span></summary>
       <div class="resource-body">
         <div><span class="muted small">URL</span><code class="break">{{ r.url }}</code>{% if item.open_url %}<div><a class="button ghost small-button resource-open" href="{{ item.open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a></div>{% endif %}</div>
-        <div class="resource-actions">
+        <div class="resource-actions"><a class="button small-button" href="{{ target_base }}/resource/{{ r.id }}">Abrir detalle →</a>
           <form action="{{ target_base }}/resource/{{ r.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ r.path }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit" data-tip="Prueba CORS exactamente sobre esta URL. Caso de éxito: el servidor refleja un Origin no confiable o permite credenciales de forma insegura.">CORS check</button></form>
           {% if r.path.endswith('.js') %}<a class="button ghost small-button" href="#javascript" data-tip="Este recurso es JavaScript. Ve al pipeline JS para análisis local, secretos/config y source maps.">Analizar JS ↓</a>{% endif %}
         </div>
+        {% if item.cors_result %}
+        <div class="resource-test-result {% if item.cors_result.likely_credentialed_cors %}result-alert{% elif item.cors_result.interesting %}result-warn{% else %}result-ok{% endif %}">
+          <div><strong>Último CORS check</strong><small>{{ item.cors_result.observed_at }}</small></div>
+          {% if item.cors_result.error %}<p>Error: {{ item.cors_result.error }}</p>{% else %}
+          <p>Status {{ item.cors_result.status }} · ACAO: <code>{{ item.cors_result.allow_origin or '—' }}</code> · Credentials: <code>{{ item.cors_result.allow_credentials or '—' }}</code></p>
+          <p>{% if item.cors_result.likely_credentialed_cors %}<b>⚠ Posible CORS vulnerable:</b> refleja el Origin controlado y permite credenciales.{% elif item.cors_result.interesting %}<b>Señal CORS interesante:</b> revisa manualmente el impacto.{% else %}No se observó reflexión insegura con el Origin de prueba.{% endif %}{% if item.cors_result.replayed_context %} · Se reutilizó contexto de una request observada{% if item.cors_result.replay_source %} ({{ item.cors_result.replay_source }}){% endif %}.{% endif %}</p>
+          {% endif %}
+        </div>
+        {% endif %}
         <form class="inline-state" action="{{ target_base }}/resource/{{ r.id }}/send-repeater" method="post">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <label class="muted small">Enviar a Burp Repeater</label>

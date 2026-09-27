@@ -15,7 +15,7 @@
 <thead><tr><th>Host</th><th>Revisión</th><th>Clasificación</th><th>Prioridad</th><th>Resources</th><th>Inspecciones</th><th>Web</th></tr></thead>
 <tbody>
 {% for h in hosts %}
-<tr>
+<tr class="{% if h.classification=='finding' %}host-row-finding{% elif h.classification=='lead' %}host-row-lead{% elif h.review_state=='reviewed' %}host-row-reviewed{% endif %}">
   <td><a class="host-link" href="{{ target_base }}/host/{{ h.id }}">{{ h.hostname }}</a></td>
   <td><span class="badge review-{{ h.review_state }}">{{ h.review_state }}</span></td>
   <td><span class="badge class-{{ h.classification }}">{{ h.classification }}</span></td>
