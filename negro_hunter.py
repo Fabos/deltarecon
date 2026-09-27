@@ -220,6 +220,14 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_relationships_src ON relationships(src_type, src_id, relation);
         """
     )
+    # v0.12.2: leads_v2 also acts as the persistent hypothesis store.
+    # Additive migration keeps old workspaces intact.
+    lead_cols = {row["name"] for row in conn.execute("PRAGMA table_info(leads_v2)")}
+    if "source" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN source TEXT NOT NULL DEFAULT 'ENGINE'")
+    if "parent_lead_id" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN parent_lead_id INTEGER")
+
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
         conn.execute("INSERT INTO meta(key,value) VALUES('policy_profile',?)", (DEFAULT_POLICY,))
@@ -870,7 +878,7 @@ def _priority_rank(v: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(v, 0)
 
 
-def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | None, lead_type: str, title: str, confidence: str, review_priority: str, evidence: list[dict[str, Any]], why: str, next_test: str, confirm_if: str, discard_if: str) -> None:
+def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | None, lead_type: str, title: str, confidence: str, review_priority: str, evidence: list[dict[str, Any]], why: str, next_test: str, confirm_if: str, discard_if: str, source: str = "ENGINE", parent_lead_id: int | None = None) -> None:
     now = now_iso()
     existing = conn.execute("SELECT id,confidence,review_priority,status FROM leads_v2 WHERE lead_key=?", (lead_key,)).fetchone()
     if existing:
@@ -878,13 +886,13 @@ def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | 
         confidence = max([existing["confidence"], confidence], key=_confidence_rank)
         review_priority = max([existing["review_priority"], review_priority], key=_priority_rank)
         conn.execute(
-            "UPDATE leads_v2 SET host_id=?,resource_id=?,lead_type=?,title=?,confidence=?,review_priority=?,evidence_json=?,why_interesting=?,next_test=?,confirm_if=?,discard_if=?,updated_at=? WHERE lead_key=?",
-            (host_id, resource_id, lead_type, title, confidence, review_priority, json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, lead_key),
+            "UPDATE leads_v2 SET host_id=?,resource_id=?,lead_type=?,title=?,confidence=?,review_priority=?,evidence_json=?,why_interesting=?,next_test=?,confirm_if=?,discard_if=?,source=COALESCE(source,?),parent_lead_id=COALESCE(parent_lead_id,?),updated_at=? WHERE lead_key=?",
+            (host_id, resource_id, lead_type, title, confidence, review_priority, json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, source, parent_lead_id, now, lead_key),
         )
     else:
         conn.execute(
-            "INSERT INTO leads_v2(lead_key,host_id,resource_id,lead_type,title,confidence,review_priority,status,evidence_json,why_interesting,next_test,confirm_if,discard_if,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (lead_key, host_id, resource_id, lead_type, title, confidence, review_priority, "candidate", json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, now),
+            "INSERT INTO leads_v2(lead_key,host_id,resource_id,lead_type,title,confidence,review_priority,status,evidence_json,why_interesting,next_test,confirm_if,discard_if,created_at,updated_at,source,parent_lead_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (lead_key, host_id, resource_id, lead_type, title, confidence, review_priority, "candidate", json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, now, source, parent_lead_id),
         )
 
 
@@ -1251,6 +1259,171 @@ No propongas credential brute force, DoS, phishing, mass scanning, resource clai
     usage = getattr(response, "usage", None)
     return result, {"input_tokens":getattr(usage,"input_tokens",None),"output_tokens":getattr(usage,"output_tokens",None),"total_tokens":getattr(usage,"total_tokens",None)}
 
+
+
+
+def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, selected_node_id: str | None = None, max_chars: int = 220_000) -> tuple[str, str]:
+    """Build compact structured graph context. Never dumps full HTTP bodies."""
+    init_schema(conn)
+    nodes = list(graph_data.get("nodes") or [])
+    edges = list(graph_data.get("edges") or [])
+    node_by_id = {str(n.get("id")): n for n in nodes}
+
+    # If a node is selected, include its two-hop neighborhood first, then a concise global summary.
+    relevant_ids: set[str] = set()
+    if selected_node_id and selected_node_id in node_by_id:
+        relevant_ids.add(selected_node_id)
+        frontier = {selected_node_id}
+        for _ in range(2):
+            nxt: set[str] = set()
+            for e in edges:
+                a, b = str(e.get("source")), str(e.get("target"))
+                if a in frontier and b not in relevant_ids:
+                    relevant_ids.add(b); nxt.add(b)
+                if b in frontier and a not in relevant_ids:
+                    relevant_ids.add(a); nxt.add(a)
+            frontier = nxt
+
+    def compact_node(n: dict[str, Any]) -> dict[str, Any]:
+        meta = dict(n.get("meta") or {})
+        allowed = {k: meta.get(k) for k in (
+            "id","url","host","method","status","seen_count","authenticated","source","tool",
+            "review","classification","priority","type","why","next_test","severity","updated_at","last_seen_at"
+        ) if meta.get(k) not in (None, "")}
+        return {"id": n.get("id"), "type": n.get("type"), "label": n.get("label"), "state": n.get("state"), "meta": allowed}
+
+    important_types = {"target","host","resource","operation","javascript","observation","lead","finding","source"}
+    global_nodes = [n for n in nodes if n.get("type") in important_types]
+    global_nodes.sort(key=lambda n: (0 if n.get("state") in ("finding","interesting") else 1, str(n.get("type")), str(n.get("label"))))
+    selected_nodes = [node_by_id[i] for i in relevant_ids if i in node_by_id]
+    ordered_nodes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for n in selected_nodes + global_nodes:
+        nid = str(n.get("id"))
+        if nid and nid not in seen:
+            seen.add(nid); ordered_nodes.append(compact_node(n))
+        if len(ordered_nodes) >= 260:
+            break
+
+    kept_ids = {str(n["id"]) for n in ordered_nodes}
+    compact_edges = [
+        {"source": e.get("source"), "relation": e.get("relation"), "target": e.get("target"), "provenance": (e.get("meta") or {}).get("source")}
+        for e in edges if str(e.get("source")) in kept_ids and str(e.get("target")) in kept_ids
+    ][:420]
+
+    existing = []
+    for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 ORDER BY updated_at DESC LIMIT 120").fetchall():
+        existing.append(dict(row))
+    findings = [dict(r) for r in conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC LIMIT 80").fetchall()]
+
+    envelope = {
+        "target": domain,
+        "selected_node_id": selected_node_id,
+        "graph_summary": graph_data.get("counts") or {},
+        "nodes": ordered_nodes,
+        "edges": compact_edges,
+        "existing_hypotheses": existing,
+        "confirmed_findings": findings,
+        "instructions_context": {
+            "negative_is_knowledge": True,
+            "do_not_repeat_negative_or_discarded": True,
+            "full_http_bodies_included": False,
+        },
+    }
+    payload = "NEGRO_GRAPH_EVIDENCE\n" + json.dumps(envelope, ensure_ascii=False, indent=2)
+    payload = intel.redact_sensitive_literals(payload)[:max_chars]
+    digest = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+    return payload, digest
+
+
+def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    key = intel.load_secrets().get("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError(f"Falta OPENAI_API_KEY en {intel.SECRETS_PATH}")
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("El SDK de OpenAI no está disponible. Ejecuta ./install-web.sh") from exc
+    system = """Eres el motor de hipótesis de Negro para una investigación de seguridad autorizada.
+Responde SIEMPRE en español. NO eres un chatbot genérico y NO debes listar OWASP por rutina.
+Usa exclusivamente el grafo y el historial suministrados. No inventes endpoints, roles, objetos, respuestas ni vulnerabilidades.
+Tu trabajo es proponer 3 a 5 HIPÓTESIS INVESTIGABLES para el estado ACTUAL del target.
+Prioriza relaciones reales, cobertura pendiente, diferencias de método/rol/estado, JavaScript, flujos de negocio y señales correlacionadas.
+NEGATIVE, discarded y pruebas ya realizadas son conocimiento: no repitas la misma prueba salvo que exista evidencia NUEVA que cambie el escenario.
+Una señal interesting NO equivale a vulnerabilidad. Nunca afirmes que una vulnerabilidad existe sin evidencia confirmada.
+No uses scores ni probabilidades inventadas.
+Cada hipótesis debe citar node_ids REALES incluidos en el contexto para que Negro pueda resaltarla en el mapa.
+Evita brute force de credenciales, phishing, DoS, mass scanning, acciones destructivas o fuera de scope.
+Return ONLY JSON válido con este schema:
+{
+  "summary":"...",
+  "hypotheses":[
+    {
+      "title":"...",
+      "type":"authorization|business_logic|state_transition|cors|oauth|javascript|api|other",
+      "strength":"strong|medium|exploratory",
+      "why_interesting":"...",
+      "suggested_investigation":"...",
+      "confirm_if":"...",
+      "discard_if":"...",
+      "node_ids":["resource:1","operation:2"]
+    }
+  ],
+  "unexplored_areas":[{"area":"...","reason":"..."}]
+}"""
+    client = OpenAI(api_key=key)
+    response = client.responses.create(model=model, reasoning={"effort":"medium"}, max_output_tokens=output_tokens, instructions=system, input=payload)
+    text = response.output_text or ""
+    try:
+        result = json.loads(text)
+    except Exception:
+        a, b = text.find("{"), text.rfind("}")
+        result = json.loads(text[a:b+1]) if a >= 0 and b > a else {"summary":"No se pudo parsear la salida de IA","hypotheses":[],"unexplored_areas":[]}
+    if not isinstance(result.get("hypotheses"), list):
+        result["hypotheses"] = []
+    result["hypotheses"] = result["hypotheses"][:5]
+    usage = getattr(response, "usage", None)
+    return result, {"input_tokens":getattr(usage,"input_tokens",None),"output_tokens":getattr(usage,"output_tokens",None),"total_tokens":getattr(usage,"total_tokens",None)}
+
+
+def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: str, selected_node_id: str | None = None) -> list[dict[str, Any]]:
+    """Persist AI ideas into leads_v2, preserving human lifecycle status."""
+    init_schema(conn)
+    persisted: list[dict[str, Any]] = []
+    for idx, item in enumerate((result.get("hypotheses") or [])[:5]):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "Hipótesis sin título").strip()[:240]
+        typ = str(item.get("type") or "other").strip()[:80]
+        fingerprint = hashlib.sha256(f"{typ}|{title.lower()}".encode("utf-8", errors="ignore")).hexdigest()[:20]
+        node_ids = [str(x) for x in (item.get("node_ids") or []) if isinstance(x, str)][:20]
+        host_id = resource_id = None
+        for nid in node_ids:
+            if nid.startswith("resource:") and resource_id is None:
+                try: resource_id = int(nid.split(":",1)[1])
+                except Exception: pass
+            if nid.startswith("host:") and host_id is None:
+                try: host_id = int(nid.split(":",1)[1])
+                except Exception: pass
+        if resource_id and host_id is None:
+            row = conn.execute("SELECT host_id FROM resources WHERE id=?", (resource_id,)).fetchone()
+            host_id = int(row["host_id"]) if row else None
+        strength = str(item.get("strength") or "medium").lower()
+        priority = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
+        confidence = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
+        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id}]
+        upsert_lead(
+            conn, lead_key=f"ai_graph:{fingerprint}", host_id=host_id, resource_id=resource_id,
+            lead_type=typ, title=title, confidence=confidence, review_priority=priority,
+            evidence=evidence, why=str(item.get("why_interesting") or "").strip(),
+            next_test=str(item.get("suggested_investigation") or "").strip(),
+            confirm_if=str(item.get("confirm_if") or "").strip(), discard_if=str(item.get("discard_if") or "").strip(),
+            source="AI",
+        )
+        row = conn.execute("SELECT id,status FROM leads_v2 WHERE lead_key=?", (f"ai_graph:{fingerprint}",)).fetchone()
+        if row:
+            persisted.append({**item, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})
+    return persisted
 
 def actual_ai_cost(usage: dict[str, Any], model: str, usd_cop_rate: float) -> dict[str, Any]:
     prices = intel.OPENAI_PRICING.get(model)

@@ -33,6 +33,7 @@ DEFAULT_SETTINGS = {
     "js_max_download_mb": 8,
     "js_ai_max_chars": 650000,
     "target_ai_max_chars": 500000,
+    "graph_ai_max_chars": 220000,
     "job_max_workers": 3,
     "urlscan_detail_limit": 8,
     "wayback_limit": 5000,

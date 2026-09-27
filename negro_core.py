@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.12.1
+Negro Recon v0.12.2
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.12.1"
+VERSION = "0.12.2"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2145,6 +2145,58 @@ def ai_run_target(domain: str, paths: dict[str, Path], model: str | None = None)
         conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('target_triage',?,?,?,?,?,?,?)", (evidence_hash, selected_model, "done", json.dumps(estimate, ensure_ascii=False), json.dumps(usage, ensure_ascii=False), json.dumps(result, ensure_ascii=False), now_iso()))
     return {"cached": False, "model": selected_model, "evidence_hash": evidence_hash, "estimate": estimate, "usage": usage, "result": result}
 
+
+
+
+def ai_estimate_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dict, selected_node_id: str | None = None, model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    import negro_intel as intel
+    settings = intel.load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = min(4500, int(settings.get("ai_output_tokens", 3000)))
+    with db_connect(paths) as conn:
+        payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
+        cached = conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 3344.62)))
+    estimate.update({"task_type":"graph_ideas","model":selected_model,"output_tokens_budget":output_tokens,"evidence_hash":evidence_hash,"cached":bool(cached),"selected_node_id":selected_node_id})
+    return estimate
+
+
+def ai_run_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dict, selected_node_id: str | None = None, model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    import negro_intel as intel
+    settings = intel.load_settings()
+    selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
+    output_tokens = min(4500, int(settings.get("ai_output_tokens", 3000)))
+    with db_connect(paths) as conn:
+        payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
+        cached = conn.execute("SELECT * FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+        if cached:
+            result = json.loads(cached["result_json"] or "{}")
+            result["hypotheses"] = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
+            result["cached"] = True
+            return result
+    result, usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens)
+    usage.update(hunter.actual_ai_cost(usage, selected_model, float(settings.get("usd_cop_rate", 3344.62))))
+    with db_connect(paths) as conn:
+        persisted = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
+        result["hypotheses"] = persisted
+        result["cached"] = False
+        conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('graph_ideas',?,?,?,?,?,?,?)", (evidence_hash, selected_model, "done", None, json.dumps(usage, ensure_ascii=False), json.dumps(result, ensure_ascii=False), now_iso()))
+    result["usage"] = usage
+    return result
+
+
+def update_lead_status(paths: dict[str, Path], lead_id: int, status: str) -> dict:
+    allowed = {"candidate","testing","interesting","negative","postponed","confirmed","discarded"}
+    if status not in allowed:
+        raise ValueError("Estado de hipótesis inválido")
+    with db_connect(paths) as conn:
+        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()
+        if not row:
+            raise ValueError("Hipótesis no encontrada")
+        conn.execute("UPDATE leads_v2 SET status=?,updated_at=? WHERE id=?", (status, now_iso(), lead_id))
+        return {"id":lead_id,"title":row["title"],"status":status}
 
 def latest_target_ai(paths: dict[str, Path]) -> dict | None:
     import negro_hunter as hunter

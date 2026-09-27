@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Mapa · {{ domain }} · Negro{% endblock %}
 {% block content %}
-<section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}">
+<section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <header class="graph-toolbar">
     <div>
       <div class="eyebrow">ATTACK KNOWLEDGE GRAPH</div>
@@ -13,6 +13,7 @@
       <button type="button" class="btn-secondary" data-graph-neighborhood>1 hop</button>
       <button type="button" class="btn-secondary" data-graph-two-hop>2 hops</button>
       <button type="button" class="btn-secondary" data-graph-reset-layout>Auto ordenar</button>
+      <button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Give me ideas</button>
     </div>
   </header>
 
@@ -23,17 +24,34 @@
     <small data-graph-layout-status>Layout automático</small>
   </div>
 
+  <section class="graph-ai-panel" data-graph-ai-panel hidden>
+    <div class="graph-ai-head">
+      <div><span class="eyebrow">AI HYPOTHESES</span><h2>Ideas basadas en tu investigación real</h2><p data-graph-ai-scope>Analizar todo el target.</p></div>
+      <button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button>
+    </div>
+    {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. Configúrala en Settings para usar Give me ideas.</div>{% endif %}
+    <div class="graph-ai-controls">
+      <label>Modelo<select data-graph-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label>
+      <button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button>
+      <button type="button" class="button" data-graph-ai-run-btn hidden>Generar 3–5 hipótesis</button>
+    </div>
+    <div class="graph-ai-status" data-graph-ai-status>Negro enviará un resumen estructurado del grafo, cobertura, findings e hipótesis previas; no enviará cuerpos HTTP completos.</div>
+    <div class="graph-ai-results" data-graph-ai-results></div>
+  </section>
+
   <div class="graph-workspace">
     <aside class="graph-controls">
       <label class="graph-search"><span>Buscar</span><input type="search" placeholder="host, endpoint, finding…" data-graph-search></label>
 
-      <div class="graph-filter-title">Perspectiva</div>
-      <button class="graph-filter active" data-graph-preset="surface"><b>Attack Surface</b><small>Qué existe y cómo se organiza</small></button>
-      <button class="graph-filter" data-graph-preset="untested"><b>Untested</b><small>Elementos aún pendientes</small></button>
-      <button class="graph-filter" data-graph-preset="interesting"><b>Interesting</b><small>Señales, leads y findings</small></button>
-      <button class="graph-filter" data-graph-preset="burp"><b>Burp</b><small>Tráfico real agrupado</small></button>
-      <button class="graph-filter" data-graph-preset="attack"><b>Attack Paths</b><small>Caminos que merecen investigación</small></button>
-      <button class="graph-filter" data-graph-preset="all"><b>All</b><small>Todo, pero con ruido agrupado</small></button>
+      <div class="graph-filter-title graph-filter-title-row"><span>Perspectiva</span><button type="button" class="graph-order-reset" data-graph-preset-order-reset title="Restablecer orden">↺</button></div>
+      <div class="graph-presets" data-graph-presets>
+        <button class="graph-filter active" draggable="true" data-graph-preset="surface"><span class="graph-drag-handle">⋮⋮</span><span><b>Attack Surface</b><small>Qué existe y cómo se organiza</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="untested"><span class="graph-drag-handle">⋮⋮</span><span><b>Untested</b><small>Elementos aún pendientes</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesting</b><small>Señales, hipótesis y findings</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="burp"><span class="graph-drag-handle">⋮⋮</span><span><b>Burp</b><small>Tráfico real agrupado</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Attack Paths</b><small>Caminos que merecen investigación</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="all"><span class="graph-drag-handle">⋮⋮</span><span><b>All</b><small>Todo, pero con ruido agrupado</small></span></button>
+      </div>
 
       <div class="graph-filter-title">Tipos visibles</div>
       <div class="graph-type-filters" data-graph-types></div>
@@ -50,7 +68,7 @@
     <div class="graph-canvas-wrap">
       <svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg>
       <div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div>
-      <div class="graph-hint"><b>Arrastra nodos</b> para organizar tu flujo · Negro recuerda la posición por perspectiva · doble click = focus/expand</div>
+      <div class="graph-hint"><b>Click</b> = detalle · <b>arrastra</b> = organizar · doble click = focus/expand · también puedes reordenar las perspectivas</div>
     </div>
 
     <aside class="graph-detail" data-graph-detail>

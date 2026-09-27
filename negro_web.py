@@ -612,11 +612,24 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
             lead_rows = []
         for l in lead_rows:
             state = "tested" if l["status"] in ("discarded", "negative") else "finding" if l["status"] in ("confirmed",) else "interesting"
-            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href="intelligence#leads")
-            if l["resource_id"] and f"resource:{l['resource_id']}" in seen_nodes:
-                add_edge(f"resource:{l['resource_id']}", nid, "produced_lead", source="correlation_engine")
-            elif l["host_id"] and f"host:{l['host_id']}" in seen_nodes:
-                add_edge(f"host:{l['host_id']}", nid, "produced_lead", source="correlation_engine")
+            lsource = l["source"] if "source" in l.keys() else "ENGINE"
+            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "source": lsource, "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href="intelligence#leads")
+            linked = False
+            try:
+                ev = json.loads(l["evidence_json"] or "[]")
+            except Exception:
+                ev = []
+            for evidence in ev if isinstance(ev, list) else []:
+                if not isinstance(evidence, dict):
+                    continue
+                for node_id in evidence.get("node_ids") or []:
+                    if isinstance(node_id, str) and node_id in seen_nodes:
+                        add_edge(node_id, nid, "supports_hypothesis", source=str(lsource).lower(), evidence={"reason":"Referenced by hypothesis evidence"})
+                        linked = True
+            if not linked and l["resource_id"] and f"resource:{l['resource_id']}" in seen_nodes:
+                add_edge(f"resource:{l['resource_id']}", nid, "produced_lead", source=str(lsource).lower())
+            elif not linked and l["host_id"] and f"host:{l['host_id']}" in seen_nodes:
+                add_edge(f"host:{l['host_id']}", nid, "produced_lead", source=str(lsource).lower())
 
         findings = conn.execute("SELECT * FROM findings ORDER BY updated_at DESC").fetchall()
         for f in findings:
@@ -839,14 +852,49 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):
+        import negro_intel as intel
         domain, workspace, paths = _target_context(target_key)
         data = _graph_data(paths, domain)
-        return render(request, "graph.html", target_key, domain, workspace, graph_counts=data["counts"], graph_generated=data["generated_at"])
+        return render(request, "graph.html", target_key, domain, workspace, graph_counts=data["counts"], graph_generated=data["generated_at"], settings=intel.load_settings(), secret_status=intel.secret_status())
 
     @app.get("/api/t/{target_key}/graph", response_class=JSONResponse)
     def graph_api(target_key: str, exchanges: int = 120, observations: int = 120):
         domain, _, paths = _target_context(target_key)
         return _graph_data(paths, domain, exchange_limit=exchanges, observation_limit=observations)
+
+    @app.get("/api/t/{target_key}/graph/ideas-estimate", response_class=JSONResponse)
+    def graph_ideas_estimate(target_key: str, model: str = "", selected_node_id: str = ""):
+        domain, _, paths = _target_context(target_key)
+        graph_data = _graph_data(paths, domain)
+        try:
+            return core.ai_estimate_graph_ideas(domain, paths, graph_data, selected_node_id or None, model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/t/{target_key}/graph/ideas-run")
+    def graph_ideas_run(request: Request, target_key: str, model: str = Form(""), selected_node_id: str = Form(""), confirm_cost: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if confirm_cost != "yes":
+            raise HTTPException(status_code=400, detail="Confirma el costo estimado antes de ejecutar IA")
+        domain, _, paths = _target_context(target_key)
+        graph_data = _graph_data(paths, domain)
+        job_id = _start_job("AI graph ideas", target_key, core.ai_run_graph_ideas, domain, paths, graph_data, selected_node_id or None, model or None)
+        payload = {"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":f"/t/{target_key}/graph"}
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse(payload)
+        return RedirectResponse(url=payload["refresh_url"], status_code=303)
+
+    @app.post("/t/{target_key}/lead/{lead_id}/status")
+    def graph_lead_status(request: Request, target_key: str, lead_id: int, status: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            result = core.update_lead_status(paths, lead_id, status)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse(result)
+        return RedirectResponse(url=f"/t/{target_key}/graph", status_code=303)
 
     @app.get("/t/{target_key}/host/{host_id}", response_class=HTMLResponse)
     def host_detail(request: Request, target_key: str, host_id: int):

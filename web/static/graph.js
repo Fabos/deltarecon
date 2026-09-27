@@ -11,6 +11,9 @@
   const api = root.dataset.api;
   const base = root.dataset.base;
   const targetKey = root.dataset.target || 'target';
+  const csrf = root.dataset.csrf || '';
+  const aiEstimateUrl = root.dataset.aiEstimate || '';
+  const aiRunUrl = root.dataset.aiRun || '';
   const NS = 'http://www.w3.org/2000/svg';
 
   const typeOrder = ['source','target','host','javascript','resource','operation','cluster','request','observation','lead','finding','external'];
@@ -173,7 +176,7 @@
       graph.nodes.filter(n => n.state === 'untested' && ['resource','operation','javascript'].includes(n.type)).forEach(n => addWithAncestors(n.id,4));
       graph.edges.filter(e => include.has(e.source)&&include.has(e.target)).forEach(addEdge);
     } else if (preset === 'interesting' || preset === 'attack') {
-      const seeds = graph.nodes.filter(n => n.type!=='observation' && (n.type==='finding' || n.type==='lead' || n.state==='finding' || n.state==='interesting'));
+      const seeds = graph.nodes.filter(n => n.type!=='observation' && (n.type==='finding' || (n.type==='lead' && !['negative','discarded','postponed'].includes(String(n.meta?.status||''))) || n.state==='finding' || n.state==='interesting'));
       seeds.forEach(n => addWithAncestors(n.id,5));
       // An interesting observation seeds the path through its parent without forcing every raw observation onto the canvas.
       graph.nodes.filter(n=>n.type==='observation' && ['interesting','finding'].includes(slugState(n.state))).forEach(obs=>{
@@ -335,8 +338,10 @@
         const label=document.createElementNS(NS,'text');label.setAttribute('x',nodeRadius(n.type)+7);label.setAttribute('y','4');label.setAttribute('class','graph-node-label');
         const limit=labelLimit(n.type);label.textContent=n.label.length>limit?n.label.slice(0,limit-1)+'…':n.label;ng.appendChild(label);
       }
+      ng.setAttribute('tabindex','0'); ng.setAttribute('role','button'); ng.setAttribute('aria-label',n.label);
       ng.addEventListener('pointerdown',ev=>startNodeDrag(ev,n));
       ng.addEventListener('click',ev=>{ev.stopPropagation();if(suppressClick){suppressClick=false;return;}selected=n.id;showNode(n);render();});
+      ng.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();selected=n.id;showNode(n);render();}});
       ng.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='cluster')toggleCluster(n);else focusNeighborhood(n.id,1);});
       g.appendChild(ng);
     });
@@ -375,10 +380,11 @@
     const summary=summarizeNode(n);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting?'is-interesting':''}"><b>${summary.interesting}</b><span>Señales</span></div></div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2><span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span></div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}</div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2><span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span></div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explore relationships</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
     detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));
+    detail.querySelector('[data-ai-selected]')?.addEventListener('click',()=>openAiPanel(n.type==='cluster'?(n.parentId||''):n.id,n.type==='cluster'?(n.meta?.parent||n.label):n.label));
     detail.querySelectorAll('[data-focus]').forEach(b=>b.addEventListener('click',()=>{const x=sceneNodes.find(n=>n.id===b.dataset.focus)||graph.nodes.find(n=>n.id===b.dataset.focus);if(x){selected=x.id;showNode(x);render();}}));
   }
 
@@ -419,7 +425,14 @@
     if(!panDrag)return;view.x=panDrag.vx+e.clientX-panDrag.x;view.y=panDrag.vy+e.clientY-panDrag.y;render();
   });
   svg.addEventListener('pointerup',e=>{
-    if(nodeDrag){suppressClick=nodeDrag.moved;if(nodeDrag.moved)writeSavedLayout();nodeDrag=null;return;}panDrag=null;
+    if(nodeDrag){
+      const drag=nodeDrag; const n=sceneNodes.find(x=>x.id===drag.id);
+      suppressClick=true; window.setTimeout(()=>{suppressClick=false;},120);
+      if(drag.moved){writeSavedLayout();}
+      else if(n){selected=n.id;showNode(n);render();}
+      nodeDrag=null; return;
+    }
+    panDrag=null;
   });
   svg.addEventListener('pointercancel',()=>{nodeDrag=null;panDrag=null;});
   svg.addEventListener('pointerdown',e=>{if(e.target.closest?.('.graph-node'))return;panDrag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};svg.setPointerCapture?.(e.pointerId);});
@@ -438,6 +451,106 @@
   root.querySelector('[data-graph-neighborhood]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,1));
   root.querySelector('[data-graph-two-hop]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,2));
   root.querySelector('[data-graph-all]')?.addEventListener('click',()=>{search.value='';activeTypes=new Set(sceneNodes.map(n=>n.type).filter(t=>t!=='cluster'));buildTypeFilters();applyFilters({fitAfter:true});});
+
+
+
+  // Perspective order is personal UX state, independent of target evidence.
+  const presetWrap=root.querySelector('[data-graph-presets]');
+  const presetOrderKey=`negro.graph.presetOrder:${targetKey}`;
+  const defaultPresetOrder=['surface','untested','interesting','burp','attack','all'];
+  function restorePresetOrder(){
+    if(!presetWrap)return;
+    let order=defaultPresetOrder;
+    try{const x=JSON.parse(localStorage.getItem(presetOrderKey)||'[]');if(Array.isArray(x)&&x.length)order=[...x,...defaultPresetOrder.filter(v=>!x.includes(v))];}catch(_){ }
+    order.forEach(id=>{const b=presetWrap.querySelector(`[data-graph-preset="${id}"]`);if(b)presetWrap.appendChild(b);});
+  }
+  function savePresetOrder(){
+    if(!presetWrap)return;
+    const order=[...presetWrap.querySelectorAll('[data-graph-preset]')].map(b=>b.dataset.graphPreset);
+    try{localStorage.setItem(presetOrderKey,JSON.stringify(order));}catch(_){ }
+  }
+  if(presetWrap){
+    restorePresetOrder(); let dragged=null;
+    presetWrap.querySelectorAll('[data-graph-preset]').forEach(b=>{
+      b.addEventListener('dragstart',e=>{dragged=b;b.classList.add('dragging');e.dataTransfer?.setData('text/plain',b.dataset.graphPreset);});
+      b.addEventListener('dragend',()=>{b.classList.remove('dragging');dragged=null;savePresetOrder();});
+      b.addEventListener('dragover',e=>{e.preventDefault();if(!dragged||dragged===b)return;const r=b.getBoundingClientRect();presetWrap.insertBefore(dragged,e.clientY<r.top+r.height/2?b:b.nextSibling);});
+    });
+  }
+  root.querySelector('[data-graph-preset-order-reset]')?.addEventListener('click',()=>{try{localStorage.removeItem(presetOrderKey);}catch(_){ }restorePresetOrder();});
+
+  // Graph-aware AI hypotheses.
+  const aiPanel=root.querySelector('[data-graph-ai-panel]');
+  const aiScope=root.querySelector('[data-graph-ai-scope]');
+  const aiModel=root.querySelector('[data-graph-ai-model]');
+  const aiEstimateBtn=root.querySelector('[data-graph-ai-estimate-btn]');
+  const aiRunBtn=root.querySelector('[data-graph-ai-run-btn]');
+  const aiStatus=root.querySelector('[data-graph-ai-status]');
+  const aiResults=root.querySelector('[data-graph-ai-results]');
+  let aiSelectedNodeId='';
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  function fmtCop(v){return `COP $${Number(v||0).toLocaleString('es-CO',{maximumFractionDigits:2})}`;}
+  function openAiPanel(nodeId='',label=''){
+    aiSelectedNodeId=nodeId||''; if(aiPanel)aiPanel.hidden=false;
+    if(aiScope)aiScope.textContent=nodeId?`Explorar relaciones alrededor de “${label||nodeId}” (2 hops + contexto global).`:'Analizar todo el target y buscar áreas relevantes aún no exploradas.';
+    aiRunBtn?.setAttribute('hidden','');
+    if(aiStatus)aiStatus.textContent='Primero estima el costo. Negro enviará contexto estructurado; no cuerpos HTTP completos.';
+    aiPanel?.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  root.querySelector('[data-graph-ai-open]')?.addEventListener('click',()=>openAiPanel());
+  root.querySelector('[data-graph-ai-close]')?.addEventListener('click',()=>{if(aiPanel)aiPanel.hidden=true;});
+
+  aiEstimateBtn?.addEventListener('click',async()=>{
+    aiEstimateBtn.disabled=true; if(aiStatus)aiStatus.textContent='Construyendo contexto y estimando…';
+    try{
+      const u=new URL(aiEstimateUrl,window.location.origin);u.searchParams.set('model',aiModel?.value||'');if(aiSelectedNodeId)u.searchParams.set('selected_node_id',aiSelectedNodeId);
+      const r=await fetch(u,{headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
+      if(aiStatus)aiStatus.innerHTML=`<b>${d.cached?'Cache disponible':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':fmtCop(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens · salida máx. ${Number(d.output_tokens_budget||0).toLocaleString('es-CO')}<br><small>Evidence hash ${(d.evidence_hash||'').slice(0,12)}… · no se envían cuerpos HTTP completos.</small>`;
+      aiRunBtn?.removeAttribute('hidden');
+    }catch(err){if(aiStatus)aiStatus.textContent=`No pude estimar: ${err.message}`;}
+    finally{aiEstimateBtn.disabled=false;}
+  });
+
+  function ideaCard(h){
+    const ids=(h.node_ids||[]).slice(0,6).map(x=>`<code>${esc(x)}</code>`).join(' ');
+    const status=h.status||'candidate';
+    return `<article class="graph-ai-card" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3><p><b>Por qué interesa:</b> ${esc(h.why_interesting||'')}</p><p><b>Investigar:</b> ${esc(h.suggested_investigation||'')}</p>${ids?`<div class="graph-ai-nodes">${ids}</div>`:''}<div class="graph-ai-card-actions"><button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button></div></article>`;
+  }
+  async function refreshGraphData(){
+    const r=await fetch(api,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
+  }
+  function bindIdeaCards(){
+    aiResults?.querySelectorAll('[data-idea]').forEach(card=>{
+      const leadId=Number(card.dataset.idea||0);
+      card.querySelector('[data-view-idea]')?.addEventListener('click',async()=>{
+        const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);
+        const id=`lead:${leadId}`;const n=sceneNodes.find(x=>x.id===id)||graph.nodes.find(x=>x.id===id);if(n){selected=id;showNode(n);focusNeighborhood(id,1);}
+      });
+      card.querySelectorAll('[data-idea-status]').forEach(b=>b.addEventListener('click',async()=>{
+        const fd=new FormData();fd.set('csrf',csrf);fd.set('status',b.dataset.ideaStatus);
+        const r=await fetch(`${base}/lead/${leadId}/status`,{method:'POST',body:fd,headers:{Accept:'application/json','X-Requested-With':'NegroFetch'}});const d=await r.json();if(!r.ok){alert(d.detail||`HTTP ${r.status}`);return;}card.querySelector('.state-chip').textContent=d.status;await refreshGraphData();
+      }));
+    });
+  }
+  aiRunBtn?.addEventListener('click',async()=>{
+    aiRunBtn.disabled=true;if(aiStatus)aiStatus.textContent='IA analizando relaciones, cobertura y pruebas previas…';if(aiResults)aiResults.innerHTML='';
+    try{
+      const fd=new FormData();fd.set('csrf',csrf);fd.set('confirm_cost','yes');fd.set('model',aiModel?.value||'');fd.set('selected_node_id',aiSelectedNodeId);
+      const r=await fetch(aiRunUrl,{method:'POST',body:fd,headers:{Accept:'application/json','X-Requested-With':'NegroFetch'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
+      for(;;){
+        await sleep(1200);const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();
+        if(job.status==='error')throw new Error(job.error||'Error en IA');
+        if(job.status==='done'){
+          const result=job.summary?.result||{};const ideas=result.hypotheses||[];
+          if(aiStatus)aiStatus.textContent=`${result.cached?'Resultado reutilizado desde cache. ':''}${result.summary||`Generadas ${ideas.length} hipótesis.`}`;
+          if(aiResults)aiResults.innerHTML=ideas.length?ideas.map(ideaCard).join(''):'<p class="empty">La IA no propuso hipótesis nuevas con evidencia suficiente.</p>';
+          await refreshGraphData();bindIdeaCards();break;
+        }
+        if(aiStatus)aiStatus.textContent='IA trabajando…';
+      }
+    }catch(err){if(aiStatus)aiStatus.textContent=`Error: ${err.message}`;}
+    finally{aiRunBtn.disabled=false;}
+  });
 
   load();
 })();
