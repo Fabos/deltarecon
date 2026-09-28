@@ -310,7 +310,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             sql += " AND lower(l.source)=?"; params.append(source.lower())
         if kind:
             sql += " AND l.lead_type=?"; params.append(kind)
-        sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, l.updated_at DESC LIMIT 500"
+        sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, l.updated_at DESC LIMIT 500"
         rows=conn.execute(sql,params).fetchall()
         out=[]
         for r in rows:
@@ -319,11 +319,19 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             except Exception:item['evidence']=[]
             try:item['test_plan']=json.loads(item.get('test_plan_json') or '[]')
             except Exception:item['test_plan']=[]
-            plain=''
+            ai_meta={}
             for ev in item['evidence']:
-                if isinstance(ev,dict) and ev.get('plain_language'):
-                    plain=str(ev.get('plain_language'));break
-            item['plain_language']=plain
+                if isinstance(ev,dict) and ev.get('source')=='ai_graph':
+                    ai_meta=ev;break
+            item['plain_language']=str(ai_meta.get('plain_language') or '')
+            item['investigation_priority']=str(ai_meta.get('investigation_priority') or ('high' if item.get('review_priority')=='high' else 'medium' if item.get('review_priority')=='medium' else 'quick'))
+            item['priority_reasons']=[str(x) for x in (ai_meta.get('priority_reasons') or [])][:4]
+            node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
+            item['node_ids']=node_ids
+            refs=hunter.hypothesis_refs_from_nodes(conn,node_ids) if node_ids else {'evidence_refs':[],'resource_id':item.get('resource_id'),'primary_method':None,'primary_exchange_id':None}
+            item.update(refs)
+            if item.get('resource_id') and not item.get('resource_url'):
+                rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
             out.append(item)
         return out
 

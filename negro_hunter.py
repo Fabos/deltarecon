@@ -24,6 +24,8 @@ from typing import Any, Iterable
 
 import negro_intel as intel
 
+GRAPH_AI_PROMPT_VERSION = "0.14.2-offensive-v1"
+
 try:
     import requests
     from requests import Response
@@ -1157,6 +1159,46 @@ def list_leads(conn, limit: int = 200) -> list[dict[str, Any]]:
             item["test_plan"] = json.loads(item.get("test_plan_json") or "[]")
         except Exception:
             item["test_plan"] = []
+        ai_meta = next((ev for ev in item["evidence"] if isinstance(ev, dict) and ev.get("source") == "ai_graph"), {})
+        item["plain_language"] = str(ai_meta.get("plain_language") or "")
+        item["investigation_priority"] = str(ai_meta.get("investigation_priority") or ("high" if item.get("review_priority")=="high" else "medium" if item.get("review_priority")=="medium" else "quick"))
+        item["priority_reasons"] = [str(x) for x in (ai_meta.get("priority_reasons") or [])][:4]
+        node_ids = [str(x) for x in (ai_meta.get("node_ids") or []) if isinstance(x, str)]
+        item["node_ids"] = node_ids
+        refs=[]; seen_refs=set(); primary_method=None; primary_exchange_id=None
+        for nid in node_ids:
+            if nid.startswith("operation:"):
+                try: op_id=int(nid.split(":",1)[1])
+                except Exception: continue
+                rr=conn.execute("""SELECT o.id,o.method,o.last_status,r.id resource_id,r.path,r.query,r.url,h.hostname
+                                  FROM resource_operations o JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE o.id=?""",(op_id,)).fetchone()
+                if rr:
+                    ex=conn.execute("SELECT id,status_code,source,tool FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1",(op_id,)).fetchone()
+                    key=("operation",op_id)
+                    if key not in seen_refs:
+                        seen_refs.add(key); refs.append({"kind":"operation","id":op_id,"method":rr["method"],"resource_id":rr["resource_id"],"path":rr["path"],"query":rr["query"],"url":rr["url"],"host":rr["hostname"],"status":rr["last_status"],"exchange_id":int(ex["id"]) if ex else None,"exchange_status":ex["status_code"] if ex else None,"source":ex["source"] if ex else None,"tool":ex["tool"] if ex else None})
+                    primary_method = primary_method or rr["method"]
+                    primary_exchange_id = primary_exchange_id or (int(ex["id"]) if ex else None)
+                    if not item.get("resource_id"): item["resource_id"]=int(rr["resource_id"]); item["resource_url"]=rr["url"]
+            elif nid.startswith("resource:"):
+                try: rid=int(nid.split(":",1)[1])
+                except Exception: continue
+                rr=conn.execute("SELECT r.id,r.path,r.query,r.url,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",(rid,)).fetchone()
+                if rr and ("resource",rid) not in seen_refs:
+                    seen_refs.add(("resource",rid)); refs.append({"kind":"resource","id":rid,"resource_id":rid,"path":rr["path"],"query":rr["query"],"url":rr["url"],"host":rr["hostname"]})
+                    if not item.get("resource_id"): item["resource_id"]=rid; item["resource_url"]=rr["url"]
+            elif nid.startswith("request:") or nid.startswith("exchange:"):
+                try: exid=int(nid.split(":",1)[1])
+                except Exception: continue
+                ex=conn.execute("""SELECT e.id,e.status_code,e.source,e.tool,o.method,r.id resource_id,r.path,r.query,r.url,h.hostname
+                                  FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",(exid,)).fetchone()
+                if ex and ("exchange",exid) not in seen_refs:
+                    seen_refs.add(("exchange",exid)); refs.append({"kind":"exchange","id":exid,"exchange_id":exid,"method":ex["method"],"resource_id":ex["resource_id"],"path":ex["path"],"query":ex["query"],"url":ex["url"],"host":ex["hostname"],"status":ex["status_code"],"source":ex["source"],"tool":ex["tool"]})
+                    primary_method = primary_method or ex["method"]; primary_exchange_id = primary_exchange_id or exid
+                    if not item.get("resource_id"): item["resource_id"]=int(ex["resource_id"]); item["resource_url"]=ex["url"]
+        item["evidence_refs"] = refs[:10]
+        item["primary_method"] = primary_method
+        item["primary_exchange_id"] = primary_exchange_id
         out.append(item)
     return out
 
@@ -1427,9 +1469,11 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         "confirmed_findings": findings,
         "http_evidence": http_evidence,
         "instructions_context": {
+            "prompt_version": GRAPH_AI_PROMPT_VERSION,
             "negative_is_knowledge": True,
             "do_not_repeat_negative_or_discarded": True,
             "full_http_bodies_included": False,
+            "authorized_testing_only": True,
         },
     }
     payload = "NEGRO_GRAPH_EVIDENCE\n" + json.dumps(envelope, ensure_ascii=False, indent=2)
@@ -1457,6 +1501,8 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "title": {"type": "string"},
             "type": {"type": "string", "enum": ["authorization", "business_logic", "state_transition", "cors", "oauth", "javascript", "api", "feature_flag", "other"]},
             "strength": {"type": "string", "enum": ["strong", "medium", "exploratory"]},
+            "investigation_priority": {"type": "string", "enum": ["high", "medium", "quick"]},
+            "priority_reasons": {"type": "array", "items": {"type": "string"}},
             "plain_language": {"type": "string"},
             "why_interesting": {"type": "string"},
             "suggested_investigation": {"type": "string"},
@@ -1465,7 +1511,7 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "discard_if": {"type": "string"},
             "node_ids": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["title", "type", "strength", "plain_language", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
+        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
     }
     unexplored_schema = {
         "type": "object",
@@ -1522,28 +1568,38 @@ def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int) -> t
         from openai import OpenAI  # type: ignore
     except Exception as exc:
         raise RuntimeError("El SDK de OpenAI no está disponible. Ejecuta ./install-web.sh") from exc
-    system = """Eres la mano derecha de un pentester durante una investigación AUTORIZADA. Responde SIEMPRE en español claro, concreto y didáctico.
+    system = """Eres la mano derecha de un pentester durante una investigación AUTORIZADA. Responde SIEMPRE en español claro, concreto, ofensivo y didáctico.
 No eres un chatbot genérico: no listes OWASP por rutina, no inventes endpoints/roles/respuestas y no declares una vulnerabilidad sin evidencia.
-Tu salida debe ayudar a una persona a ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador y entender qué está buscando.
+Tu salida debe permitir ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador sin tener que adivinar tu intención.
 
-Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y una vista estructural/preview JSON limitada; úsalo para ser específico.
+Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y preview JSON limitada; úsalo para nombrar requests, parámetros, campos y respuestas REALES.
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
-Prioriza autorización, lógica de negocio, estados, feature flags, JavaScript, métodos alternativos, parámetros y diferencias entre contexto autenticado/no autenticado.
+
+ORDEN DE PRIORIDAD OFENSIVA:
+1. Superficie nueva controlada por cliente, autorización server-side desconocida, cross-role/cross-account, objetos/IDs, estados terminales, métodos alternativos, parámetros que gobiernan operaciones sensibles, endpoints/rutas nuevas desde JS o feature flags.
+2. Lógica de negocio donde exista una OPERACIÓN SENSIBLE relacionada: aplicar/canjear promoción, pagar, refund, crédito, wallet, crear/modificar/borrar, invitaciones, límites, cambios de estado. No te quedes en comprobar si la UI “se ve coherente”: pregunta qué operación consume esa condición y dónde la valida el backend.
+3. Comprobaciones simples y probablemente públicas (por ejemplo quitar cookies a un catálogo) sólo como investigation_priority=quick, con una prueba corta y criterio de descarte inmediato. No les des el mismo protagonismo que a una superficie ofensiva nueva.
+
+REGLAS ESPECÍFICAS:
+- Feature flags/config cliente: si una respuesta contiene active/enabled/flag, propone interceptar ESA RESPONSE, cambiar UNA bandera a la vez, recargar, observar nuevas rutas/controles/requests y luego probar directamente el endpoint nuevo para verificar autorización server-side. Mostrar una función oculta no es vulnerabilidad por sí solo.
+- Business logic: identifica la condición de negocio y la operación sensible que depende de ella. Ejemplo: si ves state/until/regional/limit, busca dónde se aplica/canjea/ejecuta y verifica si el servidor vuelve a validar la condición.
+- Authorization: cuando existan dos contextos/identidades o una operación con object id, explica exactamente qué request comparar y qué debe permanecer constante.
+- Cambios de estado: pueden ser necesarios para validar una hipótesis. Hazlos únicamente sobre cuentas/datos autorizados por el investigador y minimiza impacto. No impongas una prohibición genérica a POST/PUT/DELETE.
+- No sugieras brute force de credenciales, phishing, DoS, mass scanning, acciones destructivas ni fuera de scope.
+- No incluyas secretos ni pidas exfiltrar datos de terceros.
 
 Para cada hipótesis:
-- Escribe un título que diga QUÉ intentar, no una frase abstracta.
-- plain_language: explícalo como para alguien que conoce Burp pero no adivina tu intención.
-- steps: 2 a 6 pasos numerados, ejecutables y de bajo impacto. Cuando aplique, di literalmente qué request enviar a Repeater/Proxy, qué campo/header/query cambiar, si conviene interceptar REQUEST o RESPONSE, y qué comparar después.
-- what_to_watch: especifica qué nuevas rutas, cambios de UI, diferencias de status/body o llamadas de red buscar.
-- suggested_investigation: resumen corto del plan. Evita frases vacías como “revisar comportamiento”.
-- confirm_if y discard_if deben ser observables.
-- Cita node_ids REALES.
+- investigation_priority: high si puede abrir superficie ofensiva nueva o probar enforcement crítico; medium si es una relación prometedora pero faltan piezas; quick si es una comprobación corta de descarte.
+- priority_reasons: 1-4 etiquetas cortas basadas en evidencia, por ejemplo “client-controlled behavior”, “backend enforcement unknown”, “cross-role”, “state not tested”, “new attack surface possible”. No uses probabilidades.
+- title: di QUÉ intentar, no una frase abstracta.
+- plain_language: explica qué estamos intentando conseguir y por qué, como para alguien que conoce Burp pero no adivina tu intención.
+- steps: 2 a 6 pasos ejecutables. El PRIMER bloque mental es “Prueba esto ahora”. Cuando aplique, di literalmente qué request mandar a Repeater/Proxy, qué header/query/campo cambiar, si debes interceptar REQUEST o RESPONSE, y qué comparar.
+- what_to_watch: qué nuevas rutas, cambios de UI, diferencias de status/body o llamadas de red buscar.
+- suggested_investigation: una sola frase con el objetivo ofensivo, no “revisar comportamiento”.
+- confirm_if y discard_if observables y concretos.
+- node_ids: sólo IDs REALES del contexto.
 
-Ejemplo de nivel de concreción: si una respuesta de feature flags contiene campos como active=true/false, no digas sólo “evaluar feature flags”. Sugiere interceptar ESA respuesta en Burp, cambiar una bandera a la vez, recargar la interfaz, observar si aparecen controles/rutas/requests nuevas y después probar directamente el endpoint nuevo para comprobar si el backend impone autorización. Aclara que mostrar una función oculta en cliente no es por sí solo una vulnerabilidad.
-
-Evita brute force de credenciales, phishing, DoS, mass scanning, acciones destructivas o fuera de scope.
-No incluyas secretos ni pidas exfiltrar datos de terceros.
-Return ONLY JSON válido con este schema:
+Devuelve únicamente JSON válido con este schema:
 {
   "summary":"...",
   "hypotheses":[
@@ -1551,6 +1607,8 @@ Return ONLY JSON válido con este schema:
       "title":"...",
       "type":"authorization|business_logic|state_transition|cors|oauth|javascript|api|feature_flag|other",
       "strength":"strong|medium|exploratory",
+      "investigation_priority":"high|medium|quick",
+      "priority_reasons":["backend enforcement unknown"],
       "plain_language":"...",
       "why_interesting":"...",
       "suggested_investigation":"...",
@@ -1561,7 +1619,8 @@ Return ONLY JSON válido con este schema:
     }
   ],
   "unexplored_areas":[{"area":"...","reason":"..."}]
-}"""
+}
+"""
     client = OpenAI(api_key=key)
     schema_format = {
         "type": "json_schema",
@@ -1592,6 +1651,50 @@ Return ONLY JSON válido con este schema:
     return result, {"input_tokens":getattr(usage,"input_tokens",None),"output_tokens":getattr(usage,"output_tokens",None),"total_tokens":getattr(usage,"total_tokens",None)}
 
 
+def hypothesis_refs_from_nodes(conn, node_ids: list[str]) -> dict[str, Any]:
+    """Resolve internal graph ids into human-actionable HTTP/resource references."""
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    resource_id = None
+    primary_method = None
+    primary_exchange_id = None
+    for nid in node_ids[:24]:
+        if nid.startswith("operation:"):
+            try: op_id = int(nid.split(":", 1)[1])
+            except Exception: continue
+            rr = conn.execute("""SELECT o.id,o.method,o.last_status,r.id resource_id,r.path,r.query,r.url,h.hostname
+                                 FROM resource_operations o JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE o.id=?""", (op_id,)).fetchone()
+            if not rr: continue
+            ex = conn.execute("SELECT id,status_code,source,tool FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (op_id,)).fetchone()
+            key=("operation",op_id)
+            if key not in seen:
+                seen.add(key); refs.append({"kind":"operation","id":op_id,"method":rr["method"],"resource_id":int(rr["resource_id"]),"path":rr["path"],"query":rr["query"],"url":rr["url"],"host":rr["hostname"],"status":rr["last_status"],"exchange_id":int(ex["id"]) if ex else None,"exchange_status":ex["status_code"] if ex else None,"source":ex["source"] if ex else None,"tool":ex["tool"] if ex else None})
+            resource_id = resource_id or int(rr["resource_id"]); primary_method = primary_method or rr["method"]; primary_exchange_id = primary_exchange_id or (int(ex["id"]) if ex else None)
+        elif nid.startswith("resource:"):
+            try: rid = int(nid.split(":", 1)[1])
+            except Exception: continue
+            rr = conn.execute("SELECT r.id,r.path,r.query,r.url,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?", (rid,)).fetchone()
+            if rr and ("resource",rid) not in seen:
+                seen.add(("resource",rid)); refs.append({"kind":"resource","id":rid,"resource_id":rid,"path":rr["path"],"query":rr["query"],"url":rr["url"],"host":rr["hostname"]})
+                resource_id = resource_id or rid
+        elif nid.startswith("request:") or nid.startswith("exchange:"):
+            try: exid = int(nid.split(":", 1)[1])
+            except Exception: continue
+            ex = conn.execute("""SELECT e.id,e.status_code,e.source,e.tool,o.method,r.id resource_id,r.path,r.query,r.url,h.hostname
+                                 FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""", (exid,)).fetchone()
+            if ex and ("exchange",exid) not in seen:
+                seen.add(("exchange",exid)); refs.append({"kind":"exchange","id":exid,"exchange_id":exid,"method":ex["method"],"resource_id":int(ex["resource_id"]),"path":ex["path"],"query":ex["query"],"url":ex["url"],"host":ex["hostname"],"status":ex["status_code"],"source":ex["source"],"tool":ex["tool"]})
+                resource_id = resource_id or int(ex["resource_id"]); primary_method = primary_method or ex["method"]; primary_exchange_id = primary_exchange_id or exid
+    # If only a resource is known, pick its most recently observed operation to make Repeater actionable.
+    if resource_id and not primary_method:
+        op = conn.execute("SELECT id,method FROM resource_operations WHERE resource_id=? ORDER BY last_seen_at DESC LIMIT 1", (resource_id,)).fetchone()
+        if op:
+            primary_method = op["method"]
+            ex = conn.execute("SELECT id FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (op["id"],)).fetchone()
+            primary_exchange_id = int(ex["id"]) if ex else None
+    return {"evidence_refs": refs[:10], "resource_id": resource_id, "primary_method": primary_method, "primary_exchange_id": primary_exchange_id}
+
+
 def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: str, selected_node_id: str | None = None) -> list[dict[str, Any]]:
     """Persist AI ideas into leads_v2, preserving human lifecycle status."""
     init_schema(conn)
@@ -1615,9 +1718,11 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
             row = conn.execute("SELECT host_id FROM resources WHERE id=?", (resource_id,)).fetchone()
             host_id = int(row["host_id"]) if row else None
         strength = str(item.get("strength") or "medium").lower()
-        priority = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
+        investigation_priority = str(item.get("investigation_priority") or ("high" if strength == "strong" else "medium" if strength == "medium" else "quick")).lower()
+        priority = "high" if investigation_priority == "high" else "medium" if investigation_priority == "medium" else "low"
         confidence = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
-        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip()}]
+        priority_reasons = [str(x).strip()[:120] for x in (item.get("priority_reasons") or []) if str(x).strip()][:4]
+        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip(),"investigation_priority":investigation_priority,"priority_reasons":priority_reasons}]
         upsert_lead(
             conn, lead_key=f"ai_graph:{fingerprint}", host_id=host_id, resource_id=resource_id,
             lead_type=typ, title=title, confidence=confidence, review_priority=priority,
@@ -1629,7 +1734,8 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         conn.execute("UPDATE leads_v2 SET test_plan_json=? WHERE lead_key=?", (json.dumps(item.get("steps") or [], ensure_ascii=False), f"ai_graph:{fingerprint}"))
         row = conn.execute("SELECT id,status FROM leads_v2 WHERE lead_key=?", (f"ai_graph:{fingerprint}",)).fetchone()
         if row:
-            persisted.append({**item, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})
+            refs = hypothesis_refs_from_nodes(conn, node_ids)
+            persisted.append({**item, **refs, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})
     return persisted
 
 def actual_ai_cost(usage: dict[str, Any], model: str, usd_cop_rate: float) -> dict[str, Any]:

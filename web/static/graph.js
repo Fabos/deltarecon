@@ -522,10 +522,14 @@
   });
 
   function ideaCard(h){
-    const ids=(h.node_ids||[]).slice(0,6).map(x=>`<code>${esc(x)}</code>`).join(' ');
     const status=h.status||'candidate';
-    const steps=(h.steps||[]).slice(0,6).map(x=>`<li><b>${esc(x.action||'')}</b>${x.what_to_watch?`<small>Observar: ${esc(x.what_to_watch)}</small>`:''}</li>`).join('');
-    return `<article class="graph-ai-card" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué interesa:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo:</b> ${esc(h.suggested_investigation||'')}</p>${steps?`<ol class="ai-steps">${steps}</ol>`:''}<p><b>Señal positiva:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p>${ids?`<div class="graph-ai-nodes">${ids}</div>`:''}<div class="graph-ai-card-actions"><button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button><a class="btn-secondary" href="${base}/hypotheses">Abrir Hypotheses</a></div></article>`;
+    const priority=(h.investigation_priority||'medium').toLowerCase();
+    const priorityLabel=priority==='high'?'ALTA PRIORIDAD':priority==='quick'?'QUICK CHECK':'PRIORIDAD MEDIA';
+    const reasons=(h.priority_reasons||[]).slice(0,4).map(x=>`<span class="badge reason-chip">${esc(x)}</span>`).join('');
+    const steps=(h.steps||[]).slice(0,6).map(x=>`<li><b>${esc(x.action||'')}</b>${x.what_to_watch?`<small>Qué mirar: ${esc(x.what_to_watch)}</small>`:''}</li>`).join('');
+    const refs=(h.evidence_refs||[]).slice(0,5).map(r=>`<a class="evidence-ref" href="${base}/resource/${Number(r.resource_id||0)}#http"><span>${r.method?`<b>${esc(r.method)}</b> `:''}<code>${esc((r.path||'')+(r.query?'?'+r.query:''))}</code></span><small>${r.exchange_id?`Burp request #${Number(r.exchange_id)} · `:''}${r.status!=null?`HTTP ${esc(r.status)}`:''}${r.source?` · ${esc(r.source)}`:''}</small></a>`).join('');
+    const resourceId=Number(h.resource_id||0), method=String(h.primary_method||'');
+    return `<article class="graph-ai-card priority-view-${esc(priority)}" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><div class="badges"><span class="badge hypothesis-priority priority-${esc(priority)}">${priorityLabel}</span><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span>${reasons}</div><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${steps?`<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol class="ai-steps">${steps}</ol></div>`:''}${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué merece tiempo:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo ofensivo:</b> ${esc(h.suggested_investigation||'')}</p>${refs?`<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">${refs}</div></div>`:''}<p><b>Se vuelve interesante si:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p><div class="graph-ai-card-actions">${resourceId?`<a class="btn-secondary" href="${base}/resource/${resourceId}#http">Abrir request</a>`:''}${resourceId&&method?`<button type="button" class="btn-secondary" data-send-repeater data-resource="${resourceId}" data-method="${esc(method)}">Send to Repeater →</button>`:''}<button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button><a class="btn-secondary" href="${base}/hypotheses">Abrir Hypotheses</a></div></article>`;
   }
   async function refreshGraphData(){
     const r=await fetch(api,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
@@ -536,6 +540,12 @@
       card.querySelector('[data-view-idea]')?.addEventListener('click',async()=>{
         const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);
         const id=`lead:${leadId}`;const n=sceneNodes.find(x=>x.id===id)||graph.nodes.find(x=>x.id===id);if(n){selected=id;showNode(n);focusNeighborhood(id,1);}
+      });
+      card.querySelector('[data-send-repeater]')?.addEventListener('click',async(ev)=>{
+        const b=ev.currentTarget; const rid=Number(b.dataset.resource||0); if(!rid)return;
+        const fd=new FormData();fd.set('csrf',csrf);fd.set('method',b.dataset.method||'GET');b.disabled=true;
+        try{const r=await fetch(`${base}/resource/${rid}/send-repeater`,{method:'POST',body:fd,headers:{'X-Requested-With':'NegroFetch'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);b.textContent='Enviado a Repeater ✓';}
+        catch(err){b.textContent=`Error: ${err.message}`;b.disabled=false;}
       });
       card.querySelectorAll('[data-idea-status]').forEach(b=>b.addEventListener('click',async()=>{
         const fd=new FormData();fd.set('csrf',csrf);fd.set('status',b.dataset.ideaStatus);

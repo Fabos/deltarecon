@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.13. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.14.2. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -108,10 +108,19 @@ def main() -> None:
             assert 'http_evidence' in gp and 'request_line' in gp and len(gh)==64
             schema=hunter._graph_ideas_json_schema()
             assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
+            hprops=schema['properties']['hypotheses']['items']['properties']
+            assert set(hprops['investigation_priority']['enum'])=={'high','medium','quick'}
+            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.2')
+            assert 'prompt_version' in gp and '0.14.2-offensive-v1' in gp
             parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
             assert parsed['summary']=='ok'
             malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})
             assert malformed['summary']=='fallback' and 'parse_warning' in malformed
+            # v0.14.2: priority metadata and actionable evidence references.
+            conn.execute("UPDATE leads_v2 SET evidence_json=? WHERE lead_key='ai_graph:smoke'", (json.dumps([{"source":"ai_graph","plain_language":"Cambia active y observa nuevas rutas","investigation_priority":"high","priority_reasons":["client-controlled behavior","backend enforcement unknown"],"node_ids":[f"resource:{rr['id']}",f"operation:{get_id}"]}]),))
+            enriched=next(x for x in hunter.list_leads(conn) if x['lead_key']=='ai_graph:smoke')
+            assert enriched['investigation_priority']=='high' and enriched['primary_method']=='GET'
+            assert enriched['evidence_refs'] and enriched['evidence_refs'][0]['resource_id']==rr['id']
         print("[OK] schema + migration path")
         print("[OK] HTTP model: resource -> operations -> deduplicated exchanges")
         print("[OK] policy profile")

@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.14.1
+# Negro Recon 🐕 — v0.14.2
 
 > **Olfatea donde otros no miran.**
 
@@ -7,6 +7,10 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
+
+## v0.14.2 — Offensive Hypothesis Prioritization
+
+`Give me ideas` prioriza superficies ofensivas nuevas y backend enforcement desconocido, separa `ALTA / MEDIA / QUICK CHECK`, pone **Prueba esto ahora** antes de la explicación, convierte lógica de negocio en validaciones server-side y muestra evidencia HTTP con acciones directas a Resource/Repeater/Mapa. El cache de IA incluye versión de prompt para no reutilizar recomendaciones antiguas. Consulta `UPDATE-v0.14.2.md`.
 
 ## v0.14.1 — Structured AI Output Hotfix
 
