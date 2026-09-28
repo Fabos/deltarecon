@@ -1,4 +1,4 @@
-# Negro Recon v0.14.2 — Offensive Hypothesis Prioritization
+# Negro Recon v0.14.3 — Offensive Hypothesis Prioritization
 
 ## Objetivo
 

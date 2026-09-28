@@ -597,6 +597,7 @@ def _decode_http_blob(value: str | None, limit: int = 300000) -> str:
 
 
 def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any] | None:
+    import negro_hunter as hunter
     with _db(paths) as conn:
         row = conn.execute(
             """SELECT r.*, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?""",
@@ -626,6 +627,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
             except Exception:
                 pass
         operations = []
+        resource_test_summary = {k: 0 for k in hunter.TEST_STATUSES}
         for op in conn.execute("SELECT * FROM resource_operations WHERE resource_id=? ORDER BY method", (resource_id,)).fetchall():
             sources = conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()
             exchanges = []
@@ -634,7 +636,11 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
                 exchanges.append(exd)
-            operations.append({"row": op, "sources": sources, "exchanges": exchanges})
+            tests = hunter.ensure_operation_test_coverage(conn, int(op["id"]))
+            test_summary = hunter.operation_test_summary(conn, int(op["id"]))
+            for k,v in test_summary.items():
+                resource_test_summary[k] = resource_test_summary.get(k, 0) + int(v)
+            operations.append({"row": op, "sources": sources, "exchanges": exchanges, "tests": tests, "test_summary": test_summary})
         observations = []
         for o in conn.execute("SELECT * FROM observations WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC LIMIT 50", (resource_id,)).fetchall():
             d = dict(o)
@@ -656,6 +662,8 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
             "evidence": evidence,
             "cors_result": cors_result,
             "operations": operations,
+            "test_summary": resource_test_summary,
+            "test_statuses": ["pending","testing","negative","interesting","confirmed","not_applicable"],
             "observations": observations,
             "linked_findings": linked_findings,
             "all_findings": all_findings,
@@ -714,6 +722,7 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
 
 
 def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 120, observation_limit: int = 120) -> dict[str, Any]:
+    import negro_hunter as hunter
     """Build a read-only graph projection from Negro's existing relational model.
 
     The graph never duplicates authoritative entities. Node IDs are stable references
@@ -767,8 +776,11 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
         operations = conn.execute("SELECT o.*,r.path,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id ORDER BY o.id").fetchall()
         for o in operations:
             label = f"{o['method']} {o['path']}"
-            state = "interesting" if o["last_status"] and int(o["last_status"]) >= 500 else "normal"
-            nid = add_node(f"operation:{o['id']}", "operation", label, state=state, meta={"id": o["id"], "method": o["method"], "status": o["last_status"], "seen_count": o["seen_count"], "authenticated": bool(o["authenticated_observed"]), "last_seen_at": o["last_seen_at"], "url": o["url"]})
+            hunter.ensure_operation_test_coverage(conn, int(o["id"]))
+            test_summary = hunter.operation_test_summary(conn, int(o["id"]))
+            has_test_signal = int(test_summary.get("interesting",0)) > 0 or int(test_summary.get("confirmed",0)) > 0
+            state = "interesting" if has_test_signal or (o["last_status"] and int(o["last_status"]) >= 500) else "normal"
+            nid = add_node(f"operation:{o['id']}", "operation", label, state=state, meta={"id": o["id"], "method": o["method"], "status": o["last_status"], "seen_count": o["seen_count"], "authenticated": bool(o["authenticated_observed"]), "last_seen_at": o["last_seen_at"], "url": o["url"], "test_summary": test_summary})
             add_edge(f"resource:{o['resource_id']}", nid, "supports", source="http_model")
             for osrc in conn.execute("SELECT source,first_seen_at,last_seen_at,seen_count FROM operation_sources WHERE operation_id=?", (o["id"],)).fetchall():
                 src_name = str(osrc["source"])
@@ -1207,6 +1219,22 @@ def create_app(default_domain: str, default_workspace: Path):
         if not detail:
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         return render(request, "resource.html", target_key, domain, workspace, **detail)
+
+    @app.post("/t/{target_key}/operation/{operation_id}/test")
+    def operation_test_update(target_key: str, operation_id: int, test_key: str = Form(...), status: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT o.id,o.resource_id FROM resource_operations o WHERE o.id=?", (operation_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Operación no encontrada")
+            try:
+                hunter.update_operation_test_coverage(conn, operation_id, test_key.strip(), status.strip(), notes.strip(), source="manual")
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            resource_id = int(row["resource_id"])
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#operation-{operation_id}-coverage", status_code=303)
 
     @app.get("/t/{target_key}/findings", response_class=HTMLResponse)
     def findings(request: Request, target_key: str, status: str = "", severity: str = ""):

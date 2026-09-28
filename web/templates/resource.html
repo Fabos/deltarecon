@@ -42,6 +42,11 @@
       {% endif %}
     </section>
 
+    <section class="panel" id="test-coverage">
+      <div class="panel-head"><div><p class="eyebrow">TEST COVERAGE</p><h2>Qué ya probaste y qué falta</h2><p class="muted small">La cobertura vive por método. Un <code>GET</code> y un <code>POST</code> sobre la misma ruta pueden tener riesgos y resultados distintos.</p></div><div class="badges"><span class="badge coverage-pending">{{ test_summary.pending }} pendientes</span><span class="badge coverage-testing">{{ test_summary.testing }} probando</span><span class="badge test-negative">{{ test_summary.negative }} negativos</span>{% if test_summary.interesting %}<span class="badge signal-interesting">{{ test_summary.interesting }} interesantes</span>{% endif %}{% if test_summary.confirmed %}<span class="badge signal-finding">{{ test_summary.confirmed }} confirmados</span>{% endif %}</div></div>
+      <p class="muted small">Negative significa “lo probé y no dio”. Interesting significa “hay señal, sigo investigando”. Confirmed debería terminar enlazado a un Finding real.</p>
+    </section>
+
     <section class="panel" id="http">
       <div class="panel-head"><div><p class="eyebrow">HTTP</p><h2>Requests & responses</h2></div><span>{{ operations|length }} métodos</span></div>
       {% for op in operations %}{% set o=op.row %}
@@ -52,6 +57,20 @@
             <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Send to Repeater →</button></form>
             <span class="muted">Sources: {% for src in op.sources %}<span class="chip">{{ src.source }}</span>{% endfor %}</span>
           </div>
+          <details class="operation-coverage" id="operation-{{ o.id }}-coverage" {% if loop.first %}open{% endif %}>
+            <summary><span><b>Test coverage</b> · {{ op.tests|length }} checks</span><span class="badges"><span class="badge coverage-pending">{{ op.test_summary.pending }} pending</span>{% if op.test_summary.testing %}<span class="badge coverage-testing">{{ op.test_summary.testing }} testing</span>{% endif %}{% if op.test_summary.negative %}<span class="badge test-negative">{{ op.test_summary.negative }} negative</span>{% endif %}{% if op.test_summary.interesting %}<span class="badge signal-interesting">{{ op.test_summary.interesting }} interesting</span>{% endif %}{% if op.test_summary.confirmed %}<span class="badge signal-finding">{{ op.test_summary.confirmed }} confirmed</span>{% endif %}</span></summary>
+            <div class="test-checklist">
+            {% for test in op.tests %}
+              <form class="test-check-row test-status-{{ test.status }}" action="{{ target_base }}/operation/{{ o.id }}/test" method="post">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="test_key" value="{{ test.test_key }}">
+                <div class="test-check-main"><div><b>{{ test.label }}</b><span class="chip">{{ test.category }}</span></div><small>{{ test.hint }}</small></div>
+                <select name="status" aria-label="Estado {{ test.label }}">{% for st in test_statuses %}<option value="{{ st }}" {% if test.status==st %}selected{% endif %}>{% if st=='pending' %}Pendiente{% elif st=='testing' %}Probando{% elif st=='negative' %}Negativo / no dio{% elif st=='interesting' %}Interesante{% elif st=='confirmed' %}Confirmado{% else %}No aplica{% endif %}</option>{% endfor %}</select>
+                <input name="notes" value="{{ test.notes or '' }}" maxlength="2000" placeholder="Qué probaste / qué pasó" aria-label="Notas {{ test.label }}">
+                <button class="btn-secondary" type="submit">Guardar</button>
+              </form>
+            {% endfor %}
+            </div>
+          </details>
           {% for ex in op.exchanges %}
           <details class="exchange-card" {% if loop.first %}open{% endif %}>
             <summary>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %} · HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</summary>

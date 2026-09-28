@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.14.2
+# Negro Recon 🐕 — v0.14.4
 
 > **Olfatea donde otros no miran.**
 
@@ -8,9 +8,14 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.14.2 — Offensive Hypothesis Prioritization
 
-`Give me ideas` prioriza superficies ofensivas nuevas y backend enforcement desconocido, separa `ALTA / MEDIA / QUICK CHECK`, pone **Prueba esto ahora** antes de la explicación, convierte lógica de negocio en validaciones server-side y muestra evidencia HTTP con acciones directas a Resource/Repeater/Mapa. El cache de IA incluye versión de prompt para no reutilizar recomendaciones antiguas. Consulta `UPDATE-v0.14.2.md`.
+## v0.14.4 — Endpoint Test Coverage + Exploratory AI Retry
+
+Cada método observado (`GET`, `POST`, `PUT`, etc.) tiene ahora una checklist persistente de pruebas recomendadas: Authorization/IDOR, acceso sin sesión, CORS, parámetros, métodos alternativos, Content-Type, CSRF, lógica de negocio, cache, rate limiting, client-side trust y checks contextuales. Los estados `pending / testing / negative / interesting / confirmed / not_applicable` quedan guardados, aparecen en el detalle del Resource y alimentan `Give me ideas` para no repetir pruebas ya descartadas. Si la primera llamada estructurada de IA devuelve 0 hipótesis, Negro ejecuta una sola segunda pasada exploratoria acotada; la estimación de costo muestra el máximo de dos llamadas. Consulta `UPDATE-v0.14.4.md`.
+
+## v0.14.3 — Offensive Hypothesis Prioritization
+
+`Give me ideas` prioriza superficies ofensivas nuevas y backend enforcement desconocido, separa `ALTA / MEDIA / QUICK CHECK`, pone **Prueba esto ahora** antes de la explicación, convierte lógica de negocio en validaciones server-side y muestra evidencia HTTP con acciones directas a Resource/Repeater/Mapa. El cache de IA incluye versión de prompt para no reutilizar recomendaciones antiguas. Consulta `UPDATE-v0.14.3.md`.
 
 ## v0.14.1 — Structured AI Output Hotfix
 
@@ -511,3 +516,7 @@ Reglas permanentes:
 - contenido activo/fuzzing no se ejecuta masivamente;
 - herramientas externas con costo o cuota se disparan explícitamente;
 - respetar scope y reglas del programa.
+
+## v0.14.3 — AI Cache Reliability Hotfix
+
+`Give me ideas` ya no puede quedar atrapado reutilizando una respuesta malformada. Los resultados no estructurados se marcan como inválidos, no se cachean como `done`, y la UI permite reintentar. También se exige Structured Outputs real en vez de caer silenciosamente a texto libre. Consulta `UPDATE-v0.14.3.md`.

@@ -385,7 +385,10 @@
     const sourceGraph=n.virtual?sceneNodes:graph.nodes;
     const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
     const summary=summarizeNode(n);
-    const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting?'is-interesting':''}"><b>${summary.interesting}</b><span>Señales</span></div></div>`:'';
+    const testSummary=meta.test_summary||{};
+    const trackedTests=Object.values(testSummary).reduce((a,b)=>a+Number(b||0),0);
+    const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
+    const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Checks</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
     const statusHtml=(meta.coverage||meta.signal)
       ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Coverage · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Signal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} finding${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
@@ -563,8 +566,12 @@
         if(job.status==='error')throw new Error(job.error||'Error en IA');
         if(job.status==='done'){
           const result=job.summary?.result||{};const ideas=result.hypotheses||[];
-          if(aiStatus)aiStatus.textContent=`${result.cached?'Resultado reutilizado desde cache. ':''}${result.summary||`Generadas ${ideas.length} hipótesis.`}`;
-          if(aiResults)aiResults.innerHTML=ideas.length?ideas.map(ideaCard).join(''):'<p class="empty">La IA no propuso hipótesis nuevas con evidencia suficiente.</p>';
+          if(aiStatus){
+            const prefix=result.cached?'Resultado reutilizado desde cache. ':'';
+            aiStatus.textContent=prefix+(result.summary||`Generadas ${ideas.length} hipótesis.`);
+            if(result.retryable) aiStatus.textContent+=' El resultado inválido NO quedó cacheado: puedes intentarlo de nuevo.';
+          }
+          if(aiResults)aiResults.innerHTML=ideas.length?ideas.map(ideaCard).join(''):(result.retryable?'<p class="empty">La respuesta de IA no pudo validarse como JSON estructurado. No se guardó ni se cacheó. Vuelve a generar.</p>':(result.exploratory_retry_used?'<p class="empty">Negro hizo también un segundo intento exploratorio y no encontró una hipótesis defendible con la evidencia actual. Captura más tráfico o completa checks pendientes y vuelve a intentarlo.</p>':'<p class="empty">La IA no propuso hipótesis nuevas con evidencia suficiente.</p>'));
           await refreshGraphData();bindIdeaCards();break;
         }
         if(aiStatus)aiStatus.textContent='IA trabajando…';

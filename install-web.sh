@@ -45,7 +45,7 @@ else
 fi
 
 "$ROOT/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-"$ROOT/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
+"$ROOT/.venv/bin/python" -m pip install --upgrade -r "$ROOT/requirements.txt"
 
 echo "[+] Verificando dependencias de Negro..."
 "$ROOT/.venv/bin/python" - <<'PY'

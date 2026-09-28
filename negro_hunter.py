@@ -24,7 +24,7 @@ from typing import Any, Iterable
 
 import negro_intel as intel
 
-GRAPH_AI_PROMPT_VERSION = "0.14.2-offensive-v1"
+GRAPH_AI_PROMPT_VERSION = "0.14.4-coverage-retry-v1"
 
 try:
     import requests
@@ -123,6 +123,120 @@ DOC_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pp
 ARCHIVE_EXTENSIONS = {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bak", ".old", ".sql", ".dump"}
 
 
+OPERATION_TEST_CATALOG: dict[str, dict[str, str]] = {
+    "authorization": {"label":"Authorization / IDOR", "category":"access_control", "hint":"Compara el mismo objeto/acción entre sesiones, usuarios o roles autorizados. Mantén constante todo salvo la identidad o el identificador que estés validando."},
+    "session_access": {"label":"Acceso sin sesión", "category":"authentication", "hint":"Repite la request sin cookies/Authorization y compara status, datos y efectos. Descarta rápido si el recurso es deliberadamente público."},
+    "cors": {"label":"CORS", "category":"browser_security", "hint":"Prueba un Origin controlado y revisa ACAO/credentials. Una señal interesante aún requiere demostrar impacto con datos o acciones permitidas."},
+    "parameter_tampering": {"label":"Parámetros / input tampering", "category":"input", "hint":"Modifica un parámetro real cada vez: límites, ids, flags, estados, cantidades o valores observados. Compara respuesta y efecto server-side."},
+    "method_variation": {"label":"Métodos HTTP alternativos", "category":"protocol", "hint":"Comprueba si GET/POST/PUT/PATCH/DELETE equivalentes cambian controles de acceso o validación. Evita cambios de estado fuera de datos autorizados."},
+    "content_type": {"label":"Content-Type / parser differential", "category":"protocol", "hint":"En operaciones con body, compara parsers compatibles (por ejemplo JSON vs form) sólo cuando la aplicación/servidor lo acepte. Busca diferencias de validación o autorización."},
+    "csrf": {"label":"CSRF / acción con cookie", "category":"browser_security", "hint":"Si la acción cambia estado y depende de cookies, revisa SameSite/token/Origin/Referer y si una petición cross-site equivalente sería aceptada."},
+    "business_logic": {"label":"Lógica de negocio / estado", "category":"business_logic", "hint":"Identifica la condición que gobierna la operación (state, limit, price, promo, ownership, sequence) y comprueba que el backend la revalide al ejecutar la acción sensible."},
+    "cache": {"label":"Cache / variación por usuario", "category":"cache", "hint":"En respuestas GET, observa headers de cache y si contenido autenticado/personalizado puede mezclarse entre variantes o usuarios."},
+    "rate_limit": {"label":"Rate limiting / abuso", "category":"abuse", "hint":"En login, OTP, reset o validaciones repetibles, comprueba de forma acotada si hay controles de frecuencia y si se aplican a la dimensión correcta."},
+    "client_trust": {"label":"Client-side trust / feature flags", "category":"client_side", "hint":"Si el cliente recibe flags/config, altera una sola respuesta, observa UI/requests nuevas y verifica luego que el backend aplique autorización por sí mismo."},
+    "url_handling": {"label":"Redirect / URL handling", "category":"url_flow", "hint":"Cuando exista un parámetro URL/redirect real, verifica validación, normalización y destino permitido sin salir del alcance autorizado."},
+    "mass_assignment": {"label":"Mass assignment / campos ocultos", "category":"api", "hint":"En JSON de creación/edición, prueba únicamente campos reales/relacionados y observa si el backend acepta propiedades que la interfaz no debería controlar."},
+}
+
+TEST_STATUSES = {"pending", "testing", "negative", "interesting", "confirmed", "not_applicable"}
+
+
+def _operation_test_keys(conn, operation_id: int) -> list[str]:
+    row = conn.execute(
+        """SELECT o.*,r.path,r.query,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE o.id=?""",
+        (operation_id,),
+    ).fetchone()
+    if not row:
+        return []
+    method = str(row["method"] or "GET").upper()
+    path = str(row["path"] or "").lower()
+    response_ct = str(row["response_content_type"] or "").lower()
+    request_ct = str(row["request_content_type"] or "").lower()
+    static_ext = Path(urllib.parse.urlsplit(str(row["url"] or "")).path).suffix.lower()
+    is_static = static_ext in {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".map"}
+
+    keys: list[str] = ["cors"]
+    if method in {"GET", "HEAD"}:
+        keys.append("cache")
+    if is_static:
+        return list(dict.fromkeys(keys))
+
+    keys += ["authorization", "parameter_tampering", "method_variation"]
+    authish = bool(row["authenticated_observed"]) or any(x in path for x in ("login", "auth", "account", "profile", "session", "me", "user"))
+    if authish:
+        keys.append("session_access")
+    if method in {"POST", "PUT", "PATCH", "DELETE"}:
+        keys.append("business_logic")
+        if bool(row["authenticated_observed"]):
+            keys.append("csrf")
+    if method in {"POST", "PUT", "PATCH"} and ("json" in request_ct or not request_ct):
+        keys += ["content_type", "mass_assignment"]
+    if any(x in path for x in ("login", "otp", "password", "reset", "verify", "code", "token")):
+        keys.append("rate_limit")
+    if any(x in path for x in ("feature", "flag", "config", "setting", "experiment")):
+        keys.append("client_trust")
+
+    query_keys: set[str] = set()
+    ex = conn.execute("SELECT query_json FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (operation_id,)).fetchone()
+    if ex:
+        try:
+            q = json.loads(ex["query_json"] or "{}")
+            if isinstance(q, dict):
+                query_keys = {str(k).lower() for k in q}
+        except Exception:
+            pass
+    if query_keys & (REDIRECT_PARAMS | URLISH_PARAMS):
+        keys.append("url_handling")
+    if any(k in query_keys for k in ("id", "user_id", "userid", "account_id", "order_id", "document_id", "profile_id")) or re.search(r"/(?:\d+|[0-9a-f]{8}-[0-9a-f-]{27,})\b", path):
+        if "authorization" not in keys:
+            keys.append("authorization")
+    return list(dict.fromkeys(keys))
+
+
+def ensure_operation_test_coverage(conn, operation_id: int) -> list[dict[str, Any]]:
+    init_schema(conn)
+    now = now_iso()
+    for key in _operation_test_keys(conn, operation_id):
+        meta = OPERATION_TEST_CATALOG[key]
+        conn.execute(
+            """INSERT OR IGNORE INTO operation_test_coverage(operation_id,test_key,label,category,status,notes,source,created_at,updated_at)
+               VALUES(?,?,?,?, 'pending','', 'recommended', ?, ?)""",
+            (operation_id, key, meta["label"], meta["category"], now, now),
+        )
+    rows = conn.execute("SELECT * FROM operation_test_coverage WHERE operation_id=? ORDER BY id", (operation_id,)).fetchall()
+    out=[]
+    for r in rows:
+        d=dict(r)
+        d["hint"] = OPERATION_TEST_CATALOG.get(str(r["test_key"]), {}).get("hint", "Registra qué probaste y qué observaste.")
+        out.append(d)
+    return out
+
+
+def update_operation_test_coverage(conn, operation_id: int, test_key: str, status: str, notes: str = "", source: str = "manual") -> dict[str, Any]:
+    init_schema(conn)
+    if status not in TEST_STATUSES:
+        raise ValueError("Estado de prueba inválido")
+    ensure_operation_test_coverage(conn, operation_id)
+    row = conn.execute("SELECT id FROM operation_test_coverage WHERE operation_id=? AND test_key=?", (operation_id, test_key)).fetchone()
+    if not row:
+        meta = OPERATION_TEST_CATALOG.get(test_key, {"label": test_key.replace("_", " ").title(), "category": "custom"})
+        now=now_iso()
+        conn.execute("INSERT INTO operation_test_coverage(operation_id,test_key,label,category,status,notes,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (operation_id,test_key,meta["label"],meta["category"],status,notes[:2000],source,now,now))
+    else:
+        conn.execute("UPDATE operation_test_coverage SET status=?,notes=?,source=?,updated_at=? WHERE operation_id=? AND test_key=?", (status,notes[:2000],source,now_iso(),operation_id,test_key))
+    final = conn.execute("SELECT * FROM operation_test_coverage WHERE operation_id=? AND test_key=?", (operation_id,test_key)).fetchone()
+    return dict(final)
+
+
+def operation_test_summary(conn, operation_id: int) -> dict[str, int]:
+    ensure_operation_test_coverage(conn, operation_id)
+    out={k:0 for k in TEST_STATUSES}
+    for r in conn.execute("SELECT status,COUNT(*) c FROM operation_test_coverage WHERE operation_id=? GROUP BY status", (operation_id,)).fetchall():
+        out[str(r["status"])] = int(r["c"])
+    return out
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -218,6 +332,21 @@ def init_schema(conn) -> None:
             created_at TEXT NOT NULL,
             UNIQUE(task_type, evidence_hash, model)
         );
+        CREATE TABLE IF NOT EXISTS operation_test_coverage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id INTEGER NOT NULL,
+            test_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            category TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notes TEXT,
+            source TEXT NOT NULL DEFAULT 'recommended',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(operation_id, test_key),
+            FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_operation_test_coverage ON operation_test_coverage(operation_id,status,test_key);
         CREATE INDEX IF NOT EXISTS idx_leads_v2_priority ON leads_v2(review_priority, confidence, updated_at);
         CREATE INDEX IF NOT EXISTS idx_relationships_src ON relationships(src_type, src_id, relation);
         """
@@ -1419,7 +1548,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         meta = dict(n.get("meta") or {})
         allowed = {k: meta.get(k) for k in (
             "id","url","host","method","status","seen_count","authenticated","source","tool",
-            "review","classification","priority","type","why","next_test","severity","updated_at","last_seen_at"
+            "review","classification","priority","type","why","next_test","severity","updated_at","last_seen_at","test_summary"
         ) if meta.get(k) not in (None, "")}
         return {"id": n.get("id"), "type": n.get("type"), "label": n.get("label"), "state": n.get("state"), "meta": allowed}
 
@@ -1446,6 +1575,15 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
     for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 ORDER BY updated_at DESC LIMIT 120").fetchall():
         existing.append(dict(row))
     findings = [dict(r) for r in conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC LIMIT 80").fetchall()]
+    testing_coverage = []
+    for tr in conn.execute(
+        """SELECT t.operation_id,t.test_key,t.label,t.category,t.status,t.notes,t.updated_at,o.method,r.id resource_id,r.path
+           FROM operation_test_coverage t JOIN resource_operations o ON o.id=t.operation_id JOIN resources r ON r.id=o.resource_id
+           ORDER BY CASE t.status WHEN 'interesting' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'testing' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END, t.updated_at DESC LIMIT 320"""
+    ).fetchall():
+        item=dict(tr)
+        item["notes"] = str(item.get("notes") or "")[:500]
+        testing_coverage.append(item)
     relevant_resource_ids: set[int] = set()
     for n in ordered_nodes:
         if n.get("type") == "resource":
@@ -1467,6 +1605,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         "edges": compact_edges,
         "existing_hypotheses": existing,
         "confirmed_findings": findings,
+        "test_coverage": testing_coverage,
         "http_evidence": http_evidence,
         "instructions_context": {
             "prompt_version": GRAPH_AI_PROMPT_VERSION,
@@ -1474,6 +1613,8 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
             "do_not_repeat_negative_or_discarded": True,
             "full_http_bodies_included": False,
             "authorized_testing_only": True,
+            "test_coverage_is_memory": True,
+            "negative_tests_should_not_repeat": True,
         },
     }
     payload = "NEGRO_GRAPH_EVIDENCE\n" + json.dumps(envelope, ensure_ascii=False, indent=2)
@@ -1560,7 +1701,26 @@ def _safe_json_object(text: str, fallback: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def graph_ai_result_is_cacheable(result: Any) -> bool:
+    """Only reuse results that were actually parsed as structured output.
+
+    A valid structured response may legitimately contain zero hypotheses. The key
+    distinction is parse success, not hypothesis count.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("parse_warning"):
+        return False
+    if result.get("structured_ok") is False:
+        return False
+    if not isinstance(result.get("hypotheses"), list):
+        return False
+    if not isinstance(result.get("unexplored_areas"), list):
+        return False
+    return isinstance(result.get("summary"), str)
+
+
+def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int, exploratory_retry: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     key = intel.load_secrets().get("OPENAI_API_KEY")
     if not key:
         raise RuntimeError(f"Falta OPENAI_API_KEY en {intel.SECRETS_PATH}")
@@ -1574,6 +1734,7 @@ Tu salida debe permitir ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador s
 
 Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y preview JSON limitada; úsalo para nombrar requests, parámetros, campos y respuestas REALES.
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
+El bloque test_coverage es la memoria explícita de qué se probó por método/endpoint. Respeta sus estados: negative/not_applicable no se repiten sin evidencia nueva; testing no se propone como si estuviera pendiente; pending sí puede alimentar ideas concretas.
 
 ORDEN DE PRIORIDAD OFENSIVA:
 1. Superficie nueva controlada por cliente, autorización server-side desconocida, cross-role/cross-account, objetos/IDs, estados terminales, métodos alternativos, parámetros que gobiernan operaciones sensibles, endpoints/rutas nuevas desde JS o feature flags.
@@ -1621,6 +1782,13 @@ Devuelve únicamente JSON válido con este schema:
   "unexplored_areas":[{"area":"...","reason":"..."}]
 }
 """
+    if exploratory_retry:
+        system += """
+
+SEGUNDO INTENTO EXPLORATORIO:
+El primer análisis estructurado no encontró hipótesis. Busca ahora 3-5 oportunidades ACOTADAS que sigan ancladas en evidencia real, priorizando test_coverage pendiente, diferencias de sesión, métodos alternativos, client-side trust/feature flags, parámetros reales, rutas/JS observados y lógica de negocio con operación sensible.
+No inventes vulnerabilidades ni endpoints. Si una comprobación es débil pero barata, márcala quick. Si aun así no hay nada defendible, devuelve hypotheses=[] y explica en unexplored_areas qué evidencia falta para avanzar.
+"""
     client = OpenAI(api_key=key)
     schema_format = {
         "type": "json_schema",
@@ -1638,12 +1806,16 @@ Devuelve únicamente JSON válido con este schema:
             input=payload,
             text={"format": schema_format},
         )
-    except TypeError:
-        # Compatibility path for an older installed OpenAI SDK. The parser below
-        # still prevents malformed model text from crashing the UI.
-        response = client.responses.create(model=model, reasoning={"effort":"medium"}, max_output_tokens=output_tokens, instructions=system, input=payload)
+    except TypeError as exc:
+        # Do not silently fall back to free-form text: that poisoned the cache
+        # with malformed pseudo-JSON in v0.14.1/v0.14.2.
+        raise RuntimeError(
+            "El SDK de OpenAI instalado no soporta Structured Outputs para Responses API. "
+            "Ejecuta ./install-web.sh para actualizar dependencias y vuelve a intentar."
+        ) from exc
     text = response.output_text or ""
-    result = _safe_json_object(text, {"summary":"La IA no devolvió JSON estructurado. Intenta de nuevo.","hypotheses":[],"unexplored_areas":[]})
+    result = _safe_json_object(text, {"summary":"La IA no devolvió JSON estructurado. No se guardó ni se cacheó el resultado; intenta de nuevo.","hypotheses":[],"unexplored_areas":[]})
+    result["structured_ok"] = not bool(result.get("parse_warning"))
     if not isinstance(result.get("hypotheses"), list):
         result["hypotheses"] = []
     result["hypotheses"] = result["hypotheses"][:5]

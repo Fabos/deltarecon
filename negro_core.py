@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.14.2
+Negro Recon v0.14.4
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.14.2"
+VERSION = "0.14.4"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2077,6 +2077,19 @@ def cors_check_resource(domain: str, paths: dict[str, Path], resource_id: int, t
     with db_connect(paths) as conn:
         record_observation(conn, "resource", int(row["id"]), "cors_probe", "cors_probe", row["url"], result)
         record_observation(conn, "host", int(row["host_id"]), "cors_probe", "cors_probe", row["url"], {**result, "resource_id": int(row["id"])})
+        preferred_method = str(replay_method or "GET").upper()
+        op = conn.execute("SELECT id FROM resource_operations WHERE resource_id=? AND method=?", (resource_id, preferred_method)).fetchone()
+        if not op:
+            op = conn.execute("SELECT id FROM resource_operations WHERE resource_id=? ORDER BY last_seen_at DESC LIMIT 1", (resource_id,)).fetchone()
+        if op:
+            if result.get("error"):
+                cors_status = "pending"
+            elif bool(result.get("likely_credentialed_cors")) or bool(result.get("interesting")):
+                cors_status = "interesting"
+            else:
+                cors_status = "negative"
+            note = "Origin controlado reflejado + credentials" if bool(result.get("likely_credentialed_cors")) else ("Señal CORS interesante" if bool(result.get("interesting")) else ("Sin reflexión insegura observada" if not result.get("error") else str(result.get("error"))[:500]))
+            hunter.update_operation_test_coverage(conn, int(op["id"]), "cors", cors_status, note, source="cors_probe")
     return result
 
 
@@ -2174,8 +2187,24 @@ def ai_estimate_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dic
     with db_connect(paths) as conn:
         payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
         cached = conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
+        if cached:
+            try:
+                cached_result = json.loads(cached["result_json"] or "{}")
+            except Exception:
+                cached_result = {}
+            if not hunter.graph_ai_result_is_cacheable(cached_result):
+                cached = None
     estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 3344.62)))
-    estimate.update({"task_type":"graph_ideas","model":selected_model,"output_tokens_budget":output_tokens,"evidence_hash":evidence_hash,"cached":bool(cached),"selected_node_id":selected_node_id})
+    first_usd = float(estimate.get("max_total_usd_est") or 0.0)
+    first_cop = float(estimate.get("max_total_cop_est") or 0.0)
+    estimate.update({
+        "task_type":"graph_ideas","model":selected_model,"output_tokens_budget":output_tokens,"evidence_hash":evidence_hash,
+        "cached":bool(cached),"selected_node_id":selected_node_id,"exploratory_retry_possible":True,"max_calls":2,
+        "first_call_max_total_usd_est":first_usd,"first_call_max_total_cop_est":first_cop,
+        "max_total_usd_est":0.0 if cached else first_usd * 2,
+        "max_total_cop_est":0.0 if cached else first_cop * 2,
+        "cost_note":"El segundo intento sólo se ejecuta si la primera respuesta estructurada devuelve 0 hipótesis." if not cached else "Resultado ya cacheado; no se ejecuta una nueva llamada."
+    })
     return estimate
 
 
@@ -2189,17 +2218,42 @@ def ai_run_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dict, se
         payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
         cached = conn.execute("SELECT * FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
         if cached:
-            result = json.loads(cached["result_json"] or "{}")
-            result["hypotheses"] = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
-            result["cached"] = True
-            return result
+            try:
+                result = json.loads(cached["result_json"] or "{}")
+            except Exception:
+                result = {}
+            if hunter.graph_ai_result_is_cacheable(result):
+                result["hypotheses"] = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
+                result["cached"] = True
+                return result
+            # A malformed result must never become a permanent cache hit.
+            conn.execute("UPDATE ai_tasks SET status='invalid' WHERE id=?", (cached["id"],))
     result, usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens)
+    attempts = 1
+    # A valid but empty first answer is not an error. Try once more with a more
+    # exploratory prompt so Negro can surface bounded quick checks from pending coverage.
+    if hunter.graph_ai_result_is_cacheable(result) and not list(result.get("hypotheses") or []):
+        retry_result, retry_usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens, exploratory_retry=True)
+        attempts = 2
+        if hunter.graph_ai_result_is_cacheable(retry_result):
+            result = retry_result
+            result["exploratory_retry_used"] = True
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            a = usage.get(key)
+            b = retry_usage.get(key)
+            if isinstance(a, int) or isinstance(b, int):
+                usage[key] = int(a or 0) + int(b or 0)
+    usage["attempts"] = attempts
     usage.update(hunter.actual_ai_cost(usage, selected_model, float(settings.get("usd_cop_rate", 3344.62))))
+    cacheable = hunter.graph_ai_result_is_cacheable(result)
     with db_connect(paths) as conn:
-        persisted = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
-        result["hypotheses"] = persisted
+        if cacheable:
+            persisted = hunter.persist_graph_ai_hypotheses(conn, result, evidence_hash=evidence_hash, selected_node_id=selected_node_id)
+            result["hypotheses"] = persisted
         result["cached"] = False
-        conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('graph_ideas',?,?,?,?,?,?,?)", (evidence_hash, selected_model, "done", None, json.dumps(usage, ensure_ascii=False), json.dumps(result, ensure_ascii=False), now_iso()))
+        result["retryable"] = not cacheable
+        status = "done" if cacheable else "invalid"
+        conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES('graph_ideas',?,?,?,?,?,?,?)", (evidence_hash, selected_model, status, None, json.dumps(usage, ensure_ascii=False), json.dumps(result, ensure_ascii=False), now_iso()))
     result["usage"] = usage
     return result
 

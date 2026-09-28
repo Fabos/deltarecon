@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.14.2. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.14.4. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -95,6 +95,13 @@ def main() -> None:
             conn.execute("INSERT INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (retest_id, 'exchange', exchange_id, 'evidence', now))
             assert conn.execute("SELECT source FROM findings WHERE id=?", (fid,)).fetchone()["source"] == 'selftest'
             assert conn.execute("SELECT COUNT(*) c FROM finding_retest_entities WHERE retest_id=?", (retest_id,)).fetchone()["c"] == 1
+            # v0.14.4: endpoint/method test coverage is persistent and feeds AI memory.
+            tests=hunter.ensure_operation_test_coverage(conn, int(get_id))
+            keys={x['test_key'] for x in tests}
+            assert {'authorization','cors','parameter_tampering','method_variation','session_access','cache'}.issubset(keys), keys
+            hunter.update_operation_test_coverage(conn, int(get_id), 'authorization', 'negative', 'cross-account check OK', source='manual')
+            ts=hunter.operation_test_summary(conn, int(get_id))
+            assert ts['negative'] >= 1
             # v0.14: hypothesis workbench migrations + AI HTTP preview context.
             cols={x["name"] for x in conn.execute("PRAGMA table_info(leads_v2)").fetchall()}
             assert {"test_plan_json","result_notes","last_tested_at"}.issubset(cols), cols
@@ -110,13 +117,13 @@ def main() -> None:
             assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
             hprops=schema['properties']['hypotheses']['items']['properties']
             assert set(hprops['investigation_priority']['enum'])=={'high','medium','quick'}
-            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.2')
-            assert 'prompt_version' in gp and '0.14.2-offensive-v1' in gp
+            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.4')
+            assert 'prompt_version' in gp and '0.14.4-coverage-retry-v1' in gp
             parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
             assert parsed['summary']=='ok'
             malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})
             assert malformed['summary']=='fallback' and 'parse_warning' in malformed
-            # v0.14.2: priority metadata and actionable evidence references.
+            # v0.14.3: priority metadata and actionable evidence references.
             conn.execute("UPDATE leads_v2 SET evidence_json=? WHERE lead_key='ai_graph:smoke'", (json.dumps([{"source":"ai_graph","plain_language":"Cambia active y observa nuevas rutas","investigation_priority":"high","priority_reasons":["client-controlled behavior","backend enforcement unknown"],"node_ids":[f"resource:{rr['id']}",f"operation:{get_id}"]}]),))
             enriched=next(x for x in hunter.list_leads(conn) if x['lead_key']=='ai_graph:smoke')
             assert enriched['investigation_priority']=='high' and enriched['primary_method']=='GET'
@@ -129,6 +136,7 @@ def main() -> None:
         print("[OK] search intelligence")
         print("[OK] findings + retest evidence model")
         print("[OK] hypothesis workbench + sanitized HTTP AI context")
+        print("[OK] endpoint test coverage memory")
 
 
 if __name__ == "__main__":
