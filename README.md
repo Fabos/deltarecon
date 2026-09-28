@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.14.0
+# Negro Recon 🐕 — v0.14.1
 
 > **Olfatea donde otros no miran.**
 
@@ -7,6 +7,10 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
+
+## v0.14.1 — Structured AI Output Hotfix
+
+`Give me ideas` usa Structured Outputs con JSON Schema estricto y un parser de respaldo seguro para que una respuesta malformada del modelo no rompa el job ni deje la UI en error. Consulta `UPDATE-v0.14.1.md`.
 
 ## v0.14.0 — Bug Bounty Pilot
 

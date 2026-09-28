@@ -106,6 +106,12 @@ def main() -> None:
             graph={"counts":{"resource":1},"nodes":[{"id":f"resource:{rr['id']}","type":"resource","label":"/api/users/42","state":"untested","meta":{"id":rr['id'],"url":"https://example.test/api/users/42"}}],"edges":[]}
             gp,gh=hunter.build_graph_ai_payload(conn,domain,graph,selected_node_id=f"resource:{rr['id']}")
             assert 'http_evidence' in gp and 'request_line' in gp and len(gh)==64
+            schema=hunter._graph_ideas_json_schema()
+            assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
+            parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
+            assert parsed['summary']=='ok'
+            malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})
+            assert malformed['summary']=='fallback' and 'parse_warning' in malformed
         print("[OK] schema + migration path")
         print("[OK] HTTP model: resource -> operations -> deduplicated exchanges")
         print("[OK] policy profile")

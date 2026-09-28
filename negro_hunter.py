@@ -1261,11 +1261,7 @@ No propongas credential brute force, DoS, phishing, mass scanning, resource clai
     client = OpenAI(api_key=key)
     response = client.responses.create(model=model, reasoning={"effort":"low"}, max_output_tokens=output_tokens, instructions=system, input=payload)
     text = response.output_text or ""
-    try:
-        result = json.loads(text)
-    except Exception:
-        a, b = text.find("{"), text.rfind("}")
-        result = json.loads(text[a:b+1]) if a >= 0 and b > a else {"summary":"No se pudo parsear la salida de IA","raw":text[:10000],"top_leads":[],"next_actions":[]}
+    result = _safe_json_object(text, {"summary":"La IA no devolvió JSON estructurado. Intenta de nuevo.","top_leads":[],"next_actions":[],"noise_or_low_value":[],"architecture":{}})
     usage = getattr(response, "usage", None)
     return result, {"input_tokens":getattr(usage,"input_tokens",None),"output_tokens":getattr(usage,"output_tokens",None),"total_tokens":getattr(usage,"total_tokens",None)}
 
@@ -1442,6 +1438,82 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
     return payload, digest
 
 
+def _graph_ideas_json_schema() -> dict[str, Any]:
+    """Strict schema for Responses API Structured Outputs."""
+    step_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "step": {"type": "integer"},
+            "action": {"type": "string"},
+            "what_to_watch": {"type": "string"},
+        },
+        "required": ["step", "action", "what_to_watch"],
+    }
+    hypothesis_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string"},
+            "type": {"type": "string", "enum": ["authorization", "business_logic", "state_transition", "cors", "oauth", "javascript", "api", "feature_flag", "other"]},
+            "strength": {"type": "string", "enum": ["strong", "medium", "exploratory"]},
+            "plain_language": {"type": "string"},
+            "why_interesting": {"type": "string"},
+            "suggested_investigation": {"type": "string"},
+            "steps": {"type": "array", "items": step_schema},
+            "confirm_if": {"type": "string"},
+            "discard_if": {"type": "string"},
+            "node_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "type", "strength", "plain_language", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
+    }
+    unexplored_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"area": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["area", "reason"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "hypotheses": {"type": "array", "items": hypothesis_schema},
+            "unexplored_areas": {"type": "array", "items": unexplored_schema},
+        },
+        "required": ["summary", "hypotheses", "unexplored_areas"],
+    }
+
+
+def _safe_json_object(text: str, fallback: dict[str, Any]) -> dict[str, Any]:
+    """Parse model JSON without ever surfacing a JSONDecodeError to the UI."""
+    raw = (text or "").strip()
+    candidates = [raw]
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        candidates.append("\n".join(lines).strip())
+    a, b = raw.find("{"), raw.rfind("}")
+    if a >= 0 and b > a:
+        candidates.append(raw[a:b+1])
+    last_error = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            last_error = exc
+    result = dict(fallback)
+    result["parse_warning"] = f"La IA devolvió una respuesta no estructurada; no se guardaron hipótesis. {last_error}" if last_error else "La IA devolvió una respuesta vacía."
+    return result
+
+
 def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int) -> tuple[dict[str, Any], dict[str, Any]]:
     key = intel.load_secrets().get("OPENAI_API_KEY")
     if not key:
@@ -1491,13 +1563,28 @@ Return ONLY JSON válido con este schema:
   "unexplored_areas":[{"area":"...","reason":"..."}]
 }"""
     client = OpenAI(api_key=key)
-    response = client.responses.create(model=model, reasoning={"effort":"medium"}, max_output_tokens=output_tokens, instructions=system, input=payload)
-    text = response.output_text or ""
+    schema_format = {
+        "type": "json_schema",
+        "name": "negro_graph_hypotheses",
+        "description": "Hipótesis accionables basadas únicamente en la evidencia estructurada de Negro.",
+        "schema": _graph_ideas_json_schema(),
+        "strict": True,
+    }
     try:
-        result = json.loads(text)
-    except Exception:
-        a, b = text.find("{"), text.rfind("}")
-        result = json.loads(text[a:b+1]) if a >= 0 and b > a else {"summary":"No se pudo parsear la salida de IA","hypotheses":[],"unexplored_areas":[]}
+        response = client.responses.create(
+            model=model,
+            reasoning={"effort":"medium"},
+            max_output_tokens=output_tokens,
+            instructions=system,
+            input=payload,
+            text={"format": schema_format},
+        )
+    except TypeError:
+        # Compatibility path for an older installed OpenAI SDK. The parser below
+        # still prevents malformed model text from crashing the UI.
+        response = client.responses.create(model=model, reasoning={"effort":"medium"}, max_output_tokens=output_tokens, instructions=system, input=payload)
+    text = response.output_text or ""
+    result = _safe_json_object(text, {"summary":"La IA no devolvió JSON estructurado. Intenta de nuevo.","hypotheses":[],"unexplored_areas":[]})
     if not isinstance(result.get("hypotheses"), list):
         result["hypotheses"] = []
     result["hypotheses"] = result["hypotheses"][:5]
