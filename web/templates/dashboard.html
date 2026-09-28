@@ -1,122 +1,104 @@
 {% extends "base.html" %}
-{% block title %}Negro · {{ domain }}{% endblock %}
+{% block title %}Inicio · {{ domain }} · Negro{% endblock %}
 {% block content %}
-<section class="hero">
+<section class="hero dashboard-hero">
   <div>
-    <p class="eyebrow">BUG BOUNTY WORKSPACE</p>
+    <p class="eyebrow">WORKSPACE DE INVESTIGACIÓN</p>
     <h1>{{ domain }}</h1>
-    <p class="muted">Descubre, asocia, inspecciona, clasifica y recuerda por qué tomaste cada decisión.</p>
+    <p class="muted">Burp alimenta la evidencia; Negro organiza qué existe, qué probaste, qué falta y qué merece volver a mirar.</p>
   </div>
-  <div class="host-actions"><a class="button secondary" href="{{ target_base }}/intelligence">Abrir Intelligence</a><a class="button ghost" href="{{ target_base }}/tree">Ver árbol</a><a class="button ghost" href="{{ target_base }}/backup">Backup ↓</a></div>
+  <div class="page-actions">
+    <a class="button" href="{{ target_base }}/graph">Abrir mapa</a>
+    <a class="button secondary" href="{{ target_base }}/hypotheses">Ver hipótesis</a>
+    <a class="button ghost" href="{{ target_base }}/backup">Crear backup ↓</a>
+  </div>
 </section>
 
-<section class="stats" data-summary-url="/api/t/{{ target_key }}/summary">
-  <a class="stat" href="{{ target_base }}/hosts"><span>Hosts</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong></a>
-  <div class="stat"><span>Resources</span><strong data-stat-key="resources">{{ stats.resources }}</strong></div>
-  <div class="stat"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong></div>
-  <div class="stat"><span>HTTP exchanges</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong></div>
-  <a class="stat" href="{{ target_base }}/hosts?review=pending"><span>Pendientes</span><strong data-stat-key="pending">{{ stats.pending }}</strong></a>
-  <a class="stat" href="{{ target_base }}/hosts?review=in_progress"><span>En revisión</span><strong data-stat-key="in_progress">{{ stats.in_progress }}</strong></a>
-  <a class="stat warning" href="{{ target_base }}/hosts?classification=lead"><span>Leads</span><strong data-stat-key="leads">{{ stats.leads }}</strong></a>
-  <a class="stat" href="{{ target_base }}/hypotheses"><span>Hypotheses</span><strong>{{ stats.hypotheses }}</strong></a>
-  <a class="stat danger" href="{{ target_base }}/findings"><span>Findings</span><strong data-stat-key="findings">{{ stats.findings }}</strong></a>
+<section class="dashboard-summary" data-summary-url="/api/t/{{ target_key }}/summary">
+  <a class="summary-card" href="{{ target_base }}/hosts"><span>Hosts</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong><small>inventario</small></a>
+  <a class="summary-card" href="{{ target_base }}/hosts"><span>Recursos</span><strong data-stat-key="resources">{{ stats.resources }}</strong><small>endpoints y URLs</small></a>
+  <div class="summary-card"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong><small>operaciones observadas</small></div>
+  <div class="summary-card"><span>Tráfico HTTP</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong><small>evidencia desde Burp</small></div>
+  <a class="summary-card emphasis-purple" href="{{ target_base }}/hypotheses"><span>Hipótesis</span><strong>{{ stats.hypotheses }}</strong><small>ideas persistentes</small></a>
+  <a class="summary-card emphasis-danger" href="{{ target_base }}/findings"><span>Hallazgos</span><strong data-stat-key="findings">{{ stats.findings }}</strong><small>confirmados / documentados</small></a>
 </section>
 
-<div class="grid two">
+<section class="attention-strip">
+  <div class="attention-title"><span class="eyebrow">CONTINUAR</span><strong>Qué requiere atención</strong></div>
+  <a href="{{ target_base }}/hosts?review=pending"><b data-stat-key="pending">{{ stats.pending }}</b><span>Pendientes</span></a>
+  <a href="{{ target_base }}/hosts?review=in_progress"><b data-stat-key="in_progress">{{ stats.in_progress }}</b><span>En revisión</span></a>
+  <a class="attention-interesting" href="{{ target_base }}/hosts?classification=lead"><b data-stat-key="leads">{{ stats.leads }}</b><span>Interesantes</span></a>
+  <a href="{{ target_base }}/hypotheses?status=testing"><b>→</b><span>Hipótesis en prueba</span></a>
+</section>
+
+<div class="grid dashboard-grid">
+  <section class="panel dashboard-focus">
+    <div class="panel-head"><div><p class="eyebrow">FOCO</p><h2>Activos que merecen volver a mirar</h2></div><a href="{{ target_base }}/hosts">Abrir inventario</a></div>
+    {% if priority_hosts %}
+      <div class="focus-list">
+      {% for h in priority_hosts %}
+        <a class="focus-item" href="{{ target_base }}/host/{{ h.id }}">
+          <span class="focus-dot {% if h.classification=='finding' %}finding{% elif h.classification=='lead' %}interesting{% endif %}"></span>
+          <span class="focus-name">{{ h.hostname }}</span>
+          <span class="badges"><span class="badge">{{ ui_label(h.review_state) }}</span><span class="badge class-{{ h.classification }}">{{ ui_label(h.classification) }}</span>{% if h.priority!='none' %}<span class="badge priority-{{ h.priority }}">{{ ui_label(h.priority) }}</span>{% endif %}</span>
+        </a>
+      {% endfor %}
+      </div>
+    {% else %}<div class="empty-state compact"><strong>Todo tranquilo por ahora.</strong><span>Cuando marques algo interesante o de prioridad alta aparecerá aquí.</span></div>{% endif %}
+  </section>
+
   <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">TARGETS</p><h2>Workspaces</h2></div><span class="muted small">Cambiar sin reiniciar Negro</span></div>
+    <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD</p><h2>Trabajos recientes</h2></div><span class="muted small">máx. 3 simultáneos</span></div>
+    <div id="jobs" data-jobs data-jobs-url="/api/t/{{ target_key }}/jobs">
+      {% if jobs %}
+        {% for job in jobs %}
+          <div class="job"><span class="status-dot {{ job.status }}"></span><div><strong>{{ job.label }}</strong><small>{{ ui_label(job.status) }} · {{ job.started_at or job.queued_at }}</small>{% if job.error %}<small class="error">{{ job.error }}</small>{% endif %}</div></div>
+        {% endfor %}
+      {% else %}<div class="empty-state compact"><strong>Sin trabajos activos.</strong><span>Los recon y análisis que ejecutes desde la UI aparecerán aquí.</span></div>{% endif %}
+    </div>
+  </section>
+</div>
+
+<div class="grid dashboard-grid">
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">TARGETS</p><h2>Espacios de trabajo</h2></div><span class="muted small">cambio rápido</span></div>
     <div class="target-cards">
       {% for t in target_cards %}
       <div class="target-card-shell {% if t.key==target_key %}active{% endif %}">
         <a class="target-card" href="/t/{{ t.key }}/">
           <div><strong>{{ t.domain }}</strong><small>{{ t.workspace }}</small></div>
-          {% if t.error %}<span class="badge class-finding">error</span>{% else %}<span class="target-metrics">{{ t.hosts }} H · {{ t.resources }} R · {{ t.leads }} L · {{ t.findings }} F</span>{% endif %}
+          {% if t.error %}<span class="badge class-finding">Error</span>{% else %}<span class="target-metrics">{{ t.hosts }} H · {{ t.resources }} R · {{ t.leads }} I · {{ t.findings }} F</span>{% endif %}
         </a>
-        <details class="target-delete"><summary title="Eliminar target">Eliminar</summary>
+        <details class="target-delete"><summary>Eliminar</summary>
           <form action="/targets/{{ t.key }}/delete" method="post" class="target-delete-form">
             <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="delete_workspace" value="yes">
-            <p>Esto elimina el target de Negro y borra <b>todo su workspace</b>.</p>
+            <p>Se eliminará el target y todo su workspace local. Los backups externos no se borran.</p>
             <label>Escribe <code>{{ t.domain }}</code><input name="confirm_domain" required autocomplete="off"></label>
-            <button class="button danger-button" type="submit">Borrar completamente</button>
+            <button class="button danger-button" type="submit">Eliminar definitivamente</button>
           </form>
         </details>
       </div>
       {% endfor %}
     </div>
-    <details class="new-target">
-      <summary>+ Agregar target</summary>
-      <form action="/targets/create" method="post" class="target-form">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <label>Dominio<input name="domain" required placeholder="example.com" autocomplete="off"></label>
-        <label>Workspace <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/example.com" autocomplete="off"></label>
-        <button class="button" type="submit">Crear / abrir target</button>
-      </form>
-    </details>
-    <details class="new-target">
-      <summary>↥ Restaurar backup</summary>
-      <form action="/targets/restore" method="post" enctype="multipart/form-data" class="target-form">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <label>Backup Negro<input type="file" name="backup" accept="application/zip,.zip" required></label>
-        <label>Workspace destino <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/restored-target" autocomplete="off"></label>
-        <button class="button ghost" type="submit">Restaurar target</button>
-      </form>
-    </details>
+    <div class="inline-details-row">
+      <details class="new-target"><summary>+ Agregar target</summary><form action="/targets/create" method="post" class="target-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Dominio<input name="domain" required placeholder="example.com" autocomplete="off"></label><label>Espacio de trabajo <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/example.com" autocomplete="off"></label><button class="button" type="submit">Crear target</button></form></details>
+      <details class="new-target"><summary>↥ Restaurar backup</summary><form action="/targets/restore" method="post" enctype="multipart/form-data" class="target-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Backup de Negro<input type="file" name="backup" accept="application/zip,.zip" required></label><label>Espacio de trabajo destino <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/restored-target" autocomplete="off"></label><button class="button ghost" type="submit">Restaurar</button></form></details>
+    </div>
   </section>
 
   <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD</p><h2>Trabajos de esta sesión</h2></div><span class="muted small">máx. 3 simultáneos · el resto queda en cola</span></div>
-    <div id="jobs" data-jobs data-jobs-url="/api/t/{{ target_key }}/jobs">
-      {% if jobs %}
-        {% for job in jobs %}
-          <div class="job"><span class="status-dot {{ job.status }}"></span><div><strong>{{ job.label }}</strong><small>{{ job.status }} · {{ job.started_at or job.queued_at }}</small>{% if job.error %}<small class="error">{{ job.error }}</small>{% endif %}</div></div>
-        {% endfor %}
-      {% else %}
-        <p class="empty">No hay trabajos iniciados desde la UI para este target.</p>
-      {% endif %}
+    <div class="panel-head"><div><p class="eyebrow">RECON</p><h2>Fuentes manuales</h2></div><a href="{{ target_base }}/intelligence">Más inteligencia →</a></div>
+    <p class="muted small">Acciones explícitas y de bajo impacto. Negro no hace fuzzing ni explotación automática aquí.</p>
+    <div class="scan-grid compact-scan-grid">
+      {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass pasivo'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl'),('wayback_cdx','Wayback · CDX'),('urlscan_direct','URLScan'),('securitytrails','SecurityTrails'),('github_code','GitHub · código público')] %}
+      <form action="{{ target_base }}/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="source" value="{{ source }}"><button class="button scan" type="submit">{{ label }}</button></form>
+      {% endfor %}
     </div>
   </section>
 </div>
 
-<div class="grid two">
-  <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">DISCOVERY</p><h2>Ejecutar fuentes</h2></div><span class="muted small">Acción explícita</span></div>
-    <p class="muted">Los botones llaman el mismo motor del CLI. No hay port scan, fuzzing ni explotación automática.</p>
-    <div class="scan-grid">
-      {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass passive'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl'),('wayback_cdx','Wayback · CDX direct'),('urlscan_direct','URLScan · direct'),('securitytrails','SecurityTrails · passive'),('github_code','GitHub · public code')] %}
-      <form action="{{ target_base }}/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <input type="hidden" name="source" value="{{ source }}">
-        <button class="button scan" type="submit">{{ label }}</button>
-      </form>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">FOCUS</p><h2>Activos con señal</h2></div><a href="{{ target_base }}/hosts?classification=lead">Ver leads</a></div>
-    {% if priority_hosts %}
-      <div class="list">
-      {% for h in priority_hosts %}
-        <div class="row-with-action">
-          <a class="row-link grow" href="{{ target_base }}/host/{{ h.id }}">
-            <span class="asset-name">{{ h.hostname }}</span>
-            <span class="badges"><span class="badge review-{{ h.review_state }}">{{ h.review_state }}</span><span class="badge class-{{ h.classification }}">{{ h.classification }}</span><span class="badge priority-{{ h.priority }}">{{ h.priority }}</span></span>
-          </a>
-          <a class="open-link" href="https://{{ h.hostname }}/" target="_blank" rel="noopener noreferrer" title="Abrir HTTPS">↗</a>
-        </div>
-      {% endfor %}
-      </div>
-    {% else %}<p class="empty">Todavía no marcaste leads o prioridades altas.</p>{% endif %}
-  </section>
-</div>
-
-<section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">HISTORY</p><h2>Últimas fuentes</h2></div></div>
-  {% if recent_runs %}
-    <div class="run-list">
-    {% for r in recent_runs %}
-      <div class="run"><span class="badge run-{{ r.status }}">{{ r.status }}</span><strong>{{ r.source }}</strong><span>{{ r.result_count }} resultados</span><small>{{ r.finished_at }}</small>{% if r.error %}<small class="error">{{ r.error }}</small>{% endif %}</div>
-    {% endfor %}
-    </div>
-  {% else %}<p class="empty">No hay ejecuciones registradas.</p>{% endif %}
+<section class="panel subdued-panel">
+  <div class="panel-head"><div><p class="eyebrow">HISTORIAL</p><h2>Últimas fuentes ejecutadas</h2></div></div>
+  {% if recent_runs %}<div class="run-list">{% for r in recent_runs %}<div class="run"><span class="badge run-{{ r.status }}">{{ ui_label(r.status) }}</span><strong>{{ r.source }}</strong><span>{{ r.result_count }} resultados</span><small>{{ r.finished_at }}</small>{% if r.error %}<small class="error">{{ r.error }}</small>{% endif %}</div>{% endfor %}</div>{% else %}<p class="empty">No hay ejecuciones registradas.</p>{% endif %}
 </section>
 {% endblock %}

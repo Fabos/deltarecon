@@ -3,35 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Negro Recon{% endblock %}</title>
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}Negro{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="{{ target_base }}/"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
-    <nav>
-      <a href="{{ target_base }}/">Dashboard</a>
-      <a href="{{ target_base }}/hosts">Hosts</a>
-      <a href="{{ target_base }}/tree">Árbol</a>
-      <a href="{{ target_base }}/graph">Mapa</a>
-      <a href="{{ target_base }}/intelligence">Intelligence</a>
-      <a href="{{ target_base }}/hypotheses">Hypotheses</a>
-      <a href="{{ target_base }}/findings">Findings</a>
-      <a href="{{ target_base }}/settings">Settings</a>
+  <header class="topbar app-header">
+    <a class="brand" href="{{ target_base }}/" aria-label="Ir al inicio de Negro"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
+    <nav class="main-nav" aria-label="Navegación principal">
+      <a class="{% if request.url.path == target_base+'/' %}active{% endif %}" href="{{ target_base }}/">Inicio</a>
+      <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
+      <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
+      <a class="{% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence">Inteligencia</a>
+      <a class="{% if '/hypotheses' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
+      <a class="{% if '/finding' in request.url.path %}active{% endif %}" href="{{ target_base }}/findings">Hallazgos</a>
+      <a class="{% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings">Ajustes</a>
     </nav>
     <div class="target-switch-wrap">
       <label for="target-switch">Target</label>
-      <select id="target-switch" data-target-switch>
+      <select id="target-switch" data-target-switch aria-label="Cambiar target">
         {% for t in targets %}
           <option value="/t/{{ t.key }}/" {% if t.key==target_key %}selected{% endif %}>{{ t.domain }}</option>
         {% endfor %}
       </select>
     </div>
   </header>
-  <main class="page">
+  <main class="page app-main">
     {% block content %}{% endblock %}
   </main>
-  <footer class="footer">Workspace: {{ workspace }} · local-first · sin autenticación remota</footer>
+  <footer class="footer"><span>{{ domain }}</span><span>Espacio local · {{ workspace }}</span></footer>
   <script src="/static/app.js"></script>
 </body>
 </html>

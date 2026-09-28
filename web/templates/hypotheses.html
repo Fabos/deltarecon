@@ -1,54 +1,45 @@
 {% extends "base.html" %}
-{% block title %}Hypotheses · {{ domain }} · Negro{% endblock %}
+{% block title %}Hipótesis · {{ domain }} · Negro{% endblock %}
 {% block content %}
-<section class="hero"><div><p class="eyebrow">INVESTIGATION MEMORY</p><h1>Hypotheses</h1><p class="muted">Ideas persistentes y accionables: qué probar ahora, por qué importa y qué ocurrió cuando lo intentaste.</p></div><a class="button secondary" href="{{ target_base }}/graph">Ver mapa</a></section>
-<form class="filters panel" method="get"><label>Buscar<input name="q" value="{{ q }}" placeholder="feature flag, auth, refund…"></label><label>Estado<select name="status"><option value="">Todos</option>{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if hypothesis_status==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Fuente<select name="source"><option value="">Todas</option><option value="AI" {% if hypothesis_source=='AI' %}selected{% endif %}>AI</option><option value="ENGINE" {% if hypothesis_source=='ENGINE' %}selected{% endif %}>ENGINE</option><option value="MANUAL" {% if hypothesis_source=='MANUAL' %}selected{% endif %}>MANUAL</option></select></label><button class="button">Filtrar</button><a class="button ghost" href="{{ target_base }}/hypotheses">Limpiar</a></form>
+<section class="hero">
+  <div><p class="eyebrow">MEMORIA DE INVESTIGACIÓN</p><h1>Hipótesis</h1><p class="muted">Ideas persistentes y accionables: qué probar, por qué importa y qué ocurrió cuando lo intentaste.</p></div>
+  <div class="page-actions"><a class="button secondary" href="{{ target_base }}/graph">Ver en mapa</a></div>
+</section>
+<form class="filters panel" method="get">
+  <label class="filter-search">Buscar<input name="q" value="{{ q }}" placeholder="feature flag, auth, refund…"></label>
+  <label>Estado<select name="status"><option value="">Todos</option>{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if hypothesis_status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <label>Fuente<select name="source"><option value="">Todas</option><option value="AI" {% if hypothesis_source=='AI' %}selected{% endif %}>IA</option><option value="ENGINE" {% if hypothesis_source=='ENGINE' %}selected{% endif %}>Motor</option><option value="MANUAL" {% if hypothesis_source=='MANUAL' %}selected{% endif %}>Manual</option></select></label>
+  <button class="button">Filtrar</button>{% if q or hypothesis_status or hypothesis_source %}<a class="button ghost" href="{{ target_base }}/hypotheses">Limpiar</a>{% endif %}
+</form>
+
 <section class="hypothesis-list">
 {% for h in hypotheses %}
 <article class="hypothesis-work-card state-{{ h.status }} priority-view-{{ h.investigation_priority }}" id="hypothesis-{{ h.id }}">
   <div class="hypothesis-head">
     <div>
       <div class="badges hypothesis-priority-row">
-        <span class="badge hypothesis-priority priority-{{ h.investigation_priority }}">{% if h.investigation_priority=='high' %}ALTA PRIORIDAD{% elif h.investigation_priority=='medium' %}PRIORIDAD MEDIA{% else %}QUICK CHECK{% endif %}</span>
-        <span class="badge">{{ h.lead_type }}</span><span class="badge">{{ h.source }}</span>
+        <span class="badge hypothesis-priority priority-{{ h.investigation_priority }}">{% if h.investigation_priority=='high' %}ALTA PRIORIDAD{% elif h.investigation_priority=='medium' %}PRIORIDAD MEDIA{% else %}CHEQUEO RÁPIDO{% endif %}</span>
+        <span class="badge">{{ h.lead_type }}</span><span class="badge">{{ ui_label(h.source) }}</span>
         {% for reason in h.priority_reasons %}<span class="badge reason-chip">{{ reason }}</span>{% endfor %}
       </div>
       <h2>{{ h.title }}</h2>
     </div>
-    <div class="badges"><span class="badge state-chip">{{ h.status }}</span></div>
+    <span class="badge state-chip">{{ ui_label(h.status) }}</span>
   </div>
-
-  {% if h.test_plan %}
-  <div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>
-  {% endif %}
-
+  {% if h.test_plan %}<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>{% endif %}
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
-  <p><b>Por qué merece tiempo:</b> {{ h.why_interesting }}</p>
-  <p><b>Objetivo ofensivo:</b> {{ h.next_test }}</p>
-
-  {% if h.evidence_refs %}
-  <div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">
-    {% for ref in h.evidence_refs %}
-      <a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}#http">
-        <span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span>
-        <small>{% if ref.exchange_id %}Burp request #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}{% if ref.source %} · {{ ref.source }}{% endif %}</small>
-      </a>
-    {% endfor %}
-  </div></div>
-  {% endif %}
-
+  <div class="hypothesis-copy"><p><b>Por qué merece tiempo:</b> {{ h.why_interesting }}</p><p><b>Objetivo ofensivo:</b> {{ h.next_test }}</p></div>
+  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}#http"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Solicitud #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}{% if ref.source %} · {{ ref.source }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
   <div class="grid two hypothesis-signals"><div><b>Se vuelve interesante si</b><p>{{ h.confirm_if }}</p></div><div><b>Descártala si</b><p>{{ h.discard_if }}</p></div></div>
-
   <div class="hypothesis-actionbar">
-    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}#http">Abrir request/evidence</a>{% endif %}
-    {% if h.resource_id and h.primary_method %}<form action="{{ target_base }}/resource/{{ h.resource_id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ h.primary_method }}"><button class="btn-secondary" type="submit">Send to Repeater →</button></form>{% endif %}
-    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}">Open Resource</a>{% endif %}
-    <a class="btn-secondary" href="{{ target_base }}/graph?focus=lead:{{ h.id }}">View on Graph</a>
+    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}#http">Abrir evidencia HTTP</a>{% endif %}
+    {% if h.resource_id and h.primary_method %}<form action="{{ target_base }}/resource/{{ h.resource_id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ h.primary_method }}"><button class="btn-secondary" type="submit">Enviar a Repeater →</button></form>{% endif %}
+    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}">Abrir recurso</a>{% endif %}
+    <a class="btn-secondary" href="{{ target_base }}/graph?focus=lead:{{ h.id }}">Ver en mapa</a>
   </div>
-
-  <form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status">{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if h.status==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label class="grow">Resultado / qué pasó<textarea name="result_notes" placeholder="Ej. Activé el flag; apareció /admin-beta pero el backend respondió 403. Esto alimentará futuras ideas.">{{ h.result_notes or '' }}</textarea></label><button class="button" type="submit">Guardar resultado</button></form>
+  <form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status">{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if h.status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label class="grow">Resultado / qué pasó<textarea name="result_notes" placeholder="Ej. Activé el flag; apareció /admin-beta, pero el backend respondió 403. Esto alimentará futuras ideas.">{{ h.result_notes or '' }}</textarea></label><button class="button" type="submit">Guardar resultado</button></form>
   <small class="muted">Actualizada {{ h.updated_at }}{% if h.last_tested_at %} · última prueba {{ h.last_tested_at }}{% endif %}</small>
 </article>
-{% else %}<section class="panel"><p class="empty">No hay hipótesis con estos filtros. Genera ideas desde el Mapa.</p></section>{% endfor %}
+{% else %}<section class="panel empty-state"><strong>No hay hipótesis con estos filtros.</strong><span>Genera ideas desde el Mapa cuando necesites una nueva línea de investigación.</span></section>{% endfor %}
 </section>
 {% endblock %}

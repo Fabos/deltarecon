@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.14.
+"""Local web workspace for Negro Recon v0.15.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -40,6 +40,33 @@ JOBS_LOCK = threading.Lock()
 JOB_MAX_CONCURRENCY = 3
 JOB_SLOTS = threading.Semaphore(JOB_MAX_CONCURRENCY)
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+UI_LABELS = {
+    "pending": "Pendiente", "in_progress": "En revisión", "reviewed": "Revisado",
+    "unknown": "Sin clasificar", "informational": "Informativo", "lead": "Interesante",
+    "discarded": "Descartado", "finding": "Hallazgo",
+    "none": "Sin prioridad", "low": "Baja", "medium": "Media", "high": "Alta", "critical": "Crítica", "info": "Informativa",
+    "normal": "Normal", "untested": "Pendiente", "testing": "En prueba", "tested": "Revisado", "interesting": "Interesante",
+    "candidate": "Candidata", "negative": "Negativa", "postponed": "Para después", "confirmed": "Confirmada",
+    "draft": "Borrador", "reported": "Reportado", "retest_required": "Retest pendiente", "still_vulnerable": "Sigue vulnerable",
+    "fixed": "Corregido", "fix_verified": "Corrección verificada", "closed": "Cerrado", "inconclusive": "No concluyente",
+    "not_applicable": "No aplica", "quick": "Chequeo rápido",
+    "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
+    "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
+    "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual",
+    "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP",
+    "js_asset": "JavaScript", "observation": "Observación",
+    "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
+    "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Feature flags", "other": "Otro",
+    "bola_surface": "Superficie BOLA/IDOR", "cloud_storage": "Almacenamiento cloud", "directory_listing": "Listado de directorio",
+    "dom_xss": "DOM XSS", "oauth_oidc_surface": "Superficie OAuth/OIDC", "open_redirect": "Open redirect",
+    "secret_or_client_config": "Secretos/configuración cliente", "source_map": "Source map", "ssrf_surface": "Superficie SSRF",
+    "subdomain_takeover": "Subdomain takeover",
+}
+
+def _ui_label(value: Any) -> str:
+    raw = str(value or "")
+    return UI_LABELS.get(raw, raw.replace("_", " ").strip().capitalize() if raw else "—")
 
 
 def _now() -> str:
@@ -337,16 +364,28 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", limit: int = 500):
+    # Inventory search is intentionally unified: one query can match a hostname,
+    # resource path, complete URL or stored query string. Resource counts remain
+    # totals for the host, independent of the search term.
     sql = """
-        SELECT h.*, COUNT(r.id) AS resource_count,
+        SELECT h.*,
+               (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id) AS resource_count,
                (SELECT COUNT(*) FROM host_inspections i WHERE i.host_id=h.id) AS inspection_count
-        FROM hosts h LEFT JOIN resources r ON r.host_id=h.id
+        FROM hosts h
         WHERE 1=1
     """
     params: list[Any] = []
-    if q:
-        sql += " AND lower(h.hostname) LIKE ?"
-        params.append(f"%{q.lower()}%")
+    q_norm = q.strip().lower()
+    if q_norm:
+        like = f"%{q_norm}%"
+        sql += """ AND (lower(h.hostname) LIKE ? OR EXISTS (
+            SELECT 1 FROM resources rq WHERE rq.host_id=h.id AND (
+                lower(COALESCE(rq.path,'')) LIKE ? OR
+                lower(COALESCE(rq.url,'')) LIKE ? OR
+                lower(COALESCE(rq.query,'')) LIKE ?
+            )
+        ))"""
+        params.extend([like, like, like, like])
     if review:
         sql += " AND h.review_state=?"
         params.append(review)
@@ -356,7 +395,7 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
     if priority:
         sql += " AND h.priority=?"
         params.append(priority)
-    sql += " GROUP BY h.id ORDER BY CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, h.hostname LIMIT ?"
+    sql += " ORDER BY CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, h.hostname LIMIT ?"
     params.append(max(1, min(limit, 2000)))
     with _db(paths) as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -370,7 +409,32 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
                    JOIN resources r ON fe.entity_type='resource' AND fe.entity_id=r.id
                    WHERE r.host_id=?""", (row["id"],)
             ).fetchone()["c"] or 0
-            item.update({"coverage_state": coverage, "signal_state": signal, "finding_count": int(direct_findings), "child_finding_count": int(child_findings), "total_finding_count": int(direct_findings) + int(child_findings)})
+            if q_norm:
+                like = f"%{q_norm}%"
+                resource_rows = conn.execute(
+                    """SELECT id,path,url,query,review_state,classification,priority FROM resources
+                       WHERE host_id=? AND (lower(COALESCE(path,'')) LIKE ? OR lower(COALESCE(url,'')) LIKE ? OR lower(COALESCE(query,'')) LIKE ?)
+                       ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, path LIMIT 8""",
+                    (row["id"], like, like, like),
+                ).fetchall()
+            else:
+                resource_rows = conn.execute(
+                    """SELECT id,path,url,query,review_state,classification,priority FROM resources WHERE host_id=?
+                       ORDER BY CASE classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 ELSE 2 END,
+                                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, path LIMIT 4""",
+                    (row["id"],),
+                ).fetchall()
+            resource_preview = []
+            for rr in resource_rows:
+                rsig, rfind = _entity_signal(conn, "resource", rr["id"], rr["classification"])
+                resource_preview.append({**dict(rr), "coverage_state": _coverage_state(rr["review_state"]), "signal_state": rsig, "finding_count": int(rfind)})
+            item.update({
+                "coverage_state": coverage, "signal_state": signal,
+                "finding_count": int(direct_findings), "child_finding_count": int(child_findings),
+                "total_finding_count": int(direct_findings) + int(child_findings),
+                "resource_preview": resource_preview,
+                "resource_matches": len(resource_preview) if q_norm else 0,
+            })
             out.append(item)
         return out
 
@@ -898,6 +962,7 @@ def create_app(default_domain: str, default_workspace: Path):
             "review_states": core.REVIEW_STATES,
             "classifications": core.CLASSIFICATIONS,
             "priorities": core.PRIORITIES,
+            "ui_label": _ui_label,
             "csrf_token": csrf_token,
         }
         return templates.TemplateResponse(request=request, name=name, context={**base_context, **ctx})

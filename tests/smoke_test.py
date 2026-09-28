@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.14.5. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.15.0. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -114,12 +114,17 @@ def main() -> None:
             graph={"counts":{"resource":1},"nodes":[{"id":f"resource:{rr['id']}","type":"resource","label":"/api/users/42","state":"untested","meta":{"id":rr['id'],"url":"https://example.test/api/users/42"}}],"edges":[]}
             gp,gh=hunter.build_graph_ai_payload(conn,domain,graph,selected_node_id=f"resource:{rr['id']}")
             assert 'http_evidence' in gp and 'request_line' in gp and len(gh)==64
+            # v0.15: untouched recommended checks are UI guidance only; AI receives actual testing memory.
+            env=json.loads(gp.split('\n',1)[1])
+            tc=env.get('test_coverage') or []
+            assert any(x.get('test_key')=='authorization' and x.get('status')=='negative' for x in tc), tc
+            assert not any(x.get('status')=='pending' and x.get('source')=='recommended' and not (x.get('notes') or '').strip() for x in tc), tc
             schema=hunter._graph_ideas_json_schema()
             assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
             hprops=schema['properties']['hypotheses']['items']['properties']
             assert set(hprops['investigation_priority']['enum'])=={'high','medium','quick'}
-            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.5')
-            assert 'prompt_version' in gp and '0.14.5-response-status-v1' in gp
+            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.15.0')
+            assert 'prompt_version' in gp and '0.15.0-evidence-first-v1' in gp
             parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
             assert parsed['summary']=='ok'
             malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})

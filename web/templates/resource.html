@@ -1,132 +1,126 @@
 {% extends "base.html" %}
-{% block title %}{{ resource.path }} · Negro{% endblock %}
+{% block title %}{{ resource.path or '/' }} · {{ resource.hostname }} · Negro{% endblock %}
 {% block content %}
-<section class="page-head resource-hero coverage-{{ coverage_state }} signal-{{ signal_state }}">
-  <div>
-    <p class="eyebrow">RESOURCE · {{ resource.hostname }}</p>
-    <h1><code>{{ resource.path }}{% if resource.query %}?{{ resource.query }}{% endif %}</code></h1>
-    <div class="hero-meta">
-      {% for src in source_details %}<span class="chip">{{ src.source }}</span>{% endfor %}
-      <span class="badge coverage-badge coverage-{{ coverage_state }}">Coverage · {{ coverage_state }}</span>
-      <span class="badge signal-badge signal-{{ signal_state }}">Signal · {{ signal_state }}</span>
-      {% if finding_count %}<span class="badge finding-count">{{ finding_count }} finding{% if finding_count != 1 %}s{% endif %}</span>{% endif %}
-      <span class="badge priority-{{ resource.priority }}">{{ resource.priority }}</span>
+<nav class="breadcrumbs" aria-label="Ruta"><a href="{{ target_base }}/hosts">Inventario</a><span>›</span><a href="{{ target_base }}/host/{{ resource.host_id }}">{{ resource.hostname }}</a><span>›</span><strong>{{ resource.path or '/' }}</strong></nav>
+<section class="page-head resource-hero">
+  <div class="resource-heading">
+    <p class="eyebrow">RECURSO</p>
+    <h1><code>{{ resource.path or '/' }}</code></h1>
+    <p class="resource-url break">{{ resource.url }}</p>
+    <div class="badges">
+      <span class="badge coverage-badge coverage-{{ coverage_state }}">Cobertura · {{ ui_label(coverage_state) }}</span>
+      {% if signal_state!='normal' %}<span class="badge signal-badge signal-{{ signal_state }}">Señal · {{ ui_label(signal_state) }}</span>{% endif %}
+      {% if finding_count %}<span class="badge finding-count">{{ finding_count }} hallazgo{% if finding_count != 1 %}s{% endif %}</span>{% endif %}
+      {% for src in source_details[:4] %}<span class="chip" title="Primera vez: {{ src.first_seen_at }}">vía {{ src.source }}</span>{% endfor %}
     </div>
   </div>
-  <div class="hero-actions">
-    {% if open_url %}<a class="button ghost" href="{{ open_url }}" target="_blank" rel="noopener noreferrer">Abrir URL ↗</a>{% endif %}
-    <a class="button ghost" href="{{ target_base }}/host/{{ resource.host_id }}#resource-{{ resource.id }}">Host ←</a>
+  <div class="page-actions">
+    {% if open_url %}<a class="button secondary" href="{{ open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a>{% endif %}
+    <a class="button ghost" href="{{ target_base }}/graph?focus=resource:{{ resource.id }}">Ver en mapa</a>
   </div>
 </section>
 
 <section class="resource-layout">
   <div class="resource-main">
-    <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">ACTIONS</p><h2>Pruebas contextuales</h2></div></div>
-      <div class="tool-grid">
-        <form action="{{ target_base }}/resource/{{ resource.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ resource.path }}">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <button class="tool-action" type="submit" data-tip="Qué hace: modifica Origin sobre este endpoint. Qué busca: confianza cross-origin insegura. Caso útil: Origin arbitrario reflejado, especialmente con credenciales."><b>CORS check</b><small>Origin reflection + credentials</small></button>
-        </form>
-        <div class="tool-action passive" data-tip="La inspección HTTP usa los exchanges reales capturados por Burp. Abre HTTP para comparar request/response sin perder el contexto autenticado."><b>HTTP evidence</b><small>{{ operations|length }} métodos observados</small></div>
-        {% if resource.path.endswith('.js') %}<a class="tool-action" href="{{ target_base }}/host/{{ resource.host_id }}#javascript" data-tip="Busca URLs, rutas, configuración, secretos candidatos y source maps dentro del JavaScript."><b>JS analysis</b><small>Rutas, config y señales</small></a>{% endif %}
+    <section class="panel action-panel">
+      <div class="panel-head"><div><p class="eyebrow">ACCIONES</p><h2>Pruebas contextuales</h2></div><span class="muted small">sobre este endpoint</span></div>
+      <div class="resource-action-grid">
+        <form action="{{ target_base }}/resource/{{ resource.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ resource.path }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Envía un Origin controlado reutilizando, cuando existe, el contexto HTTP observado en Burp."><b>CORS</b><small>Origin, credenciales y reflexión</small></button></form>
+        {% if resource.path.endswith('.js') %}<a class="action-tile" href="{{ target_base }}/host/{{ resource.host_id }}#javascript"><b>Analizar JavaScript</b><small>Rutas, configuración, secretos y source maps</small></a>{% endif %}
+        <a class="action-tile" href="#http"><b>Ver tráfico HTTP</b><small>Solicitudes y respuestas capturadas desde Burp</small></a>
+        <a class="action-tile" href="#hallazgos"><b>Documentar hallazgo</b><small>Crear o asociar un hallazgo confirmado</small></a>
       </div>
       {% if cors_result %}
-      <div class="resource-test-result {% if cors_result.likely_credentialed_cors %}result-alert{% elif cors_result.interesting %}result-warn{% else %}result-ok{% endif %}">
-        <div><strong>Último CORS check</strong><small>{{ cors_result.observed_at }}</small></div>
-        {% if cors_result.error %}<p>Error: {{ cors_result.error }}</p>{% else %}
-        <p>HTTP {{ cors_result.status }} · ACAO <code>{{ cors_result.allow_origin or '—' }}</code> · Credentials <code>{{ cors_result.allow_credentials or '—' }}</code></p>
-        <p>{% if cors_result.likely_credentialed_cors %}<b>⚠ Señal fuerte:</b> Origin controlado reflejado + credenciales.{% elif cors_result.interesting %}<b>Señal interesante:</b> requiere validación manual.{% else %}No se observó reflexión insegura con esta prueba.{% endif %}{% if cors_result.replayed_context %} Se reutilizó contexto HTTP observado{% if cors_result.replay_source %} desde {{ cors_result.replay_source }}{% endif %}.{% endif %}</p>
-        {% endif %}
+      <div class="result-banner {% if cors_result.likely_credentialed_cors %}strong{% elif cors_result.interesting %}interesting{% else %}neutral{% endif %}">
+        <div class="result-banner-icon">{% if cors_result.likely_credentialed_cors %}⚠{% elif cors_result.interesting %}◆{% else %}✓{% endif %}</div>
+        <div><div class="result-banner-head"><strong>Último CORS</strong><small>{{ cors_result.observed_at }}</small></div>
+        {% if cors_result.error %}<p>{{ cors_result.error }}</p>{% else %}<p>HTTP {{ cors_result.status }} · ACAO <code>{{ cors_result.allow_origin or '—' }}</code> · credenciales <code>{{ cors_result.allow_credentials or '—' }}</code></p>
+        <p>{% if cors_result.likely_credentialed_cors %}<b>Señal fuerte:</b> el Origin controlado fue reflejado y el servidor permite credenciales.{% elif cors_result.interesting %}<b>Señal interesante:</b> revisa manualmente el impacto.{% else %}No se observó reflexión insegura con el Origin de prueba.{% endif %}{% if cors_result.replayed_context %} Se reutilizó una solicitud real observada{% if cors_result.replay_source %} desde {{ cors_result.replay_source }}{% endif %}.{% endif %}</p>{% endif %}</div>
       </div>
       {% endif %}
     </section>
 
-    <section class="panel" id="test-coverage">
-      <div class="panel-head"><div><p class="eyebrow">TEST COVERAGE</p><h2>Qué ya probaste y qué falta</h2><p class="muted small">La cobertura vive por método. Un <code>GET</code> y un <code>POST</code> sobre la misma ruta pueden tener riesgos y resultados distintos.</p></div><div class="badges"><span class="badge coverage-pending">{{ test_summary.pending }} pendientes</span><span class="badge coverage-testing">{{ test_summary.testing }} probando</span><span class="badge test-negative">{{ test_summary.negative }} negativos</span>{% if test_summary.interesting %}<span class="badge signal-interesting">{{ test_summary.interesting }} interesantes</span>{% endif %}{% if test_summary.confirmed %}<span class="badge signal-finding">{{ test_summary.confirmed }} confirmados</span>{% endif %}</div></div>
-      <p class="muted small">Negative significa “lo probé y no dio”. Interesting significa “hay señal, sigo investigando”. Confirmed debería terminar enlazado a un Finding real.</p>
-    </section>
-
     <section class="panel" id="http">
-      <div class="panel-head"><div><p class="eyebrow">HTTP</p><h2>Requests & responses</h2></div><span>{{ operations|length }} métodos</span></div>
+      <div class="panel-head"><div><p class="eyebrow">TRÁFICO HTTP</p><h2>Solicitudes y respuestas</h2></div><span>{{ operations|length }} método{% if operations|length != 1 %}s{% endif %}</span></div>
       {% for op in operations %}{% set o=op.row %}
-      <details class="operation-card" {% if loop.first %}open{% endif %}>
-        <summary><span><span class="method-badge">{{ o.method }}</span> <b>{{ o.last_status if o.last_status is not none else '—' }}</b> · {{ o.seen_count }}× visto {% if o.authenticated_observed %}<span class="chip op-auth">auth</span>{% endif %}</span><span class="muted">{{ o.last_seen_at }}</span></summary>
-        <div class="operation-detail">
+      <details class="http-operation" {% if loop.first %}open{% endif %}>
+        <summary>
+          <span class="http-operation-title"><span class="method-pill method-{{ o.method|lower }}">{{ o.method }}</span><b>HTTP {{ o.last_status if o.last_status is not none else '—' }}</b><span>{{ o.seen_count }}× visto</span>{% if o.authenticated_observed %}<span class="chip op-auth">con sesión</span>{% endif %}</span>
+          <span class="http-operation-summary">{% for src in op.sources[:3] %}<span class="chip">{{ src.source }}</span>{% endfor %}</span>
+        </summary>
+        <div class="http-operation-body">
           <div class="operation-toolbar">
-            <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Send to Repeater →</button></form>
-            <span class="muted">Sources: {% for src in op.sources %}<span class="chip">{{ src.source }}</span>{% endfor %}</span>
+            <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Enviar a Repeater →</button></form>
+            <span class="muted small">Última observación {{ o.last_seen_at or '—' }}</span>
           </div>
-          <details class="operation-coverage" id="operation-{{ o.id }}-coverage" {% if loop.first %}open{% endif %}>
-            <summary><span><b>Test coverage</b> · {{ op.tests|length }} checks</span><span class="badges"><span class="badge coverage-pending">{{ op.test_summary.pending }} pending</span>{% if op.test_summary.testing %}<span class="badge coverage-testing">{{ op.test_summary.testing }} testing</span>{% endif %}{% if op.test_summary.negative %}<span class="badge test-negative">{{ op.test_summary.negative }} negative</span>{% endif %}{% if op.test_summary.interesting %}<span class="badge signal-interesting">{{ op.test_summary.interesting }} interesting</span>{% endif %}{% if op.test_summary.confirmed %}<span class="badge signal-finding">{{ op.test_summary.confirmed }} confirmed</span>{% endif %}</span></summary>
-            <div class="test-checklist">
-            {% for test in op.tests %}
-              <form class="test-check-row test-status-{{ test.status }}" action="{{ target_base }}/operation/{{ o.id }}/test" method="post">
-                <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="test_key" value="{{ test.test_key }}">
-                <div class="test-check-main"><div><b>{{ test.label }}</b><span class="chip">{{ test.category }}</span></div><small>{{ test.hint }}</small></div>
-                <select name="status" aria-label="Estado {{ test.label }}">{% for st in test_statuses %}<option value="{{ st }}" {% if test.status==st %}selected{% endif %}>{% if st=='pending' %}Pendiente{% elif st=='testing' %}Probando{% elif st=='negative' %}Negativo / no dio{% elif st=='interesting' %}Interesante{% elif st=='confirmed' %}Confirmado{% else %}No aplica{% endif %}</option>{% endfor %}</select>
-                <input name="notes" value="{{ test.notes or '' }}" maxlength="2000" placeholder="Qué probaste / qué pasó" aria-label="Notas {{ test.label }}">
-                <button class="btn-secondary" type="submit">Guardar</button>
-              </form>
-            {% endfor %}
+
+          {% set touched = op.test_summary.testing + op.test_summary.negative + op.test_summary.interesting + op.test_summary.confirmed + op.test_summary.not_applicable %}
+          <details class="optional-guide" id="operation-{{ o.id }}-coverage">
+            <summary>
+              <span><b>Guía opcional de pruebas</b><small>No es una checklist obligatoria; úsala sólo cuando te ayude a recordar.</small></span>
+              <span class="badges">{% if touched %}<span class="badge">{{ touched }} registradas</span>{% endif %}{% if op.test_summary.interesting %}<span class="badge signal-interesting">{{ op.test_summary.interesting }} interesantes</span>{% endif %}{% if op.test_summary.confirmed %}<span class="badge signal-finding">{{ op.test_summary.confirmed }} confirmadas</span>{% endif %}<span class="badge subtle-badge">{{ op.test_summary.pending }} sugerencias</span></span>
+            </summary>
+            <div class="optional-guide-body">
+              <p class="muted small">Negro propone pruebas según método, sesión y contenido observado. No necesitas completar todas ni marcar cada paso para usar la herramienta.</p>
+              <div class="test-checklist compact-checklist">
+              {% for test in op.tests %}
+                <form class="test-check-row test-status-{{ test.status }}" action="{{ target_base }}/operation/{{ o.id }}/test" method="post">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="test_key" value="{{ test.test_key }}">
+                  <div class="test-check-main"><div><b>{{ test.label }}</b>{% if test.status!='pending' %}<span class="chip">{{ ui_label(test.status) }}</span>{% endif %}</div><small>{{ test.hint }}</small></div>
+                  <select name="status" aria-label="Estado {{ test.label }}">{% for st in test_statuses %}<option value="{{ st }}" {% if test.status==st %}selected{% endif %}>{{ ui_label(st) }}</option>{% endfor %}</select>
+                  <input name="notes" value="{{ test.notes or '' }}" maxlength="2000" placeholder="Nota opcional: qué probaste / qué pasó" aria-label="Notas {{ test.label }}">
+                  <button class="btn-secondary" type="submit">Guardar</button>
+                </form>
+              {% endfor %}
+              </div>
             </div>
           </details>
+
           {% for ex in op.exchanges %}
           <details class="exchange-card" {% if loop.first %}open{% endif %}>
-            <summary>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %} · HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</summary>
+            <summary><span>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %}</span><span>HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</span></summary>
             <div class="exchange-actions">
-              <details>
-                <summary>Finding / evidencia</summary>
-                <div class="exchange-finding-actions">
-                  <form class="compact-finding-form" action="{{ target_base }}/findings/create" method="post">
-                    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><input type="hidden" name="status" value="confirmed">
-                    <input name="title" required value="{{ o.method }} {{ resource.path }}" aria-label="Título del finding">
-                    <select name="severity" aria-label="Severidad"><option>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select>
-                    <button class="button small-button" type="submit">Crear finding con este exchange</button>
-                  </form>
-                  {% if all_findings %}<form class="compact-finding-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post">
-                    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="relation" value="affected">
-                    <select name="finding_id" aria-label="Finding existente">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }}</option>{% endfor %}</select>
-                    <button class="button ghost small-button" type="submit">Relacionar resource</button>
-                  </form>{% endif %}
-                </div>
-              </details>
+              <details><summary>Usar como evidencia de hallazgo</summary><div class="exchange-finding-actions">
+                <form class="compact-finding-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><input type="hidden" name="status" value="confirmed"><input name="title" required value="{{ o.method }} {{ resource.path }}" aria-label="Título del hallazgo"><select name="severity" aria-label="Severidad"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select><button class="button small-button" type="submit">Crear hallazgo</button></form>
+                {% if all_findings %}<form class="compact-finding-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="relation" value="affected"><select name="finding_id" aria-label="Hallazgo existente">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }}</option>{% endfor %}</select><button class="button ghost small-button" type="submit">Asociar</button></form>{% endif %}
+              </div></details>
             </div>
             <div class="http-split">
-              <div><div class="http-label">REQUEST · {{ ex.request_size }} B</div><pre class="http-message">{{ ex.request_text or '[request no almacenado]' }}</pre></div>
-              <div><div class="http-label">RESPONSE · {{ ex.response_size }} B</div><pre class="http-message">{{ ex.response_text or '[response no almacenada]' }}</pre></div>
+              <div><div class="http-label">SOLICITUD · {{ ex.request_size }} B</div><pre class="http-message">{{ ex.request_text or '[solicitud no almacenada]' }}</pre></div>
+              <div><div class="http-label">RESPUESTA · {{ ex.response_size }} B</div><pre class="http-message">{{ ex.response_text or '[respuesta no almacenada]' }}</pre></div>
             </div>
           </details>
-          {% else %}<p class="empty">No hay exchanges guardados para este método.</p>{% endfor %}
+          {% else %}<p class="empty">Todavía no hay evidencia HTTP guardada para este método.</p>{% endfor %}
         </div>
       </details>
-      {% else %}<p class="empty">Este recurso aún no tiene métodos observados. Navega con Burp para alimentarlo.</p>{% endfor %}
+      {% else %}<div class="empty-state"><strong>Sin métodos observados.</strong><span>Navega con Burp y el tráfico aparecerá aquí automáticamente.</span></div>{% endfor %}
     </section>
 
-    <section class="panel" id="findings">
-      <div class="panel-head"><div><p class="eyebrow">INVESTIGATION</p><h2>Findings relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
-      {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ f.relation }} · {{ f.status }}</small></span><span class="badge">{{ f.severity }}</span></a>{% else %}<p class="empty">Este endpoint todavía no pertenece a ningún finding.</p>{% endfor %}
-      <div class="two-col-forms">
-        <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><label>Nuevo finding<input name="title" required placeholder="Ej. Broken authorization on order update"></label><div class="form-row"><select name="severity"><option>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select><select name="status"><option value="draft">draft</option><option value="confirmed">confirmed</option><option value="reported">reported</option></select></div><textarea name="description" placeholder="Qué observamos y por qué importa"></textarea><button class="button" type="submit">Crear y asociar</button></form>
-        {% if all_findings %}<form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Agregar a finding existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ f.status }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a cadena</button></form>{% endif %}
-      </div>
+    <section class="panel" id="hallazgos">
+      <div class="panel-head"><div><p class="eyebrow">HALLAZGOS</p><h2>Hallazgos relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
+      {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ ui_label(f.relation) }} · {{ ui_label(f.status) }}</small></span><span class="badge">{{ ui_label(f.severity) }}</span></a>{% else %}<p class="empty">Este recurso todavía no está asociado a un hallazgo confirmado.</p>{% endfor %}
+      <details class="create-finding-block"><summary>+ Crear o asociar hallazgo</summary><div class="two-col-forms">
+        <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><label>Título<input name="title" required placeholder="Ej. Autorización rota al actualizar orden"></label><div class="form-row"><label>Severidad<select name="severity"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label><label>Estado<select name="status"><option value="draft">Borrador</option><option value="confirmed">Confirmado</option><option value="reported">Reportado</option></select></label></div><textarea name="description" placeholder="Qué observamos y por qué importa"></textarea><button class="button" type="submit">Crear y asociar</button></form>
+        {% if all_findings %}<form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Hallazgo existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ ui_label(f.status) }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a la cadena</button></form>{% endif %}
+      </div></details>
     </section>
 
-    <section class="panel" id="evidence">
-      <div class="panel-head"><div><p class="eyebrow">EVIDENCE</p><h2>Notas y capturas</h2></div><span>{{ evidence|length }} imágenes</span></div>
-      <form class="note-form" action="{{ target_base }}/resource/{{ resource.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" required placeholder="Qué probaste, qué pasó, qué falta..."></textarea><button class="button" type="submit">Agregar nota</button></form>
+    <section class="panel" id="evidencia">
+      <div class="panel-head"><div><p class="eyebrow">MEMORIA</p><h2>Notas y evidencia</h2></div><span>{{ evidence|length }} capturas</span></div>
+      <form class="note-form" action="{{ target_base }}/resource/{{ resource.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" required placeholder="Qué probaste, qué pasó y qué queda pendiente…"></textarea><button class="button" type="submit">Agregar nota</button></form>
       {% for n in notes %}<div class="mini-note"><small>{{ n.created_at }}</small><p>{{ n.body }}</p></div>{% endfor %}
-      <form class="evidence-form" action="{{ target_base }}/resource/{{ resource.id }}/evidence" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required><input type="text" name="caption" maxlength="500" placeholder="Qué demuestra la captura"><button class="button ghost" type="submit">+ evidencia</button></form>
-      {% if evidence %}<div class="evidence-grid">{% for ev in evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
+      <form class="evidence-form" action="{{ target_base }}/resource/{{ resource.id }}/evidence" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required><input type="text" name="caption" maxlength="500" placeholder="Qué demuestra la captura"><button class="button ghost" type="submit">Adjuntar evidencia</button></form>
+      {% if evidence %}<div class="evidence-grid">{% for ev in evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank" rel="noopener noreferrer"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
     </section>
   </div>
 
   <aside class="resource-side">
-    <section class="panel sticky-panel"><p class="eyebrow">STATE</p><h2>Cobertura y señal</h2>
-      <div class="state-summary"><span class="coverage-dot coverage-{{ coverage_state }}"></span><b>{{ coverage_state }}</b><span class="signal-dot signal-{{ signal_state }}"></span><b>{{ signal_state }}</b></div>
-      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Coverage<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Signal manual<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label><button class="button" type="submit">Guardar estado</button></form>
-      <p class="muted small">Coverage indica cuánto has revisado. Signal indica si existe una pista interesante o un finding real. Crear un Finding lo enlaza al resource sin cambiar su identidad.</p>
-      <hr><div class="side-kv"><span>URL</span><code>{{ resource.url }}</code><span>Creado</span><b>{{ resource.created_at }}</b><span>Actualizado</span><b>{{ resource.updated_at }}</b></div>
+    <section class="panel sticky-panel state-card">
+      <p class="eyebrow">ESTADO</p><h2>Investigación</h2>
+      <div class="state-pills"><span class="state-pill coverage-{{ coverage_state }}"><i></i>{{ ui_label(coverage_state) }}</span><span class="state-pill signal-{{ signal_state }}"><i></i>{{ ui_label(signal_state) }}</span></div>
+      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Revisión<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label>Señal manual<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><button class="button" type="submit">Guardar estado</button></form>
+      <p class="muted small">La revisión indica cuánto has trabajado el recurso. La señal indica si hay una pista o un hallazgo asociado; son cosas distintas.</p>
+      <hr><div class="side-kv"><span>Creado</span><b>{{ resource.created_at }}</b><span>Actualizado</span><b>{{ resource.updated_at }}</b></div>
     </section>
   </aside>
 </section>

@@ -25,7 +25,7 @@ from typing import Any, Iterable
 
 import negro_intel as intel
 
-GRAPH_AI_PROMPT_VERSION = "0.14.5-response-status-v1"
+GRAPH_AI_PROMPT_VERSION = "0.15.0-evidence-first-v1"
 
 try:
     import requests
@@ -125,19 +125,19 @@ ARCHIVE_EXTENSIONS = {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bak", ".ol
 
 
 OPERATION_TEST_CATALOG: dict[str, dict[str, str]] = {
-    "authorization": {"label":"Authorization / IDOR", "category":"access_control", "hint":"Compara el mismo objeto/acción entre sesiones, usuarios o roles autorizados. Mantén constante todo salvo la identidad o el identificador que estés validando."},
+    "authorization": {"label":"Autorización / IDOR", "category":"access_control", "hint":"Compara el mismo objeto/acción entre sesiones, usuarios o roles autorizados. Mantén constante todo salvo la identidad o el identificador que estés validando."},
     "session_access": {"label":"Acceso sin sesión", "category":"authentication", "hint":"Repite la request sin cookies/Authorization y compara status, datos y efectos. Descarta rápido si el recurso es deliberadamente público."},
     "cors": {"label":"CORS", "category":"browser_security", "hint":"Prueba un Origin controlado y revisa ACAO/credentials. Una señal interesante aún requiere demostrar impacto con datos o acciones permitidas."},
-    "parameter_tampering": {"label":"Parámetros / input tampering", "category":"input", "hint":"Modifica un parámetro real cada vez: límites, ids, flags, estados, cantidades o valores observados. Compara respuesta y efecto server-side."},
+    "parameter_tampering": {"label":"Manipulación de parámetros", "category":"input", "hint":"Modifica un parámetro real cada vez: límites, ids, flags, estados, cantidades o valores observados. Compara respuesta y efecto server-side."},
     "method_variation": {"label":"Métodos HTTP alternativos", "category":"protocol", "hint":"Comprueba si GET/POST/PUT/PATCH/DELETE equivalentes cambian controles de acceso o validación. Evita cambios de estado fuera de datos autorizados."},
-    "content_type": {"label":"Content-Type / parser differential", "category":"protocol", "hint":"En operaciones con body, compara parsers compatibles (por ejemplo JSON vs form) sólo cuando la aplicación/servidor lo acepte. Busca diferencias de validación o autorización."},
+    "content_type": {"label":"Content-Type / diferencias de parser", "category":"protocol", "hint":"En operaciones con body, compara parsers compatibles (por ejemplo JSON vs form) sólo cuando la aplicación/servidor lo acepte. Busca diferencias de validación o autorización."},
     "csrf": {"label":"CSRF / acción con cookie", "category":"browser_security", "hint":"Si la acción cambia estado y depende de cookies, revisa SameSite/token/Origin/Referer y si una petición cross-site equivalente sería aceptada."},
     "business_logic": {"label":"Lógica de negocio / estado", "category":"business_logic", "hint":"Identifica la condición que gobierna la operación (state, limit, price, promo, ownership, sequence) y comprueba que el backend la revalide al ejecutar la acción sensible."},
-    "cache": {"label":"Cache / variación por usuario", "category":"cache", "hint":"En respuestas GET, observa headers de cache y si contenido autenticado/personalizado puede mezclarse entre variantes o usuarios."},
-    "rate_limit": {"label":"Rate limiting / abuso", "category":"abuse", "hint":"En login, OTP, reset o validaciones repetibles, comprueba de forma acotada si hay controles de frecuencia y si se aplican a la dimensión correcta."},
-    "client_trust": {"label":"Client-side trust / feature flags", "category":"client_side", "hint":"Si el cliente recibe flags/config, altera una sola respuesta, observa UI/requests nuevas y verifica luego que el backend aplique autorización por sí mismo."},
-    "url_handling": {"label":"Redirect / URL handling", "category":"url_flow", "hint":"Cuando exista un parámetro URL/redirect real, verifica validación, normalización y destino permitido sin salir del alcance autorizado."},
-    "mass_assignment": {"label":"Mass assignment / campos ocultos", "category":"api", "hint":"En JSON de creación/edición, prueba únicamente campos reales/relacionados y observa si el backend acepta propiedades que la interfaz no debería controlar."},
+    "cache": {"label":"Caché / variación por usuario", "category":"cache", "hint":"En respuestas GET, observa headers de cache y si contenido autenticado/personalizado puede mezclarse entre variantes o usuarios."},
+    "rate_limit": {"label":"Límites de frecuencia / abuso", "category":"abuse", "hint":"En login, OTP, reset o validaciones repetibles, comprueba de forma acotada si hay controles de frecuencia y si se aplican a la dimensión correcta."},
+    "client_trust": {"label":"Confianza en cliente / feature flags", "category":"client_side", "hint":"Si el cliente recibe flags/config, altera una sola respuesta, observa UI/requests nuevas y verifica luego que el backend aplique autorización por sí mismo."},
+    "url_handling": {"label":"Redirecciones / manejo de URL", "category":"url_flow", "hint":"Cuando exista un parámetro URL/redirect real, verifica validación, normalización y destino permitido sin salir del alcance autorizado."},
+    "mass_assignment": {"label":"Asignación masiva / campos ocultos", "category":"api", "hint":"En JSON de creación/edición, prueba únicamente campos reales/relacionados y observa si el backend acepta propiedades que la interfaz no debería controlar."},
 }
 
 TEST_STATUSES = {"pending", "testing", "negative", "interesting", "confirmed", "not_applicable"}
@@ -1576,11 +1576,15 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
     for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 ORDER BY updated_at DESC LIMIT 120").fetchall():
         existing.append(dict(row))
     findings = [dict(r) for r in conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC LIMIT 80").fetchall()]
+    # Test coverage is optional UX memory, not a synthetic task list for the AI.
+    # Only send checks the investigator actually touched (or that an engine recorded).
+    # Auto-generated untouched `pending/recommended` rows must not bias Give me ideas.
     testing_coverage = []
     for tr in conn.execute(
-        """SELECT t.operation_id,t.test_key,t.label,t.category,t.status,t.notes,t.updated_at,o.method,r.id resource_id,r.path
+        """SELECT t.operation_id,t.test_key,t.label,t.category,t.status,t.notes,t.source,t.updated_at,o.method,r.id resource_id,r.path
            FROM operation_test_coverage t JOIN resource_operations o ON o.id=t.operation_id JOIN resources r ON r.id=o.resource_id
-           ORDER BY CASE t.status WHEN 'interesting' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'testing' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END, t.updated_at DESC LIMIT 320"""
+           WHERE NOT (t.status='pending' AND COALESCE(TRIM(t.notes),'')='' AND COALESCE(t.source,'recommended')='recommended')
+           ORDER BY CASE t.status WHEN 'interesting' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'testing' THEN 2 WHEN 'negative' THEN 3 WHEN 'not_applicable' THEN 4 ELSE 5 END, t.updated_at DESC LIMIT 320"""
     ).fetchall():
         item=dict(tr)
         item["notes"] = str(item.get("notes") or "")[:500]
@@ -1614,7 +1618,8 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
             "do_not_repeat_negative_or_discarded": True,
             "full_http_bodies_included": False,
             "authorized_testing_only": True,
-            "test_coverage_is_memory": True,
+            "test_coverage_is_manual_memory": True,
+            "untouched_recommended_checks_are_excluded": True,
             "negative_tests_should_not_repeat": True,
         },
     }
@@ -1783,7 +1788,7 @@ Tu salida debe permitir ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador s
 
 Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y preview JSON limitada; úsalo para nombrar requests, parámetros, campos y respuestas REALES.
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
-El bloque test_coverage es la memoria explícita de qué se probó por método/endpoint. Respeta sus estados: negative/not_applicable no se repiten sin evidencia nueva; testing no se propone como si estuviera pendiente; pending sí puede alimentar ideas concretas.
+El bloque test_coverage contiene ÚNICAMENTE memoria de pruebas que el investigador o un motor realmente tocó. No es una checklist obligatoria ni una fuente de ideas por sí sola. Respeta sus estados: negative/not_applicable no se repiten sin evidencia nueva; testing no se propone como si estuviera pendiente; interesting/confirmed sirven como contexto. Los checks recomendados que nunca fueron tocados se excluyen deliberadamente.
 
 ORDEN DE PRIORIDAD OFENSIVA:
 1. Superficie nueva controlada por cliente, autorización server-side desconocida, cross-role/cross-account, objetos/IDs, estados terminales, métodos alternativos, parámetros que gobiernan operaciones sensibles, endpoints/rutas nuevas desde JS o feature flags.
@@ -1816,7 +1821,7 @@ Devuelve únicamente JSON válido que cumpla el schema suministrado.
         system += """
 
 SEGUNDO INTENTO EXPLORATORIO:
-El primer análisis estructurado no encontró hipótesis. Busca ahora 3-5 oportunidades ACOTADAS que sigan ancladas en evidencia real, priorizando test_coverage pendiente, diferencias de sesión, métodos alternativos, client-side trust/feature flags, parámetros reales, rutas/JS observados y lógica de negocio con operación sensible.
+El primer análisis estructurado no encontró hipótesis. Busca ahora 3-5 oportunidades ACOTADAS que sigan ancladas en evidencia real, priorizando diferencias de sesión observables, métodos alternativos, client-side trust/feature flags, parámetros reales, rutas/JS observados, cambios de estado y lógica de negocio con una operación sensible. Usa test_coverage sólo como memoria para no repetir lo ya probado; no conviertas checks automáticos en tareas.
 No inventes vulnerabilidades ni endpoints. Si una comprobación es débil pero barata, márcala quick. Si aun así no hay nada defendible, devuelve hypotheses=[] y explica en unexplored_areas qué evidencia falta para avanzar.
 """
     client = OpenAI(api_key=key)

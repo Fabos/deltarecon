@@ -1,29 +1,61 @@
 {% extends "base.html" %}
-{% block title %}Hosts · Negro{% endblock %}
+{% block title %}Inventario · Negro{% endblock %}
 {% block content %}
-<section class="page-head"><div><p class="eyebrow">INVENTORY</p><h1>Hosts</h1></div><span class="count">{{ hosts|length }} mostrados</span></section>
-<form class="filters panel" method="get">
-  <label>Buscar<input name="q" value="{{ q }}" placeholder="internal, auth, dev..."></label>
-  <label>Revisión<select name="review"><option value="">Todas</option>{% for x in review_states %}<option value="{{ x }}" {% if review==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
-  <label>Clasificación<select name="classification"><option value="">Todas</option>{% for x in classifications %}<option value="{{ x }}" {% if classification==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
-  <label>Prioridad<select name="priority"><option value="">Todas</option>{% for x in priorities %}<option value="{{ x }}" {% if priority==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
-  <button class="button" type="submit">Filtrar</button>
-  <a class="button ghost" href="{{ target_base }}/hosts">Limpiar</a>
+<section class="page-head inventory-head">
+  <div>
+    <p class="eyebrow">INVENTARIO</p>
+    <h1>Hosts y recursos</h1>
+    <p class="muted">Busca una sola vez por hostname, endpoint, URL o query. Negro conserva el contexto del host que lo contiene.</p>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/tree">Vista árbol</a><span class="count">{{ hosts|length }} hosts</span></div>
+</section>
+
+<form class="filters panel inventory-filters" method="get">
+  <label class="filter-search">Buscar en inventario<input name="q" value="{{ q }}" placeholder="auth, /api/orders, featureFlag…" autofocus></label>
+  <label>Revisión<select name="review"><option value="">Todas</option>{% for x in review_states %}<option value="{{ x }}" {% if review==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <label>Señal<select name="classification"><option value="">Todas</option>{% for x in classifications %}<option value="{{ x }}" {% if classification==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <label>Prioridad<select name="priority"><option value="">Todas</option>{% for x in priorities %}<option value="{{ x }}" {% if priority==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <button class="button" type="submit">Buscar</button>
+  {% if q or review or classification or priority %}<a class="button ghost" href="{{ target_base }}/hosts">Limpiar</a>{% endif %}
 </form>
-<section class="panel table-wrap">
-<table>
-<thead><tr><th>Host</th><th>Coverage</th><th>Signal</th><th>Prioridad</th><th>Resources</th><th>Inspecciones</th><th>Web</th></tr></thead>
-<tbody>
+
+<section class="inventory-list">
 {% for h in hosts %}
-<tr class="{% if h.signal_state=='finding' or h.total_finding_count %}host-row-finding{% elif h.signal_state=='interesting' %}host-row-lead{% elif h.coverage_state=='tested' %}host-row-reviewed{% endif %}">
-  <td><a class="host-link" href="{{ target_base }}/host/{{ h.id }}">{{ h.hostname }}</a></td>
-  <td><span class="badge coverage-badge coverage-{{ h.coverage_state }}">{{ h.coverage_state }}</span></td>
-  <td><span class="badge signal-badge signal-{{ h.signal_state }}">{{ h.signal_state }}</span>{% if h.total_finding_count %} <span class="badge finding-count">{{ h.total_finding_count }} finding{% if h.total_finding_count != 1 %}s{% endif %}</span>{% endif %}</td>
-  <td><span class="badge priority-{{ h.priority }}">{{ h.priority }}</span></td>
-  <td>{{ h.resource_count }}</td><td>{{ h.inspection_count }}</td>
-  <td><a class="open-link" href="https://{{ h.hostname }}/" target="_blank" rel="noopener noreferrer">Abrir ↗</a></td>
-</tr>
-{% else %}<tr><td colspan="7" class="empty">No hay hosts con esos filtros.</td></tr>{% endfor %}
-</tbody></table>
+<article class="inventory-host {% if h.signal_state=='finding' or h.total_finding_count %}is-finding{% elif h.signal_state=='interesting' %}is-interesting{% elif h.coverage_state=='tested' %}is-reviewed{% endif %}">
+  <div class="inventory-host-main">
+    <div class="inventory-host-title">
+      <span class="inventory-signal signal-{{ h.signal_state }}" aria-hidden="true"></span>
+      <div>
+        <a class="host-link inventory-title" href="{{ target_base }}/host/{{ h.id }}">{{ h.hostname }}</a>
+        <div class="inventory-meta"><span>{{ h.resource_count }} recursos</span><span>{{ h.inspection_count }} inspecciones</span>{% if q and h.resource_matches %}<span class="match-note">{{ h.resource_matches }} coincidencia{% if h.resource_matches != 1 %}s{% endif %} en recursos</span>{% endif %}</div>
+      </div>
+    </div>
+    <div class="inventory-host-status">
+      <span class="badge coverage-badge coverage-{{ h.coverage_state }}">{{ ui_label(h.coverage_state) }}</span>
+      {% if h.signal_state!='normal' %}<span class="badge signal-badge signal-{{ h.signal_state }}">{{ ui_label(h.signal_state) }}</span>{% endif %}
+      {% if h.total_finding_count %}<span class="badge finding-count">{{ h.total_finding_count }} hallazgo{% if h.total_finding_count != 1 %}s{% endif %}</span>{% endif %}
+      {% if h.priority!='none' %}<span class="badge priority-{{ h.priority }}">Prioridad {{ ui_label(h.priority) }}</span>{% endif %}
+      <a class="open-link" href="https://{{ h.hostname }}/" target="_blank" rel="noopener noreferrer" title="Abrir host">Abrir ↗</a>
+    </div>
+  </div>
+
+  {% if h.resource_preview %}
+  <div class="inventory-resources">
+    {% for r in h.resource_preview %}
+    <a class="inventory-resource {% if r.signal_state=='finding' %}is-finding{% elif r.signal_state=='interesting' %}is-interesting{% endif %}" href="{{ target_base }}/resource/{{ r.id }}">
+      <span class="resource-path"><code>{{ r.path or '/' }}{% if r.query %}?{{ r.query }}{% endif %}</code></span>
+      <span class="resource-inline-meta">
+        {% if r.signal_state!='normal' %}<span class="tiny-state signal-{{ r.signal_state }}">{{ ui_label(r.signal_state) }}</span>{% endif %}
+        {% if r.coverage_state=='tested' %}<span class="tiny-state coverage-tested">Revisado</span>{% elif r.coverage_state=='testing' %}<span class="tiny-state coverage-testing">En prueba</span>{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+    {% if not q and h.resource_count > h.resource_preview|length %}<a class="inventory-more" href="{{ target_base }}/host/{{ h.id }}#resources">+ {{ h.resource_count - h.resource_preview|length }} recursos</a>{% endif %}
+  </div>
+  {% elif q %}<div class="inventory-resources-empty">La coincidencia está en el hostname.</div>{% endif %}
+</article>
+{% else %}
+<section class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba con parte del host, endpoint, URL o query.</span></section>
+{% endfor %}
 </section>
 {% endblock %}

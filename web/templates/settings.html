@@ -1,38 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Settings · {{ domain }} · Negro
-<section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · REAL TIME</p><h2>Negro Bridge</h2></div><span class="badge class-informational">v0.10</span></div>
-<p>La extensión de Burp envía requests/responses observados a Negro en tiempo real. Negro enruta automáticamente cada host al target más específico que ya tengas creado.</p>
-<div class="kv"><span>Health</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingest</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Host → Resource → Operation → Exchange</code></div>
-<div class="callout"><strong>No se filtran JS ni assets por tipo.</strong> El tráfico se conserva estructurado; requests/responses idénticos se deduplican con <code>seen_count</code>. Los JS observados por Burp entran automáticamente al pipeline JavaScript de Negro.</div>
-<p class="muted small">Proyecto de extensión incluido en <code>burp-extension/</code>. Por defecto apunta a <code>http://127.0.0.1:8765</code>.</p>
-</section>
-{% endblock %}
+{% block title %}Ajustes · {{ domain }} · Negro{% endblock %}
 {% block content %}
-<section class="page-head"><div><p class="eyebrow">SETTINGS</p><h1>Integraciones y costos</h1><p class="muted">Las claves nunca se muestran ni se guardan en la base del target.</p></div></section>
+<section class="page-head"><div><p class="eyebrow">AJUSTES</p><h1>Integraciones y costos</h1><p class="muted">Configuración local del workspace. Las claves nunca se muestran ni se guardan dentro de la base del target.</p></div></section>
 {% if saved %}<div class="callout success">Configuración guardada.</div>{% endif %}
-<div class="grid two">
-<section class="panel"><div class="panel-head"><div><p class="eyebrow">SECRETS</p><h2>API keys</h2></div></div>
-<p class="muted">Archivo local: <code>{{ secrets_path }}</code></p>
-<div class="kv"><span>OpenAI</span><code>{{ 'configurada' if secret_status.OPENAI_API_KEY else 'falta' }}</code><span>URLScan</span><code>{{ 'configurada' if secret_status.URLSCAN_API_KEY else 'falta' }}</code><span>SecurityTrails</span><code>{{ 'configurada' if secret_status.SECURITYTRAILS_API_KEY else 'falta' }}</code><span>GitHub</span><code>{{ 'configurada' if secret_status.GITHUB_TOKEN else 'falta' }}</code></div>
-<div class="callout"><pre>OPENAI_API_KEY=sk-...
+<div class="grid two settings-grid">
+  <section class="panel"><div class="panel-head"><div><p class="eyebrow">SECRETOS</p><h2>Claves API</h2></div></div><p class="muted">Archivo local: <code>{{ secrets_path }}</code></p><div class="integration-status"><span>OpenAI <b class="{{ 'ok' if secret_status.OPENAI_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.OPENAI_API_KEY else 'falta' }}</b></span><span>URLScan <b class="{{ 'ok' if secret_status.URLSCAN_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.URLSCAN_API_KEY else 'falta' }}</b></span><span>SecurityTrails <b class="{{ 'ok' if secret_status.SECURITYTRAILS_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.SECURITYTRAILS_API_KEY else 'falta' }}</b></span><span>GitHub <b class="{{ 'ok' if secret_status.GITHUB_TOKEN else 'missing' }}">{{ 'configurada' if secret_status.GITHUB_TOKEN else 'falta' }}</b></span></div><details class="settings-example"><summary>Ver formato del archivo</summary><pre>OPENAI_API_KEY=sk-...
 URLSCAN_API_KEY=...
 SECURITYTRAILS_API_KEY=...
-GITHUB_TOKEN=...</pre></div>
-<p class="muted small">Después: <code>chmod 600 {{ secrets_path }}</code>. También puedes usar variables de entorno; tienen prioridad.</p>
-</section>
-<section class="panel"><div class="panel-head"><div><p class="eyebrow">AI</p><h2>Estimación previa</h2></div></div>
-<form class="state-form" action="{{ target_base }}/settings" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
-<label>Modelo<select name="ai_model"><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · barato</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol · profundo</option></select></label>
-<label>Máx. salida<input type="number" name="ai_output_tokens" min="500" max="12000" value="{{ settings.ai_output_tokens }}"></label>
-<label>USD → COP<input type="number" step="0.01" name="usd_cop_rate" value="{{ settings.usd_cop_rate }}"></label>
-<button class="button" type="submit">Guardar</button></form>
-<p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · fecha {{ settings.usd_cop_rate_date }}. La UI la usa sólo para estimar; OpenAI factura en USD.</p>
-</section></div>
-
-<section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · REAL TIME</p><h2>Negro Bridge</h2></div><span class="badge class-informational">v0.10</span></div>
-<p>La extensión de Burp envía requests/responses observados a Negro en tiempo real. Negro enruta automáticamente cada host al target más específico que ya tengas creado.</p>
-<div class="kv"><span>Health</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingest</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Host → Resource → Operation → Exchange</code></div>
-<div class="callout"><strong>No se filtran JS ni assets por tipo.</strong> El tráfico se conserva estructurado; requests/responses idénticos se deduplican con <code>seen_count</code>. Los JS observados por Burp entran automáticamente al pipeline JavaScript de Negro.</div>
-<p class="muted small">Proyecto de extensión incluido en <code>burp-extension/</code>. Por defecto apunta a <code>http://127.0.0.1:8765</code>.</p>
-</section>
+GITHUB_TOKEN=...</pre></details><p class="muted small">Recomendado: <code>chmod 600 {{ secrets_path }}</code>. Las variables de entorno tienen prioridad.</p></section>
+  <section class="panel"><div class="panel-head"><div><p class="eyebrow">IA</p><h2>Modelo y estimación</h2></div></div><form class="state-form" action="{{ target_base }}/settings" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Modelo<select name="ai_model"><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · económico</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol · profundo</option></select></label><label>Máximo de salida<input type="number" name="ai_output_tokens" min="500" max="12000" value="{{ settings.ai_output_tokens }}"></label><label>USD → COP<input type="number" step="0.01" name="usd_cop_rate" value="{{ settings.usd_cop_rate }}"></label><button class="button" type="submit">Guardar ajustes</button></form><p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · {{ settings.usd_cop_rate_date }}. Se usa únicamente para estimar costos.</p></section>
+</div>
+<section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · TIEMPO REAL</p><h2>Negro Bridge</h2></div><span class="badge class-informational">local</span></div><p>La extensión envía solicitudes y respuestas observadas a Negro en tiempo real. Negro las enruta al target más específico que ya exista.</p><div class="kv"><span>Salud</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingesta</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Host → Recurso → Método → Solicitud HTTP</code></div><div class="callout"><strong>Negro conserva el contexto sin convertirlo en ruido visual.</strong> El tráfico idéntico se deduplica con <code>seen_count</code>; JavaScript y recursos estáticos siguen disponibles para análisis cuando los necesites.</div><p class="muted small">La extensión incluida en <code>burp-extension/</code> apunta por defecto a <code>http://127.0.0.1:8765</code>.</p></section>
 {% endblock %}

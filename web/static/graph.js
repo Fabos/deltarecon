@@ -18,13 +18,16 @@
 
   const typeOrder = ['source','target','host','javascript','resource','operation','cluster','request','observation','lead','finding','external'];
   const typeLabel = {
-    source:'Sources', target:'Target', host:'Hosts', javascript:'JavaScript', resource:'Resources',
-    operation:'Métodos', cluster:'Groups', request:'Requests', observation:'Observaciones',
-    lead:'Leads', finding:'Findings', external:'Relacionados'
+    source:'Fuentes', target:'Target', host:'Hosts', javascript:'JavaScript', resource:'Recursos',
+    operation:'Métodos', cluster:'Grupos', request:'Solicitudes', observation:'Observaciones',
+    lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
   };
-  const stateLabel = {normal:'Normal',untested:'Untested',testing:'Testing',interesting:'Interesting',finding:'Finding',tested:'Tested'};
-  const coverageLabel = {untested:'Untested',testing:'Testing',tested:'Tested'};
-  const signalLabel = {normal:'Normal',interesting:'Interesting',finding:'Finding'};
+  const stateLabel = {normal:'Normal',untested:'Pendiente',testing:'En prueba',interesting:'Interesante',finding:'Hallazgo',tested:'Revisado'};
+  const coverageLabel = {untested:'Pendiente',testing:'En prueba',tested:'Revisado'};
+  const signalLabel = {normal:'Normal',interesting:'Interesante',finding:'Hallazgo'};
+  const metaKeyLabel = {id:'ID',type:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type solicitud',response_content_type:'Content-Type respuesta',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad'};
+  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a'};
+  const valueLabel = v => ({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada',pending:'Pendiente',in_progress:'En revisión',reviewed:'Revisado',unknown:'Sin clasificar',lead:'Interesante',finding:'Hallazgo',high:'Alta',medium:'Media',low:'Baja',none:'Sin prioridad'}[String(v)] || v);
 
   let graph = {nodes:[],edges:[]};
   let sceneNodes = [], sceneEdges = [], visibleNodes = [], visibleEdges = [];
@@ -97,7 +100,7 @@
   function makeCluster(parentId, kind, children, relation='contains'){
     const parent = graph.nodes.find(n => n.id === parentId);
     const id = `cluster:${preset}:${kind}:${parentId}`;
-    const labelMap = {requests:'Burp requests', observations:'Observaciones', javascript:'JavaScript'};
+    const labelMap = {requests:'Solicitudes Burp', observations:'Observaciones', javascript:'JavaScript'};
     const interesting = children.filter(n => ['interesting','finding'].includes(slugState(n.state))).length;
     const node = {
       id, type:'cluster', label:`${labelMap[kind] || kind} · ${children.length}`, state: interesting ? 'interesting' : 'normal',
@@ -381,19 +384,19 @@
   function showNode(n){
     const rels=(n.virtual?sceneEdges:graph.edges).filter(e=>e.source===n.id||e.target===n.id);
     const meta=n.meta||{};
-    const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(k.replaceAll('_',' '))}</span><b>${esc(v)}</b></div>`).join('');
+    const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(metaKeyLabel[k]||k.replaceAll('_',' '))}</span><b>${esc(valueLabel(v))}</b></div>`).join('');
     const sourceGraph=n.virtual?sceneNodes:graph.nodes;
-    const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
+    const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(relationLabel[e.relation]||e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
     const summary=summarizeNode(n);
     const testSummary=meta.test_summary||{};
     const trackedTests=Object.values(testSummary).reduce((a,b)=>a+Number(b||0),0);
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
-    const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Requests</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Checks</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
+    const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
     const statusHtml=(meta.coverage||meta.signal)
-      ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Coverage · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Signal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} finding${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
+      ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Cobertura · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Señal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} hallazgo${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
       : `<span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span>`;
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Focus 1 hop</button><button type="button" class="btn-secondary" data-focus-two>2 hops</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explore relationships</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin metadata adicional.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
     detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));
@@ -403,7 +406,8 @@
 
   function showEdge(e){
     const map=sceneById(),a=map.get(e.source)||graph.nodes.find(n=>n.id===e.source),b=map.get(e.target)||graph.nodes.find(n=>n.id===e.target),m=e.meta||{};
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELATIONSHIP</span><h2>${esc(e.relation)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(e.relation)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>source</span><b>${esc(m.source||'—')}</b></div></div>${m.evidence?`<div class="graph-detail-section"><h3>Por qué existe</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`:''}`;
+    const rel=relationLabel[e.relation]||e.relation;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELACIÓN</span><h2>${esc(rel)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(rel)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>Fuente</span><b>${esc(m.source||'—')}</b></div></div>${m.evidence?`<div class="graph-detail-section"><h3>Por qué existe</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`:''}`;
   }
 
   function toggleCluster(n){
@@ -505,7 +509,7 @@
   function fmtCop(v){return `COP $${Number(v||0).toLocaleString('es-CO',{maximumFractionDigits:2})}`;}
   function openAiPanel(nodeId='',label=''){
     aiSelectedNodeId=nodeId||''; if(aiPanel)aiPanel.hidden=false;
-    if(aiScope)aiScope.textContent=nodeId?`Explorar relaciones alrededor de “${label||nodeId}” (2 hops + contexto global).`:'Analizar todo el target y buscar áreas relevantes aún no exploradas.';
+    if(aiScope)aiScope.textContent=nodeId?`Explorar relaciones alrededor de “${label||nodeId}” (2 saltos + contexto global).`:'Analizar todo el target y buscar áreas relevantes aún no exploradas.';
     aiRunBtn?.setAttribute('hidden','');
     if(aiStatus)aiStatus.textContent='Primero estima el costo. Negro enviará contexto estructurado; no cuerpos HTTP completos.';
     aiPanel?.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -518,21 +522,21 @@
     try{
       const u=new URL(aiEstimateUrl,window.location.origin);u.searchParams.set('model',aiModel?.value||'');if(aiSelectedNodeId)u.searchParams.set('selected_node_id',aiSelectedNodeId);
       const r=await fetch(u,{headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
-      if(aiStatus)aiStatus.innerHTML=`<b>${d.cached?'Cache disponible':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':fmtCop(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens · salida máx. ${Number(d.output_tokens_budget||0).toLocaleString('es-CO')}<br><small>Evidence hash ${(d.evidence_hash||'').slice(0,12)}… · no se envían cuerpos HTTP completos.</small>`;
+      if(aiStatus)aiStatus.innerHTML=`<b>${d.cached?'Cache disponible':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':fmtCop(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens · salida máx. ${Number(d.output_tokens_budget||0).toLocaleString('es-CO')}<br><small>Hash de evidencia ${(d.evidence_hash||'').slice(0,12)}… · no se envían cuerpos HTTP completos.</small>`;
       aiRunBtn?.removeAttribute('hidden');
     }catch(err){if(aiStatus)aiStatus.textContent=`No pude estimar: ${err.message}`;}
     finally{aiEstimateBtn.disabled=false;}
   });
 
   function ideaCard(h){
-    const status=h.status||'candidate';
+    const status=h.status||'candidate'; const statusUi={candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada'}[status]||status;
     const priority=(h.investigation_priority||'medium').toLowerCase();
-    const priorityLabel=priority==='high'?'ALTA PRIORIDAD':priority==='quick'?'QUICK CHECK':'PRIORIDAD MEDIA';
+    const priorityLabel=priority==='high'?'ALTA PRIORIDAD':priority==='quick'?'CHEQUEO RÁPIDO':'PRIORIDAD MEDIA';
     const reasons=(h.priority_reasons||[]).slice(0,4).map(x=>`<span class="badge reason-chip">${esc(x)}</span>`).join('');
     const steps=(h.steps||[]).slice(0,6).map(x=>`<li><b>${esc(x.action||'')}</b>${x.what_to_watch?`<small>Qué mirar: ${esc(x.what_to_watch)}</small>`:''}</li>`).join('');
-    const refs=(h.evidence_refs||[]).slice(0,5).map(r=>`<a class="evidence-ref" href="${base}/resource/${Number(r.resource_id||0)}#http"><span>${r.method?`<b>${esc(r.method)}</b> `:''}<code>${esc((r.path||'')+(r.query?'?'+r.query:''))}</code></span><small>${r.exchange_id?`Burp request #${Number(r.exchange_id)} · `:''}${r.status!=null?`HTTP ${esc(r.status)}`:''}${r.source?` · ${esc(r.source)}`:''}</small></a>`).join('');
+    const refs=(h.evidence_refs||[]).slice(0,5).map(r=>`<a class="evidence-ref" href="${base}/resource/${Number(r.resource_id||0)}#http"><span>${r.method?`<b>${esc(r.method)}</b> `:''}<code>${esc((r.path||'')+(r.query?'?'+r.query:''))}</code></span><small>${r.exchange_id?`Solicitud Burp #${Number(r.exchange_id)} · `:''}${r.status!=null?`HTTP ${esc(r.status)}`:''}${r.source?` · ${esc(r.source)}`:''}</small></a>`).join('');
     const resourceId=Number(h.resource_id||0), method=String(h.primary_method||'');
-    return `<article class="graph-ai-card priority-view-${esc(priority)}" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><div class="badges"><span class="badge hypothesis-priority priority-${esc(priority)}">${priorityLabel}</span><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span>${reasons}</div><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${steps?`<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol class="ai-steps">${steps}</ol></div>`:''}${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué merece tiempo:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo ofensivo:</b> ${esc(h.suggested_investigation||'')}</p>${refs?`<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">${refs}</div></div>`:''}<p><b>Se vuelve interesante si:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p><div class="graph-ai-card-actions">${resourceId?`<a class="btn-secondary" href="${base}/resource/${resourceId}#http">Abrir request</a>`:''}${resourceId&&method?`<button type="button" class="btn-secondary" data-send-repeater data-resource="${resourceId}" data-method="${esc(method)}">Send to Repeater →</button>`:''}<button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button><a class="btn-secondary" href="${base}/hypotheses">Abrir Hypotheses</a></div></article>`;
+    return `<article class="graph-ai-card priority-view-${esc(priority)}" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><div class="badges"><span class="badge hypothesis-priority priority-${esc(priority)}">${priorityLabel}</span><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span>${reasons}</div><span class="state-chip">${esc(statusUi)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${steps?`<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol class="ai-steps">${steps}</ol></div>`:''}${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué merece tiempo:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo ofensivo:</b> ${esc(h.suggested_investigation||'')}</p>${refs?`<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">${refs}</div></div>`:''}<p><b>Se vuelve interesante si:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p><div class="graph-ai-card-actions">${resourceId?`<a class="btn-secondary" href="${base}/resource/${resourceId}#http">Abrir evidencia HTTP</a>`:''}${resourceId&&method?`<button type="button" class="btn-secondary" data-send-repeater data-resource="${resourceId}" data-method="${esc(method)}">Enviar a Repeater →</button>`:''}<button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Empezar prueba</button><button type="button" class="btn-secondary" data-idea-status="negative">Negativa</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesante</button><button type="button" class="btn-secondary" data-idea-status="postponed">Para después</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmada</button><a class="btn-secondary" href="${base}/hypotheses">Abrir hipótesis</a></div></article>`;
   }
   async function refreshGraphData(){
     const r=await fetch(api,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
@@ -552,12 +556,12 @@
       });
       card.querySelectorAll('[data-idea-status]').forEach(b=>b.addEventListener('click',async()=>{
         const fd=new FormData();fd.set('csrf',csrf);fd.set('status',b.dataset.ideaStatus);
-        const r=await fetch(`${base}/lead/${leadId}/status`,{method:'POST',body:fd,headers:{Accept:'application/json','X-Requested-With':'NegroFetch'}});const d=await r.json();if(!r.ok){alert(d.detail||`HTTP ${r.status}`);return;}card.querySelector('.state-chip').textContent=d.status;await refreshGraphData();
+        const r=await fetch(`${base}/lead/${leadId}/status`,{method:'POST',body:fd,headers:{Accept:'application/json','X-Requested-With':'NegroFetch'}});const d=await r.json();if(!r.ok){alert(d.detail||`HTTP ${r.status}`);return;}card.querySelector('.state-chip').textContent=({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada'}[d.status]||d.status);await refreshGraphData();
       }));
     });
   }
   aiRunBtn?.addEventListener('click',async()=>{
-    aiRunBtn.disabled=true;if(aiStatus)aiStatus.textContent='IA analizando relaciones, cobertura y pruebas previas…';if(aiResults)aiResults.innerHTML='';
+    aiRunBtn.disabled=true;if(aiStatus)aiStatus.textContent='IA analizando relaciones, evidencia y pruebas previas…';if(aiResults)aiResults.innerHTML='';
     try{
       const fd=new FormData();fd.set('csrf',csrf);fd.set('confirm_cost','yes');fd.set('model',aiModel?.value||'');fd.set('selected_node_id',aiSelectedNodeId);
       const r=await fetch(aiRunUrl,{method:'POST',body:fd,headers:{Accept:'application/json','X-Requested-With':'NegroFetch'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);

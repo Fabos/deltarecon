@@ -6,7 +6,7 @@
     const root = document.createElement('div');
     root.className = 'negro-toast';
     const delta = payload.summary?.delta || payload.delta || {};
-    const labels = {hosts:'hosts',resources:'resources',operations:'métodos',http_exchanges:'HTTP exchanges',js_assets:'JS',observations:'observaciones'};
+    const labels = {hosts:'hosts',resources:'recursos',operations:'métodos',http_exchanges:'solicitudes HTTP',js_assets:'JS',observations:'observaciones'};
     const changes = Object.entries(labels).filter(([k]) => Number(delta[k] || 0) !== 0).map(([k,l]) => `+${delta[k]} ${l}`);
     let result = changes.length ? changes.join(' · ') : 'Sin elementos nuevos';
     const detail = payload.summary?.result || payload.result || {};
@@ -57,7 +57,7 @@
           knownJobStatus.set(j.id, j.status);
         }
         jobsInitialized = true;
-        jobsRoot.innerHTML = jobs.map(j => `<div class="job"><span class="status-dot ${esc(j.status)}"></span><div><strong>${esc(j.label)}</strong><small>${esc(j.status)} · ${esc(j.started_at || j.queued_at)}</small>${j.error ? `<small class="error">${esc(j.error)}</small>` : ''}</div></div>`).join('');
+        jobsRoot.innerHTML = jobs.map(j => `<div class="job"><span class="status-dot ${esc(j.status)}"></span><div><strong>${esc(j.label)}</strong><small>${esc(uiStatus(j.status))} · ${esc(j.started_at || j.queued_at)}</small>${j.error ? `<small class="error">${esc(j.error)}</small>` : ''}</div></div>`).join('');
       } catch (_) {}
     };
     refreshJobs();

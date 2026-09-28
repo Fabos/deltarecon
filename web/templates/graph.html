@@ -3,77 +3,37 @@
 {% block content %}
 <section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <header class="graph-toolbar">
-    <div>
-      <div class="eyebrow">ATTACK KNOWLEDGE GRAPH</div>
-      <h1>Mapa de investigación</h1>
-      <p>No es una foto de la base de datos. Cambia de perspectiva, enfócate en una ruta y mueve los nodos hasta que el flujo te resulte natural.</p>
-    </div>
-    <div class="graph-toolbar-actions">
-      <button type="button" class="btn-secondary" data-graph-fit>Centrar</button>
-      <button type="button" class="btn-secondary" data-graph-neighborhood>1 hop</button>
-      <button type="button" class="btn-secondary" data-graph-two-hop>2 hops</button>
-      <button type="button" class="btn-secondary" data-graph-reset-layout>Auto ordenar</button>
-      <a class="btn-secondary" href="{{ target_base }}/hypotheses">Hypotheses</a>
-      <button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Give me ideas</button>
-    </div>
+    <div><div class="eyebrow">MAPA DE CONOCIMIENTO</div><h1>Mapa de investigación</h1><p>Una vista conectada de lo que existe, lo que observaste en Burp, lo que ya probaste y lo que todavía merece atención.</p></div>
+    <div class="graph-toolbar-actions"><button type="button" class="btn-secondary" data-graph-fit>Centrar</button><button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button><button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button><button type="button" class="btn-secondary" data-graph-reset-layout>Ordenar</button><a class="btn-secondary" href="{{ target_base }}/hypotheses">Hipótesis</a><button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Dame ideas</button></div>
   </header>
-
-  <div class="graph-stats">
-    {% for kind,count in graph_counts|dictsort %}
-      <span><b>{{ count }}</b> {{ kind }}</span>
-    {% endfor %}
-    <small data-graph-layout-status>Layout automático</small>
-  </div>
+  <div class="graph-stats">{% for kind,count in graph_counts|dictsort %}<span><b>{{ count }}</b> {{ kind }}</span>{% endfor %}<small data-graph-layout-status>Layout automático</small></div>
 
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
-    <div class="graph-ai-head">
-      <div><span class="eyebrow">AI HYPOTHESES</span><h2>Ideas basadas en tu investigación real</h2><p data-graph-ai-scope>Analizar todo el target.</p></div>
-      <button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button>
-    </div>
-    {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. Configúrala en Settings para usar Give me ideas.</div>{% endif %}
-    <div class="graph-ai-controls">
-      <label>Modelo<select data-graph-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label>
-      <button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button>
-      <button type="button" class="button" data-graph-ai-run-btn hidden>Generar 3–5 hipótesis</button>
-    </div>
-    <div class="graph-ai-status" data-graph-ai-status>Negro enviará el grafo, cobertura, hypotheses y previews JSON sanitizados de exchanges relevantes; nunca dumps HTTP completos.</div>
+    <div class="graph-ai-head"><div><span class="eyebrow">HIPÓTESIS CON IA</span><h2>Ideas basadas en tu investigación real</h2><p data-graph-ai-scope>Analizar todo el target.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
+    {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. Ve a Ajustes para usar “Dame ideas”.</div>{% endif %}
+    <div class="graph-ai-controls"><label>Modelo<select data-graph-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button><button type="button" class="button" data-graph-ai-run-btn hidden>Generar 3–5 hipótesis</button></div>
+    <div class="graph-ai-status" data-graph-ai-status>Negro enviará grafo, cobertura, hipótesis previas y previews JSON sanitizados de evidencia relevante. No envía dumps HTTP completos.</div>
     <div class="graph-ai-results" data-graph-ai-results></div>
   </section>
 
   <div class="graph-workspace">
     <aside class="graph-controls">
-      <label class="graph-search"><span>Buscar</span><input type="search" placeholder="host, endpoint, finding…" data-graph-search></label>
-
+      <label class="graph-search"><span>Buscar</span><input type="search" placeholder="host, endpoint, hallazgo…" data-graph-search></label>
       <div class="graph-filter-title graph-filter-title-row"><span>Perspectiva</span><button type="button" class="graph-order-reset" data-graph-preset-order-reset title="Restablecer orden">↺</button></div>
       <div class="graph-presets" data-graph-presets>
-        <button class="graph-filter active" draggable="true" data-graph-preset="surface"><span class="graph-drag-handle">⋮⋮</span><span><b>Attack Surface</b><small>Qué existe y cómo se organiza</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="untested"><span class="graph-drag-handle">⋮⋮</span><span><b>Untested</b><small>Elementos aún pendientes</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesting</b><small>Señales, hipótesis y findings</small></span></button>
+        <button class="graph-filter active" draggable="true" data-graph-preset="surface"><span class="graph-drag-handle">⋮⋮</span><span><b>Superficie</b><small>Qué existe y cómo se organiza</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="untested"><span class="graph-drag-handle">⋮⋮</span><span><b>Pendientes</b><small>Elementos aún sin revisar</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesante</b><small>Señales, hipótesis y hallazgos</small></span></button>
         <button class="graph-filter" draggable="true" data-graph-preset="burp"><span class="graph-drag-handle">⋮⋮</span><span><b>Burp</b><small>Tráfico real agrupado</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Attack Paths</b><small>Caminos que merecen investigación</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="all"><span class="graph-drag-handle">⋮⋮</span><span><b>All</b><small>Todo, pero con ruido agrupado</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Rutas de ataque</b><small>Caminos que merecen investigación</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="all"><span class="graph-drag-handle">⋮⋮</span><span><b>Todo</b><small>Vista completa con ruido agrupado</small></span></button>
       </div>
-
-      <div class="graph-filter-title">Tipos visibles</div>
-      <div class="graph-type-filters" data-graph-types></div>
-
-      <div class="graph-filter-title">Cobertura</div><div class="graph-legend"><div><i class="legend-dot state-untested"></i> Untested</div><div><i class="legend-dot state-tested"></i> Tested / Negative</div></div>
-      <div class="graph-filter-title">Señal</div><div class="graph-legend"><div><i class="legend-dot state-interesting"></i> Interesting</div><div><i class="legend-dot state-finding"></i> Finding</div></div>
+      <div class="graph-filter-title">Tipos visibles</div><div class="graph-type-filters" data-graph-types></div>
+      <div class="graph-filter-title">Cobertura</div><div class="graph-legend"><div><i class="legend-dot state-untested"></i> Pendiente</div><div><i class="legend-dot state-tested"></i> Revisado / negativo</div></div>
+      <div class="graph-filter-title">Señal</div><div class="graph-legend"><div><i class="legend-dot state-interesting"></i> Interesante</div><div><i class="legend-dot state-finding"></i> Hallazgo</div></div>
     </aside>
-
-    <div class="graph-canvas-wrap">
-      <svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg>
-      <div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div>
-      <div class="graph-hint"><b>Click</b> = detalle · <b>arrastra</b> = organizar · doble click = focus/expand · también puedes reordenar las perspectivas</div>
-    </div>
-
-    <aside class="graph-detail" data-graph-detail>
-      <div class="graph-detail-empty">
-        <div class="graph-detail-icon">⌁</div>
-        <h3>Selecciona un nodo</h3>
-        <p>Abre un endpoint, revisa su cobertura o aísla su vecindario para entender el camino.</p>
-      </div>
-    </aside>
+    <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div><div class="graph-hint"><b>Click</b> detalle · <b>arrastra</b> organiza · doble click enfoca/expande · puedes reordenar las perspectivas</div></div>
+    <aside class="graph-detail" data-graph-detail><div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Selecciona un nodo</h3><p>Abre un endpoint, revisa su contexto o aísla su vecindario para entender el camino.</p></div></aside>
   </div>
 </section>
 <script src="/static/graph.js"></script>

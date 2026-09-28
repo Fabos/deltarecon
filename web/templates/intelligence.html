@@ -1,52 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Intelligence · {{ domain }} · Negro{% endblock %}
+{% block title %}Inteligencia · {{ domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero">
-  <div><p class="eyebrow">HUNTER INTELLIGENCE</p><h1>Leads, historia y siguiente acción</h1><p class="muted">Correlación determinística primero; IA sólo sobre evidencia seleccionada y con costo visible.</p></div>
+  <div><p class="eyebrow">INTELIGENCIA DE INVESTIGACIÓN</p><h1>Señales, historia y siguiente acción</h1><p class="muted">Correlación determinística primero; IA sólo sobre evidencia seleccionada y con costo visible.</p></div>
   <a class="button secondary" href="{{ target_base }}/tree">Ver superficie</a>
 </section>
 
 <div class="grid two">
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">POLICY</p><h2>{{ policy.label }}</h2></div><span class="badge">{{ policy.profile }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">POLÍTICA</p><h2>{{ policy.label }}</h2></div><span class="badge">{{ policy.profile }}</span></div>
   <p class="muted">{{ policy.description }}</p>
-  <div class="kv"><span>Active DNS máx.</span><code>{{ policy.active_dns_max_candidates }}</code><span>VHost máx.</span><code>{{ policy.vhost_max_candidates }}</code><span>Crawl</span><code>{{ policy.crawl_max_urls }} URLs · depth {{ policy.crawl_max_depth }}</code><span>Forms</span><code>NO submit</code></div>
+  <div class="kv"><span>DNS activo máx.</span><code>{{ policy.active_dns_max_candidates }}</code><span>VHost máx.</span><code>{{ policy.vhost_max_candidates }}</code><span>Crawler</span><code>{{ policy.crawl_max_urls }} URLs · profundidad {{ policy.crawl_max_depth }}</code><span>Formularios</span><code>sin envío automático</code></div>
   <form action="{{ target_base }}/policy" method="post" class="inline-state"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="profile"><option value="conservative" {% if policy.profile=='conservative' %}selected{% endif %}>Conservador / bounty</option><option value="mercadolibre" {% if policy.profile=='mercadolibre' %}selected{% endif %}>Mercado Libre / bajo impacto</option><option value="lab" {% if policy.profile=='lab' %}selected{% endif %}>Lab autorizado</option></select><button class="button small-button" type="submit">Cambiar perfil</button></form>
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">RECON PLAN</p><h2>Acciones globales</h2></div><span class="muted small">explícitas</span></div>
+  <div class="panel-head"><div><p class="eyebrow">PLAN DE RECON</p><h2>Acciones globales</h2></div><span class="muted small">explícitas</span></div>
   <div class="scan-grid">
-    <form action="{{ target_base }}/intel/dns" method="post" data-job-form data-job-label="DNS infrastructure"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">DNS Recon</button></form>
-    <form action="{{ target_base }}/intel/axfr" method="post" data-job-form data-job-label="AXFR"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">AXFR check</button></form>
-    <form action="{{ target_base }}/intel/active-dns" method="post" data-job-form data-job-label="Smart DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Smart DNS</button></form>
-    <form action="{{ target_base }}/intel/leads" method="post" data-job-form data-job-label="Correlation Engine"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Generar leads</button></form>
+    <form action="{{ target_base }}/intel/dns" method="post" data-job-form data-job-label="Infraestructura DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Recon DNS</button></form>
+    <form action="{{ target_base }}/intel/axfr" method="post" data-job-form data-job-label="AXFR"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Comprobar AXFR</button></form>
+    <form action="{{ target_base }}/intel/active-dns" method="post" data-job-form data-job-label="DNS inteligente"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">DNS inteligente</button></form>
+    <form action="{{ target_base }}/intel/leads" method="post" data-job-form data-job-label="Motor de correlación"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Generar señales</button></form>
   </div>
-  <p class="muted small">Smart DNS usa naming observado + wildcard detection y respeta el máximo del perfil. No ejecuta wordlists masivas.</p>
+  <p class="muted small">DNS inteligente usa nombres observados + detección de wildcard y respeta el máximo del perfil. No ejecuta listas masivas.</p>
 </section>
 </div>
 
 <div class="grid two">
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">CERTIFICATE TRANSPARENCY</p><h2>CT intelligence</h2></div><span>{{ ct.total }} hosts</span></div>
-  <div class="stats compact-stats"><div class="stat"><span>Wildcard names</span><strong>{{ ct.wildcards }}</strong></div></div>
+  <div class="panel-head"><div><p class="eyebrow">TRANSPARENCIA DE CERTIFICADOS</p><h2>Historial CT</h2></div><span>{{ ct.total }} hosts</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Nombres con wildcard</span><strong>{{ ct.wildcards }}</strong></div></div>
   {% for h in ct.hosts[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.hostname }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.certificate_count }} certs{% if h.wildcard %} · wildcard{% endif %}</small>{% if h.issuers %}<small>{{ h.issuers[0] }}</small>{% endif %}</div></div>{% else %}<p class="empty">Ejecuta crt.sh para poblar historia de certificados.</p>{% endfor %}
 </section>
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">SEARCH INTELLIGENCE</p><h2>Queries sugeridas</h2></div><span>{{ search.queries|length }}</span></div>
-  {% for q in search.queries %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ q.label }}</strong><code class="break">{{ q.query }}</code></div></div>{% else %}<p class="empty">Sin queries.</p>{% endfor %}
+  <div class="panel-head"><div><p class="eyebrow">BÚSQUEDAS</p><h2>Consultas sugeridas</h2></div><span>{{ search.queries|length }}</span></div>
+  {% for q in search.queries %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ q.label }}</strong><code class="break">{{ q.query }}</code></div></div>{% else %}<p class="empty">Sin consultas.</p>{% endfor %}
   <p class="muted small">Negro las genera; no automatiza búsquedas masivas en Google.</p>
 </section>
 </div>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">WAYBACK</p><h2>Historical intelligence</h2></div><span>{{ historical.total }} resources</span></div>
-  <div class="stats compact-stats"><div class="stat"><span>Historical only</span><strong>{{ historical.historical_only_count }}</strong></div></div>
-  {% for h in historical.resources[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.url }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.captures }} captures {% if h.historical_only %}· historical-only{% endif %}</small></div></div>{% else %}<p class="empty">Ejecuta Wayback CDX para poblar historia.</p>{% endfor %}
+  <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Historial web</h2></div><span>{{ historical.total }} recursos</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Sólo histórico</span><strong>{{ historical.historical_only_count }}</strong></div></div>
+  {% for h in historical.resources[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.url }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.captures }} capturas {% if h.historical_only %}· sólo histórico{% endif %}</small></div></div>{% else %}<p class="empty">Ejecuta Wayback CDX para poblar historia.</p>{% endfor %}
 </section>
 
 <section class="panel" id="ai-target">
-  <div class="panel-head"><div><p class="eyebrow">AI TRIAGE</p><h2>Mano derecha sobre evidencia correlacionada</h2></div><span class="muted small">cache por evidence hash</span></div>
+  <div class="panel-head"><div><p class="eyebrow">TRIAGE CON IA</p><h2>Mano derecha sobre evidencia correlacionada</h2></div><span class="muted small">caché por hash de evidencia</span></div>
   {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. La parte determinística sigue funcionando.</div>{% endif %}
   <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/ai-target-estimate" data-run-url="{{ target_base }}/ai-target-run">
     <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
@@ -62,10 +62,10 @@
 </section>
 
 <section class="panel" id="leads">
-  <div class="panel-head"><div><p class="eyebrow">CORRELATION ENGINE</p><h2>Leads accionables</h2></div><span>{{ leads|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">MOTOR DE CORRELACIÓN</p><h2>Señales accionables</h2></div><span>{{ leads|length }}</span></div>
   {% for l in leads %}
   <details class="resource-card" {% if loop.index <= 5 %}open{% endif %}>
-    <summary><span><strong>{{ l.title }}</strong>{% if l.hostname %}<small> · {{ l.hostname }}</small>{% endif %}</span><span class="badges"><span class="badge priority-{{ l.review_priority }}">{{ l.review_priority }}</span><span class="badge">confidence {{ l.confidence }}</span><span class="badge">{{ l.lead_type }}</span></span></summary>
+    <summary><span><strong>{{ l.title }}</strong>{% if l.hostname %}<small> · {{ l.hostname }}</small>{% endif %}</span><span class="badges"><span class="badge priority-{{ l.review_priority }}">{{ ui_label(l.review_priority) }}</span><span class="badge">confianza {{ l.confianza }}</span><span class="badge">{{ l.lead_type }}</span></span></summary>
     <div class="resource-body">
       {% if l.resource_url %}<code class="break">{{ l.resource_url }}</code>{% endif %}
       <p><b>Por qué importa:</b> {{ l.why_interesting }}</p>
@@ -75,6 +75,6 @@
       <details><summary>Evidencia</summary><pre>{{ l.evidence | tojson(indent=2) }}</pre></details>
     </div>
   </details>
-  {% else %}<p class="empty">Aún no hay leads v0.9. Ejecuta <b>Generar leads</b> después de recolectar evidencia.</p>{% endfor %}
+  {% else %}<p class="empty">Aún no hay señales correlacionadas. Ejecuta <b>Generar señales</b> después de recolectar evidencia.</p>{% endfor %}
 </section>
 {% endblock %}
