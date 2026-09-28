@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.14.4
+Negro Recon v0.14.5
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.14.4"
+VERSION = "0.14.5"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2183,7 +2183,8 @@ def ai_estimate_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dic
     import negro_intel as intel
     settings = intel.load_settings()
     selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
-    output_tokens = min(4500, int(settings.get("ai_output_tokens", 3000)))
+    output_tokens = int(settings.get("graph_ai_output_tokens", 6000))
+    retry_output_tokens = max(output_tokens, int(settings.get("graph_ai_retry_output_tokens", 9000)))
     with db_connect(paths) as conn:
         payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
         cached = conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
@@ -2194,16 +2195,23 @@ def ai_estimate_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dic
                 cached_result = {}
             if not hunter.graph_ai_result_is_cacheable(cached_result):
                 cached = None
-    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, float(settings.get("usd_cop_rate", 3344.62)))
+    rate = float(settings.get("usd_cop_rate", 3344.62))
+    estimate = intel.estimate_ai_cost(payload, selected_model, output_tokens, rate)
+    retry_estimate = intel.estimate_ai_cost(payload, selected_model, retry_output_tokens, rate)
     first_usd = float(estimate.get("max_total_usd_est") or 0.0)
     first_cop = float(estimate.get("max_total_cop_est") or 0.0)
+    retry_usd = float(retry_estimate.get("max_total_usd_est") or 0.0)
+    retry_cop = float(retry_estimate.get("max_total_cop_est") or 0.0)
+    worst_round_usd = first_usd + retry_usd
+    worst_round_cop = first_cop + retry_cop
     estimate.update({
-        "task_type":"graph_ideas","model":selected_model,"output_tokens_budget":output_tokens,"evidence_hash":evidence_hash,
-        "cached":bool(cached),"selected_node_id":selected_node_id,"exploratory_retry_possible":True,"max_calls":2,
+        "task_type":"graph_ideas","model":selected_model,"output_tokens_budget":output_tokens,"retry_output_tokens_budget":retry_output_tokens,"evidence_hash":evidence_hash,
+        "cached":bool(cached),"selected_node_id":selected_node_id,"exploratory_retry_possible":True,"token_retry_possible":True,"max_calls":4,
         "first_call_max_total_usd_est":first_usd,"first_call_max_total_cop_est":first_cop,
-        "max_total_usd_est":0.0 if cached else first_usd * 2,
-        "max_total_cop_est":0.0 if cached else first_cop * 2,
-        "cost_note":"El segundo intento sólo se ejecuta si la primera respuesta estructurada devuelve 0 hipótesis." if not cached else "Resultado ya cacheado; no se ejecuta una nueva llamada."
+        "token_retry_max_total_usd_est":retry_usd,"token_retry_max_total_cop_est":retry_cop,
+        "max_total_usd_est":0.0 if cached else worst_round_usd * 2,
+        "max_total_cop_est":0.0 if cached else worst_round_cop * 2,
+        "cost_note":"Peor caso: reintento por límite de salida + segunda pasada exploratoria. Normalmente se usa una sola llamada." if not cached else "Resultado ya cacheado; no se ejecuta una nueva llamada."
     })
     return estimate
 
@@ -2213,7 +2221,9 @@ def ai_run_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dict, se
     import negro_intel as intel
     settings = intel.load_settings()
     selected_model = model or str(settings.get("ai_model", "gpt-6-luna"))
-    output_tokens = min(4500, int(settings.get("ai_output_tokens", 3000)))
+    output_tokens = int(settings.get("graph_ai_output_tokens", 6000))
+    retry_output_tokens = max(output_tokens, int(settings.get("graph_ai_retry_output_tokens", 9000)))
+    reasoning_effort = str(settings.get("graph_ai_reasoning_effort", "low"))
     with db_connect(paths) as conn:
         payload, evidence_hash = hunter.build_graph_ai_payload(conn, domain, graph_data, selected_node_id=selected_node_id, max_chars=int(settings.get("graph_ai_max_chars", 220000)))
         cached = conn.execute("SELECT * FROM ai_tasks WHERE task_type='graph_ideas' AND evidence_hash=? AND model=? AND status='done'", (evidence_hash, selected_model)).fetchone()
@@ -2228,21 +2238,22 @@ def ai_run_graph_ideas(domain: str, paths: dict[str, Path], graph_data: dict, se
                 return result
             # A malformed result must never become a permanent cache hit.
             conn.execute("UPDATE ai_tasks SET status='invalid' WHERE id=?", (cached["id"],))
-    result, usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens)
+    result, usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens, retry_output_tokens=retry_output_tokens, reasoning_effort=reasoning_effort)
     attempts = 1
     # A valid but empty first answer is not an error. Try once more with a more
     # exploratory prompt so Negro can surface bounded quick checks from pending coverage.
     if hunter.graph_ai_result_is_cacheable(result) and not list(result.get("hypotheses") or []):
-        retry_result, retry_usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens, exploratory_retry=True)
+        retry_result, retry_usage = hunter.run_openai_graph_ideas(payload, model=selected_model, output_tokens=output_tokens, retry_output_tokens=retry_output_tokens, reasoning_effort=reasoning_effort, exploratory_retry=True)
         attempts = 2
         if hunter.graph_ai_result_is_cacheable(retry_result):
             result = retry_result
             result["exploratory_retry_used"] = True
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
+        for key in ("input_tokens", "output_tokens", "reasoning_tokens", "total_tokens", "api_attempts"):
             a = usage.get(key)
             b = retry_usage.get(key)
             if isinstance(a, int) or isinstance(b, int):
                 usage[key] = int(a or 0) + int(b or 0)
+        usage["diagnostics"] = list(usage.get("diagnostics") or []) + list(retry_usage.get("diagnostics") or [])
     usage["attempts"] = attempts
     usage.update(hunter.actual_ai_cost(usage, selected_model, float(settings.get("usd_cop_rate", 3344.62))))
     cacheable = hunter.graph_ai_result_is_cacheable(result)

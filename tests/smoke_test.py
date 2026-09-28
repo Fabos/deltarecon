@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.14.4. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.14.5. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import negro_core as core
 import negro_hunter as hunter
+import negro_intel as intel
 
 
 def main() -> None:
@@ -95,7 +96,7 @@ def main() -> None:
             conn.execute("INSERT INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (retest_id, 'exchange', exchange_id, 'evidence', now))
             assert conn.execute("SELECT source FROM findings WHERE id=?", (fid,)).fetchone()["source"] == 'selftest'
             assert conn.execute("SELECT COUNT(*) c FROM finding_retest_entities WHERE retest_id=?", (retest_id,)).fetchone()["c"] == 1
-            # v0.14.4: endpoint/method test coverage is persistent and feeds AI memory.
+            # v0.14.5: endpoint/method test coverage is persistent and feeds AI memory.
             tests=hunter.ensure_operation_test_coverage(conn, int(get_id))
             keys={x['test_key'] for x in tests}
             assert {'authorization','cors','parameter_tampering','method_variation','session_access','cache'}.issubset(keys), keys
@@ -117,12 +118,17 @@ def main() -> None:
             assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
             hprops=schema['properties']['hypotheses']['items']['properties']
             assert set(hprops['investigation_priority']['enum'])=={'high','medium','quick'}
-            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.4')
-            assert 'prompt_version' in gp and '0.14.4-coverage-retry-v1' in gp
+            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.14.5')
+            assert 'prompt_version' in gp and '0.14.5-response-status-v1' in gp
             parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
             assert parsed['summary']=='ok'
             malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})
             assert malformed['summary']=='fallback' and 'parse_warning' in malformed
+            # v0.14.5: Graph AI distinguishes incomplete/invalid results and has dedicated budgets.
+            failure=hunter._graph_ai_failure("incomplete", error_type="incomplete", retryable=True)
+            assert failure["structured_ok"] is False and not hunter.graph_ai_result_is_cacheable(failure)
+            assert intel.load_settings()["graph_ai_output_tokens"] >= 6000
+            assert intel.load_settings()["graph_ai_retry_output_tokens"] >= intel.load_settings()["graph_ai_output_tokens"]
             # v0.14.3: priority metadata and actionable evidence references.
             conn.execute("UPDATE leads_v2 SET evidence_json=? WHERE lead_key='ai_graph:smoke'", (json.dumps([{"source":"ai_graph","plain_language":"Cambia active y observa nuevas rutas","investigation_priority":"high","priority_reasons":["client-controlled behavior","backend enforcement unknown"],"node_ids":[f"resource:{rr['id']}",f"operation:{get_id}"]}]),))
             enriched=next(x for x in hunter.list_leads(conn) if x['lead_key']=='ai_graph:smoke')

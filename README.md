@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.14.4
+# Negro Recon 🐕 — v0.14.5
 
 > **Olfatea donde otros no miran.**
 
@@ -8,6 +8,10 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
+
+## v0.14.5 — Robust Graph AI Responses + Diagnostics
+
+`Give me ideas` ahora comprueba el estado real de Responses API antes de parsear Structured Outputs. Usa un presupuesto propio de 6000 tokens, reintenta a 9000 cuando la respuesta queda `incomplete` por límite de salida y deja logs seguros `[AI graph]` con status/usage sin exponer tráfico sensible. Ver `UPDATE-v0.14.5.md`.
 
 ## v0.14.4 — Endpoint Test Coverage + Exploratory AI Retry
 

@@ -571,7 +571,16 @@
             aiStatus.textContent=prefix+(result.summary||`Generadas ${ideas.length} hipótesis.`);
             if(result.retryable) aiStatus.textContent+=' El resultado inválido NO quedó cacheado: puedes intentarlo de nuevo.';
           }
-          if(aiResults)aiResults.innerHTML=ideas.length?ideas.map(ideaCard).join(''):(result.retryable?'<p class="empty">La respuesta de IA no pudo validarse como JSON estructurado. No se guardó ni se cacheó. Vuelve a generar.</p>':(result.exploratory_retry_used?'<p class="empty">Negro hizo también un segundo intento exploratorio y no encontró una hipótesis defendible con la evidencia actual. Captura más tráfico o completa checks pendientes y vuelve a intentarlo.</p>':'<p class="empty">La IA no propuso hipótesis nuevas con evidencia suficiente.</p>'));
+          if(aiResults){
+            let empty='';
+            if(result.error_type==='incomplete') empty='<p class="empty">La respuesta quedó incompleta antes de cerrar el JSON. Negro ya intentó ampliar el presupuesto cuando correspondía; no se guardó ni cacheó. Revisa los logs <code>[AI graph]</code> y vuelve a generar.</p>';
+            else if(result.error_type==='refusal') empty='<p class="empty">El modelo rechazó esta generación. No se guardó ni cacheó el resultado.</p>';
+            else if(result.error_type==='api_error') empty='<p class="empty">La llamada a OpenAI falló. No se guardó ni cacheó el resultado; puedes reintentar.</p>';
+            else if(result.retryable) empty='<p class="empty">La respuesta completó pero no pudo validarse como Structured Output. No se guardó ni cacheó. Revisa los logs <code>[AI graph]</code> y vuelve a generar.</p>';
+            else if(result.exploratory_retry_used) empty='<p class="empty">Negro hizo también un segundo intento exploratorio y no encontró una hipótesis defendible con la evidencia actual. Captura más tráfico o completa checks pendientes y vuelve a intentarlo.</p>';
+            else empty='<p class="empty">La IA no propuso hipótesis nuevas con evidencia suficiente.</p>';
+            aiResults.innerHTML=ideas.length?ideas.map(ideaCard).join(''):empty;
+          }
           await refreshGraphData();bindIdeaCards();break;
         }
         if(aiStatus)aiStatus.textContent='IA trabajando…';

@@ -13,6 +13,7 @@ import json
 import random
 import re
 import socket
+import sys
 import string
 import time
 import urllib.parse
@@ -24,7 +25,7 @@ from typing import Any, Iterable
 
 import negro_intel as intel
 
-GRAPH_AI_PROMPT_VERSION = "0.14.4-coverage-retry-v1"
+GRAPH_AI_PROMPT_VERSION = "0.14.5-response-status-v1"
 
 try:
     import requests
@@ -1720,7 +1721,55 @@ def graph_ai_result_is_cacheable(result: Any) -> bool:
     return isinstance(result.get("summary"), str)
 
 
-def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int, exploratory_retry: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+def _graph_ai_log(event: str, **fields: Any) -> None:
+    """Safe diagnostics for Graph AI. Never log prompts, bodies, cookies or model text."""
+    clean = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        text = str(value).replace("\n", " ")[:240]
+        clean.append(f"{key}={text}")
+    suffix = " · " + " · ".join(clean) if clean else ""
+    print(f"[AI graph] {event}{suffix}", file=sys.stderr, flush=True)
+
+
+def _response_usage_dict(response: Any) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "output_tokens_details", None) if usage else None
+    return {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "reasoning_tokens": getattr(details, "reasoning_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
+
+
+def _response_refusal_text(response: Any) -> str | None:
+    try:
+        for item in list(getattr(response, "output", None) or []):
+            for content in list(getattr(item, "content", None) or []):
+                if getattr(content, "type", None) == "refusal":
+                    value = getattr(content, "refusal", None)
+                    if value:
+                        return str(value)[:800]
+    except Exception:
+        return None
+    return None
+
+
+def _graph_ai_failure(summary: str, *, error_type: str, retryable: bool, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "summary": summary,
+        "hypotheses": [],
+        "unexplored_areas": [],
+        "structured_ok": False,
+        "error_type": error_type,
+        "retryable": retryable,
+        "diagnostics": diagnostics or {},
+    }
+
+
+def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int, exploratory_retry: bool = False, retry_output_tokens: int | None = None, reasoning_effort: str = "low") -> tuple[dict[str, Any], dict[str, Any]]:
     key = intel.load_secrets().get("OPENAI_API_KEY")
     if not key:
         raise RuntimeError(f"Falta OPENAI_API_KEY en {intel.SECRETS_PATH}")
@@ -1754,33 +1803,14 @@ Para cada hipótesis:
 - priority_reasons: 1-4 etiquetas cortas basadas en evidencia, por ejemplo “client-controlled behavior”, “backend enforcement unknown”, “cross-role”, “state not tested”, “new attack surface possible”. No uses probabilidades.
 - title: di QUÉ intentar, no una frase abstracta.
 - plain_language: explica qué estamos intentando conseguir y por qué, como para alguien que conoce Burp pero no adivina tu intención.
-- steps: 2 a 6 pasos ejecutables. El PRIMER bloque mental es “Prueba esto ahora”. Cuando aplique, di literalmente qué request mandar a Repeater/Proxy, qué header/query/campo cambiar, si debes interceptar REQUEST o RESPONSE, y qué comparar.
-- what_to_watch: qué nuevas rutas, cambios de UI, diferencias de status/body o llamadas de red buscar.
+- steps: 2 a 5 pasos ejecutables y concisos. Cuando aplique, di literalmente qué request mandar a Repeater/Proxy, qué header/query/campo cambiar, si debes interceptar REQUEST o RESPONSE, y qué comparar.
+- what_to_watch: breve y observable.
 - suggested_investigation: una sola frase con el objetivo ofensivo, no “revisar comportamiento”.
 - confirm_if y discard_if observables y concretos.
 - node_ids: sólo IDs REALES del contexto.
+- Sé conciso: cada hipótesis debe caber cómodamente en una tarjeta; evita repetir la misma explicación en varias secciones.
 
-Devuelve únicamente JSON válido con este schema:
-{
-  "summary":"...",
-  "hypotheses":[
-    {
-      "title":"...",
-      "type":"authorization|business_logic|state_transition|cors|oauth|javascript|api|feature_flag|other",
-      "strength":"strong|medium|exploratory",
-      "investigation_priority":"high|medium|quick",
-      "priority_reasons":["backend enforcement unknown"],
-      "plain_language":"...",
-      "why_interesting":"...",
-      "suggested_investigation":"...",
-      "steps":[{"step":1,"action":"...","what_to_watch":"..."}],
-      "confirm_if":"...",
-      "discard_if":"...",
-      "node_ids":["resource:1","operation:2"]
-    }
-  ],
-  "unexplored_areas":[{"area":"...","reason":"..."}]
-}
+Devuelve únicamente JSON válido que cumpla el schema suministrado.
 """
     if exploratory_retry:
         system += """
@@ -1797,31 +1827,119 @@ No inventes vulnerabilidades ni endpoints. Si una comprobación es débil pero b
         "schema": _graph_ideas_json_schema(),
         "strict": True,
     }
-    try:
-        response = client.responses.create(
-            model=model,
-            reasoning={"effort":"medium"},
-            max_output_tokens=output_tokens,
-            instructions=system,
-            input=payload,
-            text={"format": schema_format},
-        )
-    except TypeError as exc:
-        # Do not silently fall back to free-form text: that poisoned the cache
-        # with malformed pseudo-JSON in v0.14.1/v0.14.2.
-        raise RuntimeError(
-            "El SDK de OpenAI instalado no soporta Structured Outputs para Responses API. "
-            "Ejecuta ./install-web.sh para actualizar dependencias y vuelve a intentar."
-        ) from exc
-    text = response.output_text or ""
-    result = _safe_json_object(text, {"summary":"La IA no devolvió JSON estructurado. No se guardó ni se cacheó el resultado; intenta de nuevo.","hypotheses":[],"unexplored_areas":[]})
-    result["structured_ok"] = not bool(result.get("parse_warning"))
-    if not isinstance(result.get("hypotheses"), list):
-        result["hypotheses"] = []
-    result["hypotheses"] = result["hypotheses"][:5]
-    usage = getattr(response, "usage", None)
-    return result, {"input_tokens":getattr(usage,"input_tokens",None),"output_tokens":getattr(usage,"output_tokens",None),"total_tokens":getattr(usage,"total_tokens",None)}
+    budgets = [max(1200, int(output_tokens))]
+    if retry_output_tokens is not None and int(retry_output_tokens) > budgets[0]:
+        budgets.append(int(retry_output_tokens))
+    total_usage = {"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"total_tokens":0,"api_attempts":0}
+    diagnostics: list[dict[str, Any]] = []
+    for attempt, budget in enumerate(budgets, start=1):
+        _graph_ai_log("request", model=model, attempt=attempt, exploratory=exploratory_retry, budget=budget, reasoning=reasoning_effort, payload_chars=len(payload))
+        try:
+            response = client.responses.create(
+                model=model,
+                reasoning={"effort":reasoning_effort},
+                max_output_tokens=budget,
+                instructions=system,
+                input=payload,
+                text={"format": schema_format},
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "El SDK de OpenAI instalado no soporta Structured Outputs para Responses API. "
+                "Ejecuta ./install-web.sh para actualizar dependencias y vuelve a intentar."
+            ) from exc
+        except Exception as exc:
+            _graph_ai_log("api_error", model=model, attempt=attempt, error=type(exc).__name__, message=str(exc)[:180])
+            return _graph_ai_failure(
+                "La llamada a OpenAI falló antes de completar la respuesta. Puedes reintentar.",
+                error_type="api_error", retryable=True, diagnostics={"exception":type(exc).__name__}
+            ), total_usage
 
+        status = str(getattr(response, "status", "unknown") or "unknown")
+        incomplete = getattr(response, "incomplete_details", None)
+        incomplete_reason = getattr(incomplete, "reason", None) if incomplete else None
+        error_obj = getattr(response, "error", None)
+        error_code = getattr(error_obj, "code", None) if error_obj else None
+        refusal = _response_refusal_text(response)
+        attempt_usage = _response_usage_dict(response)
+        total_usage["api_attempts"] += 1
+        for key_name in ("input_tokens","output_tokens","reasoning_tokens","total_tokens"):
+            value = attempt_usage.get(key_name)
+            if isinstance(value, int):
+                total_usage[key_name] = int(total_usage.get(key_name) or 0) + value
+        diag = {
+            "attempt": attempt, "status": status, "budget": budget,
+            "incomplete_reason": incomplete_reason, "error_code": error_code,
+            "output_chars": len(getattr(response, "output_text", "") or ""),
+            **attempt_usage,
+        }
+        diagnostics.append(diag)
+        _graph_ai_log("response", model=model, **diag)
+
+        if refusal:
+            _graph_ai_log("refusal", model=model, attempt=attempt)
+            result = _graph_ai_failure(
+                "El modelo rechazó generar hipótesis para esta solicitud. No se guardó ni cacheó el resultado.",
+                error_type="refusal", retryable=False, diagnostics={"attempts":diagnostics}
+            )
+            result["refusal"] = refusal
+            total_usage["response_status"] = status
+            total_usage["diagnostics"] = diagnostics
+            return result, total_usage
+
+        if status == "incomplete":
+            max_token_reason = str(incomplete_reason or "").lower() in {"max_tokens","max_output_tokens"}
+            if max_token_reason and attempt < len(budgets):
+                _graph_ai_log("retry_larger_budget", model=model, from_budget=budget, to_budget=budgets[attempt])
+                continue
+            summary = (
+                f"La respuesta quedó incompleta por límite de salida ({incomplete_reason or 'desconocido'}). "
+                "No se guardó ni cacheó; puedes reintentar."
+                if max_token_reason else
+                f"OpenAI devolvió una respuesta incompleta ({incomplete_reason or 'razón no informada'}). No se guardó ni cacheó."
+            )
+            result = _graph_ai_failure(summary, error_type="incomplete", retryable=True, diagnostics={"attempts":diagnostics})
+            total_usage["response_status"] = status
+            total_usage["incomplete_reason"] = incomplete_reason
+            total_usage["diagnostics"] = diagnostics
+            return result, total_usage
+
+        if status not in {"completed","unknown"}:
+            result = _graph_ai_failure(
+                f"OpenAI terminó la generación con estado {status}. No se guardó ni cacheó el resultado.",
+                error_type=status or "response_error", retryable=status in {"failed","cancelled"}, diagnostics={"attempts":diagnostics}
+            )
+            total_usage["response_status"] = status
+            total_usage["diagnostics"] = diagnostics
+            return result, total_usage
+
+        text = getattr(response, "output_text", "") or ""
+        if not text.strip():
+            result = _graph_ai_failure(
+                "OpenAI marcó la respuesta como completada pero no devolvió contenido estructurado. No se guardó ni cacheó.",
+                error_type="empty_output", retryable=True, diagnostics={"attempts":diagnostics}
+            )
+            total_usage["response_status"] = status
+            total_usage["diagnostics"] = diagnostics
+            return result, total_usage
+
+        result = _safe_json_object(text, {"summary":"La respuesta completó pero no pudo validarse como JSON estructurado. No se guardó ni cacheó; intenta de nuevo.","hypotheses":[],"unexplored_areas":[]})
+        result["structured_ok"] = not bool(result.get("parse_warning"))
+        if not result["structured_ok"]:
+            result["error_type"] = "invalid_structured_output"
+            result["retryable"] = True
+            result["diagnostics"] = {"attempts":diagnostics}
+            _graph_ai_log("parse_invalid", model=model, attempt=attempt, output_chars=len(text))
+        if not isinstance(result.get("hypotheses"), list):
+            result["hypotheses"] = []
+        result["hypotheses"] = result["hypotheses"][:5]
+        total_usage["response_status"] = status
+        total_usage["diagnostics"] = diagnostics
+        return result, total_usage
+
+    result = _graph_ai_failure("No fue posible completar una respuesta estructurada.", error_type="incomplete", retryable=True, diagnostics={"attempts":diagnostics})
+    total_usage["diagnostics"] = diagnostics
+    return result, total_usage
 
 def hypothesis_refs_from_nodes(conn, node_ids: list[str]) -> dict[str, Any]:
     """Resolve internal graph ids into human-actionable HTTP/resource references."""
