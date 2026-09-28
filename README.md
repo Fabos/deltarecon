@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.16.0
+# Negro Recon 🐕 — v0.16.1
 
 > **Olfatea donde otros no miran.**
 
@@ -10,11 +10,11 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.16.0 — Burp Passive Intelligence + Progressive Map
+## v0.16.1 — Burp Passive Intelligence + Progressive Map
 
 Negro ahora correlaciona **cada exchange nuevo de Burp** de forma pasiva y en tiempo real: parámetros de redirección/URL en query, form y JSON; candidatos SSRF; API keys y secretos con firma; credenciales/campos sensibles devueltos por APIs; secretos en URL; CORS observado; source maps; documentación API y errores internos. Los valores sensibles se enmascaran antes de persistirlos. Las pistas crean señales accionables con provenance exacto y notificaciones persistentes/toasts.
 
-Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.0.md`.
+Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.1.md`.
 
 ## v0.15.0 — UX final para piloto de bounty
 

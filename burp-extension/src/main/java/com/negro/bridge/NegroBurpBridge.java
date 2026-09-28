@@ -63,7 +63,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.0 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.16.1 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
@@ -172,19 +172,31 @@ public class NegroBurpBridge implements BurpExtension {
                 String error = "";
                 try {
                     HttpRequest request;
+                    URI u = URI.create(url);
+                    boolean secure = "https".equalsIgnoreCase(u.getScheme());
+                    int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
+                    HttpService service = HttpService.httpService(u.getHost(), port, secure);
+                    int rawLength = 0;
+                    boolean normalizedHttp2 = false;
                     if (requestB64 != null && !requestB64.isBlank()) {
-                        URI u = URI.create(url);
-                        boolean secure = "https".equalsIgnoreCase(u.getScheme());
-                        int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
-                        HttpService service = HttpService.httpService(u.getHost(), port, secure);
                         byte[] raw = Base64.getDecoder().decode(requestB64);
-                        request = HttpRequest.httpRequest(service, ByteArray.byteArray(raw));
+                        rawLength = raw.length;
+                        byte[] repeaterRaw = normalizeRawRequestForRepeater(raw);
+                        normalizedHttp2 = repeaterRaw != raw;
+                        request = HttpRequest.httpRequest(service, ByteArray.byteArray(repeaterRaw));
+                        // Defensive validation: a malformed HTTP/2-style raw message can be
+                        // accepted by the factory but render as an empty Repeater tab.
+                        if (request.toByteArray().length() == 0 || request.method() == null || request.method().isBlank()) {
+                            api.logging().logToError("Negro → Repeater: request reconstruida vacía; usando fallback URL. queue=" + queueId + " raw=" + rawLength + "B");
+                            request = fallbackRequest(url, method, service);
+                        }
                     } else {
-                        request = HttpRequest.httpRequestFromUrl(url).withMethod(method == null || method.isBlank() ? "GET" : method);
+                        request = fallbackRequest(url, method, service);
                     }
-                    api.repeater().sendToRepeater(request, caption == null || caption.isBlank() ? "From Negro" : caption);
+                    String tabName = caption == null || caption.isBlank() ? "Negro · " + (method == null ? "GET" : method) : caption;
+                    api.repeater().sendToRepeater(request, tabName);
                     ok = true;
-                    api.logging().logToOutput("Negro → Repeater: " + request.method() + " " + request.url());
+                    api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
                 } catch (Exception ex) {
                     error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                     api.logging().logToError("Negro → Repeater falló: " + error);
@@ -192,6 +204,55 @@ public class NegroBurpBridge implements BurpExtension {
                 ackRepeater(targetKey, queueId, ok, error);
             });
         } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Montoya stores observed HTTP/2 messages in a readable raw form whose request line
+     * can end in "HTTP/2". The generic httpRequest(service, ByteArray) factory is aimed
+     * at HTTP/1-style message syntax and some Burp builds render such reconstructed
+     * HTTP/2 raw messages as an empty Repeater tab. For the hand-off only, normalize the
+     * textual request line to HTTP/1.1 while preserving every other byte (headers/body).
+     * Repeater can still negotiate HTTP/2 when the request is sent, according to Burp's
+     * Repeater settings.
+     */
+    private byte[] normalizeRawRequestForRepeater(byte[] raw) {
+        if (raw == null || raw.length == 0) return raw;
+        int lineEnd = -1;
+        for (int i = 0; i + 1 < raw.length; i++) {
+            if (raw[i] == '\r' && raw[i + 1] == '\n') { lineEnd = i; break; }
+        }
+        if (lineEnd < 0) {
+            for (int i = 0; i < raw.length; i++) {
+                if (raw[i] == '\n') { lineEnd = i; break; }
+            }
+        }
+        if (lineEnd <= 0) return raw;
+        String firstLine = new String(raw, 0, lineEnd, StandardCharsets.ISO_8859_1);
+        if (!(firstLine.endsWith(" HTTP/2") || firstLine.endsWith(" HTTP/2.0"))) return raw;
+        String normalized = firstLine.replaceFirst(" HTTP/2(?:\\.0)?$", " HTTP/1.1");
+        byte[] head = normalized.getBytes(StandardCharsets.ISO_8859_1);
+        byte[] out = new byte[head.length + (raw.length - lineEnd)];
+        System.arraycopy(head, 0, out, 0, head.length);
+        System.arraycopy(raw, lineEnd, out, head.length, raw.length - lineEnd);
+        return out;
+    }
+
+    private HttpRequest fallbackRequest(String url, String method, HttpService service) {
+        String m = method == null || method.isBlank() ? "GET" : method;
+        try {
+            URI u = URI.create(url);
+            String path = u.getRawPath();
+            if (path == null || path.isBlank()) path = "/";
+            if (u.getRawQuery() != null && !u.getRawQuery().isBlank()) path += "?" + u.getRawQuery();
+            String host = u.getHost();
+            int explicitPort = u.getPort();
+            boolean defaultPort = explicitPort < 0 || ("https".equalsIgnoreCase(u.getScheme()) && explicitPort == 443) || ("http".equalsIgnoreCase(u.getScheme()) && explicitPort == 80);
+            String hostHeader = host + (defaultPort ? "" : ":" + explicitPort);
+            String raw = m + " " + path + " HTTP/1.1\r\nHost: " + hostHeader + "\r\nAccept: */*\r\n\r\n";
+            return HttpRequest.httpRequest(service, raw);
+        } catch (Exception ignored) {
+            return HttpRequest.httpRequestFromUrl(url).withMethod(m).withService(service);
         }
     }
 

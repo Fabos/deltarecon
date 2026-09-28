@@ -1846,7 +1846,14 @@ def create_app(default_domain: str, default_workspace: Path):
         return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream", filename=row["original_name"])
 
     @app.post("/t/{target_key}/resource/{resource_id}/send-repeater")
-    def resource_send_repeater(target_key: str, resource_id: int, method: str = Form("GET"), csrf: str = Form(...)):
+    def resource_send_repeater(target_key: str, resource_id: int, method: str = Form("GET"), exchange_id: int = Form(0), csrf: str = Form(...)):
+        """Queue an exact observed request for Burp Repeater when possible.
+
+        Prefer a specific exchange (when the user clicked an exchange card), otherwise
+        select the latest non-empty request for the requested operation.  If historical
+        data has no raw request at all, enqueue a minimal but valid HTTP/1.1 request
+        instead of allowing Burp to open a blank Repeater tab.
+        """
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         method = (method or "GET").upper().strip()[:24]
@@ -1856,13 +1863,50 @@ def create_app(default_domain: str, default_workspace: Path):
                 raise HTTPException(status_code=404, detail="Recurso no encontrado")
             op = conn.execute("SELECT id FROM resource_operations WHERE resource_id=? AND method=?", (resource_id, method)).fetchone()
             request_b64 = None
-            if op:
-                ex = conn.execute("SELECT request_b64 FROM http_exchanges WHERE operation_id=? AND request_b64 IS NOT NULL ORDER BY last_seen_at DESC LIMIT 1", (op["id"],)).fetchone()
+            selected_exchange_id = 0
+            request_size = 0
+            if op and exchange_id:
+                ex = conn.execute(
+                    """SELECT id,request_b64,request_size FROM http_exchanges
+                       WHERE id=? AND operation_id=? AND request_b64 IS NOT NULL
+                         AND request_size>0 AND LENGTH(TRIM(request_b64))>0""",
+                    (exchange_id, op["id"]),
+                ).fetchone()
                 if ex:
                     request_b64 = ex["request_b64"]
-            caption = f"Negro · {method} {row['path']}"
-            conn.execute("INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)", (resource_id, method, row["url"], request_b64, caption, _now()))
-        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
+                    request_size = int(ex["request_size"] or 0)
+                    selected_exchange_id = int(ex["id"])
+            if op and not request_b64:
+                ex = conn.execute(
+                    """SELECT id,request_b64,request_size FROM http_exchanges
+                       WHERE operation_id=? AND request_b64 IS NOT NULL
+                         AND request_size>0 AND LENGTH(TRIM(request_b64))>0
+                       ORDER BY last_seen_at DESC,id DESC LIMIT 1""",
+                    (op["id"],),
+                ).fetchone()
+                if ex:
+                    request_b64 = ex["request_b64"]
+                    request_size = int(ex["request_size"] or 0)
+                    selected_exchange_id = int(ex["id"])
+            if not request_b64:
+                parsed = urllib.parse.urlsplit(str(row["url"]))
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                host = parsed.hostname or ""
+                if parsed.port and not ((parsed.scheme == "https" and parsed.port == 443) or (parsed.scheme == "http" and parsed.port == 80)):
+                    host = f"{host}:{parsed.port}"
+                raw = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\n\r\n".encode("iso-8859-1", errors="replace")
+                request_b64 = base64.b64encode(raw).decode("ascii")
+                request_size = len(raw)
+            caption = f"Negro · {method} {row['path']}" + (f" · ex#{selected_exchange_id}" if selected_exchange_id else "")
+            conn.execute(
+                "INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
+                (resource_id, method, row["url"], request_b64, caption, _now()),
+            )
+            print(f"[repeater-queue] target={target_key} resource={resource_id} method={method} exchange={selected_exchange_id or '-'} request_bytes={request_size}")
+        suffix = f"#exchange-{selected_exchange_id}" if selected_exchange_id else "#http"
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}{suffix}", status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/inspect")
     def host_inspect(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
