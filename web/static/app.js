@@ -406,3 +406,42 @@
     });
   });
 })();
+
+// v0.16.2 — Repeater hand-off observable in the UI.
+(() => {
+  const bindRepeaterForms = () => {
+    document.querySelectorAll('form[data-repeater-form]').forEach((form) => {
+      if (form.dataset.repeaterBound === '1') return;
+      form.dataset.repeaterBound = '1';
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const button = form.querySelector('button[type="submit"]');
+        const status = form.querySelector('[data-repeater-status]');
+        if (button?.disabled) return;
+        if (button) button.disabled = true;
+        if (status) { status.textContent = 'Encolando…'; status.className = 'repeater-inline-status pending'; }
+        try {
+          const res = await fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: {'Accept':'application/json','X-Requested-With':'NegroFetch'}
+          });
+          let data = {};
+          try { data = await res.json(); } catch (_) {}
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          const bytes = Number(data.request_bytes || 0);
+          const qid = Number(data.queue_id || 0);
+          if (status) {
+            status.textContent = `Encolada #${qid || '?'} · ${bytes} B · esperando Burp…`;
+            status.className = 'repeater-inline-status ok';
+          }
+          if (button) button.textContent = 'Encolada ✓';
+        } catch (err) {
+          if (status) { status.textContent = `Error: ${err.message}`; status.className = 'repeater-inline-status error'; }
+          if (button) button.disabled = false;
+        }
+      });
+    });
+  };
+  bindRepeaterForms();
+})();

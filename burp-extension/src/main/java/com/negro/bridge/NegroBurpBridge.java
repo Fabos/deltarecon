@@ -63,12 +63,13 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.1 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.16.2 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
         bridgePoller.scheduleWithFixedDelay(this::pollRepeaterQueue, 1, 1, TimeUnit.SECONDS);
+        api.logging().logToOutput("Negro → Repeater poller activo · consultando /api/bridge/repeater/next cada 1s");
     }
 
     private Component buildPanel() {
@@ -162,12 +163,14 @@ public class NegroBurpBridge implements BurpExtension {
                 if (resp.statusCode() != 200) return;
                 String body = resp.body();
                 if (!body.contains("\"pending\":true") && !body.contains("\"pending\": true")) return;
+                api.logging().logToOutput("Negro → Repeater: item pendiente recibido del backend");
                 String targetKey = jsonString(body, "target_key");
                 String url = jsonString(body, "url");
                 String method = jsonString(body, "method");
                 String caption = jsonString(body, "caption");
                 String requestB64 = jsonString(body, "request_b64");
                 long queueId = jsonLong(body, "id");
+                api.logging().logToOutput("Negro → Repeater claim: queue=" + queueId + " target=" + targetKey + " method=" + method + " url=" + url + " b64chars=" + (requestB64 == null ? 0 : requestB64.length()));
                 boolean ok = false;
                 String error = "";
                 try {

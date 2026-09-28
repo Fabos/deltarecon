@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>{% block title %}Negro{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ version }}">
 </head>
 <body>
   <header class="topbar app-header">
@@ -35,6 +35,6 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="footer"><span>{{ domain }}</span><span>Espacio local · {{ workspace }}</span></footer>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ version }}"></script>
 </body>
 </html>

@@ -1846,7 +1846,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream", filename=row["original_name"])
 
     @app.post("/t/{target_key}/resource/{resource_id}/send-repeater")
-    def resource_send_repeater(target_key: str, resource_id: int, method: str = Form("GET"), exchange_id: int = Form(0), csrf: str = Form(...)):
+    def resource_send_repeater(request: Request, target_key: str, resource_id: int, method: str = Form("GET"), exchange_id: int = Form(0), csrf: str = Form(...)):
         """Queue an exact observed request for Burp Repeater when possible.
 
         Prefer a specific exchange (when the user clicked an exchange card), otherwise
@@ -1854,7 +1854,12 @@ def create_app(default_domain: str, default_workspace: Path):
         data has no raw request at all, enqueue a minimal but valid HTTP/1.1 request
         instead of allowing Burp to open a blank Repeater tab.
         """
-        verify_csrf(csrf)
+        print(f"[repeater-ui] submit target={target_key} resource={resource_id} method={method} exchange={exchange_id or '-'}", flush=True)
+        try:
+            verify_csrf(csrf)
+        except Exception as exc:
+            print(f"[repeater-ui] csrf_failed target={target_key} resource={resource_id} error={type(exc).__name__}: {exc}", flush=True)
+            raise
         _, _, paths = _target_context(target_key)
         method = (method or "GET").upper().strip()[:24]
         with _db(paths) as conn:
@@ -1900,13 +1905,26 @@ def create_app(default_domain: str, default_workspace: Path):
                 request_b64 = base64.b64encode(raw).decode("ascii")
                 request_size = len(raw)
             caption = f"Negro · {method} {row['path']}" + (f" · ex#{selected_exchange_id}" if selected_exchange_id else "")
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
                 (resource_id, method, row["url"], request_b64, caption, _now()),
             )
-            print(f"[repeater-queue] target={target_key} resource={resource_id} method={method} exchange={selected_exchange_id or '-'} request_bytes={request_size}")
+            queue_id = int(cur.lastrowid)
+            print(f"[repeater-queue] queued id={queue_id} target={target_key} resource={resource_id} method={method} exchange={selected_exchange_id or '-'} request_bytes={request_size}", flush=True)
         suffix = f"#exchange-{selected_exchange_id}" if selected_exchange_id else "#http"
-        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}{suffix}", status_code=303)
+        refresh_url = f"/t/{target_key}/resource/{resource_id}{suffix}"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({
+                "ok": True,
+                "queued": True,
+                "queue_id": queue_id,
+                "resource_id": resource_id,
+                "exchange_id": selected_exchange_id or None,
+                "request_bytes": request_size,
+                "method": method,
+                "refresh_url": refresh_url,
+            })
+        return RedirectResponse(url=refresh_url, status_code=303)
 
     @app.post("/t/{target_key}/host/{host_id}/inspect")
     def host_inspect(request: Request, target_key: str, host_id: int, csrf: str = Form(...)):
@@ -2253,6 +2271,26 @@ def create_app(default_domain: str, default_workspace: Path):
             status_map = {"still_vulnerable":"retest_required","fixed":"fixed","fix_verified":"closed","inconclusive":"retest_required"}
             conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
             return {"ok": True, "action": action, "finding_id": finding_id, "retest_id": retest_id, "web_path": f"/t/{target_key}/finding/{finding_id}#retests"}
+
+    @app.get("/api/bridge/repeater/status", response_class=JSONResponse)
+    def bridge_repeater_status():
+        totals = {"pending": 0, "claimed": 0, "done": 0, "error": 0}
+        latest = []
+        for target in core.list_targets():
+            try:
+                domain = str(target["domain"])
+                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+                with _db(paths) as conn:
+                    for row in conn.execute("SELECT status, COUNT(*) AS n FROM burp_repeater_queue GROUP BY status").fetchall():
+                        st = str(row["status"] or "")
+                        if st in totals: totals[st] += int(row["n"] or 0)
+                    row = conn.execute("SELECT id,status,method,url,created_at,claimed_at,finished_at,error FROM burp_repeater_queue ORDER BY id DESC LIMIT 1").fetchone()
+                    if row:
+                        latest.append({"target_key": str(target["key"]), "domain": domain, **dict(row)})
+            except Exception:
+                continue
+        latest.sort(key=lambda x: int(x.get("id") or 0), reverse=True)
+        return {"ok": True, "version": core.VERSION, "counts": totals, "latest": latest[:10]}
 
     @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
     def bridge_repeater_next():
