@@ -2294,6 +2294,32 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
     def bridge_repeater_next():
+        # Lease timeout: if Burp claimed an item but never ACKed it, mark it
+        # as error after 30 seconds. We intentionally do not auto-retry user-initiated
+        # Repeater sends because that could open duplicate tabs unexpectedly.
+        cutoff = datetime.now(timezone.utc).replace(microsecond=0).timestamp() - 30
+        recovered = 0
+        for target in core.list_targets():
+            try:
+                domain = str(target["domain"])
+                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+                with _db(paths) as conn:
+                    rows = conn.execute("SELECT id, claimed_at FROM burp_repeater_queue WHERE status='claimed' AND finished_at IS NULL").fetchall()
+                    for stale in rows:
+                        try:
+                            claimed = datetime.fromisoformat(str(stale["claimed_at"] or ""))
+                            if claimed.tzinfo is None:
+                                claimed = claimed.replace(tzinfo=timezone.utc)
+                            if claimed.timestamp() <= cutoff:
+                                conn.execute("UPDATE burp_repeater_queue SET status='error', finished_at=?, error=? WHERE id=? AND status='claimed'", (_now(), "claim_timeout_no_ack", stale["id"]))
+                                recovered += 1
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        if recovered:
+            print(f"[repeater-queue] expired_stale_claims={recovered}", flush=True)
+
         pending = []
         for target in core.list_targets():
             try:
@@ -2315,6 +2341,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if not row or row["status"] != "claimed":
                 return {"pending": False}
             item = dict(row)
+        print(f"[repeater-queue] claimed id={item.get('id')} target={target_key} bytes_b64={len(str(item.get('request_b64') or ''))}", flush=True)
         return {"pending": True, "target_key": target_key, "domain": domain, **item}
 
     @app.post("/api/bridge/repeater/{target_key}/{queue_id}/ack", response_class=JSONResponse)

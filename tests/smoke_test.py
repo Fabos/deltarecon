@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.16.2. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.16.3. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile

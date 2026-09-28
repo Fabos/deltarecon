@@ -63,7 +63,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.2 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.16.3 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
@@ -158,55 +158,64 @@ public class NegroBurpBridge implements BurpExtension {
         try {
             java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                     .uri(URI.create(negroBaseUrl + "/api/bridge/repeater/next"))
-                    .timeout(Duration.ofSeconds(3)).GET().build();
-            client.sendAsync(req, BodyHandlers.ofString()).thenAccept(resp -> {
-                if (resp.statusCode() != 200) return;
-                String body = resp.body();
-                if (!body.contains("\"pending\":true") && !body.contains("\"pending\": true")) return;
-                api.logging().logToOutput("Negro → Repeater: item pendiente recibido del backend");
-                String targetKey = jsonString(body, "target_key");
-                String url = jsonString(body, "url");
-                String method = jsonString(body, "method");
-                String caption = jsonString(body, "caption");
-                String requestB64 = jsonString(body, "request_b64");
-                long queueId = jsonLong(body, "id");
-                api.logging().logToOutput("Negro → Repeater claim: queue=" + queueId + " target=" + targetKey + " method=" + method + " url=" + url + " b64chars=" + (requestB64 == null ? 0 : requestB64.length()));
-                boolean ok = false;
-                String error = "";
-                try {
-                    HttpRequest request;
-                    URI u = URI.create(url);
-                    boolean secure = "https".equalsIgnoreCase(u.getScheme());
-                    int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
-                    HttpService service = HttpService.httpService(u.getHost(), port, secure);
-                    int rawLength = 0;
-                    boolean normalizedHttp2 = false;
-                    if (requestB64 != null && !requestB64.isBlank()) {
-                        byte[] raw = Base64.getDecoder().decode(requestB64);
-                        rawLength = raw.length;
-                        byte[] repeaterRaw = normalizeRawRequestForRepeater(raw);
-                        normalizedHttp2 = repeaterRaw != raw;
-                        request = HttpRequest.httpRequest(service, ByteArray.byteArray(repeaterRaw));
-                        // Defensive validation: a malformed HTTP/2-style raw message can be
-                        // accepted by the factory but render as an empty Repeater tab.
-                        if (request.toByteArray().length() == 0 || request.method() == null || request.method().isBlank()) {
-                            api.logging().logToError("Negro → Repeater: request reconstruida vacía; usando fallback URL. queue=" + queueId + " raw=" + rawLength + "B");
-                            request = fallbackRequest(url, method, service);
-                        }
-                    } else {
+                    .timeout(Duration.ofSeconds(3))
+                    .header("Accept", "application/json")
+                    .GET().build();
+
+            // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
+            // unobserved CompletableFuture failure could claim a queue item server-side
+            // without ever running the thenAccept callback, leaving the item stuck in
+            // "claimed" and producing no Burp logs. Blocking here is safe because this
+            // method already runs on a single daemon ScheduledExecutorService.
+            java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            String body = resp.body() == null ? "" : resp.body();
+            boolean pending = Pattern.compile("\"pending\"\\s*:\\s*true").matcher(body).find();
+            api.logging().logToOutput("Negro → Repeater poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending);
+            if (resp.statusCode() != 200 || !pending) return;
+
+            api.logging().logToOutput("Negro → Repeater: item pendiente recibido del backend");
+            String targetKey = jsonString(body, "target_key");
+            String url = jsonString(body, "url");
+            String method = jsonString(body, "method");
+            String caption = jsonString(body, "caption");
+            String requestB64 = jsonString(body, "request_b64");
+            long queueId = jsonLong(body, "id");
+            api.logging().logToOutput("Negro → Repeater claim: queue=" + queueId + " target=" + targetKey + " method=" + method + " url=" + url + " b64chars=" + (requestB64 == null ? 0 : requestB64.length()));
+            boolean ok = false;
+            String error = "";
+            try {
+                HttpRequest request;
+                URI u = URI.create(url);
+                boolean secure = "https".equalsIgnoreCase(u.getScheme());
+                int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
+                HttpService service = HttpService.httpService(u.getHost(), port, secure);
+                int rawLength = 0;
+                boolean normalizedHttp2 = false;
+                if (requestB64 != null && !requestB64.isBlank()) {
+                    byte[] raw = Base64.getDecoder().decode(requestB64);
+                    rawLength = raw.length;
+                    byte[] repeaterRaw = normalizeRawRequestForRepeater(raw);
+                    normalizedHttp2 = repeaterRaw != raw;
+                    request = HttpRequest.httpRequest(service, ByteArray.byteArray(repeaterRaw));
+                    if (request.toByteArray().length() == 0 || request.method() == null || request.method().isBlank()) {
+                        api.logging().logToError("Negro → Repeater: request reconstruida vacía; usando fallback URL. queue=" + queueId + " raw=" + rawLength + "B");
                         request = fallbackRequest(url, method, service);
                     }
-                    String tabName = caption == null || caption.isBlank() ? "Negro · " + (method == null ? "GET" : method) : caption;
-                    api.repeater().sendToRepeater(request, tabName);
-                    ok = true;
-                    api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
-                } catch (Exception ex) {
-                    error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                    api.logging().logToError("Negro → Repeater falló: " + error);
+                } else {
+                    request = fallbackRequest(url, method, service);
                 }
-                ackRepeater(targetKey, queueId, ok, error);
-            });
-        } catch (Exception ignored) {
+                String tabName = caption == null || caption.isBlank() ? "Negro · " + (method == null ? "GET" : method) : caption;
+                api.repeater().sendToRepeater(request, tabName);
+                ok = true;
+                api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
+            } catch (Exception ex) {
+                error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                api.logging().logToError("Negro → Repeater falló: " + error);
+            }
+            ackRepeater(targetKey, queueId, ok, error);
+        } catch (Exception ex) {
+            String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            api.logging().logToError("Negro → Repeater poll falló: " + msg);
         }
     }
 
