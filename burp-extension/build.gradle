@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.negro'
-version = '0.16.3'
+version = '0.16.4'
 
 repositories {
     mavenCentral()

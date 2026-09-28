@@ -63,7 +63,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.3 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.16.4 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
@@ -118,7 +118,7 @@ public class NegroBurpBridge implements BurpExtension {
     private void healthCheck() {
         java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/ingest/health"))
-                .timeout(Duration.ofSeconds(3))
+                .timeout(Duration.ofSeconds(10))
                 .GET().build();
         client.sendAsync(req, BodyHandlers.ofString())
                 .thenAccept(r -> SwingUtilities.invokeLater(() -> {
@@ -158,7 +158,7 @@ public class NegroBurpBridge implements BurpExtension {
         try {
             java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                     .uri(URI.create(negroBaseUrl + "/api/bridge/repeater/next"))
-                    .timeout(Duration.ofSeconds(3))
+                    .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .GET().build();
 
@@ -273,7 +273,7 @@ public class NegroBurpBridge implements BurpExtension {
         String json = "{\"ok\":" + ok + "," + kv("error", error == null ? "" : error) + "}";
         java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/bridge/repeater/" + targetKey + "/" + queueId + "/ack"))
-                .timeout(Duration.ofSeconds(3)).header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
                 .POST(BodyPublishers.ofString(json, StandardCharsets.UTF_8)).build();
         client.sendAsync(req, BodyHandlers.discarding());
     }

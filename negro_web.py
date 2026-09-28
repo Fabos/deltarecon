@@ -39,6 +39,14 @@ JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 JOB_MAX_CONCURRENCY = 3
 JOB_SLOTS = threading.Semaphore(JOB_MAX_CONCURRENCY)
+
+# Repeater bridge polling must stay lightweight. Never run workspace migrations on
+# every /next poll: on large bounty workspaces that can take seconds and make the
+# Burp HTTP client time out/cancel the request. Cleanup of stale claims is also
+# throttled instead of rescanning every workspace once per second.
+REPEATER_CLEANUP_LOCK = threading.Lock()
+REPEATER_LAST_CLEANUP_TS = 0.0
+REPEATER_CLEANUP_INTERVAL_SECONDS = 30.0
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 UI_LABELS = {
@@ -2272,14 +2280,73 @@ def create_app(default_domain: str, default_workspace: Path):
             conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
             return {"ok": True, "action": action, "finding_id": finding_id, "retest_id": retest_id, "web_path": f"/t/{target_key}/finding/{finding_id}#retests"}
 
+    def _bridge_workspace_paths(target: dict[str, Any]) -> tuple[str, str, dict[str, Path]] | None:
+        """Return already-initialized workspace paths without migrations.
+
+        Bridge polling runs every second. Calling ensure_workspace() here would
+        re-run schema checks + legacy inventory migration for every target, which
+        is catastrophically expensive on large workspaces (thousands of resources).
+        """
+        try:
+            domain = str(target["domain"])
+            target_key = str(target["key"])
+            workspace = Path(str(target["workspace"])).expanduser()
+            paths = core.workspace_paths(workspace)
+            if not paths["db_file"].exists():
+                return None
+            return target_key, domain, paths
+        except Exception:
+            return None
+
+    def _bridge_cleanup_stale_claims() -> int:
+        global REPEATER_LAST_CLEANUP_TS
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if now_ts - REPEATER_LAST_CLEANUP_TS < REPEATER_CLEANUP_INTERVAL_SECONDS:
+            return 0
+        if not REPEATER_CLEANUP_LOCK.acquire(blocking=False):
+            return 0
+        try:
+            # Re-check after taking the lock in case another request just cleaned.
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if now_ts - REPEATER_LAST_CLEANUP_TS < REPEATER_CLEANUP_INTERVAL_SECONDS:
+                return 0
+            REPEATER_LAST_CLEANUP_TS = now_ts
+            cutoff = now_ts - 30
+            recovered = 0
+            for target in core.list_targets():
+                info = _bridge_workspace_paths(target)
+                if not info:
+                    continue
+                _, _, paths = info
+                try:
+                    with _db(paths) as conn:
+                        rows = conn.execute("SELECT id, claimed_at FROM burp_repeater_queue WHERE status='claimed' AND finished_at IS NULL").fetchall()
+                        for stale in rows:
+                            try:
+                                claimed = datetime.fromisoformat(str(stale["claimed_at"] or ""))
+                                if claimed.tzinfo is None:
+                                    claimed = claimed.replace(tzinfo=timezone.utc)
+                                if claimed.timestamp() <= cutoff:
+                                    conn.execute("UPDATE burp_repeater_queue SET status='error', finished_at=?, error=? WHERE id=? AND status='claimed'", (_now(), "claim_timeout_no_ack", stale["id"]))
+                                    recovered += 1
+                            except Exception:
+                                continue
+                except Exception as exc:
+                    print(f"[repeater-next] cleanup target error: {exc}", flush=True)
+            return recovered
+        finally:
+            REPEATER_CLEANUP_LOCK.release()
+
     @app.get("/api/bridge/repeater/status", response_class=JSONResponse)
     def bridge_repeater_status():
         totals = {"pending": 0, "claimed": 0, "done": 0, "error": 0}
         latest = []
         for target in core.list_targets():
             try:
-                domain = str(target["domain"])
-                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+                info = _bridge_workspace_paths(target)
+                if not info:
+                    continue
+                _, domain, paths = info
                 with _db(paths) as conn:
                     for row in conn.execute("SELECT status, COUNT(*) AS n FROM burp_repeater_queue GROUP BY status").fetchall():
                         st = str(row["status"] or "")
@@ -2294,55 +2361,65 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
     def bridge_repeater_next():
-        # Lease timeout: if Burp claimed an item but never ACKed it, mark it
-        # as error after 30 seconds. We intentionally do not auto-retry user-initiated
-        # Repeater sends because that could open duplicate tabs unexpectedly.
-        cutoff = datetime.now(timezone.utc).replace(microsecond=0).timestamp() - 30
-        recovered = 0
-        for target in core.list_targets():
-            try:
-                domain = str(target["domain"])
-                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
-                with _db(paths) as conn:
-                    rows = conn.execute("SELECT id, claimed_at FROM burp_repeater_queue WHERE status='claimed' AND finished_at IS NULL").fetchall()
-                    for stale in rows:
-                        try:
-                            claimed = datetime.fromisoformat(str(stale["claimed_at"] or ""))
-                            if claimed.tzinfo is None:
-                                claimed = claimed.replace(tzinfo=timezone.utc)
-                            if claimed.timestamp() <= cutoff:
-                                conn.execute("UPDATE burp_repeater_queue SET status='error', finished_at=?, error=? WHERE id=? AND status='claimed'", (_now(), "claim_timeout_no_ack", stale["id"]))
-                                recovered += 1
-                        except Exception:
-                            continue
-            except Exception:
-                continue
+        # IMPORTANT: this endpoint is polled every second by Burp. It must never
+        # initialize/migrate workspaces. Large targets can contain thousands of
+        # resources and re-running migrations here caused >3s requests, Java
+        # timeouts and FastAPI CancelledError/500 responses.
+        import time
+        started = time.perf_counter()
+        targets = core.list_targets()
+        recovered = _bridge_cleanup_stale_claims()
         if recovered:
             print(f"[repeater-queue] expired_stale_claims={recovered}", flush=True)
 
-        pending = []
-        for target in core.list_targets():
+        pending: list[tuple[str, str, str, dict[str, Path], dict[str, Any]]] = []
+        scanned = 0
+        for target in targets:
+            info = _bridge_workspace_paths(target)
+            if not info:
+                continue
+            target_key, domain, paths = info
+            scanned += 1
             try:
-                domain = str(target["domain"])
-                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
                 with _db(paths) as conn:
                     row = conn.execute("SELECT * FROM burp_repeater_queue WHERE status='pending' ORDER BY created_at, id LIMIT 1").fetchone()
                     if row:
-                        pending.append((row["created_at"], str(target["key"]), domain, paths, dict(row)))
-            except Exception:
-                continue
+                        pending.append((str(row["created_at"] or ""), target_key, domain, paths, dict(row)))
+            except Exception as exc:
+                print(f"[repeater-next] scan target={target_key} error={exc}", flush=True)
+
         if not pending:
-            return {"pending": False}
-        pending.sort(key=lambda x: x[0])
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            # Keep normal polling quiet unless it becomes unexpectedly slow.
+            if elapsed_ms >= 500:
+                print(f"[repeater-next] empty targets={scanned} elapsed_ms={elapsed_ms}", flush=True)
+            return {"pending": False, "scan_ms": elapsed_ms}
+
+        pending.sort(key=lambda x: (x[0], int(x[4].get("id") or 0)))
         _, target_key, domain, paths, item = pending[0]
-        with _db(paths) as conn:
-            conn.execute("UPDATE burp_repeater_queue SET status='claimed', claimed_at=? WHERE id=? AND status='pending'", (_now(), item["id"]))
-            row = conn.execute("SELECT * FROM burp_repeater_queue WHERE id=?", (item["id"],)).fetchone()
-            if not row or row["status"] != "claimed":
-                return {"pending": False}
-            item = dict(row)
-        print(f"[repeater-queue] claimed id={item.get('id')} target={target_key} bytes_b64={len(str(item.get('request_b64') or ''))}", flush=True)
-        return {"pending": True, "target_key": target_key, "domain": domain, **item}
+        try:
+            with _db(paths) as conn:
+                cur = conn.execute(
+                    "UPDATE burp_repeater_queue SET status='claimed', claimed_at=? WHERE id=? AND status='pending'",
+                    (_now(), item["id"]),
+                )
+                if cur.rowcount != 1:
+                    return {"pending": False}
+                row = conn.execute("SELECT * FROM burp_repeater_queue WHERE id=?", (item["id"],)).fetchone()
+                if not row or row["status"] != "claimed":
+                    return {"pending": False}
+                item = dict(row)
+        except Exception as exc:
+            print(f"[repeater-next] claim id={item.get('id')} error={exc}", flush=True)
+            return JSONResponse(status_code=500, content={"pending": False, "error": "queue_claim_failed"})
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        print(
+            f"[repeater-next] claimed id={item.get('id')} target={target_key} "
+            f"bytes_b64={len(str(item.get('request_b64') or ''))} elapsed_ms={elapsed_ms}",
+            flush=True,
+        )
+        return {"pending": True, "target_key": target_key, "domain": domain, "scan_ms": elapsed_ms, **item}
 
     @app.post("/api/bridge/repeater/{target_key}/{queue_id}/ack", response_class=JSONResponse)
     async def bridge_repeater_ack(target_key: str, queue_id: int, request: Request):
