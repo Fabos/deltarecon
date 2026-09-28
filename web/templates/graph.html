@@ -13,6 +13,7 @@
       <button type="button" class="btn-secondary" data-graph-neighborhood>1 hop</button>
       <button type="button" class="btn-secondary" data-graph-two-hop>2 hops</button>
       <button type="button" class="btn-secondary" data-graph-reset-layout>Auto ordenar</button>
+      <a class="btn-secondary" href="{{ target_base }}/hypotheses">Hypotheses</a>
       <button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Give me ideas</button>
     </div>
   </header>
@@ -35,7 +36,7 @@
       <button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button>
       <button type="button" class="button" data-graph-ai-run-btn hidden>Generar 3–5 hipótesis</button>
     </div>
-    <div class="graph-ai-status" data-graph-ai-status>Negro enviará un resumen estructurado del grafo, cobertura, findings e hipótesis previas; no enviará cuerpos HTTP completos.</div>
+    <div class="graph-ai-status" data-graph-ai-status>Negro enviará el grafo, cobertura, hypotheses y previews JSON sanitizados de exchanges relevantes; nunca dumps HTTP completos.</div>
     <div class="graph-ai-results" data-graph-ai-results></div>
   </section>
 
@@ -56,13 +57,8 @@
       <div class="graph-filter-title">Tipos visibles</div>
       <div class="graph-type-filters" data-graph-types></div>
 
-      <div class="graph-filter-title">Estado</div>
-      <div class="graph-legend">
-        <div><i class="legend-dot state-untested"></i> Untested</div>
-        <div><i class="legend-dot state-interesting"></i> Interesting</div>
-        <div><i class="legend-dot state-finding"></i> Finding</div>
-        <div><i class="legend-dot state-tested"></i> Tested</div>
-      </div>
+      <div class="graph-filter-title">Cobertura</div><div class="graph-legend"><div><i class="legend-dot state-untested"></i> Untested</div><div><i class="legend-dot state-tested"></i> Tested / Negative</div></div>
+      <div class="graph-filter-title">Señal</div><div class="graph-legend"><div><i class="legend-dot state-interesting"></i> Interesting</div><div><i class="legend-dot state-finding"></i> Finding</div></div>
     </aside>
 
     <div class="graph-canvas-wrap">

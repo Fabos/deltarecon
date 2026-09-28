@@ -69,7 +69,7 @@
   function setLayoutStatus(text){ if (statusEl) statusEl.textContent = text; }
 
   function load(){
-    fetch(api, {headers:{'Accept':'application/json'}})
+    return fetch(api, {headers:{'Accept':'application/json'}})
       .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
         graph = data;
@@ -524,7 +524,8 @@
   function ideaCard(h){
     const ids=(h.node_ids||[]).slice(0,6).map(x=>`<code>${esc(x)}</code>`).join(' ');
     const status=h.status||'candidate';
-    return `<article class="graph-ai-card" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3><p><b>Por qué interesa:</b> ${esc(h.why_interesting||'')}</p><p><b>Investigar:</b> ${esc(h.suggested_investigation||'')}</p>${ids?`<div class="graph-ai-nodes">${ids}</div>`:''}<div class="graph-ai-card-actions"><button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button></div></article>`;
+    const steps=(h.steps||[]).slice(0,6).map(x=>`<li><b>${esc(x.action||'')}</b>${x.what_to_watch?`<small>Observar: ${esc(x.what_to_watch)}</small>`:''}</li>`).join('');
+    return `<article class="graph-ai-card" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span><span class="state-chip">${esc(status)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué interesa:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo:</b> ${esc(h.suggested_investigation||'')}</p>${steps?`<ol class="ai-steps">${steps}</ol>`:''}<p><b>Señal positiva:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p>${ids?`<div class="graph-ai-nodes">${ids}</div>`:''}<div class="graph-ai-card-actions"><button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Start testing</button><button type="button" class="btn-secondary" data-idea-status="negative">Negative</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesting</button><button type="button" class="btn-secondary" data-idea-status="postponed">Later</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmed</button><a class="btn-secondary" href="${base}/hypotheses">Abrir Hypotheses</a></div></article>`;
   }
   async function refreshGraphData(){
     const r=await fetch(api,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
@@ -562,5 +563,6 @@
     finally{aiRunBtn.disabled=false;}
   });
 
-  load();
+  const initialFocus=new URLSearchParams(window.location.search).get('focus');
+  load().then(()=>{if(initialFocus){const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}}});
 })();

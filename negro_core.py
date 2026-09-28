@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.13.0
+Negro Recon v0.14.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2215,6 +2215,23 @@ def update_lead_status(paths: dict[str, Path], lead_id: int, status: str) -> dic
         conn.execute("UPDATE leads_v2 SET status=?,updated_at=? WHERE id=?", (status, now_iso(), lead_id))
         return {"id":lead_id,"title":row["title"],"status":status}
 
+def update_hypothesis(paths: dict[str, Path], lead_id: int, *, status: str | None = None, result_notes: str | None = None) -> dict:
+    import negro_hunter as hunter
+    allowed = {"candidate","testing","interesting","negative","postponed","confirmed","discarded"}
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()
+        if not row:
+            raise ValueError("Hipótesis no encontrada")
+        next_status = status or row["status"]
+        if next_status not in allowed:
+            raise ValueError("Estado de hipótesis inválido")
+        notes = result_notes if result_notes is not None else conn.execute("SELECT result_notes FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()["result_notes"]
+        tested_at = now_iso() if next_status in {"negative","interesting","confirmed","discarded"} else None
+        conn.execute("UPDATE leads_v2 SET status=?,result_notes=?,last_tested_at=COALESCE(?,last_tested_at),updated_at=? WHERE id=?", (next_status, notes, tested_at, now_iso(), lead_id))
+        return {"id": lead_id, "title": row["title"], "status": next_status, "result_notes": notes}
+
+
 def latest_target_ai(paths: dict[str, Path]) -> dict | None:
     import negro_hunter as hunter
     with db_connect(paths) as conn:
@@ -2572,6 +2589,52 @@ def list_targets() -> list[dict]:
     for key, target in sorted(data.get("targets", {}).items(), key=lambda item: item[1].get("domain", item[0])):
         result.append({"key": key, "domain": target.get("domain", key), "workspace": target.get("workspace", ""), "current": key == current})
     return result
+
+
+def delete_target(key: str, *, delete_workspace: bool = True) -> dict:
+    """Remove a registered target and, optionally, its Negro workspace.
+
+    The workspace deletion is intentionally conservative: only the exact path
+    registered for the target is eligible and obvious dangerous roots are rejected.
+    """
+    data = targets_load()
+    target = data.get("targets", {}).get(key)
+    if not isinstance(target, dict):
+        raise KeyError(key)
+    domain = str(target.get("domain") or key)
+    workspace = Path(str(target.get("workspace") or "")).expanduser()
+    deleted_workspace = False
+    if delete_workspace and str(workspace):
+        resolved = workspace.resolve()
+        home = Path.home().resolve()
+        dangerous = {Path('/').resolve(), home, (home/'.config').resolve(), (home/'.config'/'negro').resolve()}
+        if resolved in dangerous or len(resolved.parts) < 3:
+            raise ValueError(f"Ruta de workspace insegura para borrar: {resolved}")
+        # Verify the workspace belongs to the target when the state marker exists.
+        state_file = workspace_paths(resolved)["state_file"]
+        if state_file.exists():
+            try:
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise ValueError("No pude validar el state.json del workspace") from exc
+            owner = str(state.get("domain") or "").strip().lower().rstrip('.')
+            if owner and owner != domain.strip().lower().rstrip('.'):
+                raise ValueError(f"El workspace pertenece a {owner}, no a {domain}")
+        if resolved.exists():
+            shutil.rmtree(resolved)
+            deleted_workspace = True
+    data.get("targets", {}).pop(key, None)
+    remaining = sorted(data.get("targets", {}).keys())
+    if data.get("last_target") == key:
+        data["last_target"] = remaining[0] if remaining else None
+    targets_save(data)
+    if data.get("last_target"):
+        current = data["targets"][data["last_target"]]
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    else:
+        CONFIG_PATH.unlink(missing_ok=True)
+    return {"key": key, "domain": domain, "workspace": str(workspace), "workspace_deleted": deleted_workspace, "remaining": len(remaining), "next_target": data.get("last_target")}
 
 
 def config_load() -> dict:

@@ -63,7 +63,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.13.0 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.14.0 iniciado → " + negroBaseUrl);
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());

@@ -18,6 +18,7 @@
   <a class="stat" href="{{ target_base }}/hosts?review=pending"><span>Pendientes</span><strong data-stat-key="pending">{{ stats.pending }}</strong></a>
   <a class="stat" href="{{ target_base }}/hosts?review=in_progress"><span>En revisión</span><strong data-stat-key="in_progress">{{ stats.in_progress }}</strong></a>
   <a class="stat warning" href="{{ target_base }}/hosts?classification=lead"><span>Leads</span><strong data-stat-key="leads">{{ stats.leads }}</strong></a>
+  <a class="stat" href="{{ target_base }}/hypotheses"><span>Hypotheses</span><strong>{{ stats.hypotheses }}</strong></a>
   <a class="stat danger" href="{{ target_base }}/findings"><span>Findings</span><strong data-stat-key="findings">{{ stats.findings }}</strong></a>
 </section>
 
@@ -26,10 +27,20 @@
     <div class="panel-head"><div><p class="eyebrow">TARGETS</p><h2>Workspaces</h2></div><span class="muted small">Cambiar sin reiniciar Negro</span></div>
     <div class="target-cards">
       {% for t in target_cards %}
-      <a class="target-card {% if t.key==target_key %}active{% endif %}" href="/t/{{ t.key }}/">
-        <div><strong>{{ t.domain }}</strong><small>{{ t.workspace }}</small></div>
-        {% if t.error %}<span class="badge class-finding">error</span>{% else %}<span class="target-metrics">{{ t.hosts }} H · {{ t.resources }} R · {{ t.leads }} L · {{ t.findings }} F</span>{% endif %}
-      </a>
+      <div class="target-card-shell {% if t.key==target_key %}active{% endif %}">
+        <a class="target-card" href="/t/{{ t.key }}/">
+          <div><strong>{{ t.domain }}</strong><small>{{ t.workspace }}</small></div>
+          {% if t.error %}<span class="badge class-finding">error</span>{% else %}<span class="target-metrics">{{ t.hosts }} H · {{ t.resources }} R · {{ t.leads }} L · {{ t.findings }} F</span>{% endif %}
+        </a>
+        <details class="target-delete"><summary title="Eliminar target">Eliminar</summary>
+          <form action="/targets/{{ t.key }}/delete" method="post" class="target-delete-form">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="delete_workspace" value="yes">
+            <p>Esto elimina el target de Negro y borra <b>todo su workspace</b>.</p>
+            <label>Escribe <code>{{ t.domain }}</code><input name="confirm_domain" required autocomplete="off"></label>
+            <button class="button danger-button" type="submit">Borrar completamente</button>
+          </form>
+        </details>
+      </div>
       {% endfor %}
     </div>
     <details class="new-target">

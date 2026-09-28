@@ -95,6 +95,17 @@ def main() -> None:
             conn.execute("INSERT INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (retest_id, 'exchange', exchange_id, 'evidence', now))
             assert conn.execute("SELECT source FROM findings WHERE id=?", (fid,)).fetchone()["source"] == 'selftest'
             assert conn.execute("SELECT COUNT(*) c FROM finding_retest_entities WHERE retest_id=?", (retest_id,)).fetchone()["c"] == 1
+            # v0.14: hypothesis workbench migrations + AI HTTP preview context.
+            cols={x["name"] for x in conn.execute("PRAGMA table_info(leads_v2)").fetchall()}
+            assert {"test_plan_json","result_notes","last_tested_at"}.issubset(cols), cols
+            hunter.upsert_lead(conn, lead_key="ai_graph:smoke", host_id=hid, resource_id=rr["id"], lead_type="feature_flag", title="Toggle feature flag", confidence="medium", review_priority="medium", evidence=[{"source":"ai_graph","plain_language":"Cambia active y observa nuevas rutas"}], why="response has active", next_test="intercept response", confirm_if="new route appears", discard_if="no behavior change", source="AI")
+            conn.execute("UPDATE leads_v2 SET test_plan_json=? WHERE lead_key='ai_graph:smoke'", (json.dumps([{"step":1,"action":"toggle active","what_to_watch":"new requests"}]),))
+            listed=hunter.list_leads(conn)
+            smoke=next(x for x in listed if x["lead_key"]=="ai_graph:smoke")
+            assert smoke["test_plan"][0]["action"]=="toggle active"
+            graph={"counts":{"resource":1},"nodes":[{"id":f"resource:{rr['id']}","type":"resource","label":"/api/users/42","state":"untested","meta":{"id":rr['id'],"url":"https://example.test/api/users/42"}}],"edges":[]}
+            gp,gh=hunter.build_graph_ai_payload(conn,domain,graph,selected_node_id=f"resource:{rr['id']}")
+            assert 'http_evidence' in gp and 'request_line' in gp and len(gh)==64
         print("[OK] schema + migration path")
         print("[OK] HTTP model: resource -> operations -> deduplicated exchanges")
         print("[OK] policy profile")
@@ -102,6 +113,7 @@ def main() -> None:
         print("[OK] target AI payload + evidence hash")
         print("[OK] search intelligence")
         print("[OK] findings + retest evidence model")
+        print("[OK] hypothesis workbench + sanitized HTTP AI context")
 
 
 if __name__ == "__main__":

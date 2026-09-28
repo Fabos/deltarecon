@@ -227,6 +227,12 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN source TEXT NOT NULL DEFAULT 'ENGINE'")
     if "parent_lead_id" not in lead_cols:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN parent_lead_id INTEGER")
+    if "test_plan_json" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN test_plan_json TEXT")
+    if "result_notes" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN result_notes TEXT")
+    if "last_tested_at" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN last_tested_at TEXT")
 
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
@@ -1147,6 +1153,10 @@ def list_leads(conn, limit: int = 200) -> list[dict[str, Any]]:
             item["evidence"] = json.loads(item.pop("evidence_json") or "[]")
         except Exception:
             item["evidence"] = []
+        try:
+            item["test_plan"] = json.loads(item.get("test_plan_json") or "[]")
+        except Exception:
+            item["test_plan"] = []
         out.append(item)
     return out
 
@@ -1262,6 +1272,89 @@ No propongas credential brute force, DoS, phishing, mass scanning, resource clai
 
 
 
+
+def _ai_safe_json_preview(value: Any, depth: int = 0) -> Any:
+    """Small, redacted-ish structural preview for AI hypothesis generation."""
+    if depth > 3:
+        return "…"
+    sensitive = re.compile(r"pass(word)?|secret|token|cookie|authorization|api[_-]?key|session|jwt|credential", re.I)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in list(value.items())[:24]:
+            key = str(k)[:80]
+            out[key] = "[REDACTED]" if sensitive.search(key) else _ai_safe_json_preview(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_ai_safe_json_preview(v, depth + 1) for v in value[:3]] + ([f"… {len(value)-3} more"] if len(value) > 3 else [])
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value)
+    if len(text) <= 80 and not re.search(r"[A-Za-z0-9+/=_-]{32,}", text):
+        return text
+    return f"<{type(value).__name__}:{len(text)} chars>"
+
+
+def _decode_http_b64(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        import base64
+        return base64.b64decode(value, validate=False).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _http_body(text: str) -> str:
+    if "\r\n\r\n" in text:
+        return text.split("\r\n\r\n", 1)[1]
+    if "\n\n" in text:
+        return text.split("\n\n", 1)[1]
+    return ""
+
+
+def _json_preview_from_http(text: str) -> Any:
+    body = _http_body(text).strip()
+    if not body or len(body) > 400_000:
+        return None
+    try:
+        return _ai_safe_json_preview(json.loads(body))
+    except Exception:
+        return None
+
+
+def _graph_http_evidence(conn, relevant_resource_ids: set[int] | None = None, limit: int = 24) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT e.id AS exchange_id,e.source,e.tool,e.status_code,e.query_json,e.request_b64,e.response_b64,
+                  o.id AS operation_id,o.method,o.authenticated_observed,r.id AS resource_id,r.url,r.path,h.hostname
+           FROM http_exchanges e
+           JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id
+           JOIN hosts h ON h.id=r.host_id
+           ORDER BY CASE WHEN r.id IN (%s) THEN 0 ELSE 1 END, e.last_seen_at DESC LIMIT ?""" % (
+               ",".join("?" for _ in (relevant_resource_ids or {0}))
+           ), tuple(relevant_resource_ids or {0}) + (limit,)
+    ).fetchall()
+    out=[]
+    for row in rows:
+        req=_decode_http_b64(row["request_b64"]); resp=_decode_http_b64(row["response_b64"])
+        try: q=json.loads(row["query_json"] or "{}")
+        except Exception: q={}
+        first_req=(req.splitlines()[0][:220] if req else f"{row['method']} {row['path']}")
+        first_resp=(resp.splitlines()[0][:120] if resp else None)
+        item={
+            "exchange_id": int(row["exchange_id"]), "resource_id": int(row["resource_id"]), "operation_id": int(row["operation_id"]),
+            "host": row["hostname"], "url": row["url"], "method": row["method"], "status": row["status_code"],
+            "source": row["source"], "tool": row["tool"], "authenticated": bool(row["authenticated_observed"]),
+            "request_line": first_req, "response_line": first_resp,
+            "query": _ai_safe_json_preview(q),
+            "request_json": _json_preview_from_http(req), "response_json": _json_preview_from_http(resp),
+        }
+        out.append(item)
+    return out
+
+
 def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, selected_node_id: str | None = None, max_chars: int = 220_000) -> tuple[str, str]:
     """Build compact structured graph context. Never dumps full HTTP bodies."""
     init_schema(conn)
@@ -1315,6 +1408,18 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
     for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 ORDER BY updated_at DESC LIMIT 120").fetchall():
         existing.append(dict(row))
     findings = [dict(r) for r in conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC LIMIT 80").fetchall()]
+    relevant_resource_ids: set[int] = set()
+    for n in ordered_nodes:
+        if n.get("type") == "resource":
+            try: relevant_resource_ids.add(int(str(n.get("id")).split(":",1)[1]))
+            except Exception: pass
+        elif n.get("type") == "operation":
+            try:
+                op_id = int(str(n.get("id")).split(":",1)[1])
+                rr = conn.execute("SELECT resource_id FROM resource_operations WHERE id=?", (op_id,)).fetchone()
+                if rr: relevant_resource_ids.add(int(rr["resource_id"]))
+            except Exception: pass
+    http_evidence = _graph_http_evidence(conn, relevant_resource_ids, limit=24)
 
     envelope = {
         "target": domain,
@@ -1324,6 +1429,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         "edges": compact_edges,
         "existing_hypotheses": existing,
         "confirmed_findings": findings,
+        "http_evidence": http_evidence,
         "instructions_context": {
             "negative_is_knowledge": True,
             "do_not_repeat_negative_or_discarded": True,
@@ -1344,26 +1450,39 @@ def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int) -> t
         from openai import OpenAI  # type: ignore
     except Exception as exc:
         raise RuntimeError("El SDK de OpenAI no está disponible. Ejecuta ./install-web.sh") from exc
-    system = """Eres el motor de hipótesis de Negro para una investigación de seguridad autorizada.
-Responde SIEMPRE en español. NO eres un chatbot genérico y NO debes listar OWASP por rutina.
-Usa exclusivamente el grafo y el historial suministrados. No inventes endpoints, roles, objetos, respuestas ni vulnerabilidades.
-Tu trabajo es proponer 3 a 5 HIPÓTESIS INVESTIGABLES para el estado ACTUAL del target.
-Prioriza relaciones reales, cobertura pendiente, diferencias de método/rol/estado, JavaScript, flujos de negocio y señales correlacionadas.
-NEGATIVE, discarded y pruebas ya realizadas son conocimiento: no repitas la misma prueba salvo que exista evidencia NUEVA que cambie el escenario.
-Una señal interesting NO equivale a vulnerabilidad. Nunca afirmes que una vulnerabilidad existe sin evidencia confirmada.
-No uses scores ni probabilidades inventadas.
-Cada hipótesis debe citar node_ids REALES incluidos en el contexto para que Negro pueda resaltarla en el mapa.
+    system = """Eres la mano derecha de un pentester durante una investigación AUTORIZADA. Responde SIEMPRE en español claro, concreto y didáctico.
+No eres un chatbot genérico: no listes OWASP por rutina, no inventes endpoints/roles/respuestas y no declares una vulnerabilidad sin evidencia.
+Tu salida debe ayudar a una persona a ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador y entender qué está buscando.
+
+Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y una vista estructural/preview JSON limitada; úsalo para ser específico.
+NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
+Prioriza autorización, lógica de negocio, estados, feature flags, JavaScript, métodos alternativos, parámetros y diferencias entre contexto autenticado/no autenticado.
+
+Para cada hipótesis:
+- Escribe un título que diga QUÉ intentar, no una frase abstracta.
+- plain_language: explícalo como para alguien que conoce Burp pero no adivina tu intención.
+- steps: 2 a 6 pasos numerados, ejecutables y de bajo impacto. Cuando aplique, di literalmente qué request enviar a Repeater/Proxy, qué campo/header/query cambiar, si conviene interceptar REQUEST o RESPONSE, y qué comparar después.
+- what_to_watch: especifica qué nuevas rutas, cambios de UI, diferencias de status/body o llamadas de red buscar.
+- suggested_investigation: resumen corto del plan. Evita frases vacías como “revisar comportamiento”.
+- confirm_if y discard_if deben ser observables.
+- Cita node_ids REALES.
+
+Ejemplo de nivel de concreción: si una respuesta de feature flags contiene campos como active=true/false, no digas sólo “evaluar feature flags”. Sugiere interceptar ESA respuesta en Burp, cambiar una bandera a la vez, recargar la interfaz, observar si aparecen controles/rutas/requests nuevas y después probar directamente el endpoint nuevo para comprobar si el backend impone autorización. Aclara que mostrar una función oculta en cliente no es por sí solo una vulnerabilidad.
+
 Evita brute force de credenciales, phishing, DoS, mass scanning, acciones destructivas o fuera de scope.
+No incluyas secretos ni pidas exfiltrar datos de terceros.
 Return ONLY JSON válido con este schema:
 {
   "summary":"...",
   "hypotheses":[
     {
       "title":"...",
-      "type":"authorization|business_logic|state_transition|cors|oauth|javascript|api|other",
+      "type":"authorization|business_logic|state_transition|cors|oauth|javascript|api|feature_flag|other",
       "strength":"strong|medium|exploratory",
+      "plain_language":"...",
       "why_interesting":"...",
       "suggested_investigation":"...",
+      "steps":[{"step":1,"action":"...","what_to_watch":"..."}],
       "confirm_if":"...",
       "discard_if":"...",
       "node_ids":["resource:1","operation:2"]
@@ -1411,7 +1530,7 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         strength = str(item.get("strength") or "medium").lower()
         priority = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
         confidence = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
-        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id}]
+        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip()}]
         upsert_lead(
             conn, lead_key=f"ai_graph:{fingerprint}", host_id=host_id, resource_id=resource_id,
             lead_type=typ, title=title, confidence=confidence, review_priority=priority,
@@ -1420,6 +1539,7 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
             confirm_if=str(item.get("confirm_if") or "").strip(), discard_if=str(item.get("discard_if") or "").strip(),
             source="AI",
         )
+        conn.execute("UPDATE leads_v2 SET test_plan_json=? WHERE lead_key=?", (json.dumps(item.get("steps") or [], ensure_ascii=False), f"ai_graph:{fingerprint}"))
         row = conn.execute("SELECT id,status FROM leads_v2 WHERE lead_key=?", (f"ai_graph:{fingerprint}",)).fetchone()
         if row:
             persisted.append({**item, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})

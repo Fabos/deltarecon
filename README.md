@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.13.0
+# Negro Recon 🐕 — v0.14.0
 
 > **Olfatea donde otros no miran.**
 
@@ -8,9 +8,9 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.13.0 — Bug Bounty Pilot
+## v0.14.0 — Bug Bounty Pilot
 
-Negro ya puede acompañar una investigación de punta a punta: menú contextual en Burp para abrir/marcar/crear Findings/adjuntar evidencia/retests, Findings reales multi-entidad, separación visual **Coverage vs Signal** y backup/restore completo del workspace. El objetivo de esta versión es empezar un piloto real de bug bounty sin perder contexto ni evidencia. Consulta `UPDATE-v0.13.0.md`.
+Negro ya puede acompañar una investigación de punta a punta: menú contextual en Burp para abrir/marcar/crear Findings/adjuntar evidencia/retests, Findings reales multi-entidad, separación visual **Coverage vs Signal** y backup/restore completo del workspace. El objetivo de esta versión es empezar un piloto real de bug bounty sin perder contexto ni evidencia. Consulta `UPDATE-v0.14.0.md`.
 
 ## v0.12.2 — Interactive Graph + AI Hypotheses
 

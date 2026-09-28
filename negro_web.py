@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.12.
+"""Local web workspace for Negro Recon v0.14.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -259,6 +259,7 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
                             + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='informational'").fetchone()["c"],
             "operations": conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"],
             "http_exchanges": conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"],
+            "hypotheses": conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"],
         }
         priority = conn.execute(
             """
@@ -291,6 +292,40 @@ def _target_cards() -> list[dict[str, Any]]:
             item["error"] = str(exc)[:180]
         cards.append(item)
     return cards
+
+
+def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", source: str = "", kind: str = "") -> list[dict[str, Any]]:
+    import negro_hunter as hunter
+    with _db(paths) as conn:
+        hunter.init_schema(conn)
+        sql = """SELECT l.*, h.hostname, r.url AS resource_url FROM leads_v2 l
+                 LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id WHERE 1=1"""
+        params: list[Any] = []
+        if q:
+            sql += " AND (lower(l.title) LIKE ? OR lower(COALESCE(l.why_interesting,'')) LIKE ? OR lower(COALESCE(l.next_test,'')) LIKE ?)"
+            like=f"%{q.lower()}%"; params += [like,like,like]
+        if status:
+            sql += " AND l.status=?"; params.append(status)
+        if source:
+            sql += " AND lower(l.source)=?"; params.append(source.lower())
+        if kind:
+            sql += " AND l.lead_type=?"; params.append(kind)
+        sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, l.updated_at DESC LIMIT 500"
+        rows=conn.execute(sql,params).fetchall()
+        out=[]
+        for r in rows:
+            item=dict(r)
+            try:item['evidence']=json.loads(item.pop('evidence_json') or '[]')
+            except Exception:item['evidence']=[]
+            try:item['test_plan']=json.loads(item.get('test_plan_json') or '[]')
+            except Exception:item['test_plan']=[]
+            plain=''
+            for ev in item['evidence']:
+                if isinstance(ev,dict) and ev.get('plain_language'):
+                    plain=str(ev.get('plain_language'));break
+            item['plain_language']=plain
+            out.append(item)
+        return out
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", limit: int = 500):
@@ -765,7 +800,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
         for l in lead_rows:
             state = "tested" if l["status"] in ("discarded", "negative") else "finding" if l["status"] in ("confirmed",) else "interesting"
             lsource = l["source"] if "source" in l.keys() else "ENGINE"
-            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "source": lsource, "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href="intelligence#leads")
+            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "source": lsource, "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href=f"hypotheses#hypothesis-{l['id']}")
             linked = False
             try:
                 ev = json.loads(l["evidence_json"] or "[]")
@@ -851,13 +886,16 @@ def create_app(default_domain: str, default_workspace: Path):
         if not secrets.compare_digest(value or "", csrf_token):
             raise HTTPException(status_code=403, detail="CSRF token inválido")
 
-    @app.get("/")
-    def root_redirect():
+    @app.get("/", response_class=HTMLResponse)
+    def root_redirect(request: Request):
         data = core.targets_load()
-        key = data.get("last_target") or default_key
-        if not core.get_target(str(key)):
-            key = default_key
-        return RedirectResponse(url=f"/t/{key}/", status_code=307)
+        targets = core.list_targets()
+        key = data.get("last_target")
+        if key and core.get_target(str(key)):
+            return RedirectResponse(url=f"/t/{key}/", status_code=307)
+        if targets:
+            return RedirectResponse(url=f"/t/{targets[0]['key']}/", status_code=307)
+        return templates.TemplateResponse(request=request, name="targets_empty.html", context={"version":core.VERSION,"csrf_token":csrf_token,"targets":[]})
 
     @app.post("/targets/create")
     def target_create(request: Request, domain: str = Form(...), workspace: str = Form(""), csrf: str = Form(...)):
@@ -894,6 +932,23 @@ def create_app(default_domain: str, default_workspace: Path):
                         continue
                     zf.write(file, Path("workspace") / rel)
         return FileResponse(path=str(out), filename=out.name, media_type="application/zip")
+
+    @app.post("/targets/{target_key}/delete")
+    def target_delete(request: Request, target_key: str, confirm_domain: str = Form(...), delete_workspace: str = Form("yes"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        target = core.get_target(target_key)
+        if not target:
+            raise HTTPException(status_code=404, detail="Target no encontrado")
+        domain = str(target.get("domain") or "")
+        if confirm_domain.strip().lower().rstrip('.') != domain.lower().rstrip('.'):
+            raise HTTPException(status_code=400, detail="Escribe el dominio exacto para confirmar el borrado")
+        try:
+            result = core.delete_target(target_key, delete_workspace=(delete_workspace == "yes"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if result.get("next_target"):
+            return RedirectResponse(url=f"/t/{result['next_target']}/?deleted=1", status_code=303)
+        return RedirectResponse(url="/?deleted=1", status_code=303)
 
     @app.post("/targets/restore")
     async def target_restore(request: Request, backup: UploadFile = File(...), workspace: str = Form(""), csrf: str = Form(...)):
@@ -1064,6 +1119,23 @@ def create_app(default_domain: str, default_workspace: Path):
         data = _tree_data(paths, q, review, classification, priority)
         return render(request, "tree.html", target_key, domain, workspace, tree=data, q=q, review=review, classification=classification, priority=priority)
 
+    @app.get("/t/{target_key}/hypotheses", response_class=HTMLResponse)
+    def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = ""):
+        domain, workspace, paths = _target_context(target_key)
+        rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind)
+        kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
+        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind, hypothesis_kinds=kinds)
+
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/update")
+    def hypothesis_update(request: Request, target_key: str, lead_id: int, status: str = Form(...), result_notes: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            core.update_hypothesis(paths, lead_id, status=status, result_notes=result_notes.strip())
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
+
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):
         import negro_intel as intel
@@ -1103,7 +1175,7 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         try:
-            result = core.update_lead_status(paths, lead_id, status)
+            result = core.update_hypothesis(paths, lead_id, status=status)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
