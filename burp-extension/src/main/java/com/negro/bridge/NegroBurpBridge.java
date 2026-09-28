@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.16.5
+ * Negro Burp Bridge v0.16.6
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -68,7 +68,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.5 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.16.6 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -174,7 +174,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.16.5")
+                    .header("X-Negro-Bridge-Version", "0.16.6")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -184,7 +184,7 @@ public class NegroBurpBridge implements BurpExtension {
             // method already runs on a single daemon ScheduledExecutorService.
             java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
             String body = resp.body() == null ? "" : resp.body();
-            boolean pending = Pattern.compile("\"pending\"\\s*:\\s*true").matcher(body).find();
+            boolean pending = jsonBoolean(body, "pending", false);
             api.logging().logToOutput("Negro → Repeater poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending + " · instance=" + bridgeInstanceId.substring(0, 8));
             if (resp.statusCode() != 200 || !pending) return;
 
@@ -223,14 +223,14 @@ public class NegroBurpBridge implements BurpExtension {
                 api.repeater().sendToRepeater(request, tabName);
                 ok = true;
                 api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
-            } catch (Exception ex) {
+            } catch (Throwable ex) {
                 error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                api.logging().logToError("Negro → Repeater falló: " + error);
+                api.logging().logToError("Negro → Repeater falló: " + ex.getClass().getSimpleName() + ": " + error);
             }
             ackRepeater(targetKey, queueId, ok, error);
-        } catch (Exception ex) {
+        } catch (Throwable ex) {
             String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-            api.logging().logToError("Negro → Repeater poll falló: " + msg);
+            api.logging().logToError("Negro → Repeater poll falló: " + ex.getClass().getSimpleName() + ": " + msg);
         }
     }
 
@@ -293,22 +293,93 @@ public class NegroBurpBridge implements BurpExtension {
         client.sendAsync(req, BodyHandlers.discarding());
     }
 
+    /**
+     * Tiny flat-JSON reader used by the local bridge protocol.
+     *
+     * Avoid recursive regexes for JSON strings here: request_b64 can be several
+     * kilobytes or more. Java's regex engine may recurse once per character and
+     * throw StackOverflowError; ScheduledExecutorService then suppresses future
+     * poll executions, which looks exactly like the bridge "freezing" after
+     * pending=true.
+     */
+    private int jsonValueStart(String json, String key) {
+        if (json == null || key == null) return -1;
+        String needle = "\"" + key + "\"";
+        int from = 0;
+        while (true) {
+            int keyPos = json.indexOf(needle, from);
+            if (keyPos < 0) return -1;
+            int i = keyPos + needle.length();
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i < json.length() && json.charAt(i) == ':') {
+                i++;
+                while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+                return i;
+            }
+            from = keyPos + needle.length();
+        }
+    }
+
     private String jsonString(String json, String key) {
-        Pattern p = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(null|\\\"((?:\\\\.|[^\\\"])*)\\\")");
-        Matcher m = p.matcher(json);
-        if (!m.find() || "null".equals(m.group(1))) return null;
-        return unescapeJson(m.group(2));
+        int i = jsonValueStart(json, key);
+        if (i < 0 || i >= json.length()) return null;
+        if (json.startsWith("null", i)) return null;
+        if (json.charAt(i) != '"') return null;
+        i++;
+        StringBuilder out = new StringBuilder();
+        while (i < json.length()) {
+            char c = json.charAt(i++);
+            if (c == '"') return out.toString();
+            if (c != '\\') {
+                out.append(c);
+                continue;
+            }
+            if (i >= json.length()) return null;
+            char esc = json.charAt(i++);
+            switch (esc) {
+                case '"' -> out.append('"');
+                case '\\' -> out.append('\\');
+                case '/' -> out.append('/');
+                case 'b' -> out.append('\b');
+                case 'f' -> out.append('\f');
+                case 'n' -> out.append('\n');
+                case 'r' -> out.append('\r');
+                case 't' -> out.append('\t');
+                case 'u' -> {
+                    if (i + 4 > json.length()) return null;
+                    try {
+                        out.append((char) Integer.parseInt(json.substring(i, i + 4), 16));
+                    } catch (NumberFormatException ex) {
+                        return null;
+                    }
+                    i += 4;
+                }
+                default -> out.append(esc);
+            }
+        }
+        return null;
     }
 
     private long jsonLong(String json, String key) {
-        Pattern p = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(\\d+)");
-        Matcher m = p.matcher(json);
-        return m.find() ? Long.parseLong(m.group(1)) : -1;
+        int i = jsonValueStart(json, key);
+        if (i < 0 || i >= json.length()) return -1;
+        int start = i;
+        if (json.charAt(i) == '-') i++;
+        while (i < json.length() && Character.isDigit(json.charAt(i))) i++;
+        if (i == start || (i == start + 1 && json.charAt(start) == '-')) return -1;
+        try {
+            return Long.parseLong(json.substring(start, i));
+        } catch (NumberFormatException ex) {
+            return -1;
+        }
     }
 
-    private String unescapeJson(String value) {
-        if (value == null) return null;
-        return value.replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t");
+    private boolean jsonBoolean(String json, String key, boolean defaultValue) {
+        int i = jsonValueStart(json, key);
+        if (i < 0) return defaultValue;
+        if (json.startsWith("true", i)) return true;
+        if (json.startsWith("false", i)) return false;
+        return defaultValue;
     }
 
     private void sendAsync(String json, String method, String observedUrl, String tool) {
