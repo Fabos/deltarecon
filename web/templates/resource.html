@@ -77,7 +77,7 @@
           </details>
 
           {% for ex in op.exchanges %}
-          <details class="exchange-card" {% if loop.first %}open{% endif %}>
+          <details class="exchange-card" id="exchange-{{ ex.id }}" {% if loop.first %}open{% endif %}>
             <summary><span>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %}</span><span>HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</span></summary>
             <div class="exchange-actions">
               <details><summary>Usar como evidencia de hallazgo</summary><div class="exchange-finding-actions">

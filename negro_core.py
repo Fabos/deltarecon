@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.15.0
+Negro Recon v0.16.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -286,6 +286,26 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 observed_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'info',
+                title TEXT NOT NULL,
+                message TEXT,
+                source TEXT NOT NULL DEFAULT 'engine',
+                entity_type TEXT,
+                entity_id INTEGER,
+                resource_id INTEGER,
+                operation_id INTEGER,
+                exchange_id INTEGER,
+                data_json TEXT,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                read_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS js_assets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 host_id INTEGER NOT NULL,
@@ -432,6 +452,8 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_hosts_review ON hosts(review_state, classification);
             CREATE INDEX IF NOT EXISTS idx_resources_review ON resources(review_state, classification);
             CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations(entity_type, entity_id, observed_at);
+            CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read_at, last_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id, last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_js_assets_host ON js_assets(host_id, discovered_at);
             CREATE INDEX IF NOT EXISTS idx_ai_asset ON ai_analyses(js_asset_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_operations_resource ON resource_operations(resource_id, method);

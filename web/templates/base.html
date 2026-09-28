@@ -27,6 +27,9 @@
         {% endfor %}
       </select>
     </div>
+    <a class="notification-bell" href="{{ target_base }}/notifications" data-notifications-bell data-notifications-url="/api/t/{{ target_key }}/notifications" data-target-key="{{ target_key }}" aria-label="Notificaciones de inteligencia" title="Notificaciones de inteligencia">
+      <span aria-hidden="true">●</span><b data-notification-count hidden>0</b>
+    </a>
   </header>
   <main class="page app-main">
     {% block content %}{% endblock %}

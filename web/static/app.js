@@ -38,6 +38,53 @@
     });
   }
 
+
+  const notificationBell = document.querySelector('[data-notifications-bell]');
+  if (notificationBell) {
+    const notificationUrl = notificationBell.dataset.notificationsUrl;
+    const targetKey = notificationBell.dataset.targetKey || 'target';
+    const countNode = notificationBell.querySelector('[data-notification-count]');
+    const lastKey = `negro.notification.last:${targetKey}`;
+    let initialized = false;
+    let lastId = 0;
+    try { lastId = Number(sessionStorage.getItem(lastKey) || 0) || 0; } catch (_) {}
+
+    const severityRank = {critical:5,high:4,medium:3,low:2,info:1};
+    const severityLabel = {critical:'Crítica',high:'Alta',medium:'Media',low:'Baja',info:'Informativa'};
+    const showSignalToast = (item) => {
+      if (!item || (severityRank[item.severity] || 0) < 3) return;
+      const root = document.createElement('a');
+      root.className = `negro-toast signal-toast severity-${esc(item.severity || 'medium')}`;
+      root.href = item.href || '#';
+      root.innerHTML = `<span class="signal-toast-kicker">Nueva señal · ${esc(severityLabel[item.severity] || item.severity || 'Media')}</span><strong>${esc(item.title || 'Alerta de inteligencia')}</strong><span>${esc(item.message || '')}</span>`;
+      document.body.appendChild(root);
+      window.setTimeout(() => root.remove(), item.severity === 'high' || item.severity === 'critical' ? 14000 : 10000);
+    };
+
+    const refreshNotifications = async () => {
+      if (!notificationUrl) return;
+      try {
+        const sep = notificationUrl.includes('?') ? '&' : '?';
+        const res = await fetch(`${notificationUrl}${sep}after_id=${lastId}&limit=50`, {headers:{'Accept':'application/json'}});
+        if (!res.ok) return;
+        const data = await res.json();
+        if (countNode) {
+          const unread = Number(data.unread || 0);
+          countNode.textContent = String(unread > 99 ? '99+' : unread);
+          countNode.hidden = unread <= 0;
+          notificationBell.classList.toggle('has-unread', unread > 0);
+        }
+        const items = data.items || [];
+        if (initialized || lastId > 0) items.forEach(showSignalToast);
+        lastId = Math.max(lastId, Number(data.latest_id || 0));
+        try { sessionStorage.setItem(lastKey, String(lastId)); } catch (_) {}
+        initialized = true;
+      } catch (_) {}
+    };
+    refreshNotifications();
+    setInterval(refreshNotifications, 4000);
+  }
+
   const jobsRoot = document.querySelector('[data-jobs]');
   if (jobsRoot) {
     const jobsUrl = jobsRoot.dataset.jobsUrl;
@@ -75,6 +122,13 @@
         document.querySelectorAll('[data-stat-key]').forEach(node => {
           const key = node.dataset.statKey;
           if (Object.prototype.hasOwnProperty.call(data, key)) node.textContent = String(data[key]);
+        });
+        document.querySelectorAll('[data-progress-key]').forEach(node => {
+          const key = node.dataset.progressKey;
+          if (Object.prototype.hasOwnProperty.call(data, key)) {
+            const pct = Math.max(0, Math.min(100, Number(data[key]) || 0));
+            node.style.width = `${pct}%`;
+          }
         });
       } catch (_) {}
     };

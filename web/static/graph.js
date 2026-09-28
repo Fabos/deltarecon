@@ -8,6 +8,7 @@
   const typeWrap = root.querySelector('[data-graph-types]');
   const empty = root.querySelector('[data-graph-empty]');
   const statusEl = root.querySelector('[data-graph-layout-status]');
+  const scopeStatusEl = root.querySelector('[data-graph-scope-status]');
   const api = root.dataset.api;
   const base = root.dataset.base;
   const targetKey = root.dataset.target || 'target';
@@ -50,7 +51,8 @@
   const edgesOf = id => graph.edges.filter(e => e.source === id || e.target === id);
   const opposite = (e,id) => e.source === id ? e.target : e.source;
 
-  function layoutStorageKey(){ return `negro.graph.layout.v2:${targetKey}:${preset}`; }
+  function scopeKey(){ const m=graph.meta||{}; return `${m.scope||'overview'}:${m.host_id||0}:${m.resource_id||0}`; }
+  function layoutStorageKey(){ return `negro.graph.layout.v3:${targetKey}:${scopeKey()}:${preset}`; }
   function readSavedLayout(){
     try { return JSON.parse(localStorage.getItem(layoutStorageKey()) || '{}') || {}; }
     catch (_) { return {}; }
@@ -71,18 +73,24 @@
   }
   function setLayoutStatus(text){ if (statusEl) statusEl.textContent = text; }
 
-  function load(){
-    return fetch(api, {headers:{'Accept':'application/json'}})
+  function load(url=null){
+    const endpoint=url || `${api}?scope=overview`;
+    detail.innerHTML = `<div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Cargando mapa…</h3><p>Negro está trayendo sólo la capa necesaria.</p></div>`;
+    return fetch(endpoint, {headers:{'Accept':'application/json'}})
       .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
-        graph = data;
-        buildScene();
-        buildTypeFilters();
-        applyFilters({fitAfter:true});
+        graph = data; selected=null; expandedClusters.clear();
+        if(scopeStatusEl){ const m=graph.meta||{}; scopeStatusEl.textContent=m.scope_label || 'Vista general'; }
+        buildScene(); buildTypeFilters(); applyFilters({fitAfter:true});
+        detail.innerHTML=emptyDetail();
       })
-      .catch(err => {
-        detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`;
-      });
+      .catch(err => { detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`; });
+  }
+
+  function navigateScope(n){
+    if(!n || n.virtual) return;
+    if(n.type==='host' && n.meta?.id){ load(`${api}?scope=host&host_id=${encodeURIComponent(n.meta.id)}`); return; }
+    if(n.type==='resource' && n.meta?.id){ load(`${api}?scope=resource&resource_id=${encodeURIComponent(n.meta.id)}`); return; }
   }
 
   function cloneNode(n){ return {...n, meta:{...(n.meta||{})}, x:0, y:0, manual:false}; }
@@ -145,7 +153,7 @@
     };
 
     if (preset === 'surface' || preset === 'resources') {
-      graph.nodes.filter(n => ['target','host','resource','operation'].includes(n.type)).forEach(addNode);
+      graph.nodes.filter(n => ['target','host','resource','operation','cluster'].includes(n.type)).forEach(addNode);
       graph.edges.filter(e => include.has(e.source) && include.has(e.target) && ['contains','supports'].includes(e.relation)).forEach(addEdge);
 
       // JavaScript matters, but it should not flood the initial map. Group it per host.
@@ -352,7 +360,7 @@
       ng.addEventListener('pointerdown',ev=>startNodeDrag(ev,n));
       ng.addEventListener('click',ev=>{ev.stopPropagation();if(suppressClick){suppressClick=false;return;}selected=n.id;showNode(n);render();});
       ng.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();selected=n.id;showNode(n);render();}});
-      ng.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='cluster')toggleCluster(n);else focusNeighborhood(n.id,1);});
+      ng.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='cluster'){if(Array.isArray(n.childIds))toggleCluster(n);else if(n.href)window.location.assign(`${base}/${n.href}`);}else if(['host','resource'].includes(n.type))navigateScope(n);else focusNeighborhood(n.id,1);});
       g.appendChild(ng);
     });
 
@@ -392,11 +400,13 @@
     const trackedTests=Object.values(testSummary).reduce((a,b)=>a+Number(b||0),0);
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
-    const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`: 'Agrupado para mantener el mapa legible.'}</p><button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button></div>`:'';
+    const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
     const statusHtml=(meta.coverage||meta.signal)
       ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Cobertura · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Señal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} hallazgo${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
       : `<span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span>`;
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions"><button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    const exploreAction=['host','resource'].includes(n.type)?`<button type="button" class="button" data-explore-scope>Explorar ${n.type==='host'?'host':'recurso'} en mapa →</button>`:'';
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
     detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));
@@ -411,7 +421,7 @@
   }
 
   function toggleCluster(n){
-    if(!n || n.type!=='cluster')return;
+    if(!n || n.type!=='cluster' || !Array.isArray(n.childIds))return;
     expandedClusters.has(n.id)?expandedClusters.delete(n.id):expandedClusters.add(n.id);
     const keepSelected=n.id;buildScene();buildTypeFilters();applyFilters();selected=keepSelected;const x=sceneNodes.find(a=>a.id===keepSelected);if(x)showNode(x);fit();
   }
@@ -463,6 +473,7 @@
 
   search.addEventListener('input',()=>applyFilters());
   root.querySelectorAll('[data-graph-preset]').forEach(b=>b.addEventListener('click',()=>setPreset(b.dataset.graphPreset,b)));
+  root.querySelector('[data-graph-overview]')?.addEventListener('click',()=>load(`${api}?scope=overview`));
   root.querySelector('[data-graph-fit]')?.addEventListener('click',fit);
   root.querySelector('[data-graph-reset-layout]')?.addEventListener('click',()=>{clearSavedLayout();autoLayout();applyFilters({fitAfter:true});});
   root.querySelector('[data-graph-neighborhood]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,1));
@@ -539,7 +550,8 @@
     return `<article class="graph-ai-card priority-view-${esc(priority)}" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><div class="badges"><span class="badge hypothesis-priority priority-${esc(priority)}">${priorityLabel}</span><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span>${reasons}</div><span class="state-chip">${esc(statusUi)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${steps?`<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol class="ai-steps">${steps}</ol></div>`:''}${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué merece tiempo:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo ofensivo:</b> ${esc(h.suggested_investigation||'')}</p>${refs?`<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">${refs}</div></div>`:''}<p><b>Se vuelve interesante si:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p><div class="graph-ai-card-actions">${resourceId?`<a class="btn-secondary" href="${base}/resource/${resourceId}#http">Abrir evidencia HTTP</a>`:''}${resourceId&&method?`<button type="button" class="btn-secondary" data-send-repeater data-resource="${resourceId}" data-method="${esc(method)}">Enviar a Repeater →</button>`:''}<button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Empezar prueba</button><button type="button" class="btn-secondary" data-idea-status="negative">Negativa</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesante</button><button type="button" class="btn-secondary" data-idea-status="postponed">Para después</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmada</button><a class="btn-secondary" href="${base}/hypotheses">Abrir hipótesis</a></div></article>`;
   }
   async function refreshGraphData(){
-    const r=await fetch(api,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
+    const m=graph.meta||{};let u=`${api}?scope=${encodeURIComponent(m.scope||'overview')}`;if(m.host_id)u+=`&host_id=${encodeURIComponent(m.host_id)}`;if(m.resource_id)u+=`&resource_id=${encodeURIComponent(m.resource_id)}`;
+    const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();buildScene();buildTypeFilters();applyFilters({fitAfter:false});
   }
   function bindIdeaCards(){
     aiResults?.querySelectorAll('[data-idea]').forEach(card=>{
@@ -594,5 +606,5 @@
   });
 
   const initialFocus=new URLSearchParams(window.location.search).get('focus');
-  load().then(()=>{if(initialFocus){const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}}});
+  load(initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:null).then(()=>{if(initialFocus){const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}}});
 })();

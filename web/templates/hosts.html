@@ -12,11 +12,12 @@
 
 <form class="filters panel inventory-filters" method="get">
   <label class="filter-search">Buscar en inventario<input name="q" value="{{ q }}" placeholder="auth, /api/orders, featureFlag…" autofocus></label>
-  <label>Revisión<select name="review"><option value="">Todas</option>{% for x in review_states %}<option value="{{ x }}" {% if review==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <label>Revisión del host<select name="review"><option value="">Todas</option>{% for x in review_states %}<option value="{{ x }}" {% if review==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+  <label>Recursos<select name="resource_review"><option value="">Todos</option>{% for x in review_states %}<option value="{{ x }}" {% if resource_review==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
   <label>Señal<select name="classification"><option value="">Todas</option>{% for x in classifications %}<option value="{{ x }}" {% if classification==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
   <label>Prioridad<select name="priority"><option value="">Todas</option>{% for x in priorities %}<option value="{{ x }}" {% if priority==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
   <button class="button" type="submit">Buscar</button>
-  {% if q or review or classification or priority %}<a class="button ghost" href="{{ target_base }}/hosts">Limpiar</a>{% endif %}
+  {% if q or review or resource_review or classification or priority %}<a class="button ghost" href="{{ target_base }}/hosts">Limpiar</a>{% endif %}
 </form>
 
 <section class="inventory-list">

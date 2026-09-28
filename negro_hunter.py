@@ -7,6 +7,7 @@ form submission, resource claiming, and mass brute force defaults.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -25,7 +26,7 @@ from typing import Any, Iterable
 
 import negro_intel as intel
 
-GRAPH_AI_PROMPT_VERSION = "0.15.0-evidence-first-v1"
+GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1"
 
 try:
     import requests
@@ -104,11 +105,44 @@ REDIRECT_PARAMS = {
     "next", "continue", "callback", "url", "dest", "destination", "goto", "target",
     "returnto", "return_to", "checkout_url", "domain_name",
 }
-URLISH_PARAMS = {"url", "uri", "target", "endpoint", "webhook", "feed", "proxy", "fetch", "import", "image", "file", "src", "source"}
+# Generic names such as url/target are ambiguous: in passive Burp traffic we only
+# call them redirect clues when the route/response is navigation-like. Otherwise
+# they remain eligible as URL-fetch/SSRF clues.
+STRONG_REDIRECT_PARAMS = {
+    "redirect", "redirect_url", "redirect_uri", "return", "returnurl", "return_url",
+    "next", "continue", "goto", "returnto", "return_to", "checkout_url",
+}
+AMBIGUOUS_REDIRECT_PARAMS = REDIRECT_PARAMS - STRONG_REDIRECT_PARAMS
+URLISH_PARAMS = {"url", "uri", "target", "destination", "dest", "endpoint", "webhook", "feed", "proxy", "fetch", "import", "image", "file", "src", "source"}
 OBJECT_NOUNS = {"order", "orders", "user", "users", "account", "accounts", "document", "documents", "invoice", "invoices", "customer", "customers", "profile", "profiles"}
 DOM_SOURCES = ["location.search", "location.hash", "document.url", "document.documenturi", "window.name", "postmessage", "event.data"]
 DOM_SINKS = ["innerhtml", "outerhtml", "insertadjacenthtml", "document.write", "eval(", "settimeout(", "setinterval("]
 NAV_SINKS = ["window.location", "location.href", "location.assign", "location.replace", "document.location"]
+
+# High-signal client/server clues observed passively in Burp traffic.  Values are
+# always masked before they are persisted as notifications/leads.  A match is a
+# clue for manual validation, never an automatic vulnerability verdict.
+SECRET_PATTERNS: list[tuple[str, str, re.Pattern[str], str]] = [
+    ("google_api_key", "Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "medium"),
+    ("aws_access_key", "AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "high"),
+    ("github_token", "GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,255}|github_pat_[A-Za-z0-9_]{50,255})\b"), "high"),
+    ("stripe_live_secret", "Stripe live secret", re.compile(r"\b(?:sk|rk)_live_[0-9A-Za-z]{16,}\b"), "high"),
+    ("slack_token", "Slack token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{20,}\b"), "high"),
+    ("google_oauth_secret", "Google OAuth client secret", re.compile(r"\bGOCSPX-[0-9A-Za-z_-]{20,}\b"), "high"),
+    ("sendgrid_key", "SendGrid API key", re.compile(r"\bSG\.[0-9A-Za-z_-]{12,}\.[0-9A-Za-z_-]{24,}\b"), "high"),
+    ("twilio_api_key", "Twilio API key", re.compile(r"\bSK[0-9a-fA-F]{32}\b"), "high"),
+    ("mailgun_key", "Mailgun API key", re.compile(r"\bkey-[0-9a-fA-F]{32}\b"), "high"),
+    ("private_key", "Private key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"), "high"),
+]
+
+SENSITIVE_RESPONSE_KEYS = {
+    "password", "passwd", "pwd", "pass", "client_secret", "private_key",
+    "api_key", "apikey", "api-key", "secret", "access_key", "secret_key",
+    "refresh_token", "access_token", "auth_token", "session_token", "token",
+    "session", "session_id", "sessionid", "authorization",
+}
+IDENTITY_KEYS = {"user", "username", "email", "login", "account", "userid", "user_id"}
+QUERY_SECRET_KEYS = {"password", "passwd", "pwd", "token", "access_token", "refresh_token", "api_key", "apikey", "secret"}
 
 TAKEOVER_PROVIDERS = [
     ("github", ("github.io",), ("there isn't a github pages site here", "for root urls")),
@@ -1048,9 +1082,455 @@ def _iter_js_analysis(conn) -> Iterable[tuple[Any, dict[str, Any], dict[str, Any
         yield r, local, sm if isinstance(sm, dict) else None
 
 
+
+def _safe_b64_text(value: str | None, limit: int = 1_500_000) -> str:
+    if not value:
+        return ""
+    try:
+        raw = base64.b64decode(value, validate=False)[:limit]
+    except Exception:
+        return ""
+    return raw.decode("utf-8", errors="replace")
+
+
+def _split_http_message(text: str) -> tuple[str, str]:
+    if "\r\n\r\n" in text:
+        return text.split("\r\n\r\n", 1)
+    if "\n\n" in text:
+        return text.split("\n\n", 1)
+    return text, ""
+
+
+def _header_map(raw: str | None) -> dict[str, str]:
+    try:
+        rows = json.loads(raw or "[]")
+    except Exception:
+        rows = []
+    out: dict[str, str] = {}
+    if isinstance(rows, dict):
+        rows = [{"name": k, "value": v} for k, v in rows.items()]
+    for item in rows if isinstance(rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("key") or "").strip().lower()
+        value = str(item.get("value") or "").strip()
+        if name:
+            out[name] = value
+    return out
+
+
+def _mask_value(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return "(vacío)"
+    if len(text) <= 8:
+        return "•" * min(len(text), 8)
+    return f"{text[:4]}…{text[-4:]} (len={len(text)})"
+
+
+def _secret_fingerprint(value: Any) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _json_fields(value: Any, prefix: str = "$") -> list[tuple[str, str, Any]]:
+    out: list[tuple[str, str, Any]] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            path = f"{prefix}.{k}"
+            out.append((str(k), path, v))
+            out.extend(_json_fields(v, path))
+    elif isinstance(value, list):
+        for idx, v in enumerate(value[:250]):
+            out.extend(_json_fields(v, f"{prefix}[{idx}]"))
+    return out
+
+
+def _request_parameters(req_head: str, req_body: str, request_ct: str, query_json: str | None) -> list[dict[str, str]]:
+    """Extract observed parameter names/values without mutating traffic."""
+    found: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(name: Any, value: Any, where: str) -> None:
+        n = str(name or "").strip()
+        if not n:
+            return
+        v = str(value if value is not None else "")
+        key = (n.lower(), v[:1000], where)
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"name": n, "value": v[:4000], "location": where})
+
+    # Request line query is authoritative even when the bridge query metadata is absent.
+    first = req_head.splitlines()[0] if req_head else ""
+    parts = first.split()
+    if len(parts) >= 2:
+        try:
+            q = urllib.parse.urlsplit(parts[1]).query
+            for k, vals in urllib.parse.parse_qs(q, keep_blank_values=True).items():
+                for v in vals:
+                    add(k, v, "query")
+        except Exception:
+            pass
+    try:
+        qmeta = json.loads(query_json or "null")
+    except Exception:
+        qmeta = None
+    if isinstance(qmeta, dict):
+        for k, v in qmeta.items():
+            if isinstance(v, list):
+                for item in v:
+                    add(k, item, "query")
+            else:
+                add(k, v, "query")
+    elif isinstance(qmeta, str):
+        for k, vals in urllib.parse.parse_qs(qmeta, keep_blank_values=True).items():
+            for v in vals:
+                add(k, v, "query")
+
+    ct = (request_ct or "").lower()
+    body = req_body[:1_000_000]
+    if body:
+        if "application/json" in ct or body.lstrip().startswith(("{", "[")):
+            try:
+                obj = json.loads(body)
+                for k, path, v in _json_fields(obj):
+                    if not isinstance(v, (dict, list)):
+                        add(k, v, f"json:{path}")
+            except Exception:
+                pass
+        if "application/x-www-form-urlencoded" in ct:
+            try:
+                for k, vals in urllib.parse.parse_qs(body, keep_blank_values=True).items():
+                    for v in vals:
+                        add(k, v, "form")
+            except Exception:
+                pass
+        if "multipart/form-data" in ct:
+            for m in re.finditer(r'name="([^"]+)"\r?\n(?:[^\r\n]*\r?\n)*\r?\n([^\r\n]{0,2000})', body, re.I):
+                add(m.group(1), m.group(2), "multipart")
+    return found
+
+
+def _upsert_notification(conn, *, dedupe_key: str, kind: str, severity: str, title: str, message: str,
+                         source: str, entity_type: str | None = None, entity_id: int | None = None,
+                         resource_id: int | None = None, operation_id: int | None = None,
+                         exchange_id: int | None = None, data: dict[str, Any] | None = None,
+                         emit: bool = True) -> tuple[int | None, bool]:
+    if not emit:
+        return None, False
+    now = now_iso()
+    row = conn.execute("SELECT id FROM notifications WHERE dedupe_key=?", (dedupe_key,)).fetchone()
+    payload = json.dumps(data or {}, ensure_ascii=False)
+    if row:
+        nid = int(row["id"])
+        conn.execute(
+            """UPDATE notifications SET severity=?,title=?,message=?,source=?,entity_type=?,entity_id=?,resource_id=?,operation_id=?,exchange_id=?,data_json=?,occurrences=occurrences+1,last_seen_at=? WHERE id=?""",
+            (severity, title, message, source, entity_type, entity_id, resource_id, operation_id, exchange_id, payload, now, nid),
+        )
+        return nid, False
+    cur = conn.execute(
+        """INSERT INTO notifications(dedupe_key,kind,severity,title,message,source,entity_type,entity_id,resource_id,operation_id,exchange_id,data_json,occurrences,first_seen_at,last_seen_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+        (dedupe_key, kind, severity, title, message, source, entity_type, entity_id, resource_id, operation_id, exchange_id, payload, now, now),
+    )
+    return int(cur.lastrowid), True
+
+
+def _notification_href(resource_id: int | None = None, exchange_id: int | None = None) -> str | None:
+    if not resource_id:
+        return None
+    suffix = f"#exchange-{exchange_id}" if exchange_id else ""
+    return f"resource/{resource_id}{suffix}"
+
+
+def _safe_url_evidence(value: str) -> str:
+    """Keep redirect destination/provenance useful without persisting secret query values."""
+    raw = str(value or "")[:4000]
+    if not raw:
+        return ""
+    try:
+        p = urllib.parse.urlsplit(raw)
+        if not p.scheme and not p.netloc:
+            return raw[:500]
+        pairs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+        safe_pairs = []
+        for k, v in pairs[:40]:
+            if k.lower() in QUERY_SECRET_KEYS or any(x in k.lower() for x in ("secret", "token", "password", "passwd", "pwd", "key", "code")):
+                safe_pairs.append((k, "[masked]"))
+            else:
+                safe_pairs.append((k, v[:120]))
+        q = urllib.parse.urlencode(safe_pairs, doseq=True)
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, q, ""))[:500]
+    except Exception:
+        return raw[:500]
+
+
+def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notifications: bool = True) -> dict[str, Any]:
+    """Correlate one captured HTTP exchange into high-signal, low-cost clues.
+
+    This routine is intentionally passive: it never sends a request.  It only reads
+    the request/response Burp already captured, masks sensitive values, persists
+    provenance, and creates leads/notifications that still require manual validation.
+    """
+    init_schema(conn)
+    row = conn.execute(
+        """SELECT e.*,o.method,o.resource_id,o.authenticated_observed,o.request_content_type,o.response_content_type,
+                  r.url,r.path,r.host_id,h.hostname
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
+        (exchange_id,),
+    ).fetchone()
+    if not row:
+        return {"exchange_id": exchange_id, "signals": [], "new_notifications": []}
+
+    req_text = _safe_b64_text(row["request_b64"])
+    resp_text = _safe_b64_text(row["response_b64"])
+    req_head, req_body = _split_http_message(req_text)
+    resp_head, resp_body = _split_http_message(resp_text)
+    req_headers = _header_map(row["request_headers_json"])
+    resp_headers = _header_map(row["response_headers_json"])
+    request_ct = str(row["request_content_type"] or req_headers.get("content-type") or "")
+    response_ct = str(row["response_content_type"] or resp_headers.get("content-type") or "")
+    params = _request_parameters(req_head, req_body, request_ct, row["query_json"])
+    pmap: dict[str, list[dict[str, str]]] = {}
+    for p in params:
+        pmap.setdefault(p["name"].lower(), []).append(p)
+
+    signals: list[dict[str, Any]] = []
+    new_notifications: list[int] = []
+    rid, oid, hid = int(row["resource_id"]), int(row["operation_id"]), int(row["host_id"])
+    method, path, url = str(row["method"]), str(row["path"]), str(row["url"])
+
+    def notify(*, kind: str, key: str, severity: str, title: str, message: str, data: dict[str, Any]) -> None:
+        nid, created = _upsert_notification(
+            conn, dedupe_key=key, kind=kind, severity=severity, title=title, message=message,
+            source=str(row["source"] or "burp"), entity_type="resource", entity_id=rid,
+            resource_id=rid, operation_id=oid, exchange_id=exchange_id, data={**data, "href": _notification_href(rid, exchange_id)}, emit=emit_notifications,
+        )
+        signals.append({"kind": kind, "severity": severity, "title": title, **data})
+        if created and nid:
+            new_notifications.append(nid)
+
+    # 1) Redirect parameters observed in query/form/JSON from Burp.
+    all_redirect_names = set(pmap) & REDIRECT_PARAMS
+    navigation_route = any(tok in path.lower() for tok in ("login", "signin", "sign-in", "logout", "auth", "oauth", "sso", "callback", "redirect", "continue", "checkout"))
+    has_location_header = bool(resp_headers.get("location", ""))
+    redirect_hits = sorted(
+        name for name in all_redirect_names
+        if name in STRONG_REDIRECT_PARAMS or navigation_route or has_location_header
+    )
+    for name in redirect_hits:
+        examples = pmap[name]
+        locs = sorted({x["location"] for x in examples})
+        value = next((x["value"] for x in examples if x["value"]), "")
+        value_host = ""
+        try:
+            if value.startswith(("http://", "https://", "//")):
+                value_host = urllib.parse.urlsplit(value if not value.startswith("//") else "https:" + value).hostname or ""
+        except Exception:
+            pass
+        response_location = resp_headers.get("location", "")
+        external_location = False
+        response_host = ""
+        try:
+            lp = urllib.parse.urlsplit(response_location)
+            response_host = (lp.hostname or "").lower()
+            external_location = bool(response_host and response_host != str(row["hostname"]).lower())
+        except Exception:
+            pass
+        strong = bool(external_location and (not value_host or response_host == value_host.lower()))
+        priority = "high" if strong else "medium"
+        confidence = "high" if strong else "medium"
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"locations":locs,
+              "value_example":_mask_value(value) if value else "(vacío)","response_location":_safe_url_evidence(response_location) if response_location else None}
+        upsert_lead(
+            conn, lead_key=f"open_redirect_burp:{oid}:{name}", host_id=hid, resource_id=rid,
+            lead_type="open_redirect", title=f"Posible Open Redirect · {name}", confidence=confidence, review_priority=priority,
+            evidence=[ev],
+            why=f"Burp observó el parámetro '{name}' en {', '.join(locs)} de {method} {path}. Ese valor podría controlar el destino de navegación.",
+            next_test=f"Abre el exchange #{exchange_id} en Repeater y cambia sólo '{name}' por una URL HTTPS controlada. Observa Location o navegación final y conserva el resto idéntico.",
+            confirm_if="La aplicación termina redirigiendo/navegando a un dominio externo controlado sin una allowlist efectiva.",
+            discard_if="El valor se limita a rutas internas, se ignora, se normaliza o existe una allowlist estricta.",
+        )
+        notify(kind="open_redirect", key=f"open_redirect:{oid}:{name}", severity="high" if strong else "medium",
+               title=f"Posible Open Redirect · {name}",
+               message=f"{method} {path} · detectado en {', '.join(locs)} · exchange #{exchange_id}", data=ev)
+
+    # 2) URL-fetch / SSRF surfaces from actual parameters. Avoid duplicate redirect-only clues.
+    for name in sorted((set(pmap) & URLISH_PARAMS) - set(redirect_hits)):
+        candidates = [x for x in pmap[name] if str(x["value"]).lower().startswith(("http://", "https://", "//"))]
+        if not candidates:
+            continue
+        sample = candidates[0]
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":sample["location"],"value_example":_mask_value(sample["value"])}
+        upsert_lead(conn, lead_key=f"ssrf_burp:{oid}:{name}", host_id=hid, resource_id=rid,
+            lead_type="ssrf_surface", title=f"URL controlable observada · {name}", confidence="medium", review_priority="medium",
+            evidence=[ev], why=f"Burp vio una URL completa controlada por el parámetro '{name}'. Falta determinar si la consume el servidor o sólo el cliente.",
+            next_test=f"Revisa el flujo de {method} {path}. Si existe evidencia de fetch server-side y el scope lo permite, usa únicamente un endpoint propio como marcador benigno.",
+            confirm_if="El servidor realiza una solicitud saliente hacia una URL controlada por el usuario.",
+            discard_if="El valor sólo se usa client-side, se valida por allowlist o no provoca tráfico saliente.")
+        notify(kind="url_fetch", key=f"url_fetch:{oid}:{name}", severity="medium", title=f"URL controlable en {method} {path}",
+               message=f"Parámetro '{name}' observado en {sample['location']} · revisa si existe consumo server-side.", data=ev)
+
+    # 3) Secrets/config signatures in captured request/response. Never persist the raw secret.
+    text_surfaces = [("response", resp_body), ("request", req_body)]
+    for surface, text in text_surfaces:
+        if not text:
+            continue
+        for stype, label, regex, severity in SECRET_PATTERNS:
+            for match in list(regex.finditer(text[:1_500_000]))[:8]:
+                value = match.group(0)
+                fp = _secret_fingerprint(value)
+                ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"surface":surface,
+                      "secret_type":stype,"masked_value":_mask_value(value),"fingerprint":fp}
+                upsert_lead(conn, lead_key=f"burp_secret:{stype}:{fp}", host_id=hid, resource_id=rid,
+                    lead_type="secret_or_client_config", title=f"{label} observada en tráfico HTTP", confidence="high", review_priority=severity,
+                    evidence=[ev], why=f"Burp observó una señal de {label} en el {surface} de {method} {path}. Algunas claves de cliente (por ejemplo Google API keys) pueden ser públicas por diseño; hay que validar restricciones e impacto.",
+                    next_test="Valida el tipo de credencial/configuración de forma mínima, revisa restricciones de origen/API/rol y no ejecutes acciones destructivas.",
+                    confirm_if="La credencial/configuración es activa y permite un uso no autorizado o expone capacidad no prevista.",
+                    discard_if="Es configuración pública esperada, está correctamente restringida, es un fixture o no tiene impacto demostrable.")
+                surface_label = "respuesta" if surface == "response" else "solicitud"
+                notify(kind="secret_candidate", key=f"secret:{stype}:{fp}:host:{hid}", severity=severity,
+                       title=f"{label} detectada en {surface_label}", message=f"{method} {path} · exchange #{exchange_id} · valor enmascarado {_mask_value(value)}", data=ev)
+
+    # 4) Structured credential-like fields returned by APIs.
+    response_obj: Any = None
+    body_trim = resp_body.lstrip()
+    if (body_trim.startswith(("{", "[")) or "json" in response_ct.lower()) and len(resp_body) <= 2_000_000:
+        try:
+            response_obj = json.loads(resp_body)
+        except Exception:
+            response_obj = None
+    fields = _json_fields(response_obj) if response_obj is not None else []
+    identity_present = any(k.lower() in IDENTITY_KEYS and not isinstance(v, (dict, list)) and str(v or "").strip() for k, _, v in fields)
+    for key, jpath, value in fields:
+        kl = key.lower().replace("-", "_")
+        normalized = kl.replace("_", "")
+        if kl not in SENSITIVE_RESPONSE_KEYS and normalized not in {x.replace("_", "").replace("-", "") for x in SENSITIVE_RESPONSE_KEYS}:
+            continue
+        # Session/token arrays paired with an identity are worth a clue, but never
+        # persist the raw entries. Containers unrelated to sensitive keys are skipped.
+        if isinstance(value, list):
+            if kl in {"sessions", "session", "tokens"} and identity_present and value:
+                fp = _secret_fingerprint(json.dumps(value, sort_keys=True, default=str))
+                ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
+                      "masked_value":f"[{len(value)} valores enmascarados]","fingerprint":fp,"identity_context":True}
+                upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
+                    lead_type="sensitive_response", title=f"Sesiones/tokens devueltos junto a identidad · {key}", confidence="high", review_priority="medium",
+                    evidence=[ev], why=f"La respuesta de {method} {path} entrega '{key}' junto a datos de identidad. Negro no guardó los valores.",
+                    next_test="Confirma si esos valores son reutilizables o si exponerlos al cliente amplía acceso. Trabaja sólo con tu propia cuenta/datos autorizados.",
+                    confirm_if="Los valores permiten reutilizar una sesión/token o acceder a contexto que el cliente no debería recibir.",
+                    discard_if="Son identificadores no sensibles, están rotados/ligados correctamente o su entrega al cliente es necesaria sin impacto adicional.")
+                notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity="medium",
+                       title=f"Sesiones/tokens devueltos · {key}", message=f"{method} {path} · {jpath} · exchange #{exchange_id}", data=ev)
+            continue
+        if isinstance(value, dict) or not str(value or "").strip():
+            continue
+        value_s = str(value)
+        if value_s.lower() in {"null", "none", "false", "true", "***", "*****", "redacted", "masked"}:
+            continue
+        if len(value_s) < 4:
+            continue
+        high_keys = {"password","passwd","pwd","pass","client_secret","private_key","secret_key"}
+        severity = "high" if kl in high_keys else "medium" if kl in {"api_key","apikey","api-key","secret","access_key"} else "info"
+        if identity_present and kl in high_keys:
+            severity = "high"
+        elif identity_present and kl in {"token","auth_token","session_token","session","session_id","sessionid","authorization"}:
+            severity = "medium"
+        fp = _secret_fingerprint(value_s)
+        ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
+              "masked_value":_mask_value(value_s),"fingerprint":fp,"identity_context":identity_present}
+        # access/refresh tokens are normal on token endpoints; retain as low-noise intel, no hypothesis unless unusual.
+        auth_path = any(x in path.lower() for x in ("oauth", "token", "login", "auth", "session"))
+        if kl in {"access_token","refresh_token"} and auth_path:
+            if severity == "info":
+                continue
+        title = "Posibles credenciales devueltas por la API" if identity_present and kl in high_keys else f"Campo sensible devuelto · {key}"
+        upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
+            lead_type="sensitive_response", title=title, confidence="high", review_priority=severity if severity in {"high","medium"} else "low",
+            evidence=[ev], why=f"La respuesta de {method} {path} contiene el campo '{key}' con un valor no vacío. Negro guardó sólo una versión enmascarada.",
+            next_test="Confirma si el valor pertenece al usuario actual, si era necesario devolverlo al cliente y si puede reutilizarse fuera de este flujo. Usa únicamente cuentas/datos autorizados.",
+            confirm_if="La API devuelve una credencial/secreto reutilizable que el cliente no debería recibir o que permite acceso/capacidad adicional.",
+            discard_if="El valor es público por diseño, está enmascarado/no reutilizable o su exposición es necesaria y no agrega capacidad.")
+        notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity=severity,
+               title=title, message=f"{method} {path} · {jpath} · exchange #{exchange_id}", data=ev)
+
+    # Passwords/tokens in URL query are a distinct high-value leak clue.
+    for name in sorted(set(pmap) & QUERY_SECRET_KEYS):
+        for item in pmap[name]:
+            if item["location"] != "query" or not item["value"]:
+                continue
+            fp = _secret_fingerprint(item["value"])
+            ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":"query","masked_value":_mask_value(item["value"]),"fingerprint":fp}
+            notify(kind="secret_in_url", key=f"secret_url:{oid}:{name}:{fp}", severity="high",
+                   title=f"Dato sensible en la URL · {name}", message=f"{method} {path} incluye '{name}' en query; puede terminar en logs, historial o Referer.", data=ev)
+            upsert_lead(conn, lead_key=f"secret_url:{oid}:{name}:{fp}", host_id=hid, resource_id=rid,
+                lead_type="sensitive_url", title=f"Dato sensible en query · {name}", confidence="high", review_priority="high", evidence=[ev],
+                why="Credenciales/tokens en la URL pueden quedar expuestos en logs, historial, proxies y encabezados Referer.",
+                next_test="Confirma el flujo y si el valor aparece en URLs/logs o se propaga a terceros. No reutilices credenciales ajenas.",
+                confirm_if="El secreto real queda expuesto a componentes/personas que no deberían recibirlo.",
+                discard_if="El parámetro no contiene un secreto real o el valor es un identificador público/no sensible.")
+            break
+
+    # 5) Passive CORS evidence already present in the captured exchange.
+    origin = req_headers.get("origin", "")
+    acao = resp_headers.get("access-control-allow-origin", "")
+    acac = resp_headers.get("access-control-allow-credentials", "").lower() == "true"
+    if origin and acao and acao == origin:
+        try:
+            origin_host = urllib.parse.urlsplit(origin).hostname or ""
+        except Exception:
+            origin_host = ""
+        cross_origin = bool(origin_host and origin_host.lower() != str(row["hostname"]).lower())
+        if cross_origin:
+            ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"origin":origin,"allow_origin":acao,"allow_credentials":acac}
+            pri = "high" if acac and bool(row["authenticated_observed"]) else "medium"
+            upsert_lead(conn, lead_key=f"cors_burp:{rid}:{origin}", host_id=hid, resource_id=rid,
+                lead_type="cors", title="CORS cross-origin observado en tráfico real", confidence="high", review_priority=pri,
+                evidence=[ev], why="Burp observó que el servidor reflejó exactamente un Origin de otro host. Con credenciales/datos sensibles puede ser relevante.",
+                next_test="Repite con un Origin HTTPS controlado y verifica si el navegador puede leer una respuesta autenticada sensible.",
+                confirm_if="Un origen externo arbitrario puede leer una respuesta autenticada sensible.",
+                discard_if="El Origin está allowlisted de forma esperada, no hay credenciales/datos sensibles o un origen arbitrario es rechazado.")
+            notify(kind="cors", key=f"cors_passive:{rid}:{origin}", severity=pri,
+                   title="CORS cross-origin observado", message=f"{method} {path} reflejó Origin {origin} · credentials={str(acac).lower()}", data=ev)
+
+    # 6) High-signal exposed surfaces and verbose errors in actual responses.
+    low_path = path.lower()
+    status = int(row["status_code"] or 0)
+    if status and status < 400 and any(x in low_path for x in ("/swagger", "/openapi", "/v3/api-docs", "/api-docs")):
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status}
+        notify(kind="api_docs", key=f"api_docs:{rid}", severity="medium", title="Documentación API observada", message=f"{method} {path} respondió HTTP {status}.", data=ev)
+    if status and status < 400 and low_path.endswith(".map"):
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status}
+        upsert_lead(conn, lead_key=f"sourcemap_burp:{rid}", host_id=hid, resource_id=rid, lead_type="source_map", title="Source map observado desde Burp", confidence="high", review_priority="medium", evidence=[ev],
+            why="Un source map público puede revelar código original, rutas y configuración.", next_test="Ábrelo y analiza fuentes/configuración sin asumir que la exposición sola sea una vulnerabilidad.", confirm_if="El mapa revela secretos, rutas sensibles o una cadena de impacto adicional.", discard_if="Sólo contiene código público esperado sin información sensible ni impacto.")
+        notify(kind="source_map", key=f"source_map:{rid}", severity="medium", title="Source map accesible", message=f"{method} {path} · HTTP {status}", data=ev)
+
+    error_patterns = [
+        ("stack_trace", r"(?:Traceback \(most recent call last\)|\bException in thread\b|\bat [a-zA-Z0-9_.$]+\([^\n]+:\d+\)|System\.[A-Za-z.]+Exception)"),
+        ("sql_error", r"(?:SQL syntax.*MySQL|ORA-\d{4,5}|PostgreSQL.*ERROR|SQLite(?:3)?::|Unclosed quotation mark after the character string)"),
+        ("internal_path", r"(?:/home/[A-Za-z0-9_.-]+/|/var/www/|[A-Za-z]:\\\\(?:Users|inetpub|wwwroot)\\)"),
+    ]
+    for etype, pattern in error_patterns:
+        if resp_body and re.search(pattern, resp_body[:700_000], re.I):
+            ev = {"source":"burp_response","exchange_id":exchange_id,"method":method,"url":url,"error_type":etype,"status":status}
+            notify(kind="error_disclosure", key=f"error_disclosure:{etype}:{rid}", severity="medium", title="Detalle interno en respuesta", message=f"{method} {path} muestra una señal de {etype.replace('_',' ')} · exchange #{exchange_id}", data=ev)
+
+    return {"exchange_id": exchange_id, "signals": signals, "new_notifications": new_notifications}
+
+
 def generate_leads(conn, domain: str) -> dict[str, Any]:
     init_schema(conn)
     generated_before = conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"]
+
+    # Backfill deterministic Burp clues for workspaces captured before v0.16.0.
+    # Notifications are disabled here to avoid flooding the user with historical toasts.
+    for _ex in conn.execute("SELECT id FROM http_exchanges ORDER BY id DESC LIMIT 5000").fetchall():
+        try:
+            analyze_http_exchange(conn, int(_ex["id"]), domain, emit_notifications=False)
+        except Exception:
+            pass
 
     js_by_host: dict[int, list[tuple[Any, dict[str, Any], dict[str, Any] | None]]] = {}
     for row, local, sm in _iter_js_analysis(conn):

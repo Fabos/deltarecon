@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.15.
+"""Local web workspace for Negro Recon v0.16.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -56,6 +56,8 @@ UI_LABELS = {
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP",
     "js_asset": "JavaScript", "observation": "Observación",
+    "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
+    "request": "Solicitud", "response": "Respuesta", "cluster": "Grupo", "target": "Objetivo",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
     "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Feature flags", "other": "Otro",
     "bola_surface": "Superficie BOLA/IDOR", "cloud_storage": "Almacenamiento cloud", "directory_listing": "Listado de directorio",
@@ -181,6 +183,19 @@ def _entity_signal(conn, entity_type: str, entity_id: int, classification: str |
     if classification == "lead":
         return "interesting", 0
     try:
+        # Persistent hypotheses/leads also lift the asset visually, unless the
+        # investigator already marked them negative/discarded.
+        if entity_type == "resource":
+            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE resource_id=? AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
+            if lead_count:
+                return "interesting", 0
+        elif entity_type == "host":
+            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE host_id=? AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
+            if lead_count:
+                return "interesting", 0
+    except Exception:
+        pass
+    try:
         rows = conn.execute(
             "SELECT source,kind,payload_json FROM observations WHERE entity_type=? AND entity_id=? ORDER BY id DESC LIMIT 50",
             (entity_type, entity_id),
@@ -266,41 +281,102 @@ def _safe_extract_zip(upload_path: Path, destination: Path) -> None:
         zf.extractall(destination)
 
 
+
+def _notification_rows(paths: dict[str, Path], limit: int = 100, unread_only: bool = False) -> tuple[list[dict[str, Any]], int]:
+    with _db(paths) as conn:
+        unread = int(conn.execute("SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL").fetchone()["c"] or 0)
+        sql = "SELECT * FROM notifications"
+        params: list[Any] = []
+        if unread_only:
+            sql += " WHERE read_at IS NULL"
+        sql += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, last_seen_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        rows = conn.execute(sql, params).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            item = dict(r)
+            try:
+                data = json.loads(item.get("data_json") or "{}")
+            except Exception:
+                data = {}
+            item["data"] = data if isinstance(data, dict) else {}
+            href = item["data"].get("href")
+            item["href"] = f"{href}" if isinstance(href, str) and href else None
+            out.append(item)
+    return out, unread
+
+
+def _graph_inventory_counts(paths: dict[str, Path]) -> dict[str, int]:
+    with _db(paths) as conn:
+        return {
+            "target": 1,
+            "host": int(conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"] or 0),
+            "resource": int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0),
+            "operation": int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"] or 0),
+            "request": int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0),
+            "observation": int(conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] or 0),
+            "lead": int(conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"] or 0),
+            "finding": int(conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] or 0),
+        }
+
+
 def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
     with _db(paths) as conn:
+        def one(sql: str, params: tuple[Any, ...] = ()) -> int:
+            return int(conn.execute(sql, params).fetchone()["c"] or 0)
+        hosts_total = one("SELECT COUNT(*) c FROM hosts")
+        resources_total = one("SELECT COUNT(*) c FROM resources")
+        host_discarded = one("SELECT COUNT(*) c FROM hosts WHERE classification='discarded'")
+        resource_discarded = one("SELECT COUNT(*) c FROM resources WHERE classification='discarded'")
+        host_pending = one("SELECT COUNT(*) c FROM hosts WHERE classification!='discarded' AND review_state='pending'")
+        resource_pending = one("SELECT COUNT(*) c FROM resources WHERE classification!='discarded' AND review_state='pending'")
+        host_progress = one("SELECT COUNT(*) c FROM hosts WHERE classification!='discarded' AND review_state='in_progress'")
+        resource_progress = one("SELECT COUNT(*) c FROM resources WHERE classification!='discarded' AND review_state='in_progress'")
+        host_reviewed = one("SELECT COUNT(*) c FROM hosts WHERE classification!='discarded' AND review_state='reviewed'")
+        resource_reviewed = one("SELECT COUNT(*) c FROM resources WHERE classification!='discarded' AND review_state='reviewed'")
+        host_done = host_reviewed + host_discarded
+        resource_done = resource_reviewed + resource_discarded
         stats = {
-            "hosts": conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"],
-            "resources": conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"],
-            "pending": conn.execute("SELECT COUNT(*) c FROM hosts WHERE review_state='pending'").fetchone()["c"]
-                       + conn.execute("SELECT COUNT(*) c FROM resources WHERE review_state='pending'").fetchone()["c"],
-            "in_progress": conn.execute("SELECT COUNT(*) c FROM hosts WHERE review_state='in_progress'").fetchone()["c"]
-                           + conn.execute("SELECT COUNT(*) c FROM resources WHERE review_state='in_progress'").fetchone()["c"],
-            "reviewed": conn.execute("SELECT COUNT(*) c FROM hosts WHERE review_state='reviewed'").fetchone()["c"]
-                        + conn.execute("SELECT COUNT(*) c FROM resources WHERE review_state='reviewed'").fetchone()["c"],
-            "leads": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='lead'").fetchone()["c"]
-                    + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='lead'").fetchone()["c"],
-            "findings": conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"],
-            "discarded": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='discarded'").fetchone()["c"]
-                        + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='discarded'").fetchone()["c"],
-            "informational": conn.execute("SELECT COUNT(*) c FROM hosts WHERE classification='informational'").fetchone()["c"]
-                            + conn.execute("SELECT COUNT(*) c FROM resources WHERE classification='informational'").fetchone()["c"],
-            "operations": conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"],
-            "http_exchanges": conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"],
-            "hypotheses": conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"],
+            "hosts": hosts_total,
+            "resources": resources_total,
+            "host_active": max(0, hosts_total - host_discarded),
+            "resource_active": max(0, resources_total - resource_discarded),
+            "host_pending": host_pending,
+            "resource_pending": resource_pending,
+            "host_in_progress": host_progress,
+            "resource_in_progress": resource_progress,
+            "host_reviewed": host_reviewed,
+            "resource_reviewed": resource_reviewed,
+            "host_discarded": host_discarded,
+            "resource_discarded": resource_discarded,
+            "host_progress_pct": round((host_done / hosts_total * 100.0), 1) if hosts_total else 0.0,
+            "resource_progress_pct": round((resource_done / resources_total * 100.0), 1) if resources_total else 0.0,
+            "pending": host_pending + resource_pending,
+            "in_progress": host_progress + resource_progress,
+            "reviewed": host_reviewed + resource_reviewed,
+            "leads": one("SELECT COUNT(*) c FROM leads_v2 WHERE status NOT IN ('negative','discarded')")
+                     + one("SELECT COUNT(*) c FROM hosts WHERE classification='lead'")
+                     + one("SELECT COUNT(*) c FROM resources WHERE classification='lead'"),
+            "findings": one("SELECT COUNT(*) c FROM findings"),
+            "discarded": host_discarded + resource_discarded,
+            "informational": one("SELECT COUNT(*) c FROM hosts WHERE classification='informational'") + one("SELECT COUNT(*) c FROM resources WHERE classification='informational'"),
+            "operations": one("SELECT COUNT(*) c FROM resource_operations"),
+            "http_exchanges": one("SELECT COUNT(*) c FROM http_exchanges"),
+            "hypotheses": one("SELECT COUNT(*) c FROM leads_v2"),
+            "notifications_unread": one("SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL"),
         }
         priority = conn.execute(
-            """
-            SELECT * FROM hosts
-            WHERE priority='high' OR classification IN ('lead','finding')
-            ORDER BY CASE classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 ELSE 2 END,
-                     CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-                     updated_at DESC
-            LIMIT 12
-            """
+            """SELECT h.*,
+                      (SELECT COUNT(*) FROM leads_v2 l WHERE l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id))) AS active_lead_count
+               FROM hosts h
+               WHERE h.priority='high' OR h.classification IN ('lead','finding')
+                  OR EXISTS (SELECT 1 FROM leads_v2 l WHERE l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id)))
+               ORDER BY CASE h.classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 ELSE 2 END,
+                        CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                        active_lead_count DESC, h.updated_at DESC LIMIT 12"""
         ).fetchall()
         recent_runs = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 10").fetchall()
     return {"stats": stats, "priority_hosts": priority, "recent_runs": recent_runs}
-
 
 def _target_cards() -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
@@ -363,7 +439,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
         return out
 
 
-def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", limit: int = 500):
+def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
     # Inventory search is intentionally unified: one query can match a hostname,
     # resource path, complete URL or stored query string. Resource counts remain
     # totals for the host, independent of the search term.
@@ -395,6 +471,9 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
     if priority:
         sql += " AND h.priority=?"
         params.append(priority)
+    if resource_review:
+        sql += " AND EXISTS (SELECT 1 FROM resources rsf WHERE rsf.host_id=h.id AND rsf.review_state=?)"
+        params.append(resource_review)
     sql += " ORDER BY CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, h.hostname LIMIT ?"
     params.append(max(1, min(limit, 2000)))
     with _db(paths) as conn:
@@ -411,11 +490,21 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
             ).fetchone()["c"] or 0
             if q_norm:
                 like = f"%{q_norm}%"
+                extra = " AND review_state=?" if resource_review else ""
+                rparams: list[Any] = [row["id"], like, like, like]
+                if resource_review: rparams.append(resource_review)
                 resource_rows = conn.execute(
-                    """SELECT id,path,url,query,review_state,classification,priority FROM resources
-                       WHERE host_id=? AND (lower(COALESCE(path,'')) LIKE ? OR lower(COALESCE(url,'')) LIKE ? OR lower(COALESCE(query,'')) LIKE ?)
+                    f"""SELECT id,path,url,query,review_state,classification,priority FROM resources
+                       WHERE host_id=? AND (lower(COALESCE(path,'')) LIKE ? OR lower(COALESCE(url,'')) LIKE ? OR lower(COALESCE(query,'')) LIKE ?){extra}
                        ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, path LIMIT 8""",
-                    (row["id"], like, like, like),
+                    rparams,
+                ).fetchall()
+            elif resource_review:
+                resource_rows = conn.execute(
+                    """SELECT id,path,url,query,review_state,classification,priority FROM resources WHERE host_id=? AND review_state=?
+                       ORDER BY CASE classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 ELSE 2 END,
+                                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, path LIMIT 8""",
+                    (row["id"], resource_review),
                 ).fetchall()
             else:
                 resource_rows = conn.execute(
@@ -433,7 +522,7 @@ def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classifica
                 "finding_count": int(direct_findings), "child_finding_count": int(child_findings),
                 "total_finding_count": int(direct_findings) + int(child_findings),
                 "resource_preview": resource_preview,
-                "resource_matches": len(resource_preview) if q_norm else 0,
+                "resource_matches": len(resource_preview) if (q_norm or resource_review) else 0,
             })
             out.append(item)
         return out
@@ -785,7 +874,7 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
         return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes}
 
 
-def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 120, observation_limit: int = 120) -> dict[str, Any]:
+def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int = 120, observation_limit: int = 120) -> dict[str, Any]:
     import negro_hunter as hunter
     """Build a read-only graph projection from Negro's existing relational model.
 
@@ -937,6 +1026,167 @@ def _graph_data(paths: dict[str, Path], domain: str, *, exchange_limit: int = 12
     for n in nodes:
         type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
     return {"target": domain, "nodes": nodes, "edges": edges, "counts": type_counts, "generated_at": _now()}
+
+
+def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview", host_id: int | None = None,
+                resource_id: int | None = None, exchange_limit: int = 100, observation_limit: int = 100) -> dict[str, Any]:
+    """Progressive graph projection for large real-world targets.
+
+    overview -> Target + aggregated hosts only.
+    host     -> one host + its resources/operations and bounded evidence.
+    resource -> one resource + methods + bounded Burp/evidence/hypotheses/findings.
+
+    The browser never needs 5k+ resource nodes just to open the map.
+    """
+    import negro_hunter as hunter
+    scope = (scope or "overview").lower()
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_node(nid: str, typ: str, label: str, *, state: str="normal", meta: dict[str, Any] | None=None, href: str | None=None):
+        if nid in seen: return nid
+        seen.add(nid); nodes.append({"id":nid,"type":typ,"label":str(label),"state":state,"meta":meta or {},"href":href}); return nid
+    def add_edge(a: str,b: str,rel: str,source: str="inventory",evidence: Any=None):
+        if a in seen and b in seen and a != b:
+            edges.append({"id":f"e{len(edges)+1}","source":a,"target":b,"relation":rel,"meta":{"source":source,"evidence":evidence}})
+
+    target=add_node("target:root","target",domain,meta={"domain":domain})
+    with _db(paths) as conn:
+        total_hosts=int(conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"] or 0)
+        total_resources=int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0)
+        total_ops=int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"] or 0)
+        totals={"target":1,"host":total_hosts,"resource":total_resources,"operation":total_ops,
+                "request":int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0),
+                "observation":int(conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] or 0),
+                "lead":int(conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"] or 0),
+                "finding":int(conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] or 0)}
+
+        if scope == "overview" or (scope == "host" and not host_id) or (scope == "resource" and not resource_id):
+            rows=conn.execute("""
+                SELECT h.*,
+                  (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id) resource_count,
+                  (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id AND r.classification='discarded') discarded_resources,
+                  (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id AND r.review_state='pending' AND r.classification!='discarded') pending_resources,
+                  (SELECT COUNT(*) FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE r.host_id=h.id) operation_count,
+                  (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id AND r.classification='lead') interesting_resources,
+                  (SELECT COUNT(*) FROM leads_v2 l WHERE l.host_id=h.id AND l.status NOT IN ('negative','discarded')) lead_count,
+                  (SELECT COUNT(DISTINCT fe.finding_id) FROM finding_entities fe LEFT JOIN resources rr ON fe.entity_type='resource' AND fe.entity_id=rr.id WHERE (fe.entity_type='host' AND fe.entity_id=h.id) OR rr.host_id=h.id) finding_count
+                FROM hosts h ORDER BY CASE WHEN h.classification='finding' THEN 0 WHEN h.classification='lead' THEN 1 WHEN h.review_state='in_progress' THEN 2 ELSE 3 END, h.hostname
+            """).fetchall()
+            important=[]; grouped={"pending":[],"reviewed":[],"discarded":[]}
+            for h in rows:
+                is_important = bool(int(h["finding_count"] or 0) or int(h["lead_count"] or 0) or int(h["interesting_resources"] or 0) or h["classification"] in ('lead','finding') or h["review_state"]=='in_progress' or h["priority"] in ('high','medium') or int(h["operation_count"] or 0)>0)
+                if is_important and len(important)<70:
+                    important.append(h)
+                else:
+                    bucket='discarded' if h["classification"]=='discarded' else 'reviewed' if h["review_state"]=='reviewed' else 'pending'
+                    grouped[bucket].append(h)
+            for h in important:
+                coverage=_coverage_state(h["review_state"]); signal="finding" if int(h["finding_count"] or 0)>0 else "interesting" if h["classification"]=='lead' or int(h["interesting_resources"] or 0)>0 or int(h["lead_count"] or 0)>0 else "normal"
+                nid=add_node(f"host:{h['id']}","host",h["hostname"],state=_visual_state(coverage,signal),
+                    meta={"id":h["id"],"coverage":coverage,"signal":signal,"review":h["review_state"],"classification":h["classification"],"priority":h["priority"],
+                          "resource_count":int(h["resource_count"] or 0),"pending_resources":int(h["pending_resources"] or 0),"discarded_resources":int(h["discarded_resources"] or 0),
+                          "operation_count":int(h["operation_count"] or 0),"interesting_resources":int(h["interesting_resources"] or 0),"lead_count":int(h["lead_count"] or 0),"finding_count":int(h["finding_count"] or 0)}, href=f"host/{h['id']}")
+                add_edge(target,nid,"contains")
+            cluster_labels={"pending":"Hosts pendientes","reviewed":"Hosts revisados","discarded":"Hosts descartados"}
+            cluster_hrefs={"pending":"hosts?review=pending","reviewed":"hosts?review=reviewed","discarded":"hosts?classification=discarded"}
+            cluster_states={"pending":"untested","reviewed":"tested","discarded":"tested"}
+            for bucket,items in grouped.items():
+                if not items: continue
+                cid=add_node(f"cluster:hosts:{bucket}","cluster",f"{cluster_labels[bucket]} · {len(items)}",state=cluster_states[bucket],meta={"count":len(items),"group":"hosts","bucket":bucket,"note":"Agrupados para que el mapa siga siendo usable. Abre Inventario para filtrar/buscar."},href=cluster_hrefs[bucket])
+                add_edge(target,cid,"contains",source="progressive_disclosure")
+            return {"target":domain,"nodes":nodes,"edges":edges,"counts":totals,"generated_at":_now(),
+                    "meta":{"scope":"overview","large_target":total_resources>800,"scope_label":"Vista general","host_count":total_hosts,"resource_count":total_resources,"important_hosts":len(important),"grouped_hosts":sum(len(v) for v in grouped.values())}}
+
+        selected_resource=None
+        selected_host=None
+        if scope == "resource" and resource_id:
+            selected_resource=conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",(resource_id,)).fetchone()
+            if not selected_resource:
+                return {"target":domain,"nodes":[nodes[0]],"edges":[],"counts":totals,"generated_at":_now(),"meta":{"scope":"overview"}}
+            host_id=int(selected_resource["host_id"])
+        if host_id:
+            selected_host=conn.execute("SELECT * FROM hosts WHERE id=?",(host_id,)).fetchone()
+        if not selected_host:
+            return _graph_data(paths,domain,scope="overview")
+
+        h=selected_host
+        hcov=_coverage_state(h["review_state"]); hsig,hfind=_entity_signal(conn,"host",h["id"],h["classification"])
+        hn=add_node(f"host:{h['id']}","host",h["hostname"],state=_visual_state(hcov,hsig),meta={"id":h["id"],"coverage":hcov,"signal":hsig,"finding_count":hfind,"review":h["review_state"],"classification":h["classification"],"priority":h["priority"]},href=f"host/{h['id']}")
+        add_edge(target,hn,"contains")
+
+        if scope == "resource" and selected_resource is not None:
+            resources=[selected_resource]
+            resource_limit=1
+        else:
+            resource_limit=180
+            resources=conn.execute("""SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.host_id=?
+                ORDER BY CASE r.classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 WHEN 'discarded' THEN 5 ELSE 2 END,
+                         CASE r.review_state WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, r.updated_at DESC LIMIT ?""",(host_id,resource_limit)).fetchall()
+        rids=[int(r["id"]) for r in resources]
+        for r in resources:
+            cov=_coverage_state(r["review_state"]); sig,fc=_entity_signal(conn,"resource",r["id"],r["classification"])
+            rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(cov,sig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":cov,"signal":sig,"review":r["review_state"],"classification":r["classification"],"finding_count":fc,"priority":r["priority"]},href=f"resource/{r['id']}")
+            add_edge(hn,rn,"contains")
+        if scope == "host":
+            total_for_host=int(conn.execute("SELECT COUNT(*) c FROM resources WHERE host_id=?",(host_id,)).fetchone()["c"] or 0)
+            hidden=max(0,total_for_host-len(resources))
+            if hidden:
+                cn=add_node(f"cluster:hidden_resources:{host_id}","cluster",f"Otros recursos · {hidden}",meta={"count":hidden,"host_id":host_id,"note":"Usa Inventario/buscador para acotar antes de expandir más."},href=f"host/{host_id}")
+                add_edge(hn,cn,"contains",source="progressive_disclosure")
+
+        if rids:
+            marks=','.join('?'*len(rids))
+            ops=conn.execute(f"SELECT o.*,r.path,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE o.resource_id IN ({marks}) ORDER BY o.last_seen_at DESC LIMIT 360",rids).fetchall()
+            opids=[]
+            for o in ops:
+                opids.append(int(o["id"]))
+                test_summary=hunter.operation_test_summary(conn,int(o["id"]))
+                state="interesting" if int(test_summary.get("interesting",0))+int(test_summary.get("confirmed",0))>0 or (o["last_status"] and int(o["last_status"])>=500) else "normal"
+                on=add_node(f"operation:{o['id']}","operation",f"{o['method']} {o['path']}",state=state,meta={"id":o["id"],"method":o["method"],"status":o["last_status"],"seen_count":o["seen_count"],"authenticated":bool(o["authenticated_observed"]),"last_seen_at":o["last_seen_at"],"url":o["url"],"test_summary":test_summary})
+                add_edge(f"resource:{o['resource_id']}",on,"supports",source="http_model")
+            if opids:
+                omarks=','.join('?'*len(opids))
+                exchanges=conn.execute(f"SELECT e.*,o.method,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.operation_id IN ({omarks}) ORDER BY e.last_seen_at DESC LIMIT ?",(*opids,max(10,min(exchange_limit,120)))).fetchall()
+                for e in exchanges:
+                    en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                    add_edge(f"operation:{e['operation_id']}",en,"observed_in",source=e["source"])
+
+            # Observations only for visible host/resources.
+            obs=conn.execute("SELECT * FROM observations WHERE (entity_type='host' AND entity_id=?) OR (entity_type='resource' AND entity_id IN (%s)) ORDER BY id DESC LIMIT ?" % (','.join('?'*len(rids))), (host_id,*rids,max(10,min(observation_limit,100)))).fetchall() if rids else []
+            for o in obs:
+                try: payload=json.loads(o["payload_json"] or '{}')
+                except Exception: payload={}
+                st="interesting" if bool(payload.get("interesting")) or bool(payload.get("likely_credentialed_cors")) else "normal"
+                on=add_node(f"observation:{o['id']}","observation",str(o["kind"]).replace('_',' '),state=st,meta={"id":o["id"],"source":o["source"],"kind":o["kind"],"value":o["value"],"observed_at":o["observed_at"]})
+                parent=f"{o['entity_type']}:{o['entity_id']}"; add_edge(parent,on,"tested_by",source=o["source"])
+
+            leads=conn.execute(f"SELECT * FROM leads_v2 WHERE host_id=? OR resource_id IN ({marks}) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
+            for l in leads:
+                st="tested" if l["status"] in ('discarded','negative') else "finding" if l["status"]=='confirmed' else "interesting"
+                ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"]},href=f"hypotheses#hypothesis-{l['id']}")
+                parent=f"resource:{l['resource_id']}" if l["resource_id"] and f"resource:{l['resource_id']}" in seen else hn
+                add_edge(parent,ln,"produced_lead",source=str(l["source"]).lower())
+            findings=conn.execute("SELECT DISTINCT f.* FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id LEFT JOIN resources rr ON fe.entity_type='resource' AND fe.entity_id=rr.id WHERE (fe.entity_type='host' AND fe.entity_id=?) OR rr.host_id=? ORDER BY f.updated_at DESC LIMIT 100",(host_id,host_id)).fetchall()
+            for f in findings:
+                fn=add_node(f"finding:{f['id']}","finding",f["title"],state="finding",meta={"id":f["id"],"severity":f["severity"],"status":f["status"],"description":f["description"]},href=f"finding/{f['id']}")
+                for fe in conn.execute("SELECT * FROM finding_entities WHERE finding_id=?",(f["id"],)).fetchall():
+                    parent=f"{fe['entity_type']}:{fe['entity_id']}"; add_edge(parent,fn,fe["relation"] or 'affected_by',source='finding')
+
+        # JS is useful at host scope but bounded; resources don't need every bundle node.
+        if scope == "host":
+            jsrows=conn.execute("SELECT * FROM js_assets WHERE host_id=? ORDER BY discovered_at DESC LIMIT 60",(host_id,)).fetchall()
+            for js in jsrows:
+                label=Path(urllib.parse.urlsplit(js["url"]).path).name or js["url"]
+                jn=add_node(f"js:{js['id']}","javascript",label,state="tested" if js["analyzed_at"] else "untested",meta={"id":js["id"],"url":js["url"],"source":js["source"],"analyzed_at":js["analyzed_at"]})
+                add_edge(hn,jn,"contains",source=js["source"])
+
+    counts: dict[str,int]={}
+    for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
+    label="Recurso" if scope=='resource' else "Host" if scope=='host' else "Vista general"
+    return {"target":domain,"nodes":nodes,"edges":edges,"counts":totals,"generated_at":_now(),
+            "meta":{"scope":scope,"scope_label":label,"host_id":host_id,"resource_id":resource_id,"large_target":total_resources>800,"loaded_counts":counts}}
 
 
 def create_app(default_domain: str, default_workspace: Path):
@@ -1105,6 +1355,44 @@ def create_app(default_domain: str, default_workspace: Path):
             jobs = [j for j in JOBS.values() if j.get("target_key") == target_key][-8:][::-1]
         return render(request, "dashboard.html", target_key, domain, workspace, **data, jobs=jobs, target_cards=_target_cards())
 
+    @app.get("/t/{target_key}/notifications", response_class=HTMLResponse)
+    def notifications_page(request: Request, target_key: str):
+        domain, workspace, paths = _target_context(target_key)
+        rows, unread = _notification_rows(paths, 250, False)
+        return render(request, "notifications.html", target_key, domain, workspace, notifications=rows, unread=unread)
+
+    @app.get("/api/t/{target_key}/notifications", response_class=JSONResponse)
+    def notifications_api(target_key: str, after_id: int = 0, limit: int = 50):
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            unread = int(conn.execute("SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL").fetchone()["c"] or 0)
+            rows = conn.execute(
+                """SELECT * FROM notifications WHERE id>? ORDER BY id ASC LIMIT ?""",
+                (max(0, after_id), max(1, min(limit, 100))),
+            ).fetchall()
+            items=[]
+            for r in rows:
+                item=dict(r)
+                try: data=json.loads(item.get('data_json') or '{}')
+                except Exception: data={}
+                item['data']=data if isinstance(data,dict) else {}
+                href=item['data'].get('href') if isinstance(item['data'],dict) else None
+                item['href']=f"/t/{target_key}/{href}" if isinstance(href,str) and href else f"/t/{target_key}/intelligence#leads"
+                items.append(item)
+            latest = int(conn.execute("SELECT COALESCE(MAX(id),0) m FROM notifications").fetchone()["m"] or 0)
+        return {"items":items,"unread":unread,"latest_id":latest}
+
+    @app.post("/t/{target_key}/notifications/read")
+    def notifications_read(target_key: str, notification_id: int = Form(0), all_items: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            if all_items == 'yes':
+                conn.execute("UPDATE notifications SET read_at=? WHERE read_at IS NULL", (_now(),))
+            elif notification_id:
+                conn.execute("UPDATE notifications SET read_at=? WHERE id=?", (_now(), notification_id))
+        return RedirectResponse(url=f"/t/{target_key}/notifications", status_code=303)
+
     @app.get("/t/{target_key}/intelligence", response_class=HTMLResponse)
     def intelligence_page(request: Request, target_key: str):
         import negro_intel as intel
@@ -1116,6 +1404,8 @@ def create_app(default_domain: str, default_workspace: Path):
             historical=core.historical_intelligence(paths),
             ct=core.ct_intelligence(paths),
             search=core.search_intelligence(domain, paths),
+            notifications=_notification_rows(paths, 20, False)[0],
+            notifications_unread=_notification_rows(paths, 1, False)[1],
             latest_ai=core.latest_target_ai(paths),
             settings=intel.load_settings(),
             secret_status=intel.secret_status(),
@@ -1193,10 +1483,10 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=refresh_url, status_code=303)
 
     @app.get("/t/{target_key}/hosts", response_class=HTMLResponse)
-    def hosts(request: Request, target_key: str, q: str = "", review: str = "", classification: str = "", priority: str = ""):
+    def hosts(request: Request, target_key: str, q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = ""):
         domain, workspace, paths = _target_context(target_key)
-        rows = _host_rows(paths, q, review, classification, priority)
-        return render(request, "hosts.html", target_key, domain, workspace, hosts=rows, q=q, review=review, classification=classification, priority=priority)
+        rows = _host_rows(paths, q, review, classification, priority, resource_review)
+        return render(request, "hosts.html", target_key, domain, workspace, hosts=rows, q=q, review=review, classification=classification, priority=priority, resource_review=resource_review)
 
     @app.get("/t/{target_key}/tree", response_class=HTMLResponse)
     def tree(request: Request, target_key: str, q: str = "", review: str = "", classification: str = "", priority: str = ""):
@@ -1225,18 +1515,38 @@ def create_app(default_domain: str, default_workspace: Path):
     def graph_page(request: Request, target_key: str):
         import negro_intel as intel
         domain, workspace, paths = _target_context(target_key)
-        data = _graph_data(paths, domain)
-        return render(request, "graph.html", target_key, domain, workspace, graph_counts=data["counts"], graph_generated=data["generated_at"], settings=intel.load_settings(), secret_status=intel.secret_status())
+        counts = _graph_inventory_counts(paths)
+        return render(request, "graph.html", target_key, domain, workspace, graph_counts=counts, graph_generated=_now(), settings=intel.load_settings(), secret_status=intel.secret_status())
 
     @app.get("/api/t/{target_key}/graph", response_class=JSONResponse)
-    def graph_api(target_key: str, exchanges: int = 120, observations: int = 120):
+    def graph_api(target_key: str, scope: str = "overview", host_id: int = 0, resource_id: int = 0, focus: str = "", exchanges: int = 100, observations: int = 100):
         domain, _, paths = _target_context(target_key)
-        return _graph_data(paths, domain, exchange_limit=exchanges, observation_limit=observations)
+        if focus:
+            try:
+                typ, raw_id = focus.split(":", 1); entity_id = int(raw_id)
+            except Exception:
+                typ, entity_id = "", 0
+            if entity_id:
+                with _db(paths) as conn:
+                    if typ == 'host': host_id = entity_id; scope = 'host'
+                    elif typ == 'resource': resource_id = entity_id; scope = 'resource'
+                    elif typ == 'operation':
+                        rr=conn.execute("SELECT resource_id FROM resource_operations WHERE id=?",(entity_id,)).fetchone()
+                        if rr: resource_id=int(rr['resource_id']); scope='resource'
+                    elif typ == 'lead':
+                        rr=conn.execute("SELECT host_id,resource_id FROM leads_v2 WHERE id=?",(entity_id,)).fetchone()
+                        if rr and rr['resource_id']: resource_id=int(rr['resource_id']); scope='resource'
+                        elif rr and rr['host_id']: host_id=int(rr['host_id']); scope='host'
+                    elif typ == 'finding':
+                        rr=conn.execute("SELECT entity_type,entity_id FROM finding_entities WHERE finding_id=? ORDER BY CASE entity_type WHEN 'resource' THEN 0 WHEN 'host' THEN 1 ELSE 2 END LIMIT 1",(entity_id,)).fetchone()
+                        if rr and rr['entity_type']=='resource': resource_id=int(rr['entity_id']); scope='resource'
+                        elif rr and rr['entity_type']=='host': host_id=int(rr['entity_id']); scope='host'
+        return _graph_data(paths, domain, scope=scope, host_id=host_id or None, resource_id=resource_id or None, exchange_limit=exchanges, observation_limit=observations)
 
     @app.get("/api/t/{target_key}/graph/ideas-estimate", response_class=JSONResponse)
     def graph_ideas_estimate(target_key: str, model: str = "", selected_node_id: str = ""):
         domain, _, paths = _target_context(target_key)
-        graph_data = _graph_data(paths, domain)
+        graph_data = _graph_data_full(paths, domain)
         try:
             return core.ai_estimate_graph_ideas(domain, paths, graph_data, selected_node_id or None, model or None)
         except Exception as exc:
@@ -1248,7 +1558,7 @@ def create_app(default_domain: str, default_workspace: Path):
         if confirm_cost != "yes":
             raise HTTPException(status_code=400, detail="Confirma el costo estimado antes de ejecutar IA")
         domain, _, paths = _target_context(target_key)
-        graph_data = _graph_data(paths, domain)
+        graph_data = _graph_data_full(paths, domain)
         job_id = _start_job("AI graph ideas", target_key, core.ai_run_graph_ideas, domain, paths, graph_data, selected_node_id or None, model or None)
         payload = {"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":f"/t/{target_key}/graph"}
         if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
@@ -1813,7 +2123,18 @@ def create_app(default_domain: str, default_workspace: Path):
             )
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
-        return {"accepted": True, "target_key": target_key, "target_domain": domain, **result}
+        # Passive Burp intelligence: inspect only the traffic already captured. This
+        # never sends a network request and stores only masked secret values.
+        passive = {"signals": [], "new_notifications": []}
+        try:
+            import negro_hunter as hunter
+            with _db(paths) as conn:
+                passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
+        except Exception as exc:
+            print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
+        return {"accepted": True, "target_key": target_key, "target_domain": domain, **result,
+                "signal_count": len(passive.get("signals") or []),
+                "new_notification_count": len(passive.get("new_notifications") or [])}
 
     @app.get("/api/bridge/findings/{target_key}", response_class=JSONResponse)
     def bridge_findings(target_key: str):

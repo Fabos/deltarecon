@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test offline de Negro v0.15.0. No toca Internet ni ejecuta IA."""
+"""Smoke test offline de Negro v0.16.0. No toca Internet ni ejecuta IA."""
 from pathlib import Path
 import json
 import tempfile
@@ -123,8 +123,8 @@ def main() -> None:
             assert schema['additionalProperties'] is False and schema['properties']['hypotheses']['type']=='array'
             hprops=schema['properties']['hypotheses']['items']['properties']
             assert set(hprops['investigation_priority']['enum'])=={'high','medium','quick'}
-            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.15.0')
-            assert 'prompt_version' in gp and '0.15.0-evidence-first-v1' in gp
+            assert 'priority_reasons' in hprops and hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.16.0')
+            assert 'prompt_version' in gp and '0.16.0-burp-signals-v1' in gp
             parsed=hunter._safe_json_object('{\"summary\":\"ok\",\"hypotheses\":[],\"unexplored_areas\":[]}', {})
             assert parsed['summary']=='ok'
             malformed=hunter._safe_json_object('{\"summary\": \"oops\" \"hypotheses\": []}', {"summary":"fallback","hypotheses":[],"unexplored_areas":[]})
@@ -139,6 +139,60 @@ def main() -> None:
             enriched=next(x for x in hunter.list_leads(conn) if x['lead_key']=='ai_graph:smoke')
             assert enriched['investigation_priority']=='high' and enriched['primary_method']=='GET'
             assert enriched['evidence_refs'] and enriched['evidence_refs'][0]['resource_id']==rr['id']
+
+        # v0.16: Burp passive intelligence consumes query/form/JSON and response bodies.
+        redirect_req = (
+            b"GET /login?next=https%3A%2F%2Fattacker.example HTTP/1.1\r\n"
+            b"Host: example.test\r\nCookie: sid=smoke\r\n\r\n"
+        )
+        redirect_resp = (
+            b"HTTP/1.1 302 Found\r\nLocation: https://attacker.example\r\nContent-Length: 0\r\n\r\n"
+        )
+        red = core.upsert_http_observation(
+            paths, domain, url="https://example.test/login?next=https%3A%2F%2Fattacker.example", method="GET",
+            source="burp_proxy", status_code=302, authenticated=True, tool="PROXY",
+            request_b64=base64.b64encode(redirect_req).decode(), response_b64=base64.b64encode(redirect_resp).decode(),
+            request_headers=[{"name":"Cookie","value":"sid=smoke"}],
+            response_headers=[{"name":"Location","value":"https://attacker.example"}],
+            query="next=https%3A%2F%2Fattacker.example",
+        )
+        with core.db_connect(paths) as conn:
+            passive = hunter.analyze_http_exchange(conn, int(red['exchange_id']), domain, emit_notifications=True)
+            assert len(passive['signals']) >= 1
+            lead = conn.execute("SELECT evidence_json FROM leads_v2 WHERE lead_type='open_redirect' AND resource_id=? ORDER BY id DESC LIMIT 1", (red['resource_id'],)).fetchone()
+            assert lead and 'next' in (lead['evidence_json'] or '') and 'query' in (lead['evidence_json'] or ''), lead
+            note = conn.execute("SELECT * FROM notifications WHERE kind='open_redirect' ORDER BY id DESC LIMIT 1").fetchone()
+            assert note and int(note['exchange_id']) == int(red['exchange_id']), note
+            ndata=json.loads(note['data_json'] or '{}')
+            assert ndata.get('href') == f"resource/{red['resource_id']}#exchange-{red['exchange_id']}"
+
+        # Ambiguous `url` on a fetch route should surface as URL-fetch/SSRF, not be mislabeled redirect.
+        fetch_req=b"GET /fetch?url=https%3A%2F%2Fprobe.example HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        fetch_resp=b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}"
+        fet=core.upsert_http_observation(paths,domain,url="https://example.test/fetch?url=https%3A%2F%2Fprobe.example",method="GET",source="burp_proxy",status_code=200,tool="PROXY",request_b64=base64.b64encode(fetch_req).decode(),response_b64=base64.b64encode(fetch_resp).decode(),query="url=https%3A%2F%2Fprobe.example")
+        with core.db_connect(paths) as conn:
+            hunter.analyze_http_exchange(conn,int(fet['exchange_id']),domain,emit_notifications=True)
+            assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='ssrf_surface' AND resource_id=?",(fet['resource_id'],)).fetchone()['c'] >= 1
+            assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='open_redirect' AND resource_id=?",(fet['resource_id'],)).fetchone()['c'] == 0
+
+        api_key = "AIza" + "A" * 35
+        config_req = b"GET /api/config HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        config_body = json.dumps({"username":"demo","password":"SuperSecret123!","googleApiKey":api_key}).encode()
+        config_resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + config_body
+        cfg = core.upsert_http_observation(
+            paths, domain, url="https://example.test/api/config", method="GET", source="burp_proxy",
+            status_code=200, authenticated=True, response_content_type="application/json", tool="PROXY",
+            request_b64=base64.b64encode(config_req).decode(), response_b64=base64.b64encode(config_resp).decode(),
+        )
+        with core.db_connect(paths) as conn:
+            passive2 = hunter.analyze_http_exchange(conn, int(cfg['exchange_id']), domain, emit_notifications=True)
+            assert len(passive2['signals']) >= 1
+            kinds={x['kind'] for x in conn.execute("SELECT kind FROM notifications WHERE exchange_id=?", (cfg['exchange_id'],)).fetchall()}
+            assert 'secret_candidate' in kinds and 'sensitive_response' in kinds, kinds
+            blobs='\n'.join((x['data_json'] or '') for x in conn.execute("SELECT data_json FROM notifications WHERE exchange_id=?", (cfg['exchange_id'],)).fetchall())
+            assert 'SuperSecret123!' not in blobs and api_key not in blobs, blobs
+            cols={x['name'] for x in conn.execute("PRAGMA table_info(notifications)").fetchall()}
+            assert {'kind','severity','resource_id','operation_id','exchange_id','read_at'}.issubset(cols), cols
         print("[OK] schema + migration path")
         print("[OK] HTTP model: resource -> operations -> deduplicated exchanges")
         print("[OK] policy profile")
@@ -148,6 +202,7 @@ def main() -> None:
         print("[OK] findings + retest evidence model")
         print("[OK] hypothesis workbench + sanitized HTTP AI context")
         print("[OK] endpoint test coverage memory")
+        print("[OK] Burp passive intelligence + notifications")
 
 
 if __name__ == "__main__":

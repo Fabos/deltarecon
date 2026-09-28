@@ -45,6 +45,12 @@
   {% for h in historical.resources[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.url }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.captures }} capturas {% if h.historical_only %}· sólo histórico{% endif %}</small></div></div>{% else %}<p class="empty">Ejecuta Wayback CDX para poblar historia.</p>{% endfor %}
 </section>
 
+<section class="panel passive-intel-panel">
+  <div class="panel-head"><div><p class="eyebrow">BURP · INTELIGENCIA PASIVA</p><h2>Señales detectadas mientras navegas</h2></div><a href="{{ target_base }}/notifications">Ver notificaciones{% if notifications_unread %} · {{ notifications_unread }} nuevas{% endif %} →</a></div>
+  <p class="muted small">Negro analiza únicamente las requests/responses que Burp ya capturó. Busca parámetros de redirección/URL, secretos o client config, credenciales/campos sensibles en respuestas, CORS observado, source maps, documentación API y errores internos. No ejecuta explotación automática.</p>
+  {% if notifications %}<div class="passive-intel-list">{% for n in notifications[:6] %}<a href="{% if n.href %}{{ target_base }}/{{ n.href }}{% else %}{{ target_base }}/notifications{% endif %}" class="passive-intel-item severity-{{ n.severity }}"><span></span><div><strong>{{ n.title }}</strong><small>{{ n.message }}</small></div><em>{{ ui_label(n.severity) }}</em></a>{% endfor %}</div>{% else %}<p class="empty">Todavía no hay señales pasivas. Navega el target con Burp y Negro irá correlacionando el tráfico.</p>{% endif %}
+</section>
+
 <section class="panel" id="ai-target">
   <div class="panel-head"><div><p class="eyebrow">TRIAGE CON IA</p><h2>Mano derecha sobre evidencia correlacionada</h2></div><span class="muted small">caché por hash de evidencia</span></div>
   {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. La parte determinística sigue funcionando.</div>{% endif %}

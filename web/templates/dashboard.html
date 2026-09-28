@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero dashboard-hero">
   <div>
-    <p class="eyebrow">WORKSPACE DE INVESTIGACIÓN</p>
+    <p class="eyebrow">ESPACIO DE INVESTIGACIÓN</p>
     <h1>{{ domain }}</h1>
     <p class="muted">Burp alimenta la evidencia; Negro organiza qué existe, qué probaste, qué falta y qué merece volver a mirar.</p>
   </div>
@@ -14,21 +14,43 @@
   </div>
 </section>
 
-<section class="dashboard-summary" data-summary-url="/api/t/{{ target_key }}/summary">
-  <a class="summary-card" href="{{ target_base }}/hosts"><span>Hosts</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong><small>inventario</small></a>
-  <a class="summary-card" href="{{ target_base }}/hosts"><span>Recursos</span><strong data-stat-key="resources">{{ stats.resources }}</strong><small>endpoints y URLs</small></a>
-  <div class="summary-card"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong><small>operaciones observadas</small></div>
-  <div class="summary-card"><span>Tráfico HTTP</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong><small>evidencia desde Burp</small></div>
-  <a class="summary-card emphasis-purple" href="{{ target_base }}/hypotheses"><span>Hipótesis</span><strong>{{ stats.hypotheses }}</strong><small>ideas persistentes</small></a>
-  <a class="summary-card emphasis-danger" href="{{ target_base }}/findings"><span>Hallazgos</span><strong data-stat-key="findings">{{ stats.findings }}</strong><small>confirmados / documentados</small></a>
+<section class="dashboard-progress" data-summary-url="/api/t/{{ target_key }}/summary">
+  <article class="review-progress-card hosts-progress">
+    <div class="review-progress-head"><div><span class="eyebrow">HOSTS</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong></div><a href="{{ target_base }}/hosts">Abrir inventario →</a></div>
+    <div class="review-progress-meta">
+      <span><b data-stat-key="host_pending">{{ stats.host_pending }}</b> pendientes</span>
+      <span><b data-stat-key="host_in_progress">{{ stats.host_in_progress }}</b> en revisión</span>
+      <span><b data-stat-key="host_reviewed">{{ stats.host_reviewed }}</b> revisados</span>
+      <span class="discarded"><b data-stat-key="host_discarded">{{ stats.host_discarded }}</b> descartados</span>
+    </div>
+    <div class="review-progress-track"><i data-progress-key="host_progress_pct" style="width:{{ stats.host_progress_pct }}%"></i></div>
+    <small><b data-stat-key="host_progress_pct">{{ stats.host_progress_pct }}</b>% triage completado · descartados ya no cuentan como pendientes</small>
+  </article>
+  <article class="review-progress-card resources-progress">
+    <div class="review-progress-head"><div><span class="eyebrow">RECURSOS</span><strong data-stat-key="resources">{{ stats.resources }}</strong></div><a href="{{ target_base }}/hosts">Buscar endpoint →</a></div>
+    <div class="review-progress-meta">
+      <span><b data-stat-key="resource_pending">{{ stats.resource_pending }}</b> pendientes</span>
+      <span><b data-stat-key="resource_in_progress">{{ stats.resource_in_progress }}</b> en revisión</span>
+      <span><b data-stat-key="resource_reviewed">{{ stats.resource_reviewed }}</b> revisados</span>
+      <span class="discarded"><b data-stat-key="resource_discarded">{{ stats.resource_discarded }}</b> descartados</span>
+    </div>
+    <div class="review-progress-track"><i data-progress-key="resource_progress_pct" style="width:{{ stats.resource_progress_pct }}%"></i></div>
+    <small><b data-stat-key="resource_progress_pct">{{ stats.resource_progress_pct }}</b>% triage completado</small>
+  </article>
+  <div class="dashboard-mini-metrics">
+    <div class="summary-card"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong><small>operaciones observadas</small></div>
+    <div class="summary-card"><span>Tráfico HTTP</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong><small>evidencia desde Burp</small></div>
+    <a class="summary-card emphasis-purple" href="{{ target_base }}/hypotheses"><span>Hipótesis</span><strong data-stat-key="hypotheses">{{ stats.hypotheses }}</strong><small>ideas persistentes</small></a>
+    <a class="summary-card emphasis-danger" href="{{ target_base }}/findings"><span>Hallazgos</span><strong data-stat-key="findings">{{ stats.findings }}</strong><small>confirmados / documentados</small></a>
+  </div>
 </section>
 
-<section class="attention-strip">
+<section class="attention-strip attention-strip-five">
   <div class="attention-title"><span class="eyebrow">CONTINUAR</span><strong>Qué requiere atención</strong></div>
-  <a href="{{ target_base }}/hosts?review=pending"><b data-stat-key="pending">{{ stats.pending }}</b><span>Pendientes</span></a>
-  <a href="{{ target_base }}/hosts?review=in_progress"><b data-stat-key="in_progress">{{ stats.in_progress }}</b><span>En revisión</span></a>
+  <a href="{{ target_base }}/hosts?review=pending"><b data-stat-key="host_pending">{{ stats.host_pending }}</b><span>Hosts pendientes</span></a>
+  <a href="{{ target_base }}/hosts?resource_review=pending"><b data-stat-key="resource_pending">{{ stats.resource_pending }}</b><span>Recursos pendientes</span></a>
   <a class="attention-interesting" href="{{ target_base }}/hosts?classification=lead"><b data-stat-key="leads">{{ stats.leads }}</b><span>Interesantes</span></a>
-  <a href="{{ target_base }}/hypotheses?status=testing"><b>→</b><span>Hipótesis en prueba</span></a>
+  <a class="attention-alerts" href="{{ target_base }}/notifications"><b data-stat-key="notifications_unread">{{ stats.notifications_unread }}</b><span>Alertas nuevas</span></a>
 </section>
 
 <div class="grid dashboard-grid">
@@ -38,7 +60,7 @@
       <div class="focus-list">
       {% for h in priority_hosts %}
         <a class="focus-item" href="{{ target_base }}/host/{{ h.id }}">
-          <span class="focus-dot {% if h.classification=='finding' %}finding{% elif h.classification=='lead' %}interesting{% endif %}"></span>
+          <span class="focus-dot {% if h.classification=='finding' %}finding{% elif h.classification=='lead' or h.active_lead_count %}interesting{% endif %}"></span>
           <span class="focus-name">{{ h.hostname }}</span>
           <span class="badges"><span class="badge">{{ ui_label(h.review_state) }}</span><span class="badge class-{{ h.classification }}">{{ ui_label(h.classification) }}</span>{% if h.priority!='none' %}<span class="badge priority-{{ h.priority }}">{{ ui_label(h.priority) }}</span>{% endif %}</span>
         </a>
@@ -61,7 +83,7 @@
 
 <div class="grid dashboard-grid">
   <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">TARGETS</p><h2>Espacios de trabajo</h2></div><span class="muted small">cambio rápido</span></div>
+    <div class="panel-head"><div><p class="eyebrow">OBJETIVOS</p><h2>Espacios de trabajo</h2></div><span class="muted small">cambio rápido</span></div>
     <div class="target-cards">
       {% for t in target_cards %}
       <div class="target-card-shell {% if t.key==target_key %}active{% endif %}">
