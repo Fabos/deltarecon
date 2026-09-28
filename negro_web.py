@@ -49,7 +49,7 @@ REPEATER_LAST_CLEANUP_TS = 0.0
 REPEATER_CLEANUP_INTERVAL_SECONDS = 30.0
 # Only one current Burp bridge instance may consume the Repeater queue. Older
 # extension builds started a daemon poller but did not stop it when the JAR was
-# removed, so orphan pollers could keep claiming queue items invisibly. v0.16.6
+# removed, so orphan pollers could keep claiming queue items invisibly. v0.16.7
 # requires an instance id and keeps a short in-memory consumer lease.
 REPEATER_BRIDGE_LOCK = threading.Lock()
 REPEATER_ACTIVE_BRIDGE_ID: str | None = None
@@ -2397,7 +2397,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Legacy/orphan bridge pollers must never consume queue items.
             return JSONResponse(
                 status_code=428,
-                content={"pending": False, "error": "bridge_id_required", "required_version": "0.16.6"},
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.16.7"},
             )
         allowed, active_id = _bridge_consumer_allowed(bridge_id)
         if not allowed:

@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.16.6
+ * Negro Burp Bridge v0.16.7
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -68,7 +68,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.6 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.16.7 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -174,7 +174,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.16.6")
+                    .header("X-Negro-Bridge-Version", "0.16.7")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -358,6 +358,51 @@ public class NegroBurpBridge implements BurpExtension {
             }
         }
         return null;
+    }
+
+    private String unescapeJson(String value) {
+        if (value == null) return null;
+        StringBuilder out = new StringBuilder(value.length());
+        int i = 0;
+        while (i < value.length()) {
+            char c = value.charAt(i++);
+            if (c != '\\') {
+                out.append(c);
+                continue;
+            }
+            if (i >= value.length()) {
+                out.append('\\');
+                break;
+            }
+            char esc = value.charAt(i++);
+            switch (esc) {
+                case '"' -> out.append('"');
+                case '\\' -> out.append('\\');
+                case '/' -> out.append('/');
+                case 'b' -> out.append('\b');
+                case 'f' -> out.append('\f');
+                case 'n' -> out.append('\n');
+                case 'r' -> out.append('\r');
+                case 't' -> out.append('\t');
+                case 'u' -> {
+                    if (i + 4 <= value.length()) {
+                        try {
+                            out.append((char) Integer.parseInt(value.substring(i, i + 4), 16));
+                            i += 4;
+                        } catch (NumberFormatException ex) {
+                            out.append("\\u");
+                        }
+                    } else {
+                        out.append("\\u");
+                    }
+                }
+                default -> {
+                    out.append('\\');
+                    out.append(esc);
+                }
+            }
+        }
+        return out.toString();
     }
 
     private long jsonLong(String json, String key) {

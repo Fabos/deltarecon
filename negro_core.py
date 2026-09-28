@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.16.6
+Negro Recon v0.16.7
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.16.6"
+VERSION = "0.16.7"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 

@@ -1,12 +1,17 @@
-# Negro Recon 🐕 — v0.16.6
-## v0.16.6 — Repeater bridge parser fix
+# Negro Recon 🐕 — v0.16.7
 
-Corrige el hand-off Negro → Burp Repeater para requests grandes: el parser regex del bridge podía lanzar `StackOverflowError` al leer `request_b64` y matar silenciosamente el poller justo después de `pending=true`. Ahora usa un parser iterativo y mantiene logs/ACK robustos. Ver `UPDATE-v0.16.6.md`.
+## v0.16.7 — Hotfix de compilación Burp Bridge
+
+Corrige el helper `unescapeJson(...)` faltante en v0.16.6, que impedía compilar el JAR. No cambia el protocolo ni la lógica de Repeater. Ver `UPDATE-v0.16.7.md`.
+
+## v0.16.7 — Repeater bridge parser fix
+
+Corrige el hand-off Negro → Burp Repeater para requests grandes: el parser regex del bridge podía lanzar `StackOverflowError` al leer `request_b64` y matar silenciosamente el poller justo después de `pending=true`. Ahora usa un parser iterativo y mantiene logs/ACK robustos. Ver `UPDATE-v0.16.7.md`.
 
 
-## v0.16.6 — Repeater Bridge orphan-poller fix
+## v0.16.7 — Repeater Bridge orphan-poller fix
 
-Corrige la causa raíz de items que quedaban en `claimed`: bridges antiguos podían seguir ejecutando su poller después de retirar el JAR. La extensión ahora detiene sus hilos al descargarse y el backend exige un id único de bridge/lease de consumidor. Tras actualizar, reinicia Burp una vez. Ver `UPDATE-v0.16.6.md`.
+Corrige la causa raíz de items que quedaban en `claimed`: bridges antiguos podían seguir ejecutando su poller después de retirar el JAR. La extensión ahora detiene sus hilos al descargarse y el backend exige un id único de bridge/lease de consumidor. Tras actualizar, reinicia Burp una vez. Ver `UPDATE-v0.16.7.md`.
 
 
 > **Olfatea donde otros no miran.**
@@ -19,11 +24,11 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.16.6 — Repeater Bridge fast poll fix
+## v0.16.7 — Repeater Bridge fast poll fix
 
 Negro ahora correlaciona **cada exchange nuevo de Burp** de forma pasiva y en tiempo real: parámetros de redirección/URL en query, form y JSON; candidatos SSRF; API keys y secretos con firma; credenciales/campos sensibles devueltos por APIs; secretos en URL; CORS observado; source maps; documentación API y errores internos. Los valores sensibles se enmascaran antes de persistirlos. Las pistas crean señales accionables con provenance exacto y notificaciones persistentes/toasts.
 
-Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.6.md`.
+Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.7.md`.
 
 ## v0.15.0 — UX final para piloto de bounty
 
