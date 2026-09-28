@@ -27,7 +27,9 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +38,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.14
+ * Negro Burp Bridge v0.16.5
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -57,13 +59,23 @@ public class NegroBurpBridge implements BurpExtension {
     private final AtomicLong errors = new AtomicLong();
     private volatile String negroBaseUrl = System.getProperty("negro.url", "http://127.0.0.1:8765");
     private JLabel statusLabel;
+    private Timer uiTimer;
+    private final String bridgeInstanceId = UUID.randomUUID().toString();
+    private final AtomicBoolean unloading = new AtomicBoolean(false);
     private final ScheduledExecutorService bridgePoller = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "negro-repeater-bridge"); t.setDaemon(true); return t; });
 
     @Override
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.4 iniciado → " + negroBaseUrl);
+        api.logging().logToOutput("Negro Burp Bridge v0.16.5 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.extension().registerUnloadingHandler(() -> {
+            if (unloading.compareAndSet(false, true)) {
+                bridgePoller.shutdownNow();
+                if (uiTimer != null) SwingUtilities.invokeLater(() -> uiTimer.stop());
+                api.logging().logToOutput("Negro Burp Bridge descargado · poller detenido · instance=" + bridgeInstanceId.substring(0, 8));
+            }
+        });
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
@@ -99,9 +111,9 @@ public class NegroBurpBridge implements BurpExtension {
 
         JLabel counters = new JLabel();
         panel.add(counters);
-        Timer timer = new Timer(1000, e -> counters.setText(
+        uiTimer = new Timer(1000, e -> counters.setText(
                 "Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get()));
-        timer.start();
+        uiTimer.start();
 
         apply.addActionListener(e -> {
             String value = field.getText().trim().replaceAll("/+$", "");
@@ -155,11 +167,14 @@ public class NegroBurpBridge implements BurpExtension {
     }
 
     private void pollRepeaterQueue() {
+        if (unloading.get()) return;
         try {
             java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                     .uri(URI.create(negroBaseUrl + "/api/bridge/repeater/next"))
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
+                    .header("X-Negro-Bridge-Id", bridgeInstanceId)
+                    .header("X-Negro-Bridge-Version", "0.16.5")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -170,7 +185,7 @@ public class NegroBurpBridge implements BurpExtension {
             java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
             String body = resp.body() == null ? "" : resp.body();
             boolean pending = Pattern.compile("\"pending\"\\s*:\\s*true").matcher(body).find();
-            api.logging().logToOutput("Negro → Repeater poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending);
+            api.logging().logToOutput("Negro → Repeater poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending + " · instance=" + bridgeInstanceId.substring(0, 8));
             if (resp.statusCode() != 200 || !pending) return;
 
             api.logging().logToOutput("Negro → Repeater: item pendiente recibido del backend");

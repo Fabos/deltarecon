@@ -1,4 +1,9 @@
-# Negro Recon 🐕 — v0.16.4
+# Negro Recon 🐕 — v0.16.5
+
+## v0.16.5 — Repeater Bridge orphan-poller fix
+
+Corrige la causa raíz de items que quedaban en `claimed`: bridges antiguos podían seguir ejecutando su poller después de retirar el JAR. La extensión ahora detiene sus hilos al descargarse y el backend exige un id único de bridge/lease de consumidor. Tras actualizar, reinicia Burp una vez. Ver `UPDATE-v0.16.5.md`.
+
 
 > **Olfatea donde otros no miran.**
 
@@ -10,11 +15,11 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 
 
-## v0.16.4 — Repeater Bridge fast poll fix
+## v0.16.5 — Repeater Bridge fast poll fix
 
 Negro ahora correlaciona **cada exchange nuevo de Burp** de forma pasiva y en tiempo real: parámetros de redirección/URL en query, form y JSON; candidatos SSRF; API keys y secretos con firma; credenciales/campos sensibles devueltos por APIs; secretos en URL; CORS observado; source maps; documentación API y errores internos. Los valores sensibles se enmascaran antes de persistirlos. Las pistas crean señales accionables con provenance exacto y notificaciones persistentes/toasts.
 
-Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.4.md`.
+Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.5.md`.
 
 ## v0.15.0 — UX final para piloto de bounty
 

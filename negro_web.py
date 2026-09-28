@@ -47,6 +47,14 @@ JOB_SLOTS = threading.Semaphore(JOB_MAX_CONCURRENCY)
 REPEATER_CLEANUP_LOCK = threading.Lock()
 REPEATER_LAST_CLEANUP_TS = 0.0
 REPEATER_CLEANUP_INTERVAL_SECONDS = 30.0
+# Only one current Burp bridge instance may consume the Repeater queue. Older
+# extension builds started a daemon poller but did not stop it when the JAR was
+# removed, so orphan pollers could keep claiming queue items invisibly. v0.16.5
+# requires an instance id and keeps a short in-memory consumer lease.
+REPEATER_BRIDGE_LOCK = threading.Lock()
+REPEATER_ACTIVE_BRIDGE_ID: str | None = None
+REPEATER_ACTIVE_BRIDGE_LAST_SEEN = 0.0
+REPEATER_BRIDGE_LEASE_SECONDS = 5.0
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 UI_LABELS = {
@@ -2337,6 +2345,19 @@ def create_app(default_domain: str, default_workspace: Path):
         finally:
             REPEATER_CLEANUP_LOCK.release()
 
+
+    def _bridge_consumer_allowed(bridge_id: str) -> tuple[bool, str | None]:
+        global REPEATER_ACTIVE_BRIDGE_ID, REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+        now_ts = datetime.now(timezone.utc).timestamp()
+        with REPEATER_BRIDGE_LOCK:
+            active = REPEATER_ACTIVE_BRIDGE_ID
+            stale = (now_ts - REPEATER_ACTIVE_BRIDGE_LAST_SEEN) > REPEATER_BRIDGE_LEASE_SECONDS
+            if not active or active == bridge_id or stale:
+                REPEATER_ACTIVE_BRIDGE_ID = bridge_id
+                REPEATER_ACTIVE_BRIDGE_LAST_SEEN = now_ts
+                return True, None
+            return False, active
+
     @app.get("/api/bridge/repeater/status", response_class=JSONResponse)
     def bridge_repeater_status():
         totals = {"pending": 0, "claimed": 0, "done": 0, "error": 0}
@@ -2357,10 +2378,31 @@ def create_app(default_domain: str, default_workspace: Path):
             except Exception:
                 continue
         latest.sort(key=lambda x: int(x.get("id") or 0), reverse=True)
-        return {"ok": True, "version": core.VERSION, "counts": totals, "latest": latest[:10]}
+        now_ts = datetime.now(timezone.utc).timestamp()
+        with REPEATER_BRIDGE_LOCK:
+            active = REPEATER_ACTIVE_BRIDGE_ID
+            last_seen = REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+        bridge = {
+            "active": bool(active and (now_ts - last_seen) <= REPEATER_BRIDGE_LEASE_SECONDS),
+            "instance": str(active or "")[:8] or None,
+            "last_seen_seconds_ago": round(max(0.0, now_ts - last_seen), 2) if active else None,
+        }
+        return {"ok": True, "version": core.VERSION, "counts": totals, "bridge": bridge, "latest": latest[:10]}
 
     @app.get("/api/bridge/repeater/next", response_class=JSONResponse)
-    def bridge_repeater_next():
+    def bridge_repeater_next(request: Request):
+        bridge_id = str(request.headers.get("x-negro-bridge-id") or "").strip()
+        bridge_version = str(request.headers.get("x-negro-bridge-version") or "").strip()
+        if not bridge_id:
+            # Legacy/orphan bridge pollers must never consume queue items.
+            return JSONResponse(
+                status_code=428,
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.16.5"},
+            )
+        allowed, active_id = _bridge_consumer_allowed(bridge_id)
+        if not allowed:
+            return {"pending": False, "busy": True, "active_bridge": str(active_id or "")[:8]}
+
         # IMPORTANT: this endpoint is polled every second by Burp. It must never
         # initialize/migrate workspaces. Large targets can contain thousands of
         # resources and re-running migrations here caused >3s requests, Java
@@ -2415,7 +2457,7 @@ def create_app(default_domain: str, default_workspace: Path):
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         print(
-            f"[repeater-next] claimed id={item.get('id')} target={target_key} "
+            f"[repeater-next] claimed id={item.get('id')} target={target_key} bridge={bridge_id[:8]} v={bridge_version or '?'} "
             f"bytes_b64={len(str(item.get('request_b64') or ''))} elapsed_ms={elapsed_ms}",
             flush=True,
         )
