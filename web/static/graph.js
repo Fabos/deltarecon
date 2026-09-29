@@ -7,6 +7,7 @@
   const search = root.querySelector('[data-graph-search]');
   const typeWrap = root.querySelector('[data-graph-types]');
   const empty = root.querySelector('[data-graph-empty]');
+  const routesWrap = root.querySelector('[data-graph-routes]');
   const statusEl = root.querySelector('[data-graph-layout-status]');
   const scopeStatusEl = root.querySelector('[data-graph-scope-status]');
   const api = root.dataset.api;
@@ -33,6 +34,7 @@
   let graph = {nodes:[],edges:[]};
   let sceneNodes = [], sceneEdges = [], visibleNodes = [], visibleEdges = [];
   let selected = null;
+  let activeRoute = null;
   let preset = 'surface';
   let activeTypes = new Set();
   let expandedClusters = new Set();
@@ -79,9 +81,10 @@
     return fetch(endpoint, {headers:{'Accept':'application/json'}})
       .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
-        graph = data; selected=null; expandedClusters.clear();
+        graph = data; selected=null; activeRoute=null; expandedClusters.clear();
         if(scopeStatusEl){ const m=graph.meta||{}; scopeStatusEl.textContent=m.scope_label || 'Vista general'; }
         buildScene(); buildTypeFilters(); applyFilters({fitAfter:true});
+        renderRoutes();
         detail.innerHTML=emptyDetail();
       })
       .catch(err => { detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`; });
@@ -319,6 +322,15 @@
     return [a,b].some(n=>n && (n.state==='interesting'||n.state==='finding'||n.type==='lead'||n.type==='finding'||n.type==='observation'));
   }
 
+  function relationIsRoute(e){
+    if(!activeRoute || !Array.isArray(activeRoute.node_ids)) return false;
+    const ids=activeRoute.node_ids;
+    for(let i=0;i<ids.length-1;i++){
+      if((e.source===ids[i]&&e.target===ids[i+1])||(e.target===ids[i]&&e.source===ids[i+1]))return true;
+    }
+    return false;
+  }
+
   function labelVisible(n){
     if(selected===n.id)return true;
     if(['target','host','resource','operation','finding','lead','cluster'].includes(n.type))return true;
@@ -335,13 +347,13 @@
       const path=document.createElementNS(NS,'path');
       const dx=Math.max(45,Math.abs(b.x-a.x)*.48), c1x=a.x+Math.sign(b.x-a.x||1)*dx, c2x=b.x-Math.sign(b.x-a.x||1)*dx;
       path.setAttribute('d',`M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`);
-      path.setAttribute('class',`graph-edge${relationIsHighlight(e)?' graph-edge-highlight':''}`);path.dataset.id=e.id;
+      path.setAttribute('class',`graph-edge${relationIsHighlight(e)?' graph-edge-highlight':''}${relationIsRoute(e)?' graph-edge-route':''}`);path.dataset.id=e.id;
       path.addEventListener('click',ev=>{ev.stopPropagation();showEdge(e)});g.appendChild(path);
     });
 
     visibleNodes.forEach(n=>{
       const ng=document.createElementNS(NS,'g');
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}`);
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}${activeRoute?.node_ids?.includes(n.id)?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
       if (n.meta?.coverage && ['host','resource'].includes(n.type)) {
@@ -464,6 +476,33 @@
   svg.addEventListener('pointercancel',()=>{nodeDrag=null;panDrag=null;});
   svg.addEventListener('pointerdown',e=>{if(e.target.closest?.('.graph-node'))return;panDrag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};svg.setPointerCapture?.(e.pointerId);});
   svg.addEventListener('wheel',e=>{e.preventDefault();const rect=svg.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top,old=view.k,next=Math.max(.2,Math.min(2.6,old*(e.deltaY<0?1.1:.9)));view.x=mx-(mx-view.x)*(next/old);view.y=my-(my-view.y)*(next/old);view.k=next;render();},{passive:false});
+
+  function routePriorityLabel(v){return v==='high'?'Alta':v==='medium'?'Media':'Quick check';}
+  function renderRoutes(){
+    if(!routesWrap)return;
+    const routes=(graph.routes||[]).slice(0,8);
+    if(!routes.length){routesWrap.innerHTML='<p class="empty">Todavía no hay una ruta defendible. Captura tráfico o genera hipótesis para que Negro pueda conectar evidencia con una prueba.</p>';return;}
+    routesWrap.innerHTML=routes.map(r=>{
+      const selectedRoute=activeRoute?.lead_id===r.lead_id?' active':'';
+      const source=String(r.source||'ENGINE').toUpperCase().startsWith('AI')?'IA':'Motor';
+      const endpoint=[r.method,r.path].filter(Boolean).join(' ');
+      return `<button type="button" class="graph-route-card${selectedRoute}" data-route-lead="${Number(r.lead_id||0)}"><span class="graph-route-rank">${Number(r.score||0)}</span><span class="graph-route-copy"><span class="badges"><span class="badge priority-${esc(r.priority||'low')}">${esc(routePriorityLabel(r.priority))}</span><span class="chip">${source}</span>${endpoint?`<code>${esc(endpoint)}</code>`:''}</span><b>${esc(r.title||'Ruta de investigación')}</b><small>${esc(r.next_test||r.why||'Abrir evidencia y validar manualmente.')}</small></span><span class="graph-route-arrow">→</span></button>`;
+    }).join('');
+    routesWrap.querySelectorAll('[data-route-lead]').forEach(btn=>btn.addEventListener('click',async()=>{
+      const leadId=Number(btn.dataset.routeLead||0);let route=(graph.routes||[]).find(r=>Number(r.lead_id||0)===leadId);if(!route)return;
+      const resourceNode=route.resource_id?`resource:${Number(route.resource_id)}`:'';
+      if(resourceNode && !graph.nodes.some(n=>n.id===resourceNode)){
+        await load(`${api}?scope=resource&resource_id=${encodeURIComponent(route.resource_id)}`);
+        route=(graph.routes||[]).find(r=>Number(r.lead_id||0)===leadId)||route;
+      }
+      activeRoute=route;
+      const attackBtn=root.querySelector('[data-graph-preset="attack"]');
+      if(attackBtn)setPreset('attack',attackBtn);else{buildScene();buildTypeFilters();applyFilters({fitAfter:true});}
+      const leadNode=`lead:${leadId}`;const n=sceneNodes.find(x=>x.id===leadNode)||graph.nodes.find(x=>x.id===leadNode);
+      if(n){selected=leadNode;showNode(n);focusNeighborhood(leadNode,2);render();}
+      renderRoutes();
+    }));
+  }
 
   function setPreset(next,button){
     preset=next;selected=null;expandedClusters=new Set();

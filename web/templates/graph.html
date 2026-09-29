@@ -9,6 +9,11 @@
   <div class="graph-scope-banner"><strong data-graph-scope-status>Vista general</strong><span>En targets grandes Negro carga el mapa por capas para no bloquear el navegador. Doble clic en un host/recurso para profundizar.</span></div>
   <div class="graph-stats">{% for kind,count in graph_counts|dictsort %}<span><b>{{ count }}</b> {{ ui_label(kind) }}</span>{% endfor %}<small data-graph-layout-status>Orden automático</small></div>
 
+  <section class="graph-route-panel">
+    <div class="graph-route-head"><div><span class="eyebrow">RUTAS DE INVESTIGACIÓN</span><h2>Por dónde seguir</h2></div><small>Correlaciones con evidencia; no son cadenas de explotación confirmadas.</small></div>
+    <div class="graph-route-list" data-graph-routes><p class="empty">Cargando rutas…</p></div>
+  </section>
+
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
     <div class="graph-ai-head"><div><span class="eyebrow">HIPÓTESIS CON IA</span><h2>Ideas basadas en tu investigación real</h2><p data-graph-ai-scope>Analizar todo el target.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
     {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. Ve a Ajustes para usar “Dame ideas”.</div>{% endif %}

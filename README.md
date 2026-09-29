@@ -1,4 +1,19 @@
-# Negro Recon 🐕 — v0.16.7
+# Negro Recon 🐕 — v0.17.0
+
+## v0.17.0 — Access Control Intelligence + Rutas de investigación
+
+Negro convierte lo aprendido en el módulo de **Access Control** en ayudas pasivas sobre tráfico que ya capturaste con Burp. No explota automáticamente ni convierte indicios en Findings: crea hipótesis trazables para revisión manual.
+
+- **Resources → Qué merece revisión aquí**: tabla por recurso con indicio, razón, prueba sugerida, prioridad y estado.
+- Señales pasivas para autorización horizontal/IDOR, campos privilegiados y mass assignment, métodos HTTP alternativos, redirects con body, discrepancias `403` proxy/backend y acciones sensibles dependientes de `Referer`.
+- El check de métodos recuerda preservar la semántica: al convertir `POST`/JSON a `GET`, los parámetros equivalentes pueden necesitar ir en query string.
+- **Mapa → Rutas de investigación**: prioriza caminos `evidencia → recurso/operación → hipótesis → siguiente prueba`, incluyendo hipótesis de IA ya persistidas. Son rutas para investigar, **no cadenas de explotación confirmadas**.
+- Las rutas se pueden abrir desde el mapa; Negro carga el recurso, enfoca el vecindario y resalta el camino.
+- Mejor contraste de líneas y resaltado especial para la ruta activa en el mapa oscuro.
+- Los workspaces existentes pueden regenerar estas señales con el flujo normal de `generate-leads`; no se borra estado previo.
+- El protocolo Burp ↔ Negro **no cambió**: el Burp Bridge v0.16.7 existente sigue siendo compatible y no necesita recompilarse.
+
+Consulta `UPDATE-v0.17.0.md`.
 
 ## v0.16.7 — Hotfix de compilación Burp Bridge
 

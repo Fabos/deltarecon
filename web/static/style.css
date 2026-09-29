@@ -161,3 +161,25 @@ input,select,textarea{background:#0a0e11;border-color:#283139;border-radius:9px;
 .repeater-inline-status{display:inline-block;margin-left:.5rem;font-size:.78rem;color:var(--muted,#8d98a5);vertical-align:middle}
 .repeater-inline-status.ok{color:#a8ef63}.repeater-inline-status.error{color:#ff7b83}.repeater-inline-status.pending{color:#d2b56b}
 form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+
+/* v0.17.0 — Access Control Intelligence + Investigation Routes */
+.resource-intel-panel{border-color:#34404a;background:linear-gradient(180deg,#12181c,#0e1316)}
+.resource-intel-table-wrap{overflow-x:auto;margin-top:12px;border:1px solid #273139;border-radius:11px}
+.resource-intel-table{min-width:980px;background:#0a0f12}
+.resource-intel-table th{background:#0d1317;color:#7f8c94}
+.resource-intel-table td{white-space:normal;vertical-align:top;line-height:1.45;color:#bec8ce}
+.resource-intel-table td:first-child{min-width:220px}.resource-intel-table td:nth-child(2){min-width:260px}.resource-intel-table td:nth-child(3){min-width:340px}.resource-intel-table td:last-child{min-width:125px}
+.resource-intel-table td:first-child a:hover{color:var(--accent)}.resource-intel-table td:first-child small{display:block;margin-top:5px;color:#71808a;font-size:10px;text-transform:capitalize}
+.resource-intel-row.priority-high{box-shadow:inset 3px 0 #d86e77}.resource-intel-row.priority-medium{box-shadow:inset 3px 0 #b18d52}.resource-intel-row.priority-low{box-shadow:inset 3px 0 #516571}
+.intel-next-test{color:#d6e0e5}.resource-review-aids{margin-top:14px;border:1px solid #263139;border-radius:10px;background:#0a0f12}.resource-review-aids>summary{cursor:pointer;padding:10px 12px;display:flex;justify-content:space-between;gap:12px;color:#c8d2d7}.resource-review-aids>summary span{color:#75838b;font-size:10px}.resource-review-aid-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;padding:10px;border-top:1px solid #20292f}.resource-review-aid{display:grid;gap:5px;padding:10px;border:1px solid #263139;border-radius:9px;background:#0d1317}.resource-review-aid:hover{border-color:#53694a}.resource-review-aid span{font-size:11px}.resource-review-aid small{color:#7e8b93;line-height:1.45}
+
+.graph-route-panel{border:1px solid #29343b;border-radius:13px;background:#0b1013;padding:12px 14px}.graph-route-head{display:flex;justify-content:space-between;gap:18px;align-items:end;margin-bottom:9px}.graph-route-head h2{font-size:15px}.graph-route-head small{max-width:560px;text-align:right;color:#74818a;font-size:10px}.graph-route-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px}.graph-route-card{width:100%;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;border:1px solid #2a353d;border-radius:10px;background:#0d1317;color:inherit;padding:10px 11px;cursor:pointer}.graph-route-card:hover,.graph-route-card.active{border-color:#62794d;background:#111914}.graph-route-card.active{box-shadow:inset 3px 0 var(--accent)}.graph-route-rank{width:31px;height:31px;border-radius:8px;display:grid;place-items:center;background:#151d21;border:1px solid #34424a;color:#b9c5cb;font-size:10px;font-weight:800}.graph-route-copy{display:grid;gap:4px;min-width:0}.graph-route-copy>.badges{gap:4px}.graph-route-copy code{font-size:9px;color:#9fb0ba;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}.graph-route-copy>b{font-size:12px;color:#dbe3e7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.graph-route-copy>small{font-size:10px;color:#78868e;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.graph-route-arrow{color:#617078;font-size:18px}
+
+/* The map must be readable on the newer dark palette: relationships are evidence, not decoration. */
+.graph-edge{stroke:#45545d!important;stroke-width:1.55!important;opacity:.88!important}
+.graph-edge-highlight{stroke:#aa86d2!important;stroke-width:2.35!important;opacity:1!important}
+.graph-edge-route{stroke:var(--accent)!important;stroke-width:3!important;opacity:1!important;filter:drop-shadow(0 0 3px rgba(181,243,107,.22))}
+.graph-node.route-node circle{stroke:var(--accent)!important;stroke-width:2.5!important;filter:drop-shadow(0 0 5px rgba(181,243,107,.16))}
+.graph-edge:hover{stroke:#d5ffab!important;stroke-width:2.6!important;opacity:1!important}
+
+@media(max-width:760px){.graph-route-head{align-items:flex-start;flex-direction:column}.graph-route-head small{text-align:left}.graph-route-list{grid-template-columns:1fr}.resource-review-aid-grid{grid-template-columns:1fr}}

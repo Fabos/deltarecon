@@ -40,6 +40,42 @@
       {% endif %}
     </section>
 
+    <section class="panel resource-intel-panel" id="inteligencia-recurso">
+      <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA DEL RECURSO</p><h2>Qué merece revisión aquí</h2></div><span>{{ resource_hypotheses|length }} señal{% if resource_hypotheses|length != 1 %}es{% endif %}</span></div>
+      <p class="muted small">Negro no afirma que exista una vulnerabilidad. Correlaciona lo que ya observó en Burp/JS/recon y te recuerda pruebas concretas para este recurso.</p>
+
+      {% if resource_hypotheses %}
+      <div class="resource-intel-table-wrap">
+        <table class="resource-intel-table">
+          <thead><tr><th>Posible / indicio</th><th>Por qué llamó la atención</th><th>Prueba sugerida</th><th>Estado</th></tr></thead>
+          <tbody>
+          {% for h in resource_hypotheses %}
+            <tr class="resource-intel-row priority-{{ h.review_priority }}">
+              <td><a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><b>{{ h.title }}</b></a><small>{{ h.lead_type|replace('_',' ') }} · {{ h.source }}</small></td>
+              <td>{{ h.why_interesting or 'Señal correlacionada con evidencia del recurso.' }}</td>
+              <td><span class="intel-next-test">{{ h.next_test or 'Revisar manualmente la evidencia relacionada.' }}</span></td>
+              <td><span class="badge priority-{{ h.review_priority }}">{{ ui_label(h.review_priority) }}</span><span class="chip">{{ ui_label(h.status) }}</span></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}<div class="empty-state compact"><strong>Sin señales correlacionadas todavía.</strong><span>Navega el flujo con Burp; Negro irá asociando hipótesis al recurso sin enviar tráfico adicional.</span></div>{% endif %}
+
+      {% if review_aids %}
+      <details class="resource-review-aids">
+        <summary><b>Recordatorios de pruebas</b><span>{{ review_aids|length }} sugerencias contextuales</span></summary>
+        <div class="resource-review-aid-grid">
+        {% for a in review_aids %}
+          <a href="#operation-{{ a.operation_id }}-coverage" class="resource-review-aid status-{{ a.status }}">
+            <span><b>{{ a.method }}</b> · {{ a.label }}</span><small>{{ a.hint }}</small>
+          </a>
+        {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </section>
+
     <section class="panel" id="http">
       <div class="panel-head"><div><p class="eyebrow">TRÁFICO HTTP</p><h2>Solicitudes y respuestas</h2></div><span>{{ operations|length }} método{% if operations|length != 1 %}s{% endif %}</span></div>
       {% for op in operations %}{% set o=op.row %}

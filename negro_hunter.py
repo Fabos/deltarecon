@@ -144,6 +144,25 @@ SENSITIVE_RESPONSE_KEYS = {
 IDENTITY_KEYS = {"user", "username", "email", "login", "account", "userid", "user_id"}
 QUERY_SECRET_KEYS = {"password", "passwd", "pwd", "token", "access_token", "refresh_token", "api_key", "apikey", "secret"}
 
+# Access-control intelligence.  These are intentionally heuristic names: a match
+# creates a hypothesis/review aid, never a confirmed finding.
+OBJECT_ID_KEYS = {
+    "id", "userid", "user_id", "accountid", "account_id", "orderid", "order_id",
+    "documentid", "document_id", "invoiceid", "invoice_id", "ticketid", "ticket_id",
+    "profileid", "profile_id", "sellerid", "seller_id", "customerid", "customer_id",
+    "ownerid", "owner_id", "resourceid", "resource_id",
+}
+PRIVILEGED_FIELD_KEYS = {
+    "role", "roleid", "role_id", "roles", "permission", "permissions", "scope", "scopes",
+    "isadmin", "is_admin", "admin", "privilege", "privileges", "ownerid", "owner_id",
+    "status", "state", "approved", "verified", "featured", "tier", "level",
+}
+SENSITIVE_ACTION_TOKENS = {
+    "admin", "internal", "manage", "management", "approve", "approval", "promote", "role",
+    "permission", "delete", "remove", "publish", "feature", "export", "refund", "confirm",
+    "complete", "finalize", "verify", "moderate", "suspend", "ban",
+}
+
 TAKEOVER_PROVIDERS = [
     ("github", ("github.io",), ("there isn't a github pages site here", "for root urls")),
     ("heroku", ("herokudns.com", "herokuapp.com"), ("no such app", "heroku | no such app")),
@@ -172,6 +191,9 @@ OPERATION_TEST_CATALOG: dict[str, dict[str, str]] = {
     "client_trust": {"label":"Confianza en cliente / feature flags", "category":"client_side", "hint":"Si el cliente recibe flags/config, altera una sola respuesta, observa UI/requests nuevas y verifica luego que el backend aplique autorización por sí mismo."},
     "url_handling": {"label":"Redirecciones / manejo de URL", "category":"url_flow", "hint":"Cuando exista un parámetro URL/redirect real, verifica validación, normalización y destino permitido sin salir del alcance autorizado."},
     "mass_assignment": {"label":"Asignación masiva / campos ocultos", "category":"api", "hint":"En JSON de creación/edición, prueba únicamente campos reales/relacionados y observa si el backend acepta propiedades que la interfaz no debería controlar."},
+    "referer_trust": {"label":"Autorización basada en Referer", "category":"access_control", "hint":"Si la acción parece privilegiada y envía Referer, compara el comportamiento al quitarlo o modificarlo. Referer puede aportar contexto, pero no debe sustituir la autorización server-side."},
+    "proxy_path_access": {"label":"Control por ruta en proxy/frontend", "category":"access_control", "hint":"Si un 403 parece provenir de una capa distinta al backend, compara fingerprints y revisa discrepancias de routing/normalización. X-Original-URL/X-Rewrite-URL sólo tienen sentido cuando existe evidencia de varias capas."},
+    "redirect_body": {"label":"Datos antes de redirigir", "category":"access_control", "hint":"En 3xx revisa el body antes de seguir Location. Una redirección no evita una filtración si los datos sensibles ya fueron incluidos en la respuesta."},
 }
 
 TEST_STATUSES = {"pending", "testing", "negative", "interesting", "confirmed", "not_applicable"}
@@ -211,6 +233,17 @@ def _operation_test_keys(conn, operation_id: int) -> list[str]:
         keys.append("rate_limit")
     if any(x in path for x in ("feature", "flag", "config", "setting", "experiment")):
         keys.append("client_trust")
+
+    # Referer is client-controlled.  Do not call this a vulnerability; simply
+    # remind the hunter when a sensitive-looking state change carries it.
+    ex_headers = conn.execute("SELECT request_headers_json,status_code FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (operation_id,)).fetchone()
+    latest_headers = _header_map(ex_headers["request_headers_json"]) if ex_headers else {}
+    if latest_headers.get("referer") and method in {"POST", "PUT", "PATCH", "DELETE"} and any(tok in path for tok in SENSITIVE_ACTION_TOKENS):
+        keys.append("referer_trust")
+    if ex_headers and int(ex_headers["status_code"] or 0) in {301,302,303,307,308}:
+        keys.append("redirect_body")
+    if ex_headers and int(ex_headers["status_code"] or 0) == 403:
+        keys.append("proxy_path_access")
 
     query_keys: set[str] = set()
     ex = conn.execute("SELECT query_json FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (operation_id,)).fetchone()
@@ -1516,6 +1549,124 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
         if resp_body and re.search(pattern, resp_body[:700_000], re.I):
             ev = {"source":"burp_response","exchange_id":exchange_id,"method":method,"url":url,"error_type":etype,"status":status}
             notify(kind="error_disclosure", key=f"error_disclosure:{etype}:{rid}", severity="medium", title="Detalle interno en respuesta", message=f"{method} {path} muestra una señal de {etype.replace('_',' ')} · exchange #{exchange_id}", data=ev)
+
+    # 7) Access Control Intelligence — passive hypotheses learned from the
+    # Access Control training module.  These clues never perform exploitation.
+    # They only point the hunter to a concrete manual comparison in Repeater.
+    param_keys = {re.sub(r"[^a-z0-9_]", "", k.lower().replace("-", "_")) for k in pmap}
+    compact_param_keys = {k.replace("_", "") for k in param_keys}
+    object_hits = sorted({
+        k for k in pmap
+        if re.sub(r"[^a-z0-9]", "", k.lower()) in {x.replace("_", "") for x in OBJECT_ID_KEYS}
+           or re.sub(r"[^a-z0-9]", "", k.lower()).endswith("id")
+    })
+    path_has_object = bool(re.search(r"/(?:\d{1,18}|[0-9a-f]{8}-[0-9a-f-]{27,})\b", path, re.I))
+    if (object_hits or path_has_object) and bool(row["authenticated_observed"]):
+        evidence = [{"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,
+                     "object_parameters":object_hits[:8],"path_identifier":path_has_object}]
+        upsert_lead(conn, lead_key=f"access_object:{oid}", host_id=hid, resource_id=rid,
+            lead_type="access_object_reference", title="Objeto referenciado por el cliente · revisar autorización horizontal",
+            confidence="medium", review_priority="high" if method in {"PUT","PATCH","DELETE"} else "medium", evidence=evidence,
+            why="La operación autenticada referencia un objeto mediante un ID/UUID controlado por el cliente. Eso no demuestra IDOR, pero es una superficie clásica para comparar ownership entre dos identidades autorizadas.",
+            next_test="Envía el exchange a Repeater y compara exactamente la misma operación con un objeto perteneciente a tu segunda cuenta de prueba. Mantén constante todo salvo identidad/ID y evita tocar datos de terceros.",
+            confirm_if="Una identidad puede leer o modificar un objeto que pertenece a otra identidad sin autorización equivalente.",
+            discard_if="El backend valida ownership/tenant/rol de forma consistente o el identificador sólo referencia datos públicos.")
+
+    # Fields returned by the API but not editable by the observed request can
+    # be useful mass-assignment hypotheses (roleId, permissions, ownerId, etc.).
+    response_field_names = {re.sub(r"[^a-z0-9_]", "", k.lower().replace("-", "_")) for k, _, _ in fields}
+    compact_response_fields = {k.replace("_", "") for k in response_field_names}
+    privileged_compact = {x.replace("_", "") for x in PRIVILEGED_FIELD_KEYS}
+    hidden_privileged = sorted({
+        k for k in response_field_names
+        if k.replace("_", "") in privileged_compact and k.replace("_", "") not in compact_param_keys
+    })
+    if method in {"POST","PUT","PATCH"} and hidden_privileged and bool(row["authenticated_observed"]):
+        ev = {"source":"burp_access_control","exchange_id":exchange_id,"method":method,"url":url,
+              "response_only_privileged_fields":hidden_privileged[:10]}
+        upsert_lead(conn, lead_key=f"mass_assignment_fields:{oid}", host_id=hid, resource_id=rid,
+            lead_type="mass_assignment", title="Campos privilegiados visibles pero no editados por la interfaz",
+            confidence="medium", review_priority="high" if any(x.replace('_','') in {"role","roleid","isadmin","admin","permission","permissions","ownerid"} for x in hidden_privileged) else "medium",
+            evidence=[ev], why="La respuesta expone propiedades de autorización/estado que no aparecieron en el request observado. En endpoints de edición esto puede indicar campos que el binder/model acepta aunque la UI no los envíe.",
+            next_test=f"En Repeater, conserva el request original y prueba uno de estos campos observados: {', '.join(hidden_privileged[:6])}. Cambia sólo datos de tu propia cuenta/objeto y verifica el estado server-side después.",
+            confirm_if="El backend acepta modificar un campo privilegiado que la identidad actual no debería controlar y el cambio produce capacidad adicional.",
+            discard_if="El backend ignora/rechaza esos campos o revalida autorización antes de aplicar cambios sensibles.")
+
+    # Same resource observed with multiple verbs: prioritize semantic method
+    # comparisons rather than blindly spraying verbs.  Preserve the operation's
+    # parameters when translating POST/JSON into GET/query during manual tests.
+    sibling_methods = [str(x["method"]).upper() for x in conn.execute(
+        "SELECT method FROM resource_operations WHERE resource_id=? ORDER BY method", (rid,)
+    ).fetchall()]
+    if len(set(sibling_methods)) >= 2 and any(x in {"POST","PUT","PATCH","DELETE"} for x in sibling_methods):
+        ev = {"source":"burp_http_model","exchange_id":exchange_id,"url":url,"methods":sorted(set(sibling_methods))}
+        upsert_lead(conn, lead_key=f"method_auth:{rid}", host_id=hid, resource_id=rid,
+            lead_type="method_access_control", title="Mismo recurso observado con varios métodos HTTP",
+            confidence="medium", review_priority="medium", evidence=[ev],
+            why="El mismo recurso acepta varios verbos y al menos uno cambia estado. Distintas rutas de código/middleware pueden aplicar controles diferentes.",
+            next_test="Compara la misma intención de negocio con los métodos observados. Si conviertes POST/JSON a GET, mueve los parámetros equivalentes al query string; cambiar sólo el verbo puede producir una petición incompleta y un falso negativo.",
+            confirm_if="La misma acción/estado puede alcanzarse mediante un método con controles de autorización más débiles.",
+            discard_if="Los métodos tienen semánticas distintas o todos aplican autorización equivalente.")
+
+    # Redirects are not authorization.  If a 3xx still carries a meaningful
+    # body, surface it so the hunter reads the response before following Location.
+    if status in {301,302,303,307,308}:
+        stripped_body = resp_body.strip()
+        body_field_names = {str(k).lower().replace("-", "_") for k, _, _ in fields}
+        data_like = bool(body_field_names & (IDENTITY_KEYS | SENSITIVE_RESPONSE_KEYS | PRIVILEGED_FIELD_KEYS))
+        if len(stripped_body) >= 120 and (data_like or len(stripped_body) >= 600):
+            ev = {"source":"burp_redirect","exchange_id":exchange_id,"method":method,"url":url,"status":status,
+                  "location":_safe_url_evidence(resp_headers.get("location", "")),"response_size":len(resp_body),
+                  "interesting_fields":sorted(body_field_names & (IDENTITY_KEYS | SENSITIVE_RESPONSE_KEYS | PRIVILEGED_FIELD_KEYS))[:10]}
+            upsert_lead(conn, lead_key=f"redirect_body:{rid}:{status}", host_id=hid, resource_id=rid,
+                lead_type="redirect_body_access_control", title="Redirect con contenido que merece revisión",
+                confidence="high" if data_like else "medium", review_priority="medium", evidence=[ev],
+                why="El servidor respondió con redirección pero también envió un body significativo. Redirigir al navegador no evita una filtración si los datos ya salieron en la respuesta.",
+                next_test=f"Abre el exchange #{exchange_id} sin seguir el redirect y revisa el body completo. Compara con tu propia identidad y no uses datos de terceros fuera del scope.",
+                confirm_if="El body del 3xx contiene datos sensibles/privados que la identidad no estaba autorizada a recibir.",
+                discard_if="El body sólo contiene una página genérica de redirect sin información adicional.")
+
+    # A 403 that looks like a different server/layer than a normal backend 404
+    # is a useful routing hypothesis.  Compare only passive fingerprints.
+    if status == 403:
+        baseline = conn.execute(
+            """SELECT e.id,e.response_size,e.response_headers_json,r.path
+               FROM http_exchanges e JOIN resource_operations oo ON oo.id=e.operation_id
+               JOIN resources r ON r.id=oo.resource_id
+               WHERE r.host_id=? AND e.status_code=404 AND e.id<>? ORDER BY e.last_seen_at DESC LIMIT 1""",
+            (hid, exchange_id),
+        ).fetchone()
+        if baseline:
+            bh = _header_map(baseline["response_headers_json"])
+            server_a, server_b = resp_headers.get("server", "").lower(), bh.get("server", "").lower()
+            ctype_a, ctype_b = resp_headers.get("content-type", "").split(";",1)[0].lower(), bh.get("content-type", "").split(";",1)[0].lower()
+            size_a, size_b = int(row["response_size"] or 0), int(baseline["response_size"] or 0)
+            size_ratio = max(size_a, size_b, 1) / max(min(size_a or 1, size_b or 1), 1)
+            layer_diff = bool((server_a and server_b and server_a != server_b) or (ctype_a and ctype_b and ctype_a != ctype_b) or size_ratio >= 3.0)
+            if layer_diff:
+                ev = {"source":"burp_fingerprint","exchange_id":exchange_id,"method":method,"url":url,"status":403,
+                      "server":server_a or None,"content_type":ctype_a or None,"size":size_a,
+                      "baseline_404_exchange":int(baseline["id"]),"baseline_path":baseline["path"],"baseline_server":server_b or None,
+                      "baseline_content_type":ctype_b or None,"baseline_size":size_b}
+                upsert_lead(conn, lead_key=f"proxy_403:{rid}", host_id=hid, resource_id=rid,
+                    lead_type="proxy_path_access_control", title="403 con fingerprint distinto al backend observado",
+                    confidence="medium", review_priority="medium", evidence=[ev],
+                    why="El 403 difiere de un 404 normal del mismo host en servidor, Content-Type o tamaño. Puede significar que proxy/WAF/frontend está bloqueando la ruta antes de la aplicación.",
+                    next_test="Primero confirma qué capa responde. Si la arquitectura lo justifica, prueba manualmente discrepancias de routing/normalización; X-Original-URL y X-Rewrite-URL son quick checks, no una conclusión automática.",
+                    confirm_if="Una representación permitida por la capa frontal termina ejecutando una ruta que directamente estaba bloqueada y el backend no revalida autorización.",
+                    discard_if="403 y 404 provienen de la misma capa o el backend aplica autorización equivalente tras cualquier reescritura.")
+
+    # Sensitive state-changing action carrying Referer: remember the technique,
+    # but keep it low priority because Referer is commonly present for benign reasons.
+    if req_headers.get("referer") and method in {"POST","PUT","PATCH","DELETE"} and any(tok in low_path for tok in SENSITIVE_ACTION_TOKENS):
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"referer":_safe_url_evidence(req_headers.get("referer", ""))}
+        upsert_lead(conn, lead_key=f"referer_access:{oid}", host_id=hid, resource_id=rid,
+            lead_type="referer_access_control", title="Acción sensible observada con Referer",
+            confidence="low", review_priority="low", evidence=[ev],
+            why="Referer es controlado por el cliente y no debe ser la prueba de autorización. Su presencia no implica vulnerabilidad; sólo merece un quick check en una acción sensible.",
+            next_test="Con tu propia cuenta de prueba, compara la request original contra la misma request sin Referer y con un Referer distinto. Si el resultado de autorización depende del header, investiga por qué.",
+            confirm_if="Una identidad sin privilegios ejecuta la acción únicamente al presentar un Referer privilegiado/controlado.",
+            discard_if="Referer sólo participa en CSRF/telemetría o la autorización depende correctamente de la identidad/rol server-side.")
 
     return {"exchange_id": exchange_id, "signals": signals, "new_notifications": new_notifications}
 

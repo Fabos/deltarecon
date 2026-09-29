@@ -80,6 +80,12 @@ UI_LABELS = {
     "dom_xss": "DOM XSS", "oauth_oidc_surface": "Superficie OAuth/OIDC", "open_redirect": "Open redirect",
     "secret_or_client_config": "Secretos/configuración cliente", "source_map": "Source map", "ssrf_surface": "Superficie SSRF",
     "subdomain_takeover": "Subdomain takeover",
+    "access_object_reference": "Autorización horizontal / IDOR",
+    "mass_assignment": "Asignación masiva",
+    "method_access_control": "Control de acceso por método HTTP",
+    "redirect_body_access_control": "Datos expuestos antes de redirect",
+    "proxy_path_access_control": "Control de acceso por ruta/proxy",
+    "referer_access_control": "Control de acceso basado en Referer",
 }
 
 def _ui_label(value: Any) -> str:
@@ -821,6 +827,37 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
                WHERE fe.entity_type='resource' AND fe.entity_id=? ORDER BY f.updated_at DESC""",
             (resource_id,),
         ).fetchall()
+        # Resource-level investigation help.  Keep this compact: leads/hypotheses
+        # tell the hunter *why this resource deserves attention*, while detailed
+        # per-method coverage remains available lower in the HTTP section.
+        resource_hypotheses = []
+        for l in conn.execute(
+            """SELECT * FROM leads_v2 WHERE resource_id=? AND status NOT IN ('negative','discarded')
+               ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'interesting' THEN 1 WHEN 'testing' THEN 2
+                                    WHEN 'candidate' THEN 3 WHEN 'postponed' THEN 4 ELSE 5 END,
+                        CASE review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                        updated_at DESC LIMIT 20""",
+            (resource_id,),
+        ).fetchall():
+            item = dict(l)
+            try:
+                item["evidence"] = json.loads(l["evidence_json"] or "[]")
+            except Exception:
+                item["evidence"] = []
+            resource_hypotheses.append(item)
+
+        review_aids = []
+        for op in operations:
+            o = op["row"]
+            for t in op["tests"]:
+                if str(t.get("status") or "pending") not in {"pending","testing","interesting"}:
+                    continue
+                review_aids.append({
+                    "operation_id": int(o["id"]), "method": str(o["method"]),
+                    "test_key": t.get("test_key"), "label": t.get("label"),
+                    "hint": t.get("hint"), "status": t.get("status"),
+                })
+        review_aids = review_aids[:14]
         all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
         coverage = _coverage_state(row["review_state"])
         signal, finding_count = _entity_signal(conn, "resource", resource_id, row["classification"])
@@ -834,6 +871,8 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
             "test_summary": resource_test_summary,
             "test_statuses": ["pending","testing","negative","interesting","confirmed","not_applicable"],
             "observations": observations,
+            "resource_hypotheses": resource_hypotheses,
+            "review_aids": review_aids,
             "linked_findings": linked_findings,
             "all_findings": all_findings,
             "coverage_state": coverage,
@@ -899,6 +938,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
     """
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
+    routes: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
     seen_edges: set[str] = set()
 
@@ -1038,10 +1078,104 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
                 evidence = rel["evidence_json"]
             add_edge(src, dst, rel["relation"], source=rel["source"], evidence=evidence)
 
+        routes = _investigation_routes(conn, limit=10)
+
     type_counts: dict[str, int] = {}
     for n in nodes:
         type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
-    return {"target": domain, "nodes": nodes, "edges": edges, "counts": type_counts, "generated_at": _now()}
+    return {"target": domain, "nodes": nodes, "edges": edges, "routes": routes, "counts": type_counts, "generated_at": _now()}
+
+
+def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: list[int] | None = None, limit: int = 8) -> list[dict[str, Any]]:
+    """Build deterministic, evidence-backed investigation paths.
+
+    A route is *not* an exploit chain.  It is a compact sequence from observed
+    evidence to an active hypothesis and its next manual test.  AI hypotheses
+    participate naturally because they are persisted in leads_v2 too.
+    """
+    where = ["l.status NOT IN ('negative','discarded')"]
+    params: list[Any] = []
+    if resource_ids:
+        marks = ','.join('?' * len(resource_ids))
+        if host_id:
+            where.append(f"(l.host_id=? OR l.resource_id IN ({marks}))")
+            params.extend([host_id, *resource_ids])
+        else:
+            where.append(f"l.resource_id IN ({marks})")
+            params.extend(resource_ids)
+    elif host_id:
+        where.append("l.host_id=?")
+        params.append(host_id)
+
+    rows = conn.execute(
+        f"""SELECT l.*,h.hostname,r.path,r.url FROM leads_v2 l
+             LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id
+             WHERE {' AND '.join(where)}
+             ORDER BY CASE l.status WHEN 'confirmed' THEN 0 WHEN 'interesting' THEN 1 WHEN 'testing' THEN 2 ELSE 3 END,
+                      CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                      CASE l.confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                      l.updated_at DESC LIMIT ?""",
+        (*params, max(1, limit * 3)),
+    ).fetchall()
+
+    status_score = {"confirmed": 45, "interesting": 34, "testing": 28, "candidate": 20, "postponed": 8}
+    priority_score = {"high": 28, "medium": 18, "low": 8}
+    confidence_score = {"high": 14, "medium": 9, "low": 4}
+    routes: list[dict[str, Any]] = []
+    for l in rows:
+        rid = int(l["resource_id"] or 0)
+        hid = int(l["host_id"] or 0)
+        if rid and not hid:
+            rr = conn.execute("SELECT host_id FROM resources WHERE id=?", (rid,)).fetchone()
+            hid = int(rr["host_id"]) if rr else 0
+        try:
+            evidence = json.loads(l["evidence_json"] or "[]")
+        except Exception:
+            evidence = []
+
+        exchange_id = 0
+        operation_id = 0
+        method = ""
+        path = str(l["path"] or "")
+        for ev in evidence if isinstance(evidence, list) else []:
+            if not isinstance(ev, dict):
+                continue
+            if not exchange_id and ev.get("exchange_id"):
+                try: exchange_id = int(ev.get("exchange_id"))
+                except Exception: exchange_id = 0
+        if exchange_id:
+            ex = conn.execute(
+                """SELECT e.operation_id,o.method,o.resource_id,r.path,r.host_id
+                   FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id WHERE e.id=?""", (exchange_id,)
+            ).fetchone()
+            if ex:
+                operation_id = int(ex["operation_id"]); method = str(ex["method"] or "")
+                rid = rid or int(ex["resource_id"]); hid = hid or int(ex["host_id"]); path = path or str(ex["path"] or "")
+        if rid and not operation_id:
+            op = conn.execute("SELECT id,method FROM resource_operations WHERE resource_id=? ORDER BY last_seen_at DESC LIMIT 1", (rid,)).fetchone()
+            if op:
+                operation_id = int(op["id"]); method = str(op["method"] or "")
+
+        node_ids = []
+        if hid: node_ids.append(f"host:{hid}")
+        if rid: node_ids.append(f"resource:{rid}")
+        if operation_id: node_ids.append(f"operation:{operation_id}")
+        if exchange_id: node_ids.append(f"exchange:{exchange_id}")
+        node_ids.append(f"lead:{int(l['id'])}")
+
+        score = status_score.get(str(l["status"]), 12) + priority_score.get(str(l["review_priority"]), 5) + confidence_score.get(str(l["confidence"]), 3)
+        if exchange_id: score += 6
+        if str(l["source"] or "").upper().startswith("AI"): score += 3
+        routes.append({
+            "id": f"route:{int(l['id'])}", "lead_id": int(l["id"]), "host_id": hid or None, "resource_id": rid or None,
+            "score": score, "title": str(l["title"]), "lead_type": str(l["lead_type"]), "status": str(l["status"]),
+            "priority": str(l["review_priority"]), "confidence": str(l["confidence"]), "source": str(l["source"] or "ENGINE"),
+            "method": method, "path": path, "node_ids": node_ids,
+            "why": str(l["why_interesting"] or ""), "next_test": str(l["next_test"] or ""),
+        })
+    routes.sort(key=lambda x: (-int(x["score"]), x["title"]))
+    return routes[:limit]
 
 
 def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview", host_id: int | None = None,
@@ -1112,7 +1246,8 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 if not items: continue
                 cid=add_node(f"cluster:hosts:{bucket}","cluster",f"{cluster_labels[bucket]} · {len(items)}",state=cluster_states[bucket],meta={"count":len(items),"group":"hosts","bucket":bucket,"note":"Agrupados para que el mapa siga siendo usable. Abre Inventario para filtrar/buscar."},href=cluster_hrefs[bucket])
                 add_edge(target,cid,"contains",source="progressive_disclosure")
-            return {"target":domain,"nodes":nodes,"edges":edges,"counts":totals,"generated_at":_now(),
+            routes=_investigation_routes(conn, limit=6)
+            return {"target":domain,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
                     "meta":{"scope":"overview","large_target":total_resources>800,"scope_label":"Vista general","host_count":total_hosts,"resource_count":total_resources,"important_hosts":len(important),"grouped_hosts":sum(len(v) for v in grouped.values())}}
 
         selected_resource=None
@@ -1184,6 +1319,14 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"]},href=f"hypotheses#hypothesis-{l['id']}")
                 parent=f"resource:{l['resource_id']}" if l["resource_id"] and f"resource:{l['resource_id']}" in seen else hn
                 add_edge(parent,ln,"produced_lead",source=str(l["source"]).lower())
+                try: lev=json.loads(l["evidence_json"] or '[]')
+                except Exception: lev=[]
+                for ev in lev if isinstance(lev,list) else []:
+                    if not isinstance(ev,dict): continue
+                    exid=ev.get('exchange_id')
+                    if exid and f"exchange:{exid}" in seen:
+                        add_edge(f"exchange:{exid}",ln,"supports_hypothesis",source=str(l["source"]).lower(),evidence={"exchange_id":exid})
+                        break
             findings=conn.execute("SELECT DISTINCT f.* FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id LEFT JOIN resources rr ON fe.entity_type='resource' AND fe.entity_id=rr.id WHERE (fe.entity_type='host' AND fe.entity_id=?) OR rr.host_id=? ORDER BY f.updated_at DESC LIMIT 100",(host_id,host_id)).fetchall()
             for f in findings:
                 fn=add_node(f"finding:{f['id']}","finding",f["title"],state="finding",meta={"id":f["id"],"severity":f["severity"],"status":f["status"],"description":f["description"]},href=f"finding/{f['id']}")
@@ -1198,10 +1341,12 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 jn=add_node(f"js:{js['id']}","javascript",label,state="tested" if js["analyzed_at"] else "untested",meta={"id":js["id"],"url":js["url"],"source":js["source"],"analyzed_at":js["analyzed_at"]})
                 add_edge(hn,jn,"contains",source=js["source"])
 
+        routes=_investigation_routes(conn, host_id=host_id, resource_ids=rids, limit=8)
+
     counts: dict[str,int]={}
     for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
     label="Recurso" if scope=='resource' else "Host" if scope=='host' else "Vista general"
-    return {"target":domain,"nodes":nodes,"edges":edges,"counts":totals,"generated_at":_now(),
+    return {"target":domain,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
             "meta":{"scope":scope,"scope_label":label,"host_id":host_id,"resource_id":resource_id,"large_target":total_resources>800,"loaded_counts":counts}}
 
 
