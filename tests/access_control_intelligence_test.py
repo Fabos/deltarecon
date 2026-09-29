@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline test for Negro v0.17.0 Access Control Intelligence."""
+"""Offline test for Negro v0.17.1 Access Control Intelligence."""
 from pathlib import Path
 import base64
 import json
@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 import negro_core as core
 import negro_hunter as hunter
+import negro_intel as intel
 import negro_web as web
 
 
@@ -18,10 +19,11 @@ def b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
-def ingest(paths, domain, *, method, path, status=200, req_body=b"", resp_body=b"{}", req_headers=None, resp_headers=None, authenticated=True, query=None, request_ct=None, response_ct="application/json"):
+def ingest(paths, domain, *, method, path, status=200, req_body=b"", resp_body=b"{}", req_headers=None, resp_headers=None, authenticated=True, query=None, request_ct=None, response_ct="application/json", host=None):
     req_headers = req_headers or []
     resp_headers = resp_headers or []
-    header_lines = [f"{method} {path}{(('?' + query) if isinstance(query, str) and query else '')} HTTP/1.1", f"Host: {domain}"]
+    request_host = host or domain
+    header_lines = [f"{method} {path}{(('?' + query) if isinstance(query, str) and query else '')} HTTP/1.1", f"Host: {request_host}"]
     for h in req_headers:
         header_lines.append(f"{h['name']}: {h['value']}")
     if request_ct:
@@ -38,7 +40,7 @@ def ingest(paths, domain, *, method, path, status=200, req_body=b"", resp_body=b
         response_header_lines.append(f"Content-Type: {response_ct}")
     resp = ("\r\n".join(response_header_lines) + "\r\n\r\n").encode() + resp_body
 
-    url = f"https://{domain}{path}" + (("?" + query) if isinstance(query, str) and query else "")
+    url = f"https://{request_host}{path}" + (("?" + query) if isinstance(query, str) and query else "")
     return core.upsert_http_observation(
         paths, domain, url=url, method=method, source="burp_repeater", status_code=status,
         authenticated=authenticated, request_content_type=request_ct, response_content_type=response_ct,
@@ -143,9 +145,71 @@ def main():
         with core.db_connect(paths) as conn:
             assert conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] == 0
 
+        # 7) First-party sibling CORS must not flood hypotheses; an external
+        # reflected Origin remains a candidate.
+        first_party = ingest(
+            paths, domain, host="api.access.test", method="GET", path="/api/me",
+            req_headers=[{"name":"Origin","value":"https://app.access.test"}],
+            resp_headers=[{"name":"Access-Control-Allow-Origin","value":"https://app.access.test"},{"name":"Access-Control-Allow-Credentials","value":"true"}],
+            resp_body=json.dumps({"id":101,"email":"ana@access.test"}).encode(),
+        )
+        external = ingest(
+            paths, domain, host="api.access.test", method="GET", path="/api/external-cors-test",
+            req_headers=[{"name":"Origin","value":"https://evil.example"}],
+            resp_headers=[{"name":"Access-Control-Allow-Origin","value":"https://evil.example"},{"name":"Access-Control-Allow-Credentials","value":"true"}],
+            resp_body=json.dumps({"ok":True}).encode(),
+        )
+        with core.db_connect(paths) as conn:
+            hunter.analyze_http_exchange(conn, int(first_party["exchange_id"]), domain, emit_notifications=True)
+            assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='cors' AND resource_id=?", (first_party["resource_id"],)).fetchone()["c"] == 0
+            hunter.analyze_http_exchange(conn, int(external["exchange_id"]), domain, emit_notifications=True)
+            assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='cors' AND resource_id=?", (external["resource_id"],)).fetchone()["c"] == 1
+
+        # 8) A newly-created access-control hypothesis appears in Notifications,
+        # deduplicated by lead rather than per repeated request.
+        notify_patch = ingest(
+            paths, domain, host="api.access.test", method="PATCH", path="/api/profile-notify", request_ct="application/json",
+            req_body=json.dumps({"email":"new@access.test"}).encode(),
+            resp_body=json.dumps({"email":"new@access.test","roleId":1,"role":"customer"}).encode(),
+        )
+        with core.db_connect(paths) as conn:
+            hunter.analyze_http_exchange(conn, int(notify_patch["exchange_id"]), domain, emit_notifications=True)
+            row=conn.execute("SELECT * FROM notifications WHERE kind='hypothesis' ORDER BY id DESC LIMIT 1").fetchone()
+            assert row is not None, "Expected hypothesis notification"
+            data=json.loads(row["data_json"] or "{}")
+            assert data.get("lead_id"), data
+
+        # 9) Local JS analysis turns discovered API routes into Resources,
+        # creates one aggregate notification, and links JS -> cross-host Resource
+        # in the scoped graph.
+        with core.db_connect(paths) as conn:
+            app_host_id,_=core.upsert_host(conn,"app.access.test","test")
+            cur=conn.execute("INSERT INTO js_assets(host_id,url,source,discovered_at) VALUES(?,?,?,?)",(app_host_id,"https://app.access.test/assets/admin-tools.js","test",core.now_iso()))
+            js_id=int(cur.lastrowid)
+        original_http_bytes=intel.http_bytes
+        try:
+            js_code=b"fetch('https://api.access.test/admin/users'); fetch('https://api.access.test/ops/audit/export');"
+            intel.http_bytes=lambda *args,**kwargs:(js_code,"application/javascript","https://app.access.test/assets/admin-tools.js")
+            result=core.local_analyze_js_asset(domain,paths,js_id)
+        finally:
+            intel.http_bytes=original_http_bytes
+        assert result["routes"]["in_scope"] >= 2, result
+        assert result["routes"]["interesting"] >= 2, result
+        with core.db_connect(paths) as conn:
+            assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='javascript_surface'").fetchone()["c"] >= 1
+            assert conn.execute("SELECT COUNT(*) c FROM notifications WHERE kind='javascript_surface'").fetchone()["c"] >= 1
+        graph=web._graph_data(paths,domain,scope="host",host_id=app_host_id)
+        assert any(n["id"]==f"js:{js_id}" for n in graph["nodes"]), graph["nodes"]
+        api_resources={n["id"] for n in graph["nodes"] if n["type"]=="resource" and str(n.get("meta",{}).get("host"))=="api.access.test"}
+        assert api_resources, graph["nodes"]
+        assert any(e["source"]==f"js:{js_id}" and e["target"] in api_resources and e["relation"]=="discovered" for e in graph["edges"]), graph["edges"]
+
         print("[OK] Access Control Intelligence signals")
         print("[OK] Resource review aids")
         print("[OK] Investigation routes")
+        print("[OK] First-party CORS noise reduction")
+        print("[OK] Hypothesis notifications")
+        print("[OK] JavaScript surface -> resources -> graph")
         print("[OK] No automatic findings/exploitation")
 
 

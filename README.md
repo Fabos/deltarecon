@@ -1,4 +1,10 @@
-# Negro Recon 🐕 — v0.17.0
+# Negro Recon 🐕 — v0.17.1
+
+## v0.17.1 — Signal UX + JavaScript Surface
+
+Refina Access Control Intelligence con filtros por estado/tipo/prioridad en el mapa, edición de estado + resultado desde la propia hipótesis visual, perspectivas claramente separadas, notificaciones para nuevas hipótesis, reducción de ruido CORS first-party y relaciones `JavaScript → Resource` (incluido cross-host). `Analizar local` ahora avisa cuando el bundle amplía superficie y destaca rutas sensibles sin convertirlas automáticamente en findings.
+
+Consulta `UPDATE-v0.17.1.md`.
 
 ## v0.17.0 — Access Control Intelligence + Rutas de investigación
 

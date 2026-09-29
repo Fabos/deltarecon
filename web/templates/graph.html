@@ -29,10 +29,17 @@
       <div class="graph-presets" data-graph-presets>
         <button class="graph-filter active" draggable="true" data-graph-preset="surface"><span class="graph-drag-handle">⋮⋮</span><span><b>Superficie</b><small>Qué existe y cómo se organiza</small></span></button>
         <button class="graph-filter" draggable="true" data-graph-preset="untested"><span class="graph-drag-handle">⋮⋮</span><span><b>Pendientes</b><small>Elementos aún sin revisar</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesante</b><small>Señales, hipótesis y hallazgos</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="burp"><span class="graph-drag-handle">⋮⋮</span><span><b>Burp</b><small>Tráfico real agrupado</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Rutas de ataque</b><small>Caminos que merecen investigación</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesante</b><small>Dónde existen señales, hipótesis o hallazgos</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="burp"><span class="graph-drag-handle">⋮⋮</span><span><b>Burp</b><small>Sólo tráfico observado: recurso → método → request</small></span></button>
+        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Rutas de investigación</b><small>Evidencia → hipótesis → siguiente prueba</small></span></button>
         <button class="graph-filter" draggable="true" data-graph-preset="all"><span class="graph-drag-handle">⋮⋮</span><span><b>Todo</b><small>Vista completa con ruido agrupado</small></span></button>
+      </div>
+      <div data-graph-hypothesis-filters hidden>
+        <div class="graph-filter-title graph-filter-title-row"><span>Filtros de hipótesis</span><button type="button" class="graph-order-reset" data-graph-lead-filter-reset title="Restablecer filtros">↺</button></div>
+        <small class="graph-filter-help">Afectan Interesante, Rutas de investigación y sus tarjetas.</small>
+        <div class="graph-filter-title sub">Estado</div><div class="graph-mini-filters" data-graph-lead-statuses></div>
+        <div class="graph-filter-title sub">Prioridad</div><div class="graph-mini-filters" data-graph-lead-priorities></div>
+        <div class="graph-filter-title sub">Tipo</div><div class="graph-mini-filters" data-graph-lead-kinds></div>
       </div>
       <div class="graph-filter-title">Tipos visibles</div><div class="graph-type-filters" data-graph-types></div>
       <div class="graph-filter-title">Cobertura</div><div class="graph-legend"><div><i class="legend-dot state-untested"></i> Pendiente</div><div><i class="legend-dot state-tested"></i> Revisado / negativo</div></div>

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.17.0
+Negro Recon v0.17.1
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.17.0"
+VERSION = "0.17.1"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -1517,6 +1517,7 @@ def _js_asset_row(paths: dict[str, Path], asset_id: int):
 def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, timeout: int = 35) -> dict:
     import hashlib
     import negro_intel as intel
+    import negro_hunter as hunter
     row = _js_asset_row(paths, asset_id)
     if not row:
         raise RuntimeError("JS asset no encontrado")
@@ -1540,18 +1541,118 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
         chosen = external[-1] if external else candidates[-1]
         sourcemap_url = chosen if str(chosen).lower().startswith("data:") else urllib.parse.urljoin(final_url, chosen)
     with db_connect(paths) as conn:
+        hunter.init_schema(conn)
         conn.execute(
             "UPDATE js_assets SET size_bytes=?, sha256=?, local_path=?, sourcemap_url=?, local_analysis_json=?, analyzed_at=? WHERE id=?",
             (len(raw), sha, str(raw_path), sourcemap_url, json.dumps(local, ensure_ascii=False), now_iso(), asset_id),
         )
         host_id = int(row["host_id"])
         record_observation(conn, "host", host_id, "js_local", "js_analysis", row["url"], {"asset_id": asset_id, "size_bytes": len(raw), "content_type": content_type, "summary": {"in_scope_urls": len(local.get("in_scope_urls", [])), "relative_paths": len(local.get("relative_paths", [])), "websockets": len(local.get("websockets", [])), "source_maps": local.get("source_maps", []), "keywords": local.get("keywords", {})}})
+        discovered_urls: list[str] = []
+        new_urls: list[str] = []
+        discovered_resource_ids: list[int] = []
         for url in local.get("in_scope_urls", []):
-            upsert_resource(conn, url, "js_local", domain)
+            normalized = canonicalize_url(url, domain)
+            if not normalized:
+                continue
+            canonical = normalized[0]
+            _, created = upsert_resource(conn, canonical, "js_local", domain)
+            rr = conn.execute("SELECT id FROM resources WHERE url=?", (canonical,)).fetchone()
+            if rr:
+                discovered_resource_ids.append(int(rr["id"]))
+            discovered_urls.append(canonical)
+            if created:
+                new_urls.append(canonical)
         for ws in local.get("websockets", []):
             record_observation(conn, "host", host_id, "js_local", "websocket", ws, None)
+
+        # One aggregated event per analyzed asset.  The JS analyzer already knew
+        # these routes; v0.17.1 makes that knowledge visible to the hunter instead
+        # of silently adding rows to Resources.
+        sensitive_tokens = (
+            "admin", "internal", "manage", "management", "approve", "approval",
+            "audit", "export", "delete", "role", "permission", "privilege",
+            "debug", "ops", "feature", "moderation", "staff", "backoffice",
+        )
+        sensitive_urls = []
+        for candidate in discovered_urls:
+            low_path = (urllib.parse.urlsplit(candidate).path or "/").lower()
+            if any(tok in low_path for tok in sensitive_tokens):
+                sensitive_urls.append(candidate)
+
+        if discovered_urls:
+            hunter._upsert_notification(
+                conn,
+                dedupe_key=f"js_surface:{asset_id}:{sha[:16]}",
+                kind="javascript_surface",
+                severity="medium" if sensitive_urls else "low",
+                title="JavaScript amplió la superficie" if new_urls else "Rutas observadas en JavaScript",
+                message=(
+                    f"{len(discovered_urls)} ruta(s) in-scope · {len(new_urls)} nueva(s)"
+                    + (f" · {len(sensitive_urls)} merece(n) revisión" if sensitive_urls else "")
+                ),
+                source="js_local",
+                entity_type="host",
+                entity_id=host_id,
+                data={
+                    "asset_id": asset_id,
+                    "javascript_url": row["url"],
+                    "routes_count": len(discovered_urls),
+                    "new_routes_count": len(new_urls),
+                    "interesting_routes": sensitive_urls[:20],
+                    "resource_ids": discovered_resource_ids[:100],
+                    "graph_focus": f"js:{asset_id}",
+                    "href": f"host/{host_id}#javascript",
+                },
+                emit=True,
+            )
+
+        if sensitive_urls:
+            lead_result = hunter.upsert_lead(
+                conn,
+                lead_key=f"js_sensitive_routes:{asset_id}:{sha[:16]}",
+                host_id=host_id,
+                resource_id=None,
+                lead_type="javascript_surface",
+                title="JavaScript revela rutas que merecen revisión",
+                confidence="high",
+                review_priority="medium",
+                evidence=[{
+                    "source": "javascript",
+                    "asset_id": asset_id,
+                    "url": row["url"],
+                    "routes": sensitive_urls[:30],
+                    "node_ids": [f"js:{asset_id}"] + [f"resource:{x}" for x in discovered_resource_ids[:30]],
+                }],
+                why="El bundle contiene rutas in-scope con nombres asociados a administración, operaciones internas o acciones sensibles. Esto amplía superficie; no demuestra que estén desprotegidas.",
+                next_test="Abre las rutas descubiertas desde Resources/Mapa, identifica su método y contexto legítimo, y revisa control de acceso sin hacer fuzzing masivo.",
+                confirm_if="Una ruta revelada expone funcionalidad sensible con controles insuficientes o habilita una cadena adicional.",
+                discard_if="Las rutas son públicas/esperadas o aplican autenticación y autorización server-side de forma consistente.",
+                source="JS_LOCAL",
+            )
+            lead_id, created = lead_result
+            if created:
+                hunter._upsert_notification(
+                    conn,
+                    dedupe_key=f"hypothesis:new:{lead_id}",
+                    kind="hypothesis",
+                    severity="medium",
+                    title="Nueva hipótesis · superficie desde JavaScript",
+                    message=f"{len(sensitive_urls)} ruta(s) del bundle merecen revisión manual.",
+                    source="js_local",
+                    entity_type="host",
+                    entity_id=host_id,
+                    data={
+                        "lead_id": lead_id,
+                        "lead_type": "javascript_surface",
+                        "graph_focus": f"lead:{lead_id}",
+                        "href": f"hypotheses#hypothesis-{lead_id}",
+                    },
+                    emit=True,
+                )
     rebuild_inventory(paths, domain)
-    return {"asset_id": asset_id, "url": row["url"], "size_bytes": len(raw), "sha256": sha, "local_path": str(raw_path), "sourcemap_url": sourcemap_url, "analysis": local}
+    return {"asset_id": asset_id, "url": row["url"], "size_bytes": len(raw), "sha256": sha, "local_path": str(raw_path), "sourcemap_url": sourcemap_url, "analysis": local,
+            "routes": {"in_scope": len(discovered_urls), "new": len(new_urls), "interesting": len(sensitive_urls)}}
 
 
 def fetch_sourcemap_for_asset(domain: str, paths: dict[str, Path], asset_id: int, timeout: int = 40) -> dict:

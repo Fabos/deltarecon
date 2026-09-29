@@ -1083,7 +1083,7 @@ def _priority_rank(v: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(v, 0)
 
 
-def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | None, lead_type: str, title: str, confidence: str, review_priority: str, evidence: list[dict[str, Any]], why: str, next_test: str, confirm_if: str, discard_if: str, source: str = "ENGINE", parent_lead_id: int | None = None) -> None:
+def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | None, lead_type: str, title: str, confidence: str, review_priority: str, evidence: list[dict[str, Any]], why: str, next_test: str, confirm_if: str, discard_if: str, source: str = "ENGINE", parent_lead_id: int | None = None) -> tuple[int, bool]:
     now = now_iso()
     existing = conn.execute("SELECT id,confidence,review_priority,status FROM leads_v2 WHERE lead_key=?", (lead_key,)).fetchone()
     if existing:
@@ -1094,11 +1094,13 @@ def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | 
             "UPDATE leads_v2 SET host_id=?,resource_id=?,lead_type=?,title=?,confidence=?,review_priority=?,evidence_json=?,why_interesting=?,next_test=?,confirm_if=?,discard_if=?,source=COALESCE(source,?),parent_lead_id=COALESCE(parent_lead_id,?),updated_at=? WHERE lead_key=?",
             (host_id, resource_id, lead_type, title, confidence, review_priority, json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, source, parent_lead_id, now, lead_key),
         )
+        return int(existing["id"]), False
     else:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO leads_v2(lead_key,host_id,resource_id,lead_type,title,confidence,review_priority,status,evidence_json,why_interesting,next_test,confirm_if,discard_if,created_at,updated_at,source,parent_lead_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (lead_key, host_id, resource_id, lead_type, title, confidence, review_priority, "candidate", json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, now, source, parent_lead_id),
         )
+        return int(cur.lastrowid), True
 
 
 def _iter_js_analysis(conn) -> Iterable[tuple[Any, dict[str, Any], dict[str, Any] | None]]:
@@ -1339,10 +1341,48 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
         nid, created = _upsert_notification(
             conn, dedupe_key=key, kind=kind, severity=severity, title=title, message=message,
             source=str(row["source"] or "burp"), entity_type="resource", entity_id=rid,
-            resource_id=rid, operation_id=oid, exchange_id=exchange_id, data={**data, "href": _notification_href(rid, exchange_id)}, emit=emit_notifications,
+            resource_id=rid, operation_id=oid, exchange_id=exchange_id,
+            data={**data, "href": data.get("href") or _notification_href(rid, exchange_id)}, emit=emit_notifications,
         )
         signals.append({"kind": kind, "severity": severity, "title": title, **data})
         if created and nid:
+            new_notifications.append(nid)
+
+    def notify_new_lead(result: tuple[int, bool], *, lead_type: str, title: str, priority: str,
+                        message: str, data: dict[str, Any] | None = None) -> None:
+        """Surface only *new* deterministic hypotheses in the notification inbox.
+
+        Hypotheses remain non-findings.  The notification is simply a low-noise way
+        to tell the hunter that a resource acquired a new reason to review it.
+        """
+        lead_id, created = result
+        if not created or not emit_notifications:
+            return
+        severity = "high" if priority == "high" else "medium" if priority == "medium" else "low"
+        payload = {
+            "lead_id": lead_id,
+            "lead_type": lead_type,
+            "graph_focus": f"lead:{lead_id}",
+            "href": f"hypotheses#hypothesis-{lead_id}",
+            **(data or {}),
+        }
+        nid, made = _upsert_notification(
+            conn,
+            dedupe_key=f"hypothesis:new:{lead_id}",
+            kind="hypothesis",
+            severity=severity,
+            title=title,
+            message=message,
+            source="access_control_intelligence",
+            entity_type="resource",
+            entity_id=rid,
+            resource_id=rid,
+            operation_id=oid,
+            exchange_id=exchange_id,
+            data=payload,
+            emit=True,
+        )
+        if made and nid:
             new_notifications.append(nid)
 
     # 1) Redirect parameters observed in query/form/JSON from Burp.
@@ -1515,8 +1555,36 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             origin_host = urllib.parse.urlsplit(origin).hostname or ""
         except Exception:
             origin_host = ""
-        cross_origin = bool(origin_host and origin_host.lower() != str(row["hostname"]).lower())
-        if cross_origin:
+        origin_host = origin_host.lower().rstrip(".")
+        response_host = str(row["hostname"] or "").lower().rstrip(".")
+        target_domain = str(domain or "").lower().rstrip(".")
+        cross_origin = bool(origin_host and origin_host != response_host)
+        # A browser origin can be technically cross-origin while still being a
+        # normal first-party application relationship (app.example.com ->
+        # api.example.com).  Do not flood hypotheses for hosts already known to
+        # belong to the current target or its registrable target namespace.
+        known_origin_host = bool(origin_host and conn.execute("SELECT 1 FROM hosts WHERE lower(hostname)=? LIMIT 1", (origin_host,)).fetchone())
+        target_first_party = bool(
+            origin_host and target_domain and
+            (origin_host == target_domain or origin_host.endswith("." + target_domain))
+        )
+        first_party = known_origin_host or target_first_party
+        if cross_origin and first_party:
+            # v0.17.0 could create noisy CORS hypotheses for normal sibling
+            # subdomains (app.target -> api.target).  If we observe that same
+            # relationship again, retire the old candidate instead of leaving
+            # stale noise in the workbench.
+            stale_key=f"cors_burp:{rid}:{origin}"
+            conn.execute(
+                """UPDATE leads_v2 SET status='negative',result_notes=CASE WHEN COALESCE(result_notes,'')='' THEN ? ELSE result_notes END,updated_at=?
+                   WHERE lead_key=? AND status IN ('candidate','testing','interesting','postponed')""",
+                ("Origen first-party conocido dentro del mismo target/workspace; no se prioriza como CORS arbitrario.", now_iso(), stale_key),
+            )
+            conn.execute(
+                "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE dedupe_key=?",
+                (now_iso(), f"cors_passive:{rid}:{origin}"),
+            )
+        elif cross_origin and not first_party:
             ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"origin":origin,"allow_origin":acao,"allow_credentials":acac}
             pri = "high" if acac and bool(row["authenticated_observed"]) else "medium"
             upsert_lead(conn, lead_key=f"cors_burp:{rid}:{origin}", host_id=hid, resource_id=rid,
@@ -1564,13 +1632,17 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     if (object_hits or path_has_object) and bool(row["authenticated_observed"]):
         evidence = [{"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,
                      "object_parameters":object_hits[:8],"path_identifier":path_has_object}]
-        upsert_lead(conn, lead_key=f"access_object:{oid}", host_id=hid, resource_id=rid,
+        object_priority = "high" if method in {"PUT","PATCH","DELETE"} else "medium"
+        lead_result = upsert_lead(conn, lead_key=f"access_object:{oid}", host_id=hid, resource_id=rid,
             lead_type="access_object_reference", title="Objeto referenciado por el cliente · revisar autorización horizontal",
-            confidence="medium", review_priority="high" if method in {"PUT","PATCH","DELETE"} else "medium", evidence=evidence,
+            confidence="medium", review_priority=object_priority, evidence=evidence,
             why="La operación autenticada referencia un objeto mediante un ID/UUID controlado por el cliente. Eso no demuestra IDOR, pero es una superficie clásica para comparar ownership entre dos identidades autorizadas.",
             next_test="Envía el exchange a Repeater y compara exactamente la misma operación con un objeto perteneciente a tu segunda cuenta de prueba. Mantén constante todo salvo identidad/ID y evita tocar datos de terceros.",
             confirm_if="Una identidad puede leer o modificar un objeto que pertenece a otra identidad sin autorización equivalente.",
             discard_if="El backend valida ownership/tenant/rol de forma consistente o el identificador sólo referencia datos públicos.")
+        notify_new_lead(lead_result, lead_type="access_object_reference", title="Nueva hipótesis · autorización horizontal",
+                        priority=object_priority, message=f"{method} {path} referencia un objeto controlado por el cliente.",
+                        data={"object_parameters": object_hits[:8]})
 
     # Fields returned by the API but not editable by the observed request can
     # be useful mass-assignment hypotheses (roleId, permissions, ownerId, etc.).
@@ -1584,13 +1656,17 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     if method in {"POST","PUT","PATCH"} and hidden_privileged and bool(row["authenticated_observed"]):
         ev = {"source":"burp_access_control","exchange_id":exchange_id,"method":method,"url":url,
               "response_only_privileged_fields":hidden_privileged[:10]}
-        upsert_lead(conn, lead_key=f"mass_assignment_fields:{oid}", host_id=hid, resource_id=rid,
+        mass_priority = "high" if any(x.replace('_','') in {"role","roleid","isadmin","admin","permission","permissions","ownerid"} for x in hidden_privileged) else "medium"
+        lead_result = upsert_lead(conn, lead_key=f"mass_assignment_fields:{oid}", host_id=hid, resource_id=rid,
             lead_type="mass_assignment", title="Campos privilegiados visibles pero no editados por la interfaz",
-            confidence="medium", review_priority="high" if any(x.replace('_','') in {"role","roleid","isadmin","admin","permission","permissions","ownerid"} for x in hidden_privileged) else "medium",
+            confidence="medium", review_priority=mass_priority,
             evidence=[ev], why="La respuesta expone propiedades de autorización/estado que no aparecieron en el request observado. En endpoints de edición esto puede indicar campos que el binder/model acepta aunque la UI no los envíe.",
             next_test=f"En Repeater, conserva el request original y prueba uno de estos campos observados: {', '.join(hidden_privileged[:6])}. Cambia sólo datos de tu propia cuenta/objeto y verifica el estado server-side después.",
             confirm_if="El backend acepta modificar un campo privilegiado que la identidad actual no debería controlar y el cambio produce capacidad adicional.",
             discard_if="El backend ignora/rechaza esos campos o revalida autorización antes de aplicar cambios sensibles.")
+        notify_new_lead(lead_result, lead_type="mass_assignment", title="Nueva hipótesis · asignación masiva",
+                        priority=mass_priority, message=f"{method} {path} devuelve campos privilegiados no enviados por la interfaz.",
+                        data={"fields": hidden_privileged[:10]})
 
     # Same resource observed with multiple verbs: prioritize semantic method
     # comparisons rather than blindly spraying verbs.  Preserve the operation's
@@ -1600,13 +1676,16 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     ).fetchall()]
     if len(set(sibling_methods)) >= 2 and any(x in {"POST","PUT","PATCH","DELETE"} for x in sibling_methods):
         ev = {"source":"burp_http_model","exchange_id":exchange_id,"url":url,"methods":sorted(set(sibling_methods))}
-        upsert_lead(conn, lead_key=f"method_auth:{rid}", host_id=hid, resource_id=rid,
+        lead_result = upsert_lead(conn, lead_key=f"method_auth:{rid}", host_id=hid, resource_id=rid,
             lead_type="method_access_control", title="Mismo recurso observado con varios métodos HTTP",
             confidence="medium", review_priority="medium", evidence=[ev],
             why="El mismo recurso acepta varios verbos y al menos uno cambia estado. Distintas rutas de código/middleware pueden aplicar controles diferentes.",
             next_test="Compara la misma intención de negocio con los métodos observados. Si conviertes POST/JSON a GET, mueve los parámetros equivalentes al query string; cambiar sólo el verbo puede producir una petición incompleta y un falso negativo.",
             confirm_if="La misma acción/estado puede alcanzarse mediante un método con controles de autorización más débiles.",
             discard_if="Los métodos tienen semánticas distintas o todos aplican autorización equivalente.")
+        notify_new_lead(lead_result, lead_type="method_access_control", title="Nueva hipótesis · autorización por método",
+                        priority="medium", message=f"{path} fue observado con varios métodos HTTP.",
+                        data={"methods": sorted(set(sibling_methods))})
 
     # Redirects are not authorization.  If a 3xx still carries a meaningful
     # body, surface it so the hunter reads the response before following Location.
@@ -1618,13 +1697,16 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             ev = {"source":"burp_redirect","exchange_id":exchange_id,"method":method,"url":url,"status":status,
                   "location":_safe_url_evidence(resp_headers.get("location", "")),"response_size":len(resp_body),
                   "interesting_fields":sorted(body_field_names & (IDENTITY_KEYS | SENSITIVE_RESPONSE_KEYS | PRIVILEGED_FIELD_KEYS))[:10]}
-            upsert_lead(conn, lead_key=f"redirect_body:{rid}:{status}", host_id=hid, resource_id=rid,
+            lead_result = upsert_lead(conn, lead_key=f"redirect_body:{rid}:{status}", host_id=hid, resource_id=rid,
                 lead_type="redirect_body_access_control", title="Redirect con contenido que merece revisión",
                 confidence="high" if data_like else "medium", review_priority="medium", evidence=[ev],
                 why="El servidor respondió con redirección pero también envió un body significativo. Redirigir al navegador no evita una filtración si los datos ya salieron en la respuesta.",
                 next_test=f"Abre el exchange #{exchange_id} sin seguir el redirect y revisa el body completo. Compara con tu propia identidad y no uses datos de terceros fuera del scope.",
                 confirm_if="El body del 3xx contiene datos sensibles/privados que la identidad no estaba autorizada a recibir.",
                 discard_if="El body sólo contiene una página genérica de redirect sin información adicional.")
+            notify_new_lead(lead_result, lead_type="redirect_body_access_control", title="Nueva hipótesis · datos en redirect",
+                            priority="medium", message=f"{method} {path} respondió {status} con un body significativo.",
+                            data={"status": status, "response_size": len(resp_body)})
 
     # A 403 that looks like a different server/layer than a normal backend 404
     # is a useful routing hypothesis.  Compare only passive fingerprints.
@@ -1648,25 +1730,30 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
                       "server":server_a or None,"content_type":ctype_a or None,"size":size_a,
                       "baseline_404_exchange":int(baseline["id"]),"baseline_path":baseline["path"],"baseline_server":server_b or None,
                       "baseline_content_type":ctype_b or None,"baseline_size":size_b}
-                upsert_lead(conn, lead_key=f"proxy_403:{rid}", host_id=hid, resource_id=rid,
+                lead_result = upsert_lead(conn, lead_key=f"proxy_403:{rid}", host_id=hid, resource_id=rid,
                     lead_type="proxy_path_access_control", title="403 con fingerprint distinto al backend observado",
                     confidence="medium", review_priority="medium", evidence=[ev],
                     why="El 403 difiere de un 404 normal del mismo host en servidor, Content-Type o tamaño. Puede significar que proxy/WAF/frontend está bloqueando la ruta antes de la aplicación.",
                     next_test="Primero confirma qué capa responde. Si la arquitectura lo justifica, prueba manualmente discrepancias de routing/normalización; X-Original-URL y X-Rewrite-URL son quick checks, no una conclusión automática.",
                     confirm_if="Una representación permitida por la capa frontal termina ejecutando una ruta que directamente estaba bloqueada y el backend no revalida autorización.",
                     discard_if="403 y 404 provienen de la misma capa o el backend aplica autorización equivalente tras cualquier reescritura.")
+                notify_new_lead(lead_result, lead_type="proxy_path_access_control", title="Nueva hipótesis · capa frontal distinta",
+                                priority="medium", message=f"{path} devuelve un 403 con fingerprint distinto al 404 del backend.",
+                                data={"status": 403, "baseline_404_exchange": int(baseline["id"])})
 
     # Sensitive state-changing action carrying Referer: remember the technique,
     # but keep it low priority because Referer is commonly present for benign reasons.
     if req_headers.get("referer") and method in {"POST","PUT","PATCH","DELETE"} and any(tok in low_path for tok in SENSITIVE_ACTION_TOKENS):
         ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"referer":_safe_url_evidence(req_headers.get("referer", ""))}
-        upsert_lead(conn, lead_key=f"referer_access:{oid}", host_id=hid, resource_id=rid,
+        lead_result = upsert_lead(conn, lead_key=f"referer_access:{oid}", host_id=hid, resource_id=rid,
             lead_type="referer_access_control", title="Acción sensible observada con Referer",
             confidence="low", review_priority="low", evidence=[ev],
             why="Referer es controlado por el cliente y no debe ser la prueba de autorización. Su presencia no implica vulnerabilidad; sólo merece un quick check en una acción sensible.",
             next_test="Con tu propia cuenta de prueba, compara la request original contra la misma request sin Referer y con un Referer distinto. Si el resultado de autorización depende del header, investiga por qué.",
             confirm_if="Una identidad sin privilegios ejecuta la acción únicamente al presentar un Referer privilegiado/controlado.",
             discard_if="Referer sólo participa en CSRF/telemetría o la autorización depende correctamente de la identidad/rol server-side.")
+        notify_new_lead(lead_result, lead_type="referer_access_control", title="Quick check · Referer en acción sensible",
+                        priority="low", message=f"{method} {path} incluye Referer; verifica que no participe en autorización.", data={})
 
     return {"exchange_id": exchange_id, "signals": signals, "new_notifications": new_notifications}
 

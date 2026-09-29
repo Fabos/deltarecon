@@ -86,6 +86,7 @@ UI_LABELS = {
     "redirect_body_access_control": "Datos expuestos antes de redirect",
     "proxy_path_access_control": "Control de acceso por ruta/proxy",
     "referer_access_control": "Control de acceso basado en Referer",
+    "javascript_surface": "Superficie descubierta en JavaScript",
 }
 
 def _ui_label(value: Any) -> str:
@@ -970,12 +971,14 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
 
         resources = conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id ORDER BY r.id").fetchall()
         resource_by_url: dict[str, str] = {}
+        resource_by_host_path: dict[tuple[str, str], str] = {}
         for r in resources:
             coverage = _coverage_state(r["review_state"])
             signal, finding_count = _entity_signal(conn, "resource", r["id"], r["classification"])
             state = _visual_state(coverage, signal)
             nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta={"id": r["id"], "url": r["url"], "host": r["hostname"], "coverage": coverage, "signal": signal, "review": r["review_state"], "classification": r["classification"], "finding_count": finding_count, "priority": r["priority"], "updated_at": r["updated_at"]}, href=f"resource/{r['id']}")
             resource_by_url[str(r["url"])] = nid
+            resource_by_host_path[(str(r["hostname"]).lower(), str(r["path"] or "/"))] = nid
             add_edge(f"host:{r['host_id']}", nid, "contains", source="inventory")
             for rs in conn.execute("SELECT source,first_seen_at FROM resource_sources WHERE resource_id=? ORDER BY first_seen_at", (r["id"],)).fetchall():
                 src_name = str(rs["source"])
@@ -1005,8 +1008,28 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
         js_rows = conn.execute("SELECT * FROM js_assets ORDER BY discovered_at DESC LIMIT 150").fetchall()
         for js in js_rows:
             label = Path(urllib.parse.urlsplit(js["url"]).path).name or js["url"]
-            nid = add_node(f"js:{js['id']}", "javascript", label, state="tested" if js["analyzed_at"] else "untested", meta={"id": js["id"], "url": js["url"], "source": js["source"], "size_bytes": js["size_bytes"], "analyzed_at": js["analyzed_at"], "discovered_at": js["discovered_at"]})
+            try:
+                js_local = json.loads(js["local_analysis_json"] or "{}")
+            except Exception:
+                js_local = {}
+            discovered = list(js_local.get("in_scope_urls", []) or []) if isinstance(js_local, dict) else []
+            sensitive = []
+            for u in discovered:
+                p = urllib.parse.urlsplit(str(u))
+                lowp = (p.path or "/").lower()
+                if any(x in lowp for x in ("admin","internal","manage","approve","audit","export","delete","role","permission","debug","ops","feature","staff","backoffice")):
+                    sensitive.append(str(u))
+            js_state = "interesting" if sensitive else "tested" if js["analyzed_at"] else "untested"
+            nid = add_node(f"js:{js['id']}", "javascript", label, state=js_state, meta={"id": js["id"], "url": js["url"], "source": js["source"], "size_bytes": js["size_bytes"], "analyzed_at": js["analyzed_at"], "discovered_at": js["discovered_at"], "routes_count": len(discovered), "interesting_routes": len(sensitive)})
             add_edge(f"host:{js['host_id']}", nid, "contains", source=js["source"])
+            for candidate in discovered[:300]:
+                try:
+                    pu = urllib.parse.urlsplit(str(candidate))
+                    rnode = resource_by_url.get(str(candidate)) or resource_by_host_path.get(((pu.hostname or "").lower(), pu.path or "/"))
+                except Exception:
+                    rnode = None
+                if rnode:
+                    add_edge(nid, rnode, "discovered", source="js_local", evidence={"url": str(candidate), "asset_id": int(js["id"])})
 
         obs_rows = conn.execute("SELECT * FROM observations ORDER BY id DESC LIMIT ?", (max(10, min(observation_limit, 500)),)).fetchall()
         for o in obs_rows:
@@ -1029,7 +1052,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
         for l in lead_rows:
             state = "tested" if l["status"] in ("discarded", "negative") else "finding" if l["status"] in ("confirmed",) else "interesting"
             lsource = l["source"] if "source" in l.keys() else "ENGINE"
-            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "source": lsource, "why": l["why_interesting"], "next_test": l["next_test"], "updated_at": l["updated_at"]}, href=f"hypotheses#hypothesis-{l['id']}")
+            nid = add_node(f"lead:{l['id']}", "lead", l["title"], state=state, meta={"id": l["id"], "type": l["lead_type"], "status": l["status"], "confidence": l["confidence"], "priority": l["review_priority"], "source": lsource, "why": l["why_interesting"], "next_test": l["next_test"], "result_notes": l["result_notes"] if "result_notes" in l.keys() else "", "updated_at": l["updated_at"]}, href=f"hypotheses#hypothesis-{l['id']}")
             linked = False
             try:
                 ev = json.loads(l["evidence_json"] or "[]")
@@ -1276,9 +1299,13 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 ORDER BY CASE r.classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 WHEN 'discarded' THEN 5 ELSE 2 END,
                          CASE r.review_state WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, r.updated_at DESC LIMIT ?""",(host_id,resource_limit)).fetchall()
         rids=[int(r["id"]) for r in resources]
+        visible_resource_by_url: dict[str, str] = {}
+        visible_resource_by_host_path: dict[tuple[str, str], str] = {}
         for r in resources:
             cov=_coverage_state(r["review_state"]); sig,fc=_entity_signal(conn,"resource",r["id"],r["classification"])
             rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(cov,sig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":cov,"signal":sig,"review":r["review_state"],"classification":r["classification"],"finding_count":fc,"priority":r["priority"]},href=f"resource/{r['id']}")
+            visible_resource_by_url[str(r["url"])] = rn
+            visible_resource_by_host_path[(str(r["hostname"]).lower(), str(r["path"] or "/"))] = rn
             add_edge(hn,rn,"contains")
         if scope == "host":
             total_for_host=int(conn.execute("SELECT COUNT(*) c FROM resources WHERE host_id=?",(host_id,)).fetchone()["c"] or 0)
@@ -1316,7 +1343,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
             leads=conn.execute(f"SELECT * FROM leads_v2 WHERE host_id=? OR resource_id IN ({marks}) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
             for l in leads:
                 st="tested" if l["status"] in ('discarded','negative') else "finding" if l["status"]=='confirmed' else "interesting"
-                ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"]},href=f"hypotheses#hypothesis-{l['id']}")
+                ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"],"result_notes":l["result_notes"] if "result_notes" in l.keys() else ""},href=f"hypotheses#hypothesis-{l['id']}")
                 parent=f"resource:{l['resource_id']}" if l["resource_id"] and f"resource:{l['resource_id']}" in seen else hn
                 add_edge(parent,ln,"produced_lead",source=str(l["source"]).lower())
                 try: lev=json.loads(l["evidence_json"] or '[]')
@@ -1338,8 +1365,48 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
             jsrows=conn.execute("SELECT * FROM js_assets WHERE host_id=? ORDER BY discovered_at DESC LIMIT 60",(host_id,)).fetchall()
             for js in jsrows:
                 label=Path(urllib.parse.urlsplit(js["url"]).path).name or js["url"]
-                jn=add_node(f"js:{js['id']}","javascript",label,state="tested" if js["analyzed_at"] else "untested",meta={"id":js["id"],"url":js["url"],"source":js["source"],"analyzed_at":js["analyzed_at"]})
+                try: js_local=json.loads(js["local_analysis_json"] or '{}')
+                except Exception: js_local={}
+                discovered=list(js_local.get("in_scope_urls",[]) or []) if isinstance(js_local,dict) else []
+                sensitive=[]
+                for u in discovered:
+                    lowp=(urllib.parse.urlsplit(str(u)).path or '/').lower()
+                    if any(x in lowp for x in ("admin","internal","manage","approve","audit","export","delete","role","permission","debug","ops","feature","staff","backoffice")):
+                        sensitive.append(str(u))
+                jstate="interesting" if sensitive else "tested" if js["analyzed_at"] else "untested"
+                jn=add_node(f"js:{js['id']}","javascript",label,state=jstate,meta={"id":js["id"],"url":js["url"],"source":js["source"],"analyzed_at":js["analyzed_at"],"routes_count":len(discovered),"interesting_routes":len(sensitive)})
                 add_edge(hn,jn,"contains",source=js["source"])
+                for candidate in discovered[:300]:
+                    try:
+                        pu=urllib.parse.urlsplit(str(candidate))
+                        rnode=visible_resource_by_url.get(str(candidate)) or visible_resource_by_host_path.get(((pu.hostname or '').lower(),pu.path or '/'))
+                    except Exception:
+                        rnode=None
+                    if not rnode:
+                        # A frontend bundle commonly discovers routes on a sibling
+                        # API host.  Keep that cross-host relationship visible even
+                        # while the map is scoped to the frontend host.
+                        rr=conn.execute(
+                            """SELECT r.*,h.hostname,h.review_state AS host_review,h.classification AS host_classification,h.priority AS host_priority
+                               FROM resources r JOIN hosts h ON h.id=r.host_id
+                               WHERE r.url=? OR (lower(h.hostname)=? AND r.path=?) ORDER BY CASE WHEN r.url=? THEN 0 ELSE 1 END LIMIT 1""",
+                            (str(candidate), (pu.hostname or '').lower(), pu.path or '/', str(candidate)),
+                        ).fetchone()
+                        if rr:
+                            related_hn=f"host:{rr['host_id']}"
+                            if related_hn not in seen:
+                                rhcov=_coverage_state(rr["host_review"]); rhsig,rhfind=_entity_signal(conn,"host",rr["host_id"],rr["host_classification"])
+                                add_node(related_hn,"host",rr["hostname"],state=_visual_state(rhcov,rhsig),meta={"id":rr["host_id"],"coverage":rhcov,"signal":rhsig,"review":rr["host_review"],"classification":rr["host_classification"],"priority":rr["host_priority"],"finding_count":rhfind,"related_from_js":True},href=f"host/{rr['host_id']}")
+                                add_edge(target,related_hn,"contains",source="js_cross_host")
+                            rnode=f"resource:{rr['id']}"
+                            if rnode not in seen:
+                                rcov=_coverage_state(rr["review_state"]); rsig,rfc=_entity_signal(conn,"resource",rr["id"],rr["classification"])
+                                add_node(rnode,"resource",rr["path"] or rr["url"],state=_visual_state(rcov,rsig),meta={"id":rr["id"],"url":rr["url"],"host":rr["hostname"],"coverage":rcov,"signal":rsig,"review":rr["review_state"],"classification":rr["classification"],"finding_count":rfc,"priority":rr["priority"],"related_from_js":True},href=f"resource/{rr['id']}")
+                                add_edge(related_hn,rnode,"contains",source="js_cross_host")
+                            visible_resource_by_url[str(rr["url"])]=rnode
+                            visible_resource_by_host_path[(str(rr["hostname"]).lower(),str(rr["path"] or '/'))]=rnode
+                    if rnode:
+                        add_edge(jn,rnode,"discovered",source="js_local",evidence={"url":str(candidate),"asset_id":int(js["id"])})
 
         routes=_investigation_routes(conn, host_id=host_id, resource_ids=rids, limit=8)
 
@@ -1694,6 +1761,9 @@ def create_app(default_domain: str, default_workspace: Path):
                     elif typ == 'operation':
                         rr=conn.execute("SELECT resource_id FROM resource_operations WHERE id=?",(entity_id,)).fetchone()
                         if rr: resource_id=int(rr['resource_id']); scope='resource'
+                    elif typ == 'js':
+                        rr=conn.execute("SELECT host_id FROM js_assets WHERE id=?",(entity_id,)).fetchone()
+                        if rr: host_id=int(rr['host_id']); scope='host'
                     elif typ == 'lead':
                         rr=conn.execute("SELECT host_id,resource_id FROM leads_v2 WHERE id=?",(entity_id,)).fetchone()
                         if rr and rr['resource_id']: resource_id=int(rr['resource_id']); scope='resource'
@@ -1727,11 +1797,11 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=payload["refresh_url"], status_code=303)
 
     @app.post("/t/{target_key}/lead/{lead_id}/status")
-    def graph_lead_status(request: Request, target_key: str, lead_id: int, status: str = Form(...), csrf: str = Form(...)):
+    def graph_lead_status(request: Request, target_key: str, lead_id: int, status: str = Form(...), result_notes: str | None = Form(None), csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         try:
-            result = core.update_hypothesis(paths, lead_id, status=status)
+            result = core.update_hypothesis(paths, lead_id, status=status, result_notes=result_notes.strip() if result_notes is not None else None)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
