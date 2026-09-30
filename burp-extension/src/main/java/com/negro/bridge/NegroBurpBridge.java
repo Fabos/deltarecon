@@ -15,6 +15,7 @@ import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 
@@ -25,6 +26,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.ArrayList;
@@ -40,7 +42,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.20.1
+ * Negro Burp Bridge v0.20.2
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -61,7 +63,9 @@ public class NegroBurpBridge implements BurpExtension {
     private final AtomicLong errors = new AtomicLong();
     private volatile String negroBaseUrl = System.getProperty("negro.url", "http://127.0.0.1:8765");
     private JLabel statusLabel;
+    private JLabel lastErrorLabel;
     private Timer uiTimer;
+    private volatile String lastErrorDetail = "";
     private volatile long lastSuccessfulContactMs = 0L;
     private final String bridgeInstanceId = UUID.randomUUID().toString();
     private final AtomicBoolean unloading = new AtomicBoolean(false);
@@ -71,7 +75,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.20.1 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.20.2 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -114,9 +118,17 @@ public class NegroBurpBridge implements BurpExtension {
 
         JLabel counters = new JLabel();
         panel.add(counters);
+        lastErrorLabel = new JLabel(" ");
+        lastErrorLabel.setFont(lastErrorLabel.getFont().deriveFont(11f));
+        lastErrorLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+        panel.add(lastErrorLabel);
         final int[] healthTicks = {0};
         uiTimer = new Timer(1000, e -> {
             counters.setText("Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get());
+            if (lastErrorLabel != null) {
+                String detail = lastErrorDetail == null ? "" : lastErrorDetail;
+                lastErrorLabel.setText(detail.isBlank() ? " " : "Último error: " + detail);
+            }
             healthTicks[0]++;
             if (healthTicks[0] % 10 == 0) healthCheck();
         });
@@ -152,14 +164,25 @@ public class NegroBurpBridge implements BurpExtension {
     }
 
     private JPanel legendItem(Color color, String title, String description) {
-        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 2));
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 3));
         JLabel swatch = new JLabel("   ");
         swatch.setOpaque(true);
+        swatch.setPreferredSize(new Dimension(14, 24));
         swatch.setBackground(color);
         swatch.setBorder(BorderFactory.createLineBorder(color.darker()));
-        JLabel text = new JLabel("<html><b>" + title + "</b><br><span style='font-size:9px'>" + description + "</span></html>");
+
+        JPanel copy = new JPanel();
+        copy.setLayout(new BoxLayout(copy, BoxLayout.Y_AXIS));
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD));
+        JLabel descriptionLabel = new JLabel(description);
+        descriptionLabel.setFont(descriptionLabel.getFont().deriveFont(11f));
+        descriptionLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+        copy.add(titleLabel);
+        copy.add(descriptionLabel);
+
         row.add(swatch);
-        row.add(text);
+        row.add(copy);
         return row;
     }
 
@@ -212,7 +235,7 @@ public class NegroBurpBridge implements BurpExtension {
                 String json = toJson(request, response, tool);
                 sendAsync(json, request.method(), request.url(), tool, response.annotations());
             } catch (Exception ex) {
-                errors.incrementAndGet();
+                recordError("Bridge: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
                 api.logging().logToError("Negro Bridge: " + ex.getMessage());
             }
             return ResponseReceivedAction.continueWith(response, response.annotations());
@@ -227,7 +250,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.20.1")
+                    .header("X-Negro-Bridge-Version", "0.20.2")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -500,11 +523,22 @@ public class NegroBurpBridge implements BurpExtension {
                             accepted.incrementAndGet();
                             markConnected("ingest OK");
                             long signalCount = jsonLong(body, "signal_count");
-                            if (signalCount > 0 && annotations != null) {
-                                try {
-                                    annotations.setHighlightColor(HighlightColor.CYAN);
-                                    appendNegroNote(annotations, "NEGRO · 🩵 SIGNAL · " + signalCount + " indicio(s) automático(s) sin revisar");
-                                } catch (Exception ignored) {}
+                            if (signalCount > 0) {
+                                String requestHash = jsonString(body, "request_hash");
+                                String responseHash = jsonString(body, "response_hash");
+                                // HttpHandler annotations are reliable while the handler is returning,
+                                // but this callback runs asynchronously after that lifecycle. Mutating
+                                // response.annotations() here does not reliably repaint Proxy history.
+                                // Re-bind the result to the actual ProxyHttpRequestResponse by exact
+                                // persisted hashes and annotate THAT history item instead.
+                                if ("PROXY".equalsIgnoreCase(tool)) {
+                                    scheduleSignalAnnotation(method, observedUrl, requestHash, responseHash, signalCount, 0);
+                                } else if (annotations != null) {
+                                    try {
+                                        annotations.setHighlightColor(HighlightColor.CYAN);
+                                        appendNegroNote(annotations, "NEGRO · 🩵 SIGNAL · " + signalCount + " indicio(s) automático(s) sin revisar");
+                                    } catch (Exception ignored) {}
+                                }
                             }
                             api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true · signals=" + Math.max(0, signalCount));
                         } else {
@@ -512,15 +546,91 @@ public class NegroBurpBridge implements BurpExtension {
                             api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=false");
                         }
                     } else {
-                        errors.incrementAndGet();
+                        recordError("Ingest HTTP " + resp.statusCode());
                         api.logging().logToError("Negro ingest HTTP " + resp.statusCode() + ": " + body);
                     }
                 })
                 .exceptionally(ex -> {
-                    errors.incrementAndGet();
+                    recordError("Ingest " + ex.getClass().getSimpleName() + (ex.getMessage() == null ? "" : ": " + ex.getMessage()));
                     api.logging().logToError("Negro ingest exception: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "" : ex.getMessage()));
                     return null;
                 });
+    }
+
+    private void recordError(String detail) {
+        errors.incrementAndGet();
+        String clean = detail == null ? "desconocido" : detail.replace('\n', ' ').replace('\r', ' ').trim();
+        lastErrorDetail = clean.length() > 180 ? clean.substring(0, 180) + "…" : clean;
+    }
+
+    private String sha256(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(data == null ? new byte[0] : data);
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte b : digest) out.append(String.format("%02x", b & 0xff));
+            return out.toString();
+        } catch (Exception ex) {
+            throw new IllegalStateException("SHA-256 no disponible", ex);
+        }
+    }
+
+    private void scheduleSignalAnnotation(String method, String observedUrl, String requestHash, String responseHash, long signalCount, int attempt) {
+        if (unloading.get() || signalCount <= 0 || requestHash == null || requestHash.isBlank()) return;
+        long delayMs = switch (attempt) {
+            case 0 -> 120L;
+            case 1 -> 450L;
+            default -> 1000L;
+        };
+        bridgePoller.schedule(() -> {
+            if (unloading.get()) return;
+            boolean matched = applySignalAnnotationToProxyHistory(method, observedUrl, requestHash, responseHash, signalCount);
+            if (!matched && attempt < 2) {
+                scheduleSignalAnnotation(method, observedUrl, requestHash, responseHash, signalCount, attempt + 1);
+            } else if (!matched) {
+                api.logging().logToError("Negro signal sync: no encontré el item exacto en Proxy history · " + method + " " + observedUrl);
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private boolean applySignalAnnotationToProxyHistory(String method, String observedUrl, String requestHash, String responseHash, long signalCount) {
+        try {
+            List<ProxyHttpRequestResponse> candidates = api.proxy().history(item -> {
+                try {
+                    if (!item.hasResponse()) return false;
+                    HttpRequest req = item.finalRequest();
+                    return method.equalsIgnoreCase(req.method()) && observedUrl.equals(req.url());
+                } catch (Exception ignored) {
+                    return false;
+                }
+            });
+
+            int checked = 0;
+            for (int i = candidates.size() - 1; i >= 0 && checked < 30; i--, checked++) {
+                ProxyHttpRequestResponse item = candidates.get(i);
+                String reqHash = sha256(item.finalRequest().toByteArray().getBytes());
+                if (!requestHash.equalsIgnoreCase(reqHash)) continue;
+                if (responseHash != null && !responseHash.isBlank()) {
+                    String respHash = sha256(item.response().toByteArray().getBytes());
+                    if (!responseHash.equalsIgnoreCase(respHash)) continue;
+                }
+
+                Annotations a = item.annotations();
+                // An automatic Signal must never erase a human decision or a manual
+                // highlight. Cyan is only the default for an unreviewed observation.
+                if (!a.hasHighlightColor() || a.highlightColor() == HighlightColor.NONE || a.highlightColor() == HighlightColor.CYAN) {
+                    a.setHighlightColor(HighlightColor.CYAN);
+                }
+                appendNegroNote(a, "NEGRO · 🩵 SIGNAL · " + signalCount + " indicio(s) automático(s) sin revisar");
+                api.logging().logToOutput("Negro ✓ Proxy history cyan · #" + item.id() + " · signals=" + signalCount + " · " + method + " " + observedUrl);
+                return true;
+            }
+            return false;
+        } catch (Exception ex) {
+            recordError("Signal sync: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+            api.logging().logToError("Negro signal sync exception: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "" : ex.getMessage()));
+            return false;
+        }
     }
 
     private boolean isNegroBridgeTraffic(String url) {

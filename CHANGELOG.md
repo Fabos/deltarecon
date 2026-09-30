@@ -2,17 +2,26 @@
 
 Historial consolidado de Negro Recon. Desde v0.20.1 ya no se distribuyen archivos `UPDATE-vX.Y.Z.md` separados.
 
+## v0.20.2
+
+- Corrige el **CYAN automático en Burp**: el resultado asíncrono de Negro se vuelve a enlazar con el `ProxyHttpRequestResponse` real mediante los hashes exactos del request/response persistido antes de aplicar la anotación.
+- No sobrescribe colores/decisiones humanas con un Signal automático.
+- El backend devuelve `request_hash` y `response_hash` en la ingesta para mantener provenance exacta también en la sincronización visual de Burp.
+- Rehace la leyenda de Burp con componentes Swing nativos; ya no muestra etiquetas HTML literalmente.
+- La pestaña de Burp muestra el **último error de ingesta/sincronización** para no dejar un contador `Errores` opaco.
+- Mantiene todas las mejoras v0.20.1: Hunt unificado, Signals separados de Investigaciones, Learning Backlog y `CHANGELOG.md` único.
+
 ## v0.20.1
 
-- Corrige el highlight **CYAN** automático de Burp usando los `Signal Occurrences` realmente persistidos y pendientes de revisión.
-- Los Signals pasan a describir **hechos observados**; las hipótesis se presentan al usuario como **Investigaciones** (preguntas de prueba).
+- Corrige el conteo de Signals devuelto a Burp usando los `Signal Occurrences` realmente persistidos y pendientes de revisión.
+- Los Signals describen **hechos observados**; las hipótesis se presentan al usuario como **Investigaciones** (preguntas de prueba).
 - La vista **Hunt** reúne Signals pendientes + Investigaciones sin fusionar sus modelos de datos, y añade un primer Learning Backlog por categoría.
-- Mejora la pestaña Negro de Burp con una leyenda visual y estado de conexión que se recupera tras un ingest exitoso.
+- Mejora la pestaña Negro de Burp con una primera leyenda visual y recuperación del estado de conexión tras ingesta exitosa.
 - Mantiene `Signal = observación automática`, `Investigación = pregunta a validar`, `Estado = decisión humana`.
 - Consolida el historial de releases en este único `CHANGELOG.md`.
 
-
 ---
+
 
 # Negro Recon v0.20.0 — Signals ≠ State · Evidence Memory · Burp Workflow
 

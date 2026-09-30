@@ -2,6 +2,7 @@
 """Regression tests for v0.20 product model. Offline; no network/AI."""
 from pathlib import Path
 import base64
+import hashlib
 import tempfile
 import sys
 import zlib
@@ -50,6 +51,8 @@ def main() -> None:
         exid = int(obs["exchange_id"])
         rid = int(obs["resource_id"])
         oid = int(obs["operation_id"])
+        assert obs["request_hash"] == hashlib.sha256(request).hexdigest()
+        assert obs["response_hash"] == hashlib.sha256(response).hexdigest()
 
         with core.db_connect(paths) as conn:
             tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.20.1
+Negro Recon v0.20.2
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.20.1"
+VERSION = "0.20.2"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -971,6 +971,9 @@ def upsert_http_observation(
         "host_id": host_id, "resource_id": resource_id, "operation_id": operation_id, "exchange_id": exchange_id,
         "resource_created": created_resource, "operation_created": operation_created, "exchange_created": exchange_created, "js_created": js_created,
         "resource_url": resource_url, "method": method, "source": source,
+        # Exact provenance for Burp-side annotation sync. These are hashes of the
+        # exact request/response bytes that were persisted for this exchange.
+        "request_hash": req_hash, "response_hash": resp_hash,
     }
 
 

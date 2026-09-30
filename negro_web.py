@@ -3142,7 +3142,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Legacy/orphan bridge pollers must never consume queue items.
             return JSONResponse(
                 status_code=428,
-                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.1"},
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.2"},
             )
         allowed, active_id = _bridge_consumer_allowed(bridge_id)
         if not allowed:
