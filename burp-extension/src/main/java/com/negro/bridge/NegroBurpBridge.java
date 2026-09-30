@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.20.2
+ * Negro Burp Bridge v0.20.3
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -75,7 +75,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.20.2 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.20.3 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -147,7 +147,7 @@ public class NegroBurpBridge implements BurpExtension {
         legend.add(legendItem(new Color(92, 176, 112), "Descartado", "Pruebas suficientes para cerrar"));
         panel.add(legend);
         panel.add(Box.createVerticalStrut(10));
-        JLabel philosophy = new JLabel("Signal = observación de Negro · Estado = decisión humana");
+        JLabel philosophy = new JLabel("Rule → Signal automático · Hipótesis IA sólo bajo demanda · Estado = decisión humana");
         philosophy.setFont(philosophy.getFont().deriveFont(Font.ITALIC));
         panel.add(philosophy);
 
@@ -250,7 +250,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.20.2")
+                    .header("X-Negro-Bridge-Version", "0.20.3")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an

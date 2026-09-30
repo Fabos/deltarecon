@@ -25,7 +25,7 @@ def main():
         )
         exid=int(obs['exchange_id'])
         with core.db_connect(paths) as conn:
-            hunter.analyze_http_exchange(conn,exid,'app.example.test',emit_notifications=False)
+            hunter.analyze_http_exchange(conn,exid,'app.example.test',emit_notifications=True)
             lead=conn.execute("SELECT id,resource_id,evidence_json FROM leads_v2 WHERE lead_type='secret_or_client_config' ORDER BY id DESC LIMIT 1").fetchone()
             assert lead is not None
             ev=json.loads(lead['evidence_json'])[0]
@@ -44,11 +44,12 @@ def main():
             assert key not in details['context_snippet']
             assert 'Google Maps JavaScript API' in details['context_hint']
             rid=int(lead['resource_id'])
-        rows=web._hypothesis_rows(paths)
-        secret_row=next(x for x in rows if x['lead_type']=='secret_or_client_config')
-        assert secret_row['primary_exchange_id']==exid, secret_row
-        assert secret_row['evidence_refs'][0]['exchange_id']==exid, secret_row['evidence_refs']
-        assert secret_row['secret_evidence'][0]['match_found'] is True
+        signals=web._pending_signal_rows(paths)
+        secret_signal=next(x for x in signals if x['kind']=='secret_candidate')
+        assert secret_signal['exchange_id']==exid, secret_signal
+        with core.db_connect(paths) as conn:
+            signal_detail=hunter.secret_evidence_details(conn,secret_signal['evidence'])
+            assert signal_detail and signal_detail['match_found'] is True
         detail_view=web._resource_detail(paths,rid,focus_exchange_id=exid)
         focused=[ex for op in detail_view['operations'] for ex in op['exchanges'] if ex.get('focused')]
         assert focused and focused[0]['id']==exid

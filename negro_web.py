@@ -427,7 +427,8 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
     with _db(paths) as conn:
         hunter.init_schema(conn)
         sql = """SELECT l.*, h.hostname, r.url AS resource_url FROM leads_v2 l
-                 LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id WHERE 1=1"""
+                 LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id
+                 WHERE upper(COALESCE(l.source,''))='AI'"""
         params: list[Any] = []
         if validity == "current":
             sql += " AND COALESCE(l.rule_active,1)=1"
@@ -438,8 +439,8 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             like=f"%{q.lower()}%"; params += [like,like,like]
         if status:
             sql += " AND l.status=?"; params.append(status)
-        if source:
-            sql += " AND lower(l.source)=?"; params.append(source.lower())
+        # Hunt hypotheses are AI-only in v0.20.3. `source` remains accepted
+        # for backward-compatible URLs, but ENGINE matches stay Signals.
         if kind:
             sql += " AND l.lead_type=?"; params.append(kind)
         sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, l.updated_at DESC LIMIT 500"
@@ -482,6 +483,10 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['plain_language']=str(ai_meta.get('plain_language') or '')
             item['investigation_priority']=str(ai_meta.get('investigation_priority') or ('high' if item.get('review_priority')=='high' else 'medium' if item.get('review_priority')=='medium' else 'quick'))
             item['priority_reasons']=[str(x) for x in (ai_meta.get('priority_reasons') or [])][:4]
+            item['facts']=[str(x) for x in (ai_meta.get('facts') or [])][:8]
+            item['inference']=str(ai_meta.get('inference') or '')
+            item['unknowns']=[str(x) for x in (ai_meta.get('unknowns') or [])][:8]
+            item['promoted_investigation_id']=item.get('promoted_investigation_id')
             node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
             resolved_node_ids=list(dict.fromkeys(node_ids+evidence_exchange_nodes))
             item['node_ids']=resolved_node_ids
@@ -492,6 +497,24 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
             out.append(item)
         return out
+
+
+def _investigation_rows(paths: dict[str, Path], limit: int = 200) -> list[dict[str, Any]]:
+    """Human-owned investigations promoted explicitly from AI hypotheses."""
+    import negro_hunter as hunter
+    with _db(paths) as conn:
+        hunter.init_schema(conn)
+        rows = conn.execute(
+            """SELECT i.*,
+                      (SELECT COUNT(*) FROM investigation_links l WHERE l.investigation_id=i.id AND l.entity_type='signal') AS signal_count,
+                      (SELECT COUNT(*) FROM investigation_links l WHERE l.investigation_id=i.id AND l.entity_type='exchange') AS exchange_count,
+                      (SELECT COUNT(*) FROM investigation_links l WHERE l.investigation_id=i.id AND l.entity_type='resource') AS resource_count,
+                      h.review_priority AS hypothesis_priority, h.next_test AS next_test, h.confirm_if AS confirm_if, h.discard_if AS discard_if
+               FROM investigations i LEFT JOIN leads_v2 h ON h.id=i.source_hypothesis_id
+               ORDER BY CASE i.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, i.updated_at DESC LIMIT ?""",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[str, Any]]:
@@ -886,19 +909,16 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 ).fetchall()]
                 exd["match_evidence"] = []
                 if exd["focused"]:
-                    for lead in conn.execute("SELECT id,title,evidence_json FROM leads_v2 WHERE evidence_json LIKE ? ORDER BY updated_at DESC LIMIT 40", (f'%"exchange_id": {int(ex["id"])}%',)).fetchall():
+                    for sig in conn.execute("SELECT id,title,evidence_json FROM signal_occurrences WHERE exchange_id=? ORDER BY id DESC LIMIT 80", (int(ex["id"]),)).fetchall():
                         try:
-                            lev=json.loads(lead["evidence_json"] or "[]")
+                            ev=json.loads(sig["evidence_json"] or "{}")
                         except Exception:
-                            lev=[]
-                        for ev in lev if isinstance(lev,list) else []:
-                            if not isinstance(ev,dict) or int(ev.get("exchange_id") or 0) != int(ex["id"]):
-                                continue
-                            if ev.get("secret_type"):
-                                detail=hunter.secret_evidence_details(conn,ev)
-                                if detail:
-                                    detail["lead_id"]=int(lead["id"]); detail["lead_title"]=str(lead["title"] or "")
-                                    exd["match_evidence"].append(detail)
+                            ev={}
+                        if isinstance(ev,dict) and ev.get("secret_type"):
+                            detail=hunter.secret_evidence_details(conn,ev)
+                            if detail:
+                                detail["signal_id"]=int(sig["id"]); detail["signal_title"]=str(sig["title"] or "")
+                                exd["match_evidence"].append(detail)
                 exchanges.append(exd)
             tests = hunter.ensure_operation_test_coverage(conn, int(op["id"]))
             test_summary = hunter.operation_test_summary(conn, int(op["id"]))
@@ -921,7 +941,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
         # per-method coverage remains available lower in the HTTP section.
         resource_hypotheses = []
         for l in conn.execute(
-            """SELECT * FROM leads_v2 WHERE resource_id=? AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')
+            """SELECT * FROM leads_v2 WHERE resource_id=? AND upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')
                ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'interesting' THEN 1 WHEN 'testing' THEN 2
                                     WHEN 'candidate' THEN 3 WHEN 'postponed' THEN 4 ELSE 5 END,
                         CASE review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
@@ -1152,7 +1172,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
 
         # Hunter leads are already persistent investigation hypotheses/leads.
         try:
-            lead_rows = conn.execute("SELECT * FROM leads_v2 WHERE COALESCE(rule_active,1)=1 ORDER BY updated_at DESC LIMIT 150").fetchall()
+            lead_rows = conn.execute("SELECT * FROM leads_v2 WHERE upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1 ORDER BY updated_at DESC LIMIT 150").fetchall()
         except Exception:
             lead_rows = []
         for l in lead_rows:
@@ -1222,7 +1242,7 @@ def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: lis
     evidence to an active hypothesis and its next manual test.  AI hypotheses
     participate naturally because they are persisted in leads_v2 too.
     """
-    where = ["COALESCE(l.rule_active,1)=1", "l.status NOT IN ('negative','discarded')"]
+    where = ["upper(COALESCE(l.source,''))='AI'", "COALESCE(l.rule_active,1)=1", "l.status NOT IN ('negative','discarded')"]
     params: list[Any] = []
     if resource_ids:
         marks = ','.join('?' * len(resource_ids))
@@ -1543,7 +1563,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 on=add_node(f"observation:{o['id']}","observation",str(o["kind"]).replace('_',' '),state=st,meta={"id":o["id"],"source":o["source"],"kind":o["kind"],"value":o["value"],"observed_at":o["observed_at"]})
                 parent=f"{o['entity_type']}:{o['entity_id']}"; add_edge(parent,on,"tested_by",source=o["source"])
 
-            leads=conn.execute(f"SELECT * FROM leads_v2 WHERE COALESCE(rule_active,1)=1 AND (host_id=? OR resource_id IN ({marks})) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
+            leads=conn.execute(f"SELECT * FROM leads_v2 WHERE upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1 AND (host_id=? OR resource_id IN ({marks})) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
             for l in leads:
                 st="tested" if l["status"] in ('discarded','negative') else "finding" if l["status"]=='confirmed' else "interesting"
                 ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"],"result_notes":l["result_notes"] if "result_notes" in l.keys() else ""},href=f"hypotheses#hypothesis-{l['id']}")
@@ -2179,8 +2199,9 @@ def create_app(default_domain: str, default_workspace: Path):
     def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = "", validity: str = "current"):
         domain, workspace, paths = _target_context(target_key)
         validity = validity if validity in {"current","inactive","all"} else "current"
-        rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
+        rows = _hypothesis_rows(paths, q=q, status=status, source="AI", kind=kind, validity=validity)
         signals = _pending_signal_rows(paths, 120)
+        investigations = _investigation_rows(paths, 200)
         with _db(paths) as conn:
             state_counts = {str(r["state"]): int(r["c"] or 0) for r in conn.execute(
                 "SELECT state,COUNT(*) c FROM entity_states GROUP BY state"
@@ -2192,9 +2213,9 @@ def create_app(default_domain: str, default_workspace: Path):
                    ORDER BY c DESC, category LIMIT 12"""
             ).fetchall()]
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
-        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals,
+        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals, investigations=investigations,
                       state_counts=state_counts, learning_backlog=learning_backlog,
-                      q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind,
+                      q=q, hypothesis_status=status, hypothesis_source="AI", hypothesis_kind=kind,
                       hypothesis_kinds=kinds, hypothesis_validity=validity)
 
     @app.post("/t/{target_key}/hypothesis/{lead_id}/update")
@@ -2206,6 +2227,41 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
+
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/promote")
+    def hypothesis_promote(request: Request, target_key: str, lead_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                inv = hunter.promote_ai_hypothesis_to_investigation(conn, lead_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{inv['id']}", status_code=303)
+
+    @app.post("/t/{target_key}/investigation/{investigation_id}/update")
+    def investigation_update(request: Request, target_key: str, investigation_id: int, status: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                hunter.update_investigation(conn, investigation_id, status=status, notes=notes.strip())
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{investigation_id}", status_code=303)
+
+    @app.post("/t/{target_key}/signal/{signal_id}/review")
+    def signal_review(request: Request, target_key: str, signal_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT id FROM signal_occurrences WHERE id=?", (signal_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Signal no encontrado")
+            conn.execute("UPDATE signal_occurrences SET reviewed_at=COALESCE(reviewed_at,?) WHERE id=?", (_now(), signal_id))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses", status_code=303)
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):
@@ -3142,7 +3198,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Legacy/orphan bridge pollers must never consume queue items.
             return JSONResponse(
                 status_code=428,
-                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.2"},
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.3"},
             )
         allowed, active_id = _bridge_consumer_allowed(bridge_id)
         if not allowed:

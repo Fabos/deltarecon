@@ -2,30 +2,38 @@
 {% block title %}Hunt · {{ domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero">
-  <div><p class="eyebrow">HUNT · MEMORIA DE INVESTIGACIÓN</p><h1>Signals + Investigaciones</h1><p class="muted">Negro observa hechos; tú decides qué significan. Un Signal conserva la evidencia exacta. Una Investigación convierte una o más pistas en una pregunta concreta que puedes probar.</p></div>
+  <div>
+    <p class="eyebrow">HUNT · MEMORIA DE INVESTIGACIÓN</p>
+    <h1>Signals → Hipótesis IA → Investigaciones</h1>
+    <p class="muted">Las Rules reconocen hechos. Los Signals conservan qué ocurrió. La IA sólo formula hipótesis cuando tú la ejecutas. Una hipótesis se vuelve Investigación únicamente cuando tú la promueves.</p>
+  </div>
   <div class="page-actions">
-    <a class="button secondary" href="{{ target_base }}/graph">Ver en mapa</a>
-    <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local">
+    <a class="button" href="{{ target_base }}/graph">🧠 Generar hipótesis con IA</a>
+    <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando Signals">
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="hypotheses">
-      <button class="button secondary" type="submit" title="Reinterpreta evidencia almacenada con las reglas actuales; no vuelve a enumerar ni usa IA.">↻ Recalcular</button>
+      <button class="button secondary" type="submit" title="Reinterpreta evidencia almacenada con las Rules actuales; no llama IA.">↻ Recalcular Rules</button>
     </form>
   </div>
 </section>
-<section class="hunt-model panel">
-  <div class="hunt-model-item signal-model"><b>🩵 Signal</b><span>Hecho observado automáticamente en un exchange concreto.</span><small>Ej. “userId en JSON”, “Origin reflejado”, “JWT observado”.</small></div>
+
+<section class="hunt-model hunt-model-four panel">
+  <div class="hunt-model-item rule-model"><b>1 · Rule</b><span>Conocimiento determinístico configurable.</span><small>Ej. reconocer <code>tenantId</code>, <code>redirect_uri</code>, IDs o CORS.</small></div>
   <div class="hunt-model-arrow">→</div>
-  <div class="hunt-model-item investigation-model"><b>Investigación</b><span>Pregunta de prueba construida a partir de una o más señales.</span><small>Ej. “¿Buyer B puede leer el objeto de Buyer A?”</small></div>
+  <div class="hunt-model-item signal-model"><b>2 · 🩵 Signal</b><span>Hecho observado en evidencia real.</span><small>No afirma una vulnerabilidad y explica por qué hizo match.</small></div>
   <div class="hunt-model-arrow">→</div>
-  <div class="hunt-model-item state-model"><b>Estado humano</b><span>Tu decisión: aprender, revisar, correlacionar, finding o descartar.</span><small>Negro nunca toma esa decisión por ti.</small></div>
+  <div class="hunt-model-item hypothesis-model"><b>3 · 🧠 Hipótesis IA</b><span>Inferencia creada sólo cuando tú pides análisis.</span><small>Separa hechos, inferencia, incógnitas y próxima prueba.</small></div>
+  <div class="hunt-model-arrow">→</div>
+  <div class="hunt-model-item investigation-model"><b>4 · Investigación</b><span>Línea de trabajo que tú decidiste perseguir.</span><small>Puede reunir muchos Signals, exchanges y recursos.</small></div>
 </section>
 
 <section class="hunt-queue">
   <article><span>🩵 Signals pendientes</span><b>{{ signals|length }}</b></article>
+  <article><span>🧠 Hipótesis IA</span><b>{{ hypotheses|length }}</b></article>
+  <article><span>🔎 Investigaciones</span><b>{{ investigations|length }}</b></article>
   <article><span>🔵 Pendiente aprendizaje</span><b>{{ state_counts.get('learning',0) }}</b></article>
-  <article><span>🟡 Revisar luego</span><b>{{ state_counts.get('review_later',0) }}</b></article>
-  <article><span>🟠 Interesante</span><b>{{ state_counts.get('interesting',0) }}</b></article>
   <article><span>🟣 Correlacionar</span><b>{{ state_counts.get('correlate',0) }}</b></article>
 </section>
+
 {% if learning_backlog %}
 <section class="panel learning-backlog">
   <div class="panel-head"><div><p class="eyebrow">LEARNING BACKLOG</p><h2>Superficies que decidiste estudiar antes de cerrar</h2></div></div>
@@ -34,7 +42,8 @@
 {% endif %}
 
 <section class="panel hunt-signals-panel">
-  <div class="panel-head"><div><p class="eyebrow">SIGNALS PENDIENTES</p><h2>Lo que Negro observó y todavía no has revisado</h2></div><span>{{ signals|length }} mostrados</span></div>
+  <div class="panel-head"><div><p class="eyebrow">SIGNALS</p><h2>Hechos automáticos pendientes de revisión</h2></div><span>{{ signals|length }} mostrados</span></div>
+  <p class="muted small">Un Signal existe porque una Rule hizo match. No crea una hipótesis por sí solo.</p>
   {% if signals %}
   <div class="hunt-signal-list">
     {% for s in signals %}
@@ -42,71 +51,62 @@
       <div class="hunt-signal-head"><div><span class="signal-dot">🩵</span><b>{{ s.title }}</b></div><div class="badges"><span class="badge">{{ ui_label(s.category or s.kind) }}</span><span class="badge">{{ ui_label(s.severity) }}</span></div></div>
       {% if s.why_text %}<p>{{ s.why_text }}</p>{% endif %}
       <div class="hunt-signal-meta"><code>{% if s.method %}{{ s.method }} {% endif %}{{ s.path or s.resource_url or 'exchange' }}</code>{% if s.exchange_id %}<span>exchange #{{ s.exchange_id }}</span>{% endif %}</div>
-      <div class="hunt-signal-actions">{% if s.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ s.resource_id }}{% if s.exchange_id %}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}</div>
+      {% if s.evidence and s.evidence.rule_match %}<div class="rule-match-grid compact-rule-match">{% for k,v in s.evidence.rule_match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}</div>{% endif %}
+      <div class="hunt-signal-actions">
+        {% if s.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ s.resource_id }}{% if s.exchange_id %}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}
+        <form action="{{ target_base }}/signal/{{ s.id }}/review" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="btn-secondary" type="submit">✓ Marcar revisado</button></form>
+      </div>
     </article>
     {% endfor %}
   </div>
-  {% else %}<div class="empty-state compact"><strong>No hay Signals pendientes.</strong><span>Cuando el motor observe una superficie nueva aparecerá aquí y Burp podrá resaltarla en cyan.</span></div>{% endif %}
+  {% else %}<div class="empty-state compact"><strong>No hay Signals pendientes.</strong><span>Las Rules seguirán observando tráfico de Burp sin generar hipótesis automáticamente.</span></div>{% endif %}
 </section>
 
-<section class="section-heading"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Qué vale la pena probar</h2><p class="muted">Estas son hipótesis de trabajo, no vulnerabilidades confirmadas.</p></div></section>
+<section class="section-heading"><div><p class="eyebrow">HIPÓTESIS IA</p><h2>Preguntas que la IA propuso bajo demanda</h2><p class="muted">Aquí sólo aparecen ideas generadas por una ejecución explícita de IA. No son Findings ni Investigaciones todavía.</p></div><a class="button secondary" href="{{ target_base }}/graph">🧠 Analizar evidencia</a></section>
 
 <form class="filters panel" method="get">
-  <label class="filter-search">Buscar<input name="q" value="{{ q }}" placeholder="feature flag, auth, refund…"></label>
-  <label>Estado<select name="status"><option value="">Todos</option>{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if hypothesis_status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
-  <label>Vigencia<select name="validity"><option value="current" {% if hypothesis_validity=='current' %}selected{% endif %}>Vigentes según reglas actuales</option><option value="inactive" {% if hypothesis_validity=='inactive' %}selected{% endif %}>Ya no coinciden</option><option value="all" {% if hypothesis_validity=='all' %}selected{% endif %}>Todas</option></select></label><label>Fuente<select name="source"><option value="">Todas</option><option value="AI" {% if hypothesis_source=='AI' %}selected{% endif %}>IA</option><option value="ENGINE" {% if hypothesis_source=='ENGINE' %}selected{% endif %}>Motor</option><option value="MANUAL" {% if hypothesis_source=='MANUAL' %}selected{% endif %}>Manual</option></select></label>
-  <button class="button">Filtrar</button>{% if q or hypothesis_status or hypothesis_source or hypothesis_validity != 'current' %}<a class="button ghost" href="{{ target_base }}/hypotheses">Limpiar</a>{% endif %}
+  <label class="filter-search">Buscar<input name="q" value="{{ q }}" placeholder="authorization, OAuth, refund…"></label>
+  <label>Estado<select name="status"><option value="">Todas</option><option value="candidate" {% if hypothesis_status=='candidate' %}selected{% endif %}>Propuestas</option><option value="postponed" {% if hypothesis_status=='postponed' %}selected{% endif %}>Guardadas</option><option value="discarded" {% if hypothesis_status=='discarded' %}selected{% endif %}>Descartadas</option></select></label>
+  <button class="button">Filtrar</button>{% if q or hypothesis_status %}<a class="button ghost" href="{{ target_base }}/hypotheses">Limpiar</a>{% endif %}
 </form>
 
-<section class="hypothesis-list">
+<section class="hypothesis-list ai-hypothesis-list">
 {% for h in hypotheses %}
-<article class="hypothesis-work-card state-{{ h.status }} priority-view-{{ h.investigation_priority }} {% if not h.rule_active %}rule-inactive{% endif %}" id="hypothesis-{{ h.id }}">
+<article class="hypothesis-work-card ai-hypothesis-card state-{{ h.status }} priority-view-{{ h.investigation_priority }}" id="hypothesis-{{ h.id }}">
   <div class="hypothesis-head">
-    <div>
-      <div class="badges hypothesis-priority-row">
-        <span class="badge hypothesis-priority priority-{{ h.investigation_priority }}">{% if h.investigation_priority=='high' %}ALTA PRIORIDAD{% elif h.investigation_priority=='medium' %}PRIORIDAD MEDIA{% else %}CHEQUEO RÁPIDO{% endif %}</span>
-        <span class="badge">{{ h.lead_type }}</span><span class="badge">{{ ui_label(h.source) }}</span>
-        {% for reason in h.priority_reasons %}<span class="badge reason-chip">{{ reason }}</span>{% endfor %}
-      </div>
-      <h2>{{ h.title }}</h2>
-    </div>
-    <div class="badges"><span class="badge state-chip">{{ ui_label(h.status) }}</span>{% if not h.rule_active %}<span class="badge class-discarded">No vigente según reglas</span>{% endif %}</div>
+    <div><div class="badges hypothesis-priority-row"><span class="badge hypothesis-priority priority-{{ h.investigation_priority }}">{% if h.investigation_priority=='high' %}ALTA PRIORIDAD{% elif h.investigation_priority=='medium' %}PRIORIDAD MEDIA{% else %}CHEQUEO RÁPIDO{% endif %}</span><span class="badge">{{ h.lead_type }}</span><span class="badge">🧠 IA</span>{% for reason in h.priority_reasons %}<span class="badge reason-chip">{{ reason }}</span>{% endfor %}</div><h2>{{ h.title }}</h2></div>
+    <div class="badges">{% if h.promoted_investigation_id %}<span class="badge class-interesting">Promovida → Investigación #{{ h.promoted_investigation_id }}</span>{% else %}<span class="badge state-chip">{{ 'Guardada' if h.status=='postponed' else ('Descartada' if h.status=='discarded' else 'Propuesta') }}</span>{% endif %}</div>
   </div>
-  {% if h.test_plan %}<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>{% endif %}
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
-  <div class="hypothesis-copy"><p><b>Por qué merece tiempo:</b> {{ h.why_interesting }}</p><p><b>Objetivo ofensivo:</b> {{ h.next_test }}</p></div>
-  {% if h.rule_matches %}<div class="rule-match-box"><div><b>¿Qué regla originó esta investigación?</b>{% if h.detector_id %}<a href="{{ target_base }}/settings/detectors/{{ h.detector_id }}">Abrir detector →</a>{% endif %}</div><div class="rule-match-grid">{% for match in h.rule_matches %}{% for k,v in match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}{% endfor %}</div></div>{% endif %}
-  {% if h.secret_evidence %}
-  <div class="secret-origin-box">
-    <div class="secret-origin-head"><div><b>¿De dónde salió esta coincidencia?</b><small>Negro conserva la procedencia exacta sin guardar el secreto completo en la hipótesis.</small></div></div>
-    {% for ev in h.secret_evidence %}
-    <div class="secret-origin-item">
-      <div class="secret-origin-grid">
-        <span>Detectado</span><code>{{ ev.masked_value }}</code>
-        <span>Exchange</span><a href="{{ target_base }}/resource/{{ ev.resource_id }}?exchange={{ ev.exchange_id }}#exchange-{{ ev.exchange_id }}">#{{ ev.exchange_id }} · {{ ev.method }} {{ ev.path }}</a>
-        <span>Superficie</span><code>{{ ev.surface }}</code>
-        <span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}la coincidencia histórica ya no pudo resolverse en el body guardado{% endif %}</code>
-        <span>Fingerprint</span><code>{{ ev.fingerprint }}</code>
-        <span>Patrón</span><code>{{ ev.pattern }}</code>
-      </div>
-      {% if ev.context_hint %}<p class="secret-context-hint">{{ ev.context_hint }}</p>{% endif %}
-      {% if ev.context_snippet %}<div class="secret-context"><div class="http-label">CONTEXTO EN {{ ev.surface|upper }} · valor enmascarado</div><pre class="http-message">{{ ev.context_snippet }}</pre></div>{% endif %}
-      <div class="secret-origin-actions"><a class="btn-secondary" href="{{ target_base }}/resource/{{ ev.resource_id }}?exchange={{ ev.exchange_id }}#exchange-{{ ev.exchange_id }}">Abrir exchange exacto #{{ ev.exchange_id }}</a></div>
-    </div>
-    {% endfor %}
+
+  <div class="ai-reasoning-grid">
+    <div class="ai-reasoning-box facts"><b>HECHOS</b>{% if h.facts %}<ul>{% for x in h.facts %}<li>{{ x }}</li>{% endfor %}</ul>{% else %}<p>Hipótesis histórica: esta ejecución no guardó el bloque facts.</p>{% endif %}</div>
+    <div class="ai-reasoning-box inference"><b>INFERENCIA</b><p>{{ h.inference or h.why_interesting }}</p></div>
+    <div class="ai-reasoning-box unknowns"><b>LO QUE AÚN NO SABEMOS</b>{% if h.unknowns %}<ul>{% for x in h.unknowns %}<li>{{ x }}</li>{% endfor %}</ul>{% else %}<p>Revisa la evidencia y define qué dato falta antes de concluir.</p>{% endif %}</div>
   </div>
-  {% endif %}
-  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}{% if ref.exchange_id %}?exchange={{ ref.exchange_id }}#exchange-{{ ref.exchange_id }}{% else %}#http{% endif %}"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Solicitud #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}{% if ref.source %} · {{ ref.source }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
-  <div class="grid two hypothesis-signals"><div><b>Se vuelve interesante si</b><p>{{ h.confirm_if }}</p></div><div><b>Descártala si</b><p>{{ h.discard_if }}</p></div></div>
+
+  {% if h.test_plan %}<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba manual propuesta</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>{% endif %}
+  <div class="hypothesis-copy"><p><b>Pregunta de investigación:</b> {{ h.next_test }}</p><p><b>Por qué puede importar:</b> {{ h.why_interesting }}</p></div>
+  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia que recibió la IA</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}{% if ref.exchange_id %}?exchange={{ ref.exchange_id }}#exchange-{{ ref.exchange_id }}{% else %}#http{% endif %}"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Exchange #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
+  <div class="grid two hypothesis-signals"><div><b>Apoyaría la hipótesis si</b><p>{{ h.confirm_if }}</p></div><div><b>La debilitaría/descartaría si</b><p>{{ h.discard_if }}</p></div></div>
   <div class="hypothesis-actionbar">
-    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}{% if h.primary_exchange_id %}?exchange={{ h.primary_exchange_id }}#exchange-{{ h.primary_exchange_id }}{% else %}#http{% endif %}">{% if h.primary_exchange_id %}Abrir exchange #{{ h.primary_exchange_id }}{% else %}Abrir evidencia HTTP{% endif %}</a>{% endif %}
-    {% if h.resource_id and h.primary_method %}<form action="{{ target_base }}/resource/{{ h.resource_id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ h.primary_method }}"><button class="btn-secondary" type="submit">Enviar a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
-    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}">Abrir recurso</a>{% endif %}
-    <a class="btn-secondary" href="{{ target_base }}/graph?focus=lead:{{ h.id }}">Ver en mapa</a>
+    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}{% if h.primary_exchange_id %}?exchange={{ h.primary_exchange_id }}#exchange-{{ h.primary_exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}
+    {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/promote" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">→ Convertir en Investigación</button></form>{% else %}<a class="button" href="#investigation-{{ h.promoted_investigation_id }}">Abrir Investigación #{{ h.promoted_investigation_id }}</a>{% endif %}
   </div>
-  <form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status">{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if h.status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label class="grow">Resultado / qué pasó<textarea name="result_notes" placeholder="Ej. Activé el flag; apareció /admin-beta, pero el backend respondió 403. Esto alimentará futuras ideas.">{{ h.result_notes or '' }}</textarea></label><button class="button" type="submit">Guardar resultado</button></form>
-  <small class="muted">Actualizada {{ h.updated_at }}{% if h.last_tested_at %} · última prueba {{ h.last_tested_at }}{% endif %}</small>
+  {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Decisión<select name="status"><option value="candidate" {% if h.status=='candidate' %}selected{% endif %}>Mantener propuesta</option><option value="postponed" {% if h.status=='postponed' %}selected{% endif %}>Guardar para después</option><option value="discarded" {% if h.status=='discarded' %}selected{% endif %}>Descartar hipótesis</option></select></label><label class="grow">Nota<textarea name="result_notes" placeholder="Por qué la guardas o descartas">{{ h.result_notes or '' }}</textarea></label><button class="btn-secondary" type="submit">Guardar</button></form>{% endif %}
 </article>
-{% else %}<section class="panel empty-state"><strong>No hay investigaciones con estos filtros.</strong><span>Los Signals pueden convertirse en preguntas de prueba cuando exista suficiente contexto.</span></section>{% endfor %}
+{% else %}<section class="panel empty-state"><strong>No hay hipótesis IA con estos filtros.</strong><span>Negro no las genera automáticamente. Pulsa “Generar hipótesis con IA” cuando quieras que razone sobre la evidencia acumulada.</span></section>{% endfor %}
+</section>
+
+<section class="section-heading"><div><p class="eyebrow">INVESTIGACIONES HUMANAS</p><h2>Lo que decidiste perseguir</h2><p class="muted">Esta es tu mesa de trabajo. Una investigación puede reunir Signals y evidencia sin declarar todavía una vulnerabilidad.</p></div></section>
+<section class="investigation-list">
+{% for i in investigations %}
+<article class="panel human-investigation state-{{ i.status }}" id="investigation-{{ i.id }}">
+  <div class="panel-head"><div><div class="badges"><span class="badge">#{{ i.id }}</span><span class="badge">{{ i.category or 'other' }}</span><span class="badge state-chip">{{ 'Activa' if i.status=='active' else ('Pausada' if i.status=='paused' else 'Cerrada') }}</span></div><h2>{{ i.title }}</h2></div><div class="investigation-counts"><span>🩵 {{ i.signal_count }} Signals</span><span>{{ i.exchange_count }} exchanges</span><span>{{ i.resource_count }} recursos</span></div></div>
+  {% if i.summary %}<p><b>Por qué nació:</b> {{ i.summary }}</p>{% endif %}
+  {% if i.next_test %}<div class="hypothesis-plain"><b>Siguiente pregunta:</b> {{ i.next_test }}</div>{% endif %}
+  <form action="{{ target_base }}/investigation/{{ i.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status"><option value="active" {% if i.status=='active' %}selected{% endif %}>Activa</option><option value="paused" {% if i.status=='paused' %}selected{% endif %}>Pausada</option><option value="closed" {% if i.status=='closed' %}selected{% endif %}>Cerrada</option></select></label><label class="grow">Memoria de investigación<textarea name="notes" placeholder="Qué probaste, qué falta, qué correlacionar…">{{ i.notes or '' }}</textarea></label><button class="button" type="submit">Guardar Investigación</button></form>
+</article>
+{% else %}<section class="panel empty-state"><strong>Todavía no promoviste ninguna hipótesis.</strong><span>La IA propone. Tú decides cuáles merecen convertirse en una Investigación.</span></section>{% endfor %}
 </section>
 {% endblock %}

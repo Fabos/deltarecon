@@ -1,4 +1,15 @@
-# CHANGELOG
+# Changelog
+
+## v0.20.3
+
+- Consolida el modelo **Rule → Signal → Hipótesis IA → Investigación humana**.
+- Hunt muestra únicamente hipótesis de fuente IA; los matches determinísticos permanecen como Signals.
+- Las hipótesis IA separan `facts`, `inference`, `unknowns` y la prueba manual sugerida.
+- Nueva promoción explícita **Hipótesis → Investigación** con tablas `investigations` e `investigation_links`.
+- Una Investigación agrupa automáticamente evidencia/Signals directamente relacionados con la hipótesis promovida.
+- Los Signals pueden marcarse como revisados sin convertir el recurso en descartado.
+- Se preservan `leads_v2` ENGINE internamente por compatibilidad, pero ya no se presentan como hipótesis en Hunt.
+- Burp Bridge actualizado a v0.20.3; mantiene cyan automático y estados humanos.
 
 Historial consolidado de Negro Recon. Desde v0.20.1 ya no se distribuyen archivos `UPDATE-vX.Y.Z.md` separados.
 

@@ -156,3 +156,20 @@ No medir Negro por cantidad de módulos. Medirlo por:
 4. Flow Capture + Flow Compare + business-state observations.
 5. Pattern anomalies + cross-host correlation + business objects.
 6. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
+
+## Implementado en v0.20.3 — separación definitiva del razonamiento
+
+- `Rule → Signal → Hipótesis IA → Investigación humana` como modelo oficial.
+- Hunt deja de presentar los `ENGINE leads` determinísticos como hipótesis.
+- Las hipótesis visibles provienen únicamente de una ejecución explícita de IA.
+- Cada hipótesis IA separa hechos, inferencia, incógnitas y siguiente prueba.
+- Promoción manual `Hipótesis → Investigación` con evidencia/Signals relacionados.
+- Revisión de un Signal sin obligar a marcar el recurso como descartado.
+
+## Siguiente fase inmediata — v0.21 Search Everything
+
+- índice FTS5 sobre contenido normalizado;
+- búsqueda libre en URL/path/headers/params/body/response/notas/Signals;
+- filtros `host:`, `method:`, `status:`, `state:`, `signal:`, `param:` y similares;
+- Saved Searches;
+- ayuda integrada “Aprende a buscar como hacker”.

@@ -130,10 +130,24 @@ def main():
             missing = expected - lt
             assert not missing, (missing, lt)
 
+            # Deterministic ENGINE rows are compatibility memory, not hypotheses/routes.
+            assert web._investigation_routes(conn, limit=20) == []
+            ai_result = {"hypotheses": [{
+                "title":"Authorization comparison worth testing", "type":"authorization", "strength":"medium",
+                "investigation_priority":"medium", "priority_reasons":["object reference"],
+                "plain_language":"Compare ownership between authorized identities.",
+                "facts":["Authenticated object reference observed"],
+                "inference":"Object-level authorization is not yet proven.",
+                "unknowns":["How another authorized identity is handled"],
+                "why_interesting":"The server-side ownership check is unknown.",
+                "suggested_investigation":"Compare the same object with a second authorized identity.",
+                "steps":[{"step":1,"action":"Replay with second identity","what_to_watch":"status/body ownership"}],
+                "confirm_if":"Cross-account object is returned.", "discard_if":"Ownership is consistently enforced.",
+                "node_ids":[f"exchange:{int(ref['exchange_id'])}"]
+            }]}
+            hunter.persist_graph_ai_hypotheses(conn, ai_result, evidence_hash="access-test-ai")
             routes = web._investigation_routes(conn, limit=20)
-            assert routes, "Expected investigation routes"
-            route_types = {r["lead_type"] for r in routes}
-            assert expected & route_types, route_types
+            assert routes, "Expected AI hypothesis route"
             assert all(r["next_test"] for r in routes), routes
             assert all(str(r["id"]).startswith("route:") for r in routes), routes
 
@@ -151,10 +165,11 @@ def main():
             essential = [nid for nid in (route.get("node_ids") or []) if nid.startswith(("host:","resource:","operation:","lead:"))]
             assert all(nid in graph_node_ids for nid in essential), (route, graph_node_ids)
 
-        # Resource detail should expose hypotheses and review aids without inventing findings.
+        # Deterministic ENGINE matches must not appear as user-facing hypotheses.
         detail = web._resource_detail(paths, int(patch["resource_id"]))
-        assert detail and detail.get("resource_hypotheses"), detail
-        assert any(h.get("lead_type") == "mass_assignment" for h in detail["resource_hypotheses"]), detail["resource_hypotheses"]
+        assert detail is not None
+        assert not detail.get("resource_hypotheses"), detail.get("resource_hypotheses")
+        assert detail.get("review_aids"), detail
 
         with core.db_connect(paths) as conn:
             assert conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] == 0
@@ -179,8 +194,8 @@ def main():
             hunter.analyze_http_exchange(conn, int(external["exchange_id"]), domain, emit_notifications=True)
             assert conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type='cors' AND resource_id=?", (external["resource_id"],)).fetchone()["c"] == 1
 
-        # 8) A newly-created access-control hypothesis appears in Notifications,
-        # deduplicated by lead rather than per repeated request.
+        # 8) A deterministic access-control rule surfaces a Signal notification.
+        # It must not be presented as an AI hypothesis in Hunt.
         notify_patch = ingest(
             paths, domain, host="api.access.test", method="PATCH", path="/api/profile-notify", request_ct="application/json",
             req_body=json.dumps({"email":"new@access.test"}).encode(),
@@ -188,10 +203,10 @@ def main():
         )
         with core.db_connect(paths) as conn:
             hunter.analyze_http_exchange(conn, int(notify_patch["exchange_id"]), domain, emit_notifications=True)
-            row=conn.execute("SELECT * FROM notifications WHERE kind='hypothesis' ORDER BY id DESC LIMIT 1").fetchone()
-            assert row is not None, "Expected hypothesis notification"
+            row=conn.execute("SELECT * FROM notifications WHERE kind='signal' ORDER BY id DESC LIMIT 1").fetchone()
+            assert row is not None, "Expected Signal notification"
             data=json.loads(row["data_json"] or "{}")
-            assert data.get("lead_id"), data
+            assert data.get("lead_type"), data
 
         # 9) Local JS analysis turns discovered API routes into Resources,
         # creates one aggregate notification, and links JS -> cross-host Resource
@@ -222,7 +237,7 @@ def main():
         print("[OK] Resource review aids")
         print("[OK] Investigation routes")
         print("[OK] First-party CORS noise reduction")
-        print("[OK] Hypothesis notifications")
+        print("[OK] Deterministic Signal notifications")
         print("[OK] JavaScript surface -> resources -> graph")
         print("[OK] No automatic findings/exploitation")
 

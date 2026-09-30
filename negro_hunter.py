@@ -501,6 +501,28 @@ def init_schema(conn) -> None:
             created_at TEXT NOT NULL,
             UNIQUE(task_type, evidence_hash, model)
         );
+        CREATE TABLE IF NOT EXISTS investigations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            category TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            summary TEXT,
+            notes TEXT,
+            source_hypothesis_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_hypothesis_id)
+        );
+        CREATE TABLE IF NOT EXISTS investigation_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            investigation_id INTEGER NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            relation TEXT NOT NULL DEFAULT 'supports',
+            created_at TEXT NOT NULL,
+            UNIQUE(investigation_id, entity_type, entity_id, relation),
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS operation_test_coverage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             operation_id INTEGER NOT NULL,
@@ -554,6 +576,8 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_signal_occurrences_exchange ON signal_occurrences(exchange_id, kind);
         CREATE INDEX IF NOT EXISTS idx_parameter_observations_name ON parameter_observations(normalized_name, resource_id);
         CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
+        CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_investigation_links_entity ON investigation_links(entity_type, entity_id);
         """
     )
     # v0.12.2: leads_v2 also acts as the persistent hypothesis store.
@@ -573,6 +597,8 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN rule_active INTEGER NOT NULL DEFAULT 1")
     if "last_rule_eval_at" not in lead_cols:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN last_rule_eval_at TEXT")
+    if "promoted_investigation_id" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN promoted_investigation_id INTEGER")
 
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
@@ -1656,26 +1682,23 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
 
     def notify_new_lead(result: tuple[int, bool], *, lead_type: str, title: str, priority: str,
                         message: str, data: dict[str, Any] | None = None) -> None:
-        """Surface only *new* deterministic hypotheses in the notification inbox.
+        """Compatibility shim: deterministic rules surface Signals, never user-facing hypotheses.
 
-        Hypotheses remain non-findings.  The notification is simply a low-noise way
-        to tell the hunter that a resource acquired a new reason to review it.
+        Older code paths may still persist an internal leads_v2 row so existing workspaces
+        remain readable, but Hunt no longer treats ENGINE rows as hypotheses.  The visible
+        output of a rule match is only a Signal tied to the exact exchange.
         """
-        lead_id, created = result
-        if not created or not emit_notifications:
-            return
+        _lead_id, _created = result
         severity = "high" if priority == "high" else "medium" if priority == "medium" else "low"
         payload = {
-            "lead_id": lead_id,
             "lead_type": lead_type,
-            "graph_focus": f"lead:{lead_id}",
-            "href": f"hypotheses#hypothesis-{lead_id}",
+            "href": _notification_href(rid, exchange_id),
             **(data or {}),
         }
         nid, made = _upsert_notification(
             conn,
-            dedupe_key=f"hypothesis:new:{lead_id}",
-            kind="hypothesis",
+            dedupe_key=f"signal:rule:{lead_type}:{exchange_id}",
+            kind="signal",
             severity=severity,
             title=title,
             message=message,
@@ -1686,11 +1709,9 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             operation_id=oid,
             exchange_id=exchange_id,
             data=payload,
-            emit=True,
+            emit=emit_notifications,
             signal_kind=lead_type,
         )
-        # A deterministic investigation begins with an observable fact. Expose
-        # that fact as a Signal as well as persisting the richer investigation.
         signals.append({"kind": lead_type, "severity": severity, "title": title, **payload})
         if made and nid:
             new_notifications.append(nid)
@@ -2970,6 +2991,9 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "investigation_priority": {"type": "string", "enum": ["high", "medium", "quick"]},
             "priority_reasons": {"type": "array", "items": {"type": "string"}},
             "plain_language": {"type": "string"},
+            "facts": {"type": "array", "items": {"type": "string"}},
+            "inference": {"type": "string"},
+            "unknowns": {"type": "array", "items": {"type": "string"}},
             "why_interesting": {"type": "string"},
             "suggested_investigation": {"type": "string"},
             "steps": {"type": "array", "items": step_schema},
@@ -2977,7 +3001,7 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "discard_if": {"type": "string"},
             "node_ids": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
+        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "facts", "inference", "unknowns", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
     }
     unexplored_schema = {
         "type": "object",
@@ -3104,6 +3128,19 @@ def run_openai_graph_ideas(payload: str, *, model: str, output_tokens: int, expl
     system = """Eres la mano derecha de un pentester durante una investigación AUTORIZADA. Responde SIEMPRE en español claro, concreto, ofensivo y didáctico.
 No eres un chatbot genérico: no listes OWASP por rutina, no inventes endpoints/roles/respuestas y no declares una vulnerabilidad sin evidencia.
 Tu salida debe permitir ejecutar la SIGUIENTE PRUEBA MANUAL con Burp/Navegador sin tener que adivinar tu intención.
+
+MODELO DE NEGRO:
+- RULE = conocimiento determinístico configurable.
+- SIGNAL = hecho observado por una Rule en tráfico/evidencia real.
+- HYPOTHESIS = inferencia tuya, generada sólo porque el humano pidió este análisis.
+- INVESTIGATION = trabajo que el humano decide promover; tú NO creas findings ni cierras investigaciones.
+
+Para CADA hipótesis separa explícitamente:
+1. facts: hechos observados y verificables en la evidencia.
+2. inference: qué relación o explicación propones.
+3. unknowns: qué todavía NO sabemos y evita afirmar.
+4. suggested_investigation/steps: la prueba manual mínima que resolvería esas incógnitas.
+Una Rule/Signal aislada no debe convertirse automáticamente en una hipótesis si no aporta una pregunta de investigación de valor.
 
 Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y preview JSON limitada; úsalo para nombrar requests, parámetros, campos y respuestas REALES.
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
@@ -3310,7 +3347,7 @@ def hypothesis_refs_from_nodes(conn, node_ids: list[str]) -> dict[str, Any]:
 
 
 def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: str, selected_node_id: str | None = None) -> list[dict[str, Any]]:
-    """Persist AI ideas into leads_v2, preserving human lifecycle status."""
+    """Persist explicit, human-requested AI hypotheses. ENGINE rows are not hypotheses in Hunt."""
     init_schema(conn)
     persisted: list[dict[str, Any]] = []
     for idx, item in enumerate((result.get("hypotheses") or [])[:5]):
@@ -3328,6 +3365,9 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
             if nid.startswith("host:") and host_id is None:
                 try: host_id = int(nid.split(":",1)[1])
                 except Exception: pass
+        refs = hypothesis_refs_from_nodes(conn, node_ids) if node_ids else {"evidence_refs": [], "resource_id": None, "primary_method": None, "primary_exchange_id": None}
+        if resource_id is None and refs.get("resource_id"):
+            resource_id = int(refs["resource_id"])
         if resource_id and host_id is None:
             row = conn.execute("SELECT host_id FROM resources WHERE id=?", (resource_id,)).fetchone()
             host_id = int(row["host_id"]) if row else None
@@ -3336,7 +3376,7 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         priority = "high" if investigation_priority == "high" else "medium" if investigation_priority == "medium" else "low"
         confidence = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
         priority_reasons = [str(x).strip()[:120] for x in (item.get("priority_reasons") or []) if str(x).strip()][:4]
-        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip(),"investigation_priority":investigation_priority,"priority_reasons":priority_reasons}]
+        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip(),"investigation_priority":investigation_priority,"priority_reasons":priority_reasons,"facts":[str(x).strip()[:300] for x in (item.get("facts") or []) if str(x).strip()][:8],"inference":str(item.get("inference") or "").strip()[:1200],"unknowns":[str(x).strip()[:300] for x in (item.get("unknowns") or []) if str(x).strip()][:8]}]
         upsert_lead(
             conn, lead_key=f"ai_graph:{fingerprint}", host_id=host_id, resource_id=resource_id,
             lead_type=typ, title=title, confidence=confidence, review_priority=priority,
@@ -3348,9 +3388,69 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         conn.execute("UPDATE leads_v2 SET test_plan_json=? WHERE lead_key=?", (json.dumps(item.get("steps") or [], ensure_ascii=False), f"ai_graph:{fingerprint}"))
         row = conn.execute("SELECT id,status FROM leads_v2 WHERE lead_key=?", (f"ai_graph:{fingerprint}",)).fetchone()
         if row:
-            refs = hypothesis_refs_from_nodes(conn, node_ids)
             persisted.append({**item, **refs, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})
     return persisted
+
+def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]:
+    """Turn an AI hypothesis into a human-owned investigation. Never automatic."""
+    init_schema(conn)
+    row = conn.execute("SELECT * FROM leads_v2 WHERE id=? AND upper(COALESCE(source,''))='AI'", (int(lead_id),)).fetchone()
+    if not row:
+        raise ValueError("Hipótesis IA no encontrada")
+    existing = conn.execute("SELECT * FROM investigations WHERE source_hypothesis_id=?", (int(lead_id),)).fetchone()
+    if existing:
+        return dict(existing)
+    now = now_iso()
+    cur = conn.execute(
+        "INSERT INTO investigations(title,category,status,summary,notes,source_hypothesis_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        (str(row["title"]), str(row["lead_type"] or "other"), "active", str(row["why_interesting"] or ""), "", int(lead_id), now, now),
+    )
+    investigation_id = int(cur.lastrowid)
+    try:
+        evidence = json.loads(row["evidence_json"] or "[]")
+    except Exception:
+        evidence = []
+    node_ids: list[str] = []
+    for ev in evidence if isinstance(evidence, list) else []:
+        if isinstance(ev, dict):
+            node_ids.extend(str(x) for x in (ev.get("node_ids") or []) if isinstance(x, str))
+            if ev.get("exchange_id"):
+                node_ids.append(f"exchange:{ev.get('exchange_id')}")
+    refs = hypothesis_refs_from_nodes(conn, list(dict.fromkeys(node_ids))) if node_ids else {"evidence_refs": []}
+    for ref in refs.get("evidence_refs") or []:
+        if ref.get("exchange_id"):
+            conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "exchange", int(ref["exchange_id"]), "evidence", now))
+        if ref.get("resource_id"):
+            conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "resource", int(ref["resource_id"]), "surface", now))
+    # Attach Signals that directly support the referenced exchanges/resources.
+    exchange_ids = {int(r["exchange_id"]) for r in (refs.get("evidence_refs") or []) if r.get("exchange_id")}
+    resource_ids = {int(r["resource_id"]) for r in (refs.get("evidence_refs") or []) if r.get("resource_id")}
+    signal_rows = []
+    if exchange_ids:
+        q = ",".join("?" for _ in exchange_ids)
+        signal_rows.extend(conn.execute(f"SELECT id FROM signal_occurrences WHERE exchange_id IN ({q}) LIMIT 80", tuple(exchange_ids)).fetchall())
+    if resource_ids:
+        q = ",".join("?" for _ in resource_ids)
+        signal_rows.extend(conn.execute(f"SELECT id FROM signal_occurrences WHERE resource_id IN ({q}) LIMIT 80", tuple(resource_ids)).fetchall())
+    for sr in signal_rows:
+        conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "signal", int(sr["id"]), "supports", now))
+    conn.execute("UPDATE leads_v2 SET promoted_investigation_id=?,updated_at=? WHERE id=?", (investigation_id, now, int(lead_id)))
+    out = conn.execute("SELECT * FROM investigations WHERE id=?", (investigation_id,)).fetchone()
+    return dict(out)
+
+
+def update_investigation(conn, investigation_id: int, *, status: str | None = None, notes: str | None = None) -> dict[str, Any]:
+    init_schema(conn)
+    row = conn.execute("SELECT * FROM investigations WHERE id=?", (int(investigation_id),)).fetchone()
+    if not row:
+        raise ValueError("Investigación no encontrada")
+    next_status = status or str(row["status"] or "active")
+    if next_status not in {"active", "paused", "closed"}:
+        raise ValueError("Estado de investigación inválido")
+    next_notes = str(row["notes"] or "") if notes is None else str(notes)
+    conn.execute("UPDATE investigations SET status=?,notes=?,updated_at=? WHERE id=?", (next_status, next_notes, now_iso(), int(investigation_id)))
+    return dict(conn.execute("SELECT * FROM investigations WHERE id=?", (int(investigation_id),)).fetchone())
+
 
 def actual_ai_cost(usage: dict[str, Any], model: str, usd_cop_rate: float) -> dict[str, Any]:
     prices = intel.OPENAI_PRICING.get(model)
