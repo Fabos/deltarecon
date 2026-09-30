@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.16.
+"""Local web workspace for Negro Recon v0.19.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import negro_core as core
+import negro_rules as rulebook
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -73,7 +74,7 @@ UI_LABELS = {
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP",
     "js_asset": "JavaScript", "observation": "Observación",
     "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
-    "request": "Solicitud", "response": "Respuesta", "cluster": "Grupo", "target": "Objetivo",
+    "request": "Solicitud", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
     "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Feature flags", "other": "Otro",
     "bola_surface": "Superficie BOLA/IDOR", "cloud_storage": "Almacenamiento cloud", "directory_listing": "Listado de directorio",
@@ -251,12 +252,12 @@ def _visual_state(coverage: str, signal: str) -> str:
 def _target_context(target_key: str) -> tuple[str, Path, dict[str, Path]]:
     target = core.get_target(target_key)
     if not target:
-        raise HTTPException(status_code=404, detail="Target no encontrado")
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     domain = str(target.get("domain", "")).strip().lower().rstrip(".")
     workspace = Path(str(target.get("workspace", ""))).expanduser()
     if not domain or not workspace:
-        raise HTTPException(status_code=500, detail="Target mal configurado")
-    paths = core.ensure_workspace(workspace, domain)
+        raise HTTPException(status_code=500, detail="Proyecto mal configurado")
+    paths = core.ensure_workspace(workspace, domain, scopes=target.get("scopes"), project_name=target.get("name"))
     return domain, workspace, paths
 
 
@@ -408,7 +409,7 @@ def _target_cards() -> list[dict[str, Any]]:
         item.update({"hosts": 0, "resources": 0, "leads": 0, "findings": 0, "error": None})
         try:
             domain = str(target["domain"])
-            paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+            paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
             with _db(paths) as conn:
                 item["hosts"] = conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"]
                 item["resources"] = conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"]
@@ -446,9 +447,22 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             try:item['test_plan']=json.loads(item.get('test_plan_json') or '[]')
             except Exception:item['test_plan']=[]
             ai_meta={}
+            rule_matches=[]
             for ev in item['evidence']:
-                if isinstance(ev,dict) and ev.get('source')=='ai_graph':
-                    ai_meta=ev;break
+                if isinstance(ev,dict) and ev.get('source')=='ai_graph' and not ai_meta:
+                    ai_meta=ev
+                if isinstance(ev,dict) and isinstance(ev.get('rule_match'),dict):
+                    rule_matches.append(ev.get('rule_match'))
+            detector_map={
+                'access_object_reference':'access_object_reference','mass_assignment':'mass_assignment',
+                'method_access_control':'method_access_control','redirect_body_access_control':'redirect_body_access_control',
+                'proxy_path_access_control':'proxy_path_access_control','referer_access_control':'referer_access_control',
+                'cors':'cors','javascript_surface':'js_sensitive_route','open_redirect':'open_redirect',
+                'ssrf_surface':'ssrf_surface','secret_or_client_config':'secret_candidate',
+                'sensitive_response':'sensitive_response','sensitive_url':'sensitive_url','source_map':'source_map'
+            }
+            item['rule_matches']=rule_matches
+            item['detector_id']=detector_map.get(str(item.get('lead_type') or ''))
             item['plain_language']=str(ai_meta.get('plain_language') or '')
             item['investigation_priority']=str(ai_meta.get('investigation_priority') or ('high' if item.get('review_priority')=='high' else 'medium' if item.get('review_priority')=='medium' else 'quick'))
             item['priority_reasons']=[str(x) for x in (ai_meta.get('priority_reasons') or [])][:4]
@@ -957,7 +971,8 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
         seen_edges.add(key)
         edges.append({"id": f"e{len(edges)+1}", "source": src, "target": dst, "relation": relation, "meta": {"source": source, "evidence": evidence}})
 
-    target_id = add_node("target:root", "target", domain, state="normal", meta={"domain": domain})
+    project_name = core.workspace_project_name(paths, domain)
+    target_id = add_node("target:root", "target", project_name, state="normal", meta={"domain": domain, "project_name": project_name})
     with _db(paths) as conn:
         hosts = conn.execute("SELECT * FROM hosts ORDER BY hostname").fetchall()
         host_by_name: dict[str, str] = {}
@@ -1106,7 +1121,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
     type_counts: dict[str, int] = {}
     for n in nodes:
         type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
-    return {"target": domain, "nodes": nodes, "edges": edges, "routes": routes, "counts": type_counts, "generated_at": _now()}
+    return {"target": project_name, "nodes": nodes, "edges": edges, "routes": routes, "counts": type_counts, "generated_at": _now()}
 
 
 def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: list[int] | None = None, limit: int = 8) -> list[dict[str, Any]]:
@@ -1224,7 +1239,8 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
         if a in seen and b in seen and a != b:
             edges.append({"id":f"e{len(edges)+1}","source":a,"target":b,"relation":rel,"meta":{"source":source,"evidence":evidence}})
 
-    target=add_node("target:root","target",domain,meta={"domain":domain})
+    project_name = core.workspace_project_name(paths, domain)
+    target=add_node("target:root","target",project_name,meta={"domain":domain,"project_name":project_name})
     with _db(paths) as conn:
         total_hosts=int(conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"] or 0)
         total_resources=int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0)
@@ -1270,7 +1286,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 cid=add_node(f"cluster:hosts:{bucket}","cluster",f"{cluster_labels[bucket]} · {len(items)}",state=cluster_states[bucket],meta={"count":len(items),"group":"hosts","bucket":bucket,"note":"Agrupados para que el mapa siga siendo usable. Abre Inventario para filtrar/buscar."},href=cluster_hrefs[bucket])
                 add_edge(target,cid,"contains",source="progressive_disclosure")
             routes=_investigation_routes(conn, limit=6)
-            return {"target":domain,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
+            return {"target":project_name,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
                     "meta":{"scope":"overview","large_target":total_resources>800,"scope_label":"Vista general","host_count":total_hosts,"resource_count":total_resources,"important_hosts":len(important),"grouped_hosts":sum(len(v) for v in grouped.values())}}
 
         selected_resource=None
@@ -1278,7 +1294,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
         if scope == "resource" and resource_id:
             selected_resource=conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",(resource_id,)).fetchone()
             if not selected_resource:
-                return {"target":domain,"nodes":[nodes[0]],"edges":[],"counts":totals,"generated_at":_now(),"meta":{"scope":"overview"}}
+                return {"target":project_name,"nodes":[nodes[0]],"edges":[],"counts":totals,"generated_at":_now(),"meta":{"scope":"overview"}}
             host_id=int(selected_resource["host_id"])
         if host_id:
             selected_host=conn.execute("SELECT * FROM hosts WHERE id=?",(host_id,)).fetchone()
@@ -1413,7 +1429,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
     counts: dict[str,int]={}
     for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
     label="Recurso" if scope=='resource' else "Host" if scope=='host' else "Vista general"
-    return {"target":domain,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
+    return {"target":project_name,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
             "meta":{"scope":scope,"scope_label":label,"host_id":host_id,"resource_id":resource_id,"large_target":total_resources>800,"loaded_counts":counts}}
 
 
@@ -1421,7 +1437,23 @@ def create_app(default_domain: str, default_workspace: Path):
     if _WEB_IMPORT_ERROR is not None:
         raise RuntimeError("Faltan dependencias web. Ejecuta ./install-web.sh o instala requirements.txt") from _WEB_IMPORT_ERROR
 
-    default_key = core.register_target(default_domain, default_workspace, make_current=True)
+    existing_project = None
+    try:
+        wanted = default_workspace.expanduser().resolve()
+        for item in core.list_targets():
+            try:
+                if Path(str(item.get("workspace") or "")).expanduser().resolve() == wanted:
+                    existing_project = item
+                    break
+            except Exception:
+                continue
+    except Exception:
+        existing_project = None
+    if existing_project:
+        default_key = str(existing_project["key"])
+        core.set_current_target(default_key)
+    else:
+        default_key = core.register_target(default_domain, default_workspace, make_current=True)
     root = Path(__file__).resolve().parent
     templates = Jinja2Templates(directory=str(root / "web" / "templates"))
 
@@ -1435,6 +1467,7 @@ def create_app(default_domain: str, default_workspace: Path):
             "workspace": str(workspace),
             "target_key": target_key,
             "target_base": f"/t/{target_key}",
+            "project": core.get_target(target_key) or {"name": domain, "domain": domain, "scopes": [domain]},
             "targets": core.list_targets(),
             "version": core.VERSION,
             "review_states": core.REVIEW_STATES,
@@ -1461,19 +1494,48 @@ def create_app(default_domain: str, default_workspace: Path):
         return templates.TemplateResponse(request=request, name="targets_empty.html", context={"version":core.VERSION,"csrf_token":csrf_token,"targets":[]})
 
     @app.post("/targets/create")
-    def target_create(request: Request, domain: str = Form(...), workspace: str = Form(""), csrf: str = Form(...)):
+    def target_create(request: Request, name: str = Form(""), domain: str = Form(...), scopes: str = Form(""), workspace: str = Form(""), csrf: str = Form(...)):
         verify_csrf(csrf)
         domain = domain.strip().lower().rstrip(".")
         if domain.startswith("http://") or domain.startswith("https://") or not DOMAIN_RE.fullmatch(domain):
-            return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":"Usa sólo el dominio, por ejemplo example.com", "version":core.VERSION})
-        target_workspace = Path(workspace).expanduser() if workspace.strip() else core.suggested_workspace(domain)
+            return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":"Usa un scope principal válido, por ejemplo example.com", "version":core.VERSION})
+        scope_values=[x.strip() for x in re.split(r"[\n,;]+", scopes or "") if x.strip()]
+        scope_values=core.normalize_scopes(scope_values, domain)
+        for scope in scope_values:
+            if not DOMAIN_RE.fullmatch(scope):
+                return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":f"Scope inválido: {scope}", "version":core.VERSION})
+        project_name=(name or domain).strip()
+        target_workspace = Path(workspace).expanduser() if workspace.strip() else core.suggested_workspace(core.target_key(project_name) or domain)
         try:
-            core.ensure_workspace(target_workspace, domain)
-            key = core.register_target(domain, target_workspace, make_current=True)
+            core.ensure_workspace(target_workspace, domain, scopes=scope_values, project_name=project_name)
+            key = core.register_target(domain, target_workspace, make_current=True, name=project_name, scopes=scope_values)
         except Exception as exc:
-            print(f"[!] No pude crear target {domain}: {exc}")
+            print(f"[!] No pude crear proyecto {project_name}: {exc}")
             return templates.TemplateResponse(request=request, name="target_error.html", status_code=400, context={"message":str(exc), "workspace":str(target_workspace), "version":core.VERSION})
         return RedirectResponse(url=f"/t/{key}/", status_code=303)
+
+    @app.post("/t/{target_key}/project")
+    def project_update(request: Request, target_key: str, name: str = Form(...), scopes: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        target=core.get_target(target_key)
+        if not target:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        values=[x.strip() for x in re.split(r"[\n,;]+", scopes or "") if x.strip()]
+        roots=core.normalize_scopes(values, target.get("domain"))
+        if not roots:
+            raise HTTPException(status_code=400, detail="Agrega al menos un scope")
+        for scope in roots:
+            if not DOMAIN_RE.fullmatch(scope):
+                raise HTTPException(status_code=400, detail=f"Scope inválido: {scope}")
+        updated=core.update_target_project(target_key, name=name.strip() or target.get("name") or target.get("domain"), scopes=roots)
+        try:
+            import negro_hunter as hunter
+            paths=core.ensure_workspace(Path(str(updated.get("workspace") or target.get("workspace"))).expanduser(), updated.get("domain") or target.get("domain"), scopes=roots, project_name=updated.get("name"))
+            with _db(paths) as conn:
+                hunter.retire_first_party_cors(conn, roots)
+        except Exception as exc:
+            print(f"[project] CORS cleanup warning: {exc}")
+        return RedirectResponse(url=f"/t/{target_key}/settings?project=saved", status_code=303)
 
     @app.get("/t/{target_key}/backup")
     def target_backup(target_key: str):
@@ -1482,7 +1544,7 @@ def create_app(default_domain: str, default_workspace: Path):
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         out = backup_dir / f"negro-backup-{core.target_key(domain)}-{stamp}.zip"
-        manifest = {"format": 1, "negro_version": core.VERSION, "domain": domain, "target_key": target_key, "created_at": _now()}
+        target_meta=core.get_target(target_key) or {}; manifest = {"format": 2, "negro_version": core.VERSION, "domain": domain, "name": target_meta.get("name") or domain, "scopes": target_meta.get("scopes") or [domain], "target_key": target_key, "created_at": _now()}
         with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
             for file in workspace.rglob("*"):
@@ -1548,8 +1610,8 @@ def create_app(default_domain: str, default_workspace: Path):
             target_workspace.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(extracted), str(target_workspace))
             shutil.rmtree(staging, ignore_errors=True)
-            core.ensure_workspace(target_workspace, domain)
-            key = core.register_target(domain, target_workspace, make_current=True)
+            core.ensure_workspace(target_workspace, domain, scopes=manifest.get("scopes"), project_name=manifest.get("name") or domain)
+            key = core.register_target(domain, target_workspace, make_current=True, name=manifest.get("name") or domain, scopes=manifest.get("scopes"))
             return RedirectResponse(url=f"/t/{key}/?restored=1", status_code=303)
         finally:
             tmp.unlink(missing_ok=True)
@@ -1557,8 +1619,47 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/t/{target_key}/settings", response_class=HTMLResponse)
     def settings_page(request: Request, target_key: str):
         import negro_intel as intel
-        domain, workspace, _ = _target_context(target_key)
-        return render(request, "settings.html", target_key, domain, workspace, settings=intel.load_settings(), secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH))
+        import negro_hunter as hunter
+        domain, workspace, paths = _target_context(target_key)
+        settings=intel.load_settings()
+        lead_type_map={
+            "access_object_reference":"access_object_reference", "mass_assignment":"mass_assignment",
+            "method_access_control":"method_access_control", "redirect_body_access_control":"redirect_body_access_control",
+            "proxy_path_access_control":"proxy_path_access_control", "referer_access_control":"referer_access_control",
+            "js_sensitive_route":"javascript_surface", "cors":"cors", "open_redirect":"open_redirect",
+            "ssrf_surface":"ssrf_surface", "secret_candidate":"secret_or_client_config",
+            "sensitive_response":"sensitive_response", "sensitive_url":"sensitive_url", "source_map":"source_map",
+        }
+        notification_kind_map={
+            "js_sensitive_route":"javascript_surface", "ssrf_surface":"url_fetch", "secret_candidate":"secret_candidate",
+            "sensitive_url":"secret_in_url", "api_docs":"api_docs", "error_disclosure":"error_disclosure",
+        }
+        personal_library=settings.get("detector_rule_library") if isinstance(settings.get("detector_rule_library"),dict) else {}
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: project_rules={}
+            if not isinstance(project_rules,dict): project_rules={}
+            stats={}
+            detector_rows=[]
+            for detector_id,meta in hunter.DETECTOR_CATALOG.items():
+                lead_type=lead_type_map.get(detector_id,detector_id)
+                lead_count=int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type=? AND status NOT IN ('negative','discarded')",(lead_type,)).fetchone()["c"] or 0)
+                nk=notification_kind_map.get(detector_id,detector_id)
+                notif_count=int(conn.execute("SELECT COUNT(*) c FROM notifications WHERE kind=?",(nk,)).fetchone()["c"] or 0)
+                effective=hunter.detector_settings(detector_id,conn)
+                gl=rulebook.normalize_layer(personal_library.get(detector_id))
+                pl=rulebook.normalize_layer(project_rules.get(detector_id))
+                list_count=sum(len(v) for v in (effective.get("lists") or {}).values())
+                condition_count=len(effective.get("conditions") or {})
+                personal_count=sum(len(v) for b in ("add","exclude") for v in (gl.get(b) or {}).values()) + len(gl.get("conditions") or {})
+                project_count=sum(len(v) for b in ("add","exclude") for v in (pl.get(b) or {}).values()) + len(pl.get("conditions") or {})
+                detector_rows.append({
+                    "id":detector_id, **meta, "active_count":lead_count, "notification_count":notif_count,
+                    "enabled":bool(effective.get("enabled",True)), "rule_count":list_count+condition_count,
+                    "personal_count":personal_count, "project_count":project_count,
+                })
+        return render(request, "settings.html", target_key, domain, workspace, settings=settings, detector_rows=detector_rows, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH))
 
     @app.post("/t/{target_key}/settings")
     def settings_save(request: Request, target_key: str, ai_model: str = Form(...), ai_output_tokens: int = Form(...), usd_cop_rate: float = Form(...), csrf: str = Form(...)):
@@ -1571,8 +1672,162 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=400, detail="ai_output_tokens fuera de rango")
         if usd_cop_rate <= 0:
             raise HTTPException(status_code=400, detail="Tasa USD/COP inválida")
-        values = intel.save_settings({"ai_model":ai_model, "ai_output_tokens":ai_output_tokens, "usd_cop_rate":usd_cop_rate, "usd_cop_rate_date":datetime.now().date().isoformat()})
-        return render(request, "settings.html", target_key, domain, workspace, settings=values, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH), saved=True)
+        intel.save_settings({"ai_model":ai_model, "ai_output_tokens":ai_output_tokens, "usd_cop_rate":usd_cop_rate, "usd_cop_rate_date":datetime.now().date().isoformat()})
+        return RedirectResponse(url=f"/t/{target_key}/settings?saved=1", status_code=303)
+
+    @app.post("/t/{target_key}/settings/detectors")
+    async def detector_settings_save(request: Request, target_key: str):
+        """Bulk enable/disable only. Rule content lives in each guided editor."""
+        import negro_hunter as hunter
+        form=await request.form()
+        verify_csrf(str(form.get("csrf") or ""))
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: out=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: out={}
+            if not isinstance(out,dict): out={}
+            for detector_id in hunter.DETECTOR_CATALOG:
+                layer=rulebook.normalize_layer(out.get(detector_id))
+                layer["enabled"] = str(form.get(f"detector_{detector_id}_enabled") or "") == "on"
+                out[detector_id]=layer
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)", (json.dumps(out, ensure_ascii=False, sort_keys=True),))
+        return RedirectResponse(url=f"/t/{target_key}/settings?detectors=saved#detectors", status_code=303)
+
+    def _rule_text(values: Any) -> str:
+        return "\n".join(str(x) for x in (values or []) if str(x).strip())
+
+    def _parse_rule_lines(value: Any) -> list[str]:
+        out=[]; seen=set()
+        for raw in str(value or "").replace("\r","").split("\n"):
+            item=raw.strip()
+            if not item or item.lower() in seen: continue
+            seen.add(item.lower()); out.append(item)
+        return out
+
+    @app.get("/t/{target_key}/settings/detectors/{detector_id}", response_class=HTMLResponse)
+    def detector_rule_page(request: Request, target_key: str, detector_id: str):
+        import negro_intel as intel
+        import negro_hunter as hunter
+        if detector_id not in hunter.DETECTOR_CATALOG:
+            raise HTTPException(status_code=404, detail="Detector no encontrado")
+        domain, workspace, paths = _target_context(target_key)
+        settings=intel.load_settings()
+        personal_library=settings.get("detector_rule_library") if isinstance(settings.get("detector_rule_library"),dict) else {}
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: project_rules={}
+            if not isinstance(project_rules,dict): project_rules={}
+            effective=hunter.detector_settings(detector_id,conn)
+        global_layer=rulebook.normalize_layer(personal_library.get(detector_id))
+        project_layer=rulebook.normalize_layer(project_rules.get(detector_id))
+        builtin=rulebook.BUILTIN_RULES.get(detector_id) or {"enabled":True,"lists":{},"conditions":{}}
+        schema=rulebook.SCHEMAS.get(detector_id) or {"lists":{},"conditions":{}}
+        list_rows=[]
+        for name,(label,help_text) in (schema.get("lists") or {}).items():
+            prov=(effective.get("provenance") or {}).get(name) or {}
+            effective_values=list((effective.get("lists") or {}).get(name) or [])
+            personal_lower={str(x).lower() for x in (prov.get("personal") or [])}
+            project_lower={str(x).lower() for x in (prov.get("project") or [])}
+            effective_entries=[]
+            for value in effective_values:
+                low=str(value).lower()
+                source="project" if low in project_lower else "personal" if low in personal_lower else "builtin"
+                effective_entries.append({"value":value,"source":source})
+            list_rows.append({
+                "name":name,"label":label,"help":help_text,
+                "builtin":_rule_text((builtin.get("lists") or {}).get(name)),
+                "personal_add":_rule_text((global_layer.get("add") or {}).get(name)),
+                "personal_exclude":_rule_text((global_layer.get("exclude") or {}).get(name)),
+                "project_add":_rule_text((project_layer.get("add") or {}).get(name)),
+                "project_exclude":_rule_text((project_layer.get("exclude") or {}).get(name)),
+                "effective":effective_values,"effective_entries":effective_entries,
+                "provenance":prov,
+            })
+        condition_rows=[]
+        for name,(label,help_text) in (schema.get("conditions") or {}).items():
+            built=(builtin.get("conditions") or {}).get(name)
+            gv=(global_layer.get("conditions") or {}).get(name,None)
+            pv=(project_layer.get("conditions") or {}).get(name,None)
+            ev=(effective.get("conditions") or {}).get(name,built)
+            condition_rows.append({"name":name,"label":label,"help":help_text,"builtin":built,"personal":gv,"project":pv,"effective":ev,"type":"bool" if isinstance(built,bool) else "number" if isinstance(built,(int,float)) else "text"})
+        regex_warnings=[]
+        if detector_id=="error_disclosure":
+            for pattern in (effective.get("lists") or {}).get("custom_regex",[]):
+                try: re.compile(pattern)
+                except re.error as exc: regex_warnings.append(f"{pattern}: {exc}")
+        return render(request,"detector_rules.html",target_key,domain,workspace,
+            detector_id=detector_id,detector= hunter.DETECTOR_CATALOG[detector_id], effective=effective,
+            global_layer=global_layer,project_layer=project_layer,list_rows=list_rows,condition_rows=condition_rows,
+            regex_warnings=regex_warnings)
+
+    @app.post("/t/{target_key}/settings/detectors/{detector_id}")
+    async def detector_rule_save(request: Request, target_key: str, detector_id: str):
+        import negro_intel as intel
+        import negro_hunter as hunter
+        if detector_id not in hunter.DETECTOR_CATALOG:
+            raise HTTPException(status_code=404, detail="Detector no encontrado")
+        form=await request.form()
+        verify_csrf(str(form.get("csrf") or ""))
+        action=str(form.get("action") or "save")
+        domain, workspace, paths = _target_context(target_key)
+        settings=intel.load_settings()
+        personal_library=settings.get("detector_rule_library") if isinstance(settings.get("detector_rule_library"),dict) else {}
+        personal_library=dict(personal_library)
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: project_rules={}
+            if not isinstance(project_rules,dict): project_rules={}
+
+            if action == "reset_project":
+                project_rules.pop(detector_id,None)
+                conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)",(json.dumps(project_rules,ensure_ascii=False,sort_keys=True),))
+                return RedirectResponse(url=f"/t/{target_key}/settings/detectors/{detector_id}?reset=project",status_code=303)
+            if action == "reset_personal":
+                personal_library.pop(detector_id,None)
+                intel.save_settings({"detector_rule_library":personal_library})
+                return RedirectResponse(url=f"/t/{target_key}/settings/detectors/{detector_id}?reset=personal",status_code=303)
+
+            schema=rulebook.SCHEMAS.get(detector_id) or {"lists":{},"conditions":{}}
+            global_layer={"add":{},"exclude":{},"conditions":{}}
+            project_layer={"add":{},"exclude":{},"conditions":{}}
+            ge=str(form.get("personal_enabled") or "inherit")
+            pe=str(form.get("project_enabled") or "inherit")
+            if ge in {"true","false"}: global_layer["enabled"]=(ge=="true")
+            if pe in {"true","false"}: project_layer["enabled"]=(pe=="true")
+            for name in (schema.get("lists") or {}):
+                for layer,prefix in ((global_layer,"personal"),(project_layer,"project")):
+                    adds=_parse_rule_lines(form.get(f"{prefix}_add__{name}"))
+                    excludes=_parse_rule_lines(form.get(f"{prefix}_exclude__{name}"))
+                    if adds: layer["add"][name]=adds
+                    if excludes: layer["exclude"][name]=excludes
+            builtin=rulebook.BUILTIN_RULES.get(detector_id) or {"conditions":{}}
+            for name in (schema.get("conditions") or {}):
+                built=(builtin.get("conditions") or {}).get(name)
+                for layer,prefix in ((global_layer,"personal"),(project_layer,"project")):
+                    raw=str(form.get(f"{prefix}_condition__{name}") or "inherit").strip()
+                    if raw=="inherit" or raw=="": continue
+                    if isinstance(built,bool):
+                        if raw in {"true","false"}: layer["conditions"][name]=(raw=="true")
+                    elif isinstance(built,int):
+                        try: layer["conditions"][name]=int(raw)
+                        except ValueError: pass
+                    elif isinstance(built,float):
+                        try: layer["conditions"][name]=float(raw)
+                        except ValueError: pass
+                    else:
+                        layer["conditions"][name]=raw
+            global_layer=rulebook.normalize_layer(global_layer)
+            project_layer=rulebook.normalize_layer(project_layer)
+            if global_layer: personal_library[detector_id]=global_layer
+            else: personal_library.pop(detector_id,None)
+            if project_layer: project_rules[detector_id]=project_layer
+            else: project_rules.pop(detector_id,None)
+            intel.save_settings({"detector_rule_library":personal_library})
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)",(json.dumps(project_rules,ensure_ascii=False,sort_keys=True),))
+        return RedirectResponse(url=f"/t/{target_key}/settings/detectors/{detector_id}?saved=1",status_code=303)
 
     @app.get("/t/{target_key}/", response_class=HTMLResponse)
     def dashboard(request: Request, target_key: str):
@@ -2352,9 +2607,10 @@ def create_app(default_domain: str, default_workspace: Path):
         host = (hostname or "").strip().lower().rstrip(".")
         candidates = []
         for target in core.list_targets():
-            domain = str(target.get("domain", "")).strip().lower().rstrip(".")
-            if host == domain or host.endswith("." + domain):
-                candidates.append((len(domain), target))
+            for scope in target.get("scopes") or [target.get("domain")]:
+                scope = str(scope or "").strip().lower().rstrip(".")
+                if core.host_matches_scope(host, scope):
+                    candidates.append((len(scope), target))
         if not candidates:
             return None
         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -2393,7 +2649,7 @@ def create_app(default_domain: str, default_workspace: Path):
             return JSONResponse({"accepted": False, "reason": "host_out_of_scope", "host": parsed.hostname}, status_code=202)
         domain = str(target["domain"])
         target_key = str(target["key"])
-        paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain)
+        paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
         tool = str(payload.get("tool") or "OTHER").upper()
         source = "burp_proxy" if tool == "PROXY" else ("burp_repeater" if tool == "REPEATER" else "burp_other")
         try:
@@ -2425,7 +2681,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
-        return {"accepted": True, "target_key": target_key, "target_domain": domain, **result,
+        return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": target.get("name") or domain, **result,
                 "signal_count": len(passive.get("signals") or []),
                 "new_notification_count": len(passive.get("new_notifications") or [])}
 

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.9.0
+# Negro Recon — Metodología v0.19.0
 
 ## Principio
 
@@ -7,6 +7,25 @@ DISCOVER → ASSOCIATE → INSPECT → CORRELATE → LEAD → VALIDATE → FINDI
 ```
 
 Negro separa **evidencia**, **hipótesis** e **impacto demostrado**. Nunca convierte una key, un source map, un parámetro `redirect` o un CNAME externo en vulnerabilidad sólo por existir.
+
+
+## Knowledge Base de detectores
+
+Negro no trata sus detectores como una caja negra. Cada señal debe poder responder tres preguntas: **qué observó**, **qué regla coincidió** y **qué prueba manual falta para demostrar impacto**.
+
+Las reglas se resuelven en tres capas:
+
+```text
+Negro built-in
+      ↓
+Biblioteca personal del investigador
+      ↓
+Excepciones y reglas del proyecto
+```
+
+La biblioteca personal conserva vocabulario aprendido entre proyectos (`memberId`, `beneficiaryId`, `accessLevel`, etc.). Un proyecto puede añadir términos propios o excluir uno ruidoso sin borrarlo de la biblioteca global. Las hipótesis persisten `rule_match` para que el investigador pueda volver a la regla exacta que originó la señal.
+
+El resultado de una prueba **no modifica automáticamente la biblioteca**. Los falsos positivos y hallazgos sirven para decidir manualmente qué regla conservar, excluir o mover entre capas. Así Negro aprende contigo sin convertir heurísticas locales en conocimiento global sin revisión.
 
 
 ## Estado de investigación: Coverage vs Signal

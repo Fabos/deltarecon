@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import negro_intel as intel
+import negro_rules as rulebook
 
 GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1"
 
@@ -163,6 +164,95 @@ SENSITIVE_ACTION_TOKENS = {
     "complete", "finalize", "verify", "moderate", "suspend", "ban",
 }
 
+
+DETECTOR_CATALOG = rulebook.CATALOG
+
+
+def _project_detector_layers(conn) -> tuple[dict[str, Any], dict[str, Any]]:
+    project_rules: dict[str, Any] = {}
+    legacy: dict[str, Any] = {}
+    if conn is not None:
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            if row and row["value"]:
+                parsed = json.loads(row["value"])
+                if isinstance(parsed, dict):
+                    project_rules = parsed
+        except Exception:
+            project_rules = {}
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='detectors_json'").fetchone()
+            if row and row["value"]:
+                parsed = json.loads(row["value"])
+                if isinstance(parsed, dict):
+                    legacy = parsed
+        except Exception:
+            legacy = {}
+    return project_rules, legacy
+
+
+def detector_settings(detector_id: str, conn=None) -> dict[str, Any]:
+    """Return the effective transparent rule set for a detector.
+
+    Merge order: built-in Negro knowledge -> personal library -> project overrides.
+    Legacy v0.18 enabled flags are honoured when no new project override exists.
+    """
+    settings = intel.load_settings()
+    personal_library = settings.get("detector_rule_library") if isinstance(settings.get("detector_rule_library"), dict) else {}
+    project_rules, legacy = _project_detector_layers(conn)
+    global_layer = personal_library.get(detector_id) if isinstance(personal_library.get(detector_id), dict) else {}
+    project_layer = project_rules.get(detector_id) if isinstance(project_rules.get(detector_id), dict) else {}
+    effective = rulebook.merge_detector_rules(detector_id, global_layer, project_layer)
+    normalized_global=rulebook.normalize_layer(global_layer)
+    normalized_project=rulebook.normalize_layer(project_layer)
+    legacy_global=settings.get("detectors") if isinstance(settings.get("detectors"),dict) else {}
+    old_global=legacy_global.get(detector_id) if isinstance(legacy_global.get(detector_id),dict) else {}
+    if "enabled" not in normalized_global and "enabled" in old_global:
+        effective["enabled"] = bool(old_global.get("enabled"))
+    if "enabled" not in normalized_project:
+        old = legacy.get(detector_id) if isinstance(legacy.get(detector_id), dict) else {}
+        if "enabled" in old:
+            effective["enabled"] = bool(old.get("enabled"))
+    else:
+        effective["enabled"] = bool(normalized_project.get("enabled"))
+    return effective
+
+
+def detector_enabled(detector_id: str, conn=None) -> bool:
+    return bool(detector_settings(detector_id, conn).get("enabled", True))
+
+
+def detector_rule_list(detector_id: str, name: str, conn=None) -> list[str]:
+    return rulebook.rule_list(detector_settings(detector_id, conn), name)
+
+
+def detector_rule_bool(detector_id: str, name: str, conn=None, default: bool = False) -> bool:
+    return rulebook.rule_bool(detector_settings(detector_id, conn), name, default)
+
+
+def detector_rule_int(detector_id: str, name: str, conn=None, default: int = 0) -> int:
+    return rulebook.rule_int(detector_settings(detector_id, conn), name, default)
+
+
+def detector_sensitivity(detector_id: str, conn=None) -> str:
+    """Compatibility shim for old extensions/tests; v0.19 no longer uses presets."""
+    return "custom"
+
+def project_scopes_from_conn(conn, domain: str) -> list[str]:
+    try:
+        row=conn.execute("SELECT value FROM meta WHERE key='scopes_json'").fetchone()
+        raw=json.loads(row["value"]) if row and row["value"] else []
+        scopes=[str(x).strip().lower().rstrip('.') for x in raw if str(x).strip()] if isinstance(raw,list) else []
+    except Exception:
+        scopes=[]
+    d=str(domain or '').strip().lower().rstrip('.')
+    if d and d not in scopes: scopes.insert(0,d)
+    return scopes
+
+def host_in_project_scope(host: str, scopes: list[str]) -> bool:
+    h=str(host or '').strip().lower().rstrip('.')
+    return any(h==s or h.endswith('.'+s) for s in scopes if s)
+
 TAKEOVER_PROVIDERS = [
     ("github", ("github.io",), ("there isn't a github pages site here", "for root urls")),
     ("heroku", ("herokudns.com", "herokuapp.com"), ("no such app", "heroku | no such app")),
@@ -238,7 +328,10 @@ def _operation_test_keys(conn, operation_id: int) -> list[str]:
     # remind the hunter when a sensitive-looking state change carries it.
     ex_headers = conn.execute("SELECT request_headers_json,status_code FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 1", (operation_id,)).fetchone()
     latest_headers = _header_map(ex_headers["request_headers_json"]) if ex_headers else {}
-    if latest_headers.get("referer") and method in {"POST", "PUT", "PATCH", "DELETE"} and any(tok in path for tok in SENSITIVE_ACTION_TOKENS):
+    ref_cfg=detector_settings("referer_access_control", conn)
+    ref_methods={x.upper() for x in rulebook.rule_list(ref_cfg,"methods")}
+    ref_tokens=[x.lower() for x in rulebook.rule_list(ref_cfg,"sensitive_path_tokens")]
+    if latest_headers.get("referer") and method in ref_methods and any(tok in path for tok in ref_tokens):
         keys.append("referer_trust")
     if ex_headers and int(ex_headers["status_code"] or 0) in {301,302,303,307,308}:
         keys.append("redirect_body")
@@ -254,9 +347,17 @@ def _operation_test_keys(conn, operation_id: int) -> list[str]:
                 query_keys = {str(k).lower() for k in q}
         except Exception:
             pass
-    if query_keys & (REDIRECT_PARAMS | URLISH_PARAMS):
+    redirect_keys={x.lower() for x in detector_rule_list("open_redirect","parameter_keys",conn)}
+    ssrf_keys={x.lower() for x in detector_rule_list("ssrf_surface","parameter_keys",conn)}
+    if query_keys & (redirect_keys | ssrf_keys):
         keys.append("url_handling")
-    if any(k in query_keys for k in ("id", "user_id", "userid", "account_id", "order_id", "document_id", "profile_id")) or re.search(r"/(?:\d+|[0-9a-f]{8}-[0-9a-f-]{27,})\b", path):
+    object_cfg=detector_settings("access_object_reference",conn)
+    object_keys={re.sub(r"[^a-z0-9]","",str(x).lower()) for x in rulebook.rule_list(object_cfg,"identifier_keys")}
+    object_suffixes=[re.sub(r"[^a-z0-9]","",str(x).lower()) for x in rulebook.rule_list(object_cfg,"identifier_suffixes")]
+    qcompact={re.sub(r"[^a-z0-9]","",str(x).lower()) for x in query_keys}
+    object_query=any(x in object_keys or any(x.endswith(suf) for suf in object_suffixes if suf) for x in qcompact)
+    object_path=(rulebook.rule_bool(object_cfg,"detect_numeric_path",True) and bool(re.search(r"/(?:\d+)(?:/|$)",path))) or (rulebook.rule_bool(object_cfg,"detect_uuid_path",True) and bool(re.search(r"/[0-9a-f]{8}-[0-9a-f-]{27,}(?:/|$)",path,re.I)))
+    if object_query or object_path:
         if "authorization" not in keys:
             keys.append("authorization")
     return list(dict.fromkeys(keys))
@@ -1385,17 +1486,46 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
         if made and nid:
             new_notifications.append(nid)
 
+    # v0.19 rule helpers.  Every detector exposes the exact rules that created a
+    # clue.  The same effective rule set is shown in Settings -> Detector.
+    def _loc_base(value: str) -> str:
+        raw = str(value or "").lower()
+        return "json" if raw.startswith("json:") else raw
+
+    def _norm_name(value: str) -> str:
+        return re.sub(r"[^a-z0-9_]", "", str(value or "").lower().replace("-", "_"))
+
+    def _compact(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+    def _allowed_parameter_names(detector_id: str, key_list: str, location_list: str = "locations") -> set[str]:
+        cfg = detector_settings(detector_id, conn)
+        keys = {_compact(x) for x in rulebook.rule_list(cfg, key_list)}
+        locations = {x.lower() for x in rulebook.rule_list(cfg, location_list)}
+        found: set[str] = set()
+        for name, items in pmap.items():
+            if _compact(name) not in keys:
+                continue
+            if not locations or any(_loc_base(item.get("location", "")) in locations for item in items):
+                found.add(name)
+        return found
+
     # 1) Redirect parameters observed in query/form/JSON from Burp.
-    all_redirect_names = set(pmap) & REDIRECT_PARAMS
-    navigation_route = any(tok in path.lower() for tok in ("login", "signin", "sign-in", "logout", "auth", "oauth", "sso", "callback", "redirect", "continue", "checkout"))
+    redirect_cfg = detector_settings("open_redirect", conn)
+    redirect_names = _allowed_parameter_names("open_redirect", "parameter_keys") if redirect_cfg.get("enabled") else set()
+    redirect_strong = {_compact(x) for x in rulebook.rule_list(redirect_cfg, "strong_parameter_keys")}
+    nav_tokens = [x.lower() for x in rulebook.rule_list(redirect_cfg, "navigation_path_tokens")]
+    navigation_route = any(tok in path.lower() for tok in nav_tokens)
     has_location_header = bool(resp_headers.get("location", ""))
-    redirect_hits = sorted(
-        name for name in all_redirect_names
-        if name in STRONG_REDIRECT_PARAMS or navigation_route or has_location_header
-    )
+    redirect_hits: list[str] = []
+    for name in sorted(redirect_names):
+        is_strong_name = _compact(name) in redirect_strong
+        if rulebook.rule_bool(redirect_cfg, "require_context_for_ambiguous_keys", True) and not is_strong_name and not (navigation_route or has_location_header):
+            continue
+        redirect_hits.append(name)
     for name in redirect_hits:
         examples = pmap[name]
-        locs = sorted({x["location"] for x in examples})
+        locs = sorted({_loc_base(x["location"]) for x in examples})
         value = next((x["value"] for x in examples if x["value"]), "")
         value_host = ""
         try:
@@ -1413,61 +1543,84 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
         except Exception:
             pass
         strong = bool(external_location and (not value_host or response_host == value_host.lower()))
+        if rulebook.rule_bool(redirect_cfg, "require_external_location", False) and not strong:
+            continue
         priority = "high" if strong else "medium"
         confidence = "high" if strong else "medium"
         ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"locations":locs,
-              "value_example":_mask_value(value) if value else "(vacío)","response_location":_safe_url_evidence(response_location) if response_location else None}
+              "value_example":_mask_value(value) if value else "(vacío)","response_location":_safe_url_evidence(response_location) if response_location else None,
+              "rule_match":{"parameter_key":name,"external_location":strong}}
         upsert_lead(
             conn, lead_key=f"open_redirect_burp:{oid}:{name}", host_id=hid, resource_id=rid,
             lead_type="open_redirect", title=f"Posible Open Redirect · {name}", confidence=confidence, review_priority=priority,
             evidence=[ev],
-            why=f"Burp observó el parámetro '{name}' en {', '.join(locs)} de {method} {path}. Ese valor podría controlar el destino de navegación.",
+            why=f"Burp observó el parámetro '{name}' en {', '.join(locs)} de {method} {path}. La regla editable de Open Redirect lo reconoce como posible controlador de navegación.",
             next_test=f"Abre el exchange #{exchange_id} en Repeater y cambia sólo '{name}' por una URL HTTPS controlada. Observa Location o navegación final y conserva el resto idéntico.",
             confirm_if="La aplicación termina redirigiendo/navegando a un dominio externo controlado sin una allowlist efectiva.",
             discard_if="El valor se limita a rutas internas, se ignora, se normaliza o existe una allowlist estricta.",
         )
         notify(kind="open_redirect", key=f"open_redirect:{oid}:{name}", severity="high" if strong else "medium",
                title=f"Posible Open Redirect · {name}",
-               message=f"{method} {path} · detectado en {', '.join(locs)} · exchange #{exchange_id}", data=ev)
+               message=f"{method} {path} · regla '{name}' coincidió en {', '.join(locs)} · exchange #{exchange_id}", data=ev)
 
     # 2) URL-fetch / SSRF surfaces from actual parameters. Avoid duplicate redirect-only clues.
-    for name in sorted((set(pmap) & URLISH_PARAMS) - set(redirect_hits)):
+    ssrf_cfg = detector_settings("ssrf_surface", conn)
+    ssrf_names = _allowed_parameter_names("ssrf_surface", "parameter_keys") if ssrf_cfg.get("enabled") else set()
+    ssrf_names -= set(redirect_hits)
+    ssrf_path_tokens = [x.lower() for x in rulebook.rule_list(ssrf_cfg, "server_fetch_path_tokens")]
+    for name in sorted(ssrf_names):
         candidates = [x for x in pmap[name] if str(x["value"]).lower().startswith(("http://", "https://", "//"))]
-        if not candidates:
+        fallback = [x for x in pmap[name] if str(x.get("value") or "").strip()]
+        if rulebook.rule_bool(ssrf_cfg, "require_absolute_url", True) and not candidates:
             continue
-        sample = candidates[0]
-        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":sample["location"],"value_example":_mask_value(sample["value"])}
+        if rulebook.rule_bool(ssrf_cfg, "require_server_fetch_path_token", False) and not any(tok in path.lower() for tok in ssrf_path_tokens):
+            continue
+        if not candidates and not fallback:
+            continue
+        sample = (candidates or fallback)[0]
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":_loc_base(sample["location"]),"value_example":_mask_value(sample["value"]),
+              "rule_match":{"parameter_key":name,"absolute_url":bool(candidates)}}
         upsert_lead(conn, lead_key=f"ssrf_burp:{oid}:{name}", host_id=hid, resource_id=rid,
             lead_type="ssrf_surface", title=f"URL controlable observada · {name}", confidence="medium", review_priority="medium",
-            evidence=[ev], why=f"Burp vio una URL completa controlada por el parámetro '{name}'. Falta determinar si la consume el servidor o sólo el cliente.",
+            evidence=[ev], why=f"Burp vio un valor URL-like controlado por el parámetro '{name}'. La regla sólo identifica superficie; falta demostrar que el servidor lo consume.",
             next_test=f"Revisa el flujo de {method} {path}. Si existe evidencia de fetch server-side y el scope lo permite, usa únicamente un endpoint propio como marcador benigno.",
             confirm_if="El servidor realiza una solicitud saliente hacia una URL controlada por el usuario.",
             discard_if="El valor sólo se usa client-side, se valida por allowlist o no provoca tráfico saliente.")
         notify(kind="url_fetch", key=f"url_fetch:{oid}:{name}", severity="medium", title=f"URL controlable en {method} {path}",
-               message=f"Parámetro '{name}' observado en {sample['location']} · revisa si existe consumo server-side.", data=ev)
+               message=f"La regla SSRF reconoció '{name}' en {_loc_base(sample['location'])}; revisa si existe consumo server-side.", data=ev)
 
     # 3) Secrets/config signatures in captured request/response. Never persist the raw secret.
-    text_surfaces = [("response", resp_body), ("request", req_body)]
+    secret_cfg = detector_settings("secret_candidate", conn)
+    enabled_secret_types = {x.lower() for x in rulebook.rule_list(secret_cfg, "secret_types")}
+    text_surfaces: list[tuple[str, str]] = []
+    if secret_cfg.get("enabled"):
+        if rulebook.rule_bool(secret_cfg, "inspect_response", True):
+            text_surfaces.append(("response", resp_body))
+        if rulebook.rule_bool(secret_cfg, "inspect_request", True):
+            text_surfaces.append(("request", req_body))
     for surface, text in text_surfaces:
         if not text:
             continue
         for stype, label, regex, severity in SECRET_PATTERNS:
+            if enabled_secret_types and stype.lower() not in enabled_secret_types:
+                continue
             for match in list(regex.finditer(text[:1_500_000]))[:8]:
                 value = match.group(0)
                 fp = _secret_fingerprint(value)
                 ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"surface":surface,
-                      "secret_type":stype,"masked_value":_mask_value(value),"fingerprint":fp}
+                      "secret_type":stype,"masked_value":_mask_value(value),"fingerprint":fp,"rule_match":{"secret_type":stype}}
                 upsert_lead(conn, lead_key=f"burp_secret:{stype}:{fp}", host_id=hid, resource_id=rid,
                     lead_type="secret_or_client_config", title=f"{label} observada en tráfico HTTP", confidence="high", review_priority=severity,
-                    evidence=[ev], why=f"Burp observó una señal de {label} en el {surface} de {method} {path}. Algunas claves de cliente (por ejemplo Google API keys) pueden ser públicas por diseño; hay que validar restricciones e impacto.",
+                    evidence=[ev], why=f"Burp observó una señal de {label} en el {surface} de {method} {path}. La familia '{stype}' está habilitada en tu Knowledge Base.",
                     next_test="Valida el tipo de credencial/configuración de forma mínima, revisa restricciones de origen/API/rol y no ejecutes acciones destructivas.",
                     confirm_if="La credencial/configuración es activa y permite un uso no autorizado o expone capacidad no prevista.",
                     discard_if="Es configuración pública esperada, está correctamente restringida, es un fixture o no tiene impacto demostrable.")
                 surface_label = "respuesta" if surface == "response" else "solicitud"
                 notify(kind="secret_candidate", key=f"secret:{stype}:{fp}:host:{hid}", severity=severity,
-                       title=f"{label} detectada en {surface_label}", message=f"{method} {path} · exchange #{exchange_id} · valor enmascarado {_mask_value(value)}", data=ev)
+                       title=f"{label} detectada en {surface_label}", message=f"{method} {path} · regla {stype} · exchange #{exchange_id} · valor {_mask_value(value)}", data=ev)
 
-    # 4) Structured credential-like fields returned by APIs.
+    # Parse JSON once.  Several detectors (sensitive response, mass assignment,
+    # redirect body) reuse the same structured evidence even if one detector is disabled.
     response_obj: Any = None
     body_trim = resp_body.lstrip()
     if (body_trim.startswith(("{", "[")) or "json" in response_ct.lower()) and len(resp_body) <= 2_000_000:
@@ -1476,247 +1629,305 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
         except Exception:
             response_obj = None
     fields = _json_fields(response_obj) if response_obj is not None else []
-    identity_present = any(k.lower() in IDENTITY_KEYS and not isinstance(v, (dict, list)) and str(v or "").strip() for k, _, v in fields)
-    for key, jpath, value in fields:
-        kl = key.lower().replace("-", "_")
-        normalized = kl.replace("_", "")
-        if kl not in SENSITIVE_RESPONSE_KEYS and normalized not in {x.replace("_", "").replace("-", "") for x in SENSITIVE_RESPONSE_KEYS}:
-            continue
-        # Session/token arrays paired with an identity are worth a clue, but never
-        # persist the raw entries. Containers unrelated to sensitive keys are skipped.
-        if isinstance(value, list):
-            if kl in {"sessions", "session", "tokens"} and identity_present and value:
-                fp = _secret_fingerprint(json.dumps(value, sort_keys=True, default=str))
-                ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
-                      "masked_value":f"[{len(value)} valores enmascarados]","fingerprint":fp,"identity_context":True}
-                upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
-                    lead_type="sensitive_response", title=f"Sesiones/tokens devueltos junto a identidad · {key}", confidence="high", review_priority="medium",
-                    evidence=[ev], why=f"La respuesta de {method} {path} entrega '{key}' junto a datos de identidad. Negro no guardó los valores.",
-                    next_test="Confirma si esos valores son reutilizables o si exponerlos al cliente amplía acceso. Trabaja sólo con tu propia cuenta/datos autorizados.",
-                    confirm_if="Los valores permiten reutilizar una sesión/token o acceder a contexto que el cliente no debería recibir.",
-                    discard_if="Son identificadores no sensibles, están rotados/ligados correctamente o su entrega al cliente es necesaria sin impacto adicional.")
-                notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity="medium",
-                       title=f"Sesiones/tokens devueltos · {key}", message=f"{method} {path} · {jpath} · exchange #{exchange_id}", data=ev)
-            continue
-        if isinstance(value, dict) or not str(value or "").strip():
-            continue
-        value_s = str(value)
-        if value_s.lower() in {"null", "none", "false", "true", "***", "*****", "redacted", "masked"}:
-            continue
-        if len(value_s) < 4:
-            continue
-        high_keys = {"password","passwd","pwd","pass","client_secret","private_key","secret_key"}
-        severity = "high" if kl in high_keys else "medium" if kl in {"api_key","apikey","api-key","secret","access_key"} else "info"
-        if identity_present and kl in high_keys:
-            severity = "high"
-        elif identity_present and kl in {"token","auth_token","session_token","session","session_id","sessionid","authorization"}:
-            severity = "medium"
-        fp = _secret_fingerprint(value_s)
-        ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
-              "masked_value":_mask_value(value_s),"fingerprint":fp,"identity_context":identity_present}
-        # access/refresh tokens are normal on token endpoints; retain as low-noise intel, no hypothesis unless unusual.
-        auth_path = any(x in path.lower() for x in ("oauth", "token", "login", "auth", "session"))
-        if kl in {"access_token","refresh_token"} and auth_path:
-            if severity == "info":
-                continue
-        title = "Posibles credenciales devueltas por la API" if identity_present and kl in high_keys else f"Campo sensible devuelto · {key}"
-        upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
-            lead_type="sensitive_response", title=title, confidence="high", review_priority=severity if severity in {"high","medium"} else "low",
-            evidence=[ev], why=f"La respuesta de {method} {path} contiene el campo '{key}' con un valor no vacío. Negro guardó sólo una versión enmascarada.",
-            next_test="Confirma si el valor pertenece al usuario actual, si era necesario devolverlo al cliente y si puede reutilizarse fuera de este flujo. Usa únicamente cuentas/datos autorizados.",
-            confirm_if="La API devuelve una credencial/secreto reutilizable que el cliente no debería recibir o que permite acceso/capacidad adicional.",
-            discard_if="El valor es público por diseño, está enmascarado/no reutilizable o su exposición es necesaria y no agrega capacidad.")
-        notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity=severity,
-               title=title, message=f"{method} {path} · {jpath} · exchange #{exchange_id}", data=ev)
 
-    # Passwords/tokens in URL query are a distinct high-value leak clue.
-    for name in sorted(set(pmap) & QUERY_SECRET_KEYS):
+    # 4) Structured credential-like fields returned by APIs.
+    response_cfg = detector_settings("sensitive_response", conn)
+    sensitive_keys = {_compact(x) for x in rulebook.rule_list(response_cfg, "sensitive_keys")}
+    identity_keys = {_compact(x) for x in rulebook.rule_list(response_cfg, "identity_keys")}
+    identity_present = any(_compact(k) in identity_keys and not isinstance(v, (dict, list)) and str(v or "").strip() for k, _, v in fields)
+    if response_cfg.get("enabled") and (not rulebook.rule_bool(response_cfg, "require_identity_context", False) or identity_present):
+        for key, jpath, value in fields:
+            kl = _compact(key)
+            if kl not in sensitive_keys:
+                continue
+            if isinstance(value, list):
+                if value:
+                    fp = _secret_fingerprint(json.dumps(value, sort_keys=True, default=str))
+                    ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
+                          "masked_value":f"[{len(value)} valores enmascarados]","fingerprint":fp,"identity_context":identity_present,"rule_match":{"sensitive_key":key}}
+                    upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
+                        lead_type="sensitive_response", title=f"Campo sensible devuelto · {key}", confidence="high", review_priority="medium",
+                        evidence=[ev], why=f"La respuesta de {method} {path} entrega '{key}', nombre incluido en tus reglas de campos sensibles. Negro no guardó los valores.",
+                        next_test="Confirma si esos valores son reutilizables o si exponerlos al cliente amplía acceso. Trabaja sólo con tu propia cuenta/datos autorizados.",
+                        confirm_if="Los valores permiten reutilizar una credencial/sesión o acceder a contexto que el cliente no debería recibir.",
+                        discard_if="Son identificadores no sensibles, están rotados/ligados correctamente o su entrega al cliente es necesaria sin impacto adicional.")
+                    notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity="medium",
+                           title=f"Campo sensible devuelto · {key}", message=f"{method} {path} · regla '{key}' · {jpath}", data=ev)
+                continue
+            if isinstance(value, dict) or not str(value or "").strip():
+                continue
+            value_s = str(value)
+            if value_s.lower() in {"null", "none", "false", "true", "***", "*****", "redacted", "masked"} or len(value_s) < 4:
+                continue
+            high_keys = {"password","passwd","pwd","pass","clientsecret","privatekey","secretkey"}
+            medium_keys = {"apikey","secret","accesskey","token","authtoken","sessiontoken","session","sessionid","authorization"}
+            severity = "high" if kl in high_keys else "medium" if kl in medium_keys else "info"
+            fp = _secret_fingerprint(value_s)
+            ev = {"source":"burp_response_json","exchange_id":exchange_id,"method":method,"url":url,"json_path":jpath,"field":key,
+                  "masked_value":_mask_value(value_s),"fingerprint":fp,"identity_context":identity_present,"rule_match":{"sensitive_key":key}}
+            auth_path = any(x in path.lower() for x in ("oauth", "token", "login", "auth", "session"))
+            if kl in {"accesstoken","refreshtoken"} and auth_path and severity == "info":
+                continue
+            title = "Posibles credenciales devueltas por la API" if identity_present and kl in high_keys else f"Campo sensible devuelto · {key}"
+            upsert_lead(conn, lead_key=f"burp_response_secret:{rid}:{jpath}:{fp}", host_id=hid, resource_id=rid,
+                lead_type="sensitive_response", title=title, confidence="high", review_priority=severity if severity in {"high","medium"} else "low",
+                evidence=[ev], why=f"La respuesta de {method} {path} contiene el campo '{key}', que tu regla considera sensible. Negro guardó sólo una versión enmascarada.",
+                next_test="Confirma si el valor pertenece al usuario actual, si era necesario devolverlo al cliente y si puede reutilizarse fuera de este flujo. Usa únicamente cuentas/datos autorizados.",
+                confirm_if="La API devuelve una credencial/secreto reutilizable que el cliente no debería recibir o que permite acceso/capacidad adicional.",
+                discard_if="El valor es público por diseño, está enmascarado/no reutilizable o su exposición es necesaria y no agrega capacidad.")
+            notify(kind="sensitive_response", key=f"sensitive_response:{rid}:{jpath}:{fp}", severity=severity,
+                   title=title, message=f"{method} {path} · regla '{key}' · {jpath} · exchange #{exchange_id}", data=ev)
+
+    # Passwords/tokens in URL query are a distinct leak clue.
+    url_cfg = detector_settings("sensitive_url", conn)
+    sensitive_query_keys = {_compact(x) for x in rulebook.rule_list(url_cfg, "query_keys")}
+    sensitive_url_names = {name for name in pmap if _compact(name) in sensitive_query_keys} if url_cfg.get("enabled") else set()
+    for name in sorted(sensitive_url_names):
         for item in pmap[name]:
-            if item["location"] != "query" or not item["value"]:
+            if _loc_base(item["location"]) != "query":
+                continue
+            if rulebook.rule_bool(url_cfg, "require_nonempty_value", True) and not item["value"]:
                 continue
             fp = _secret_fingerprint(item["value"])
-            ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":"query","masked_value":_mask_value(item["value"]),"fingerprint":fp}
+            ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"parameter":name,"location":"query","masked_value":_mask_value(item["value"]),"fingerprint":fp,"rule_match":{"query_key":name}}
             notify(kind="secret_in_url", key=f"secret_url:{oid}:{name}:{fp}", severity="high",
-                   title=f"Dato sensible en la URL · {name}", message=f"{method} {path} incluye '{name}' en query; puede terminar en logs, historial o Referer.", data=ev)
+                   title=f"Dato sensible en la URL · {name}", message=f"{method} {path} incluye una regla sensible '{name}' en query.", data=ev)
             upsert_lead(conn, lead_key=f"secret_url:{oid}:{name}:{fp}", host_id=hid, resource_id=rid,
                 lead_type="sensitive_url", title=f"Dato sensible en query · {name}", confidence="high", review_priority="high", evidence=[ev],
-                why="Credenciales/tokens en la URL pueden quedar expuestos en logs, historial, proxies y encabezados Referer.",
+                why=f"'{name}' está incluido en tu Knowledge Base de secretos en URL. Si contiene una credencial real puede quedar expuesta en logs, historial, proxies y Referer.",
                 next_test="Confirma el flujo y si el valor aparece en URLs/logs o se propaga a terceros. No reutilices credenciales ajenas.",
                 confirm_if="El secreto real queda expuesto a componentes/personas que no deberían recibirlo.",
                 discard_if="El parámetro no contiene un secreto real o el valor es un identificador público/no sensible.")
             break
 
     # 5) Passive CORS evidence already present in the captured exchange.
+    cors_cfg = detector_settings("cors", conn)
     origin = req_headers.get("origin", "")
     acao = resp_headers.get("access-control-allow-origin", "")
     acac = resp_headers.get("access-control-allow-credentials", "").lower() == "true"
-    if origin and acao and acao == origin:
+    reflection_ok = (acao == origin) if rulebook.rule_bool(cors_cfg, "require_exact_reflection", True) else bool(acao)
+    if cors_cfg.get("enabled") and origin and acao and reflection_ok:
         try:
             origin_host = urllib.parse.urlsplit(origin).hostname or ""
         except Exception:
             origin_host = ""
         origin_host = origin_host.lower().rstrip(".")
         response_host = str(row["hostname"] or "").lower().rstrip(".")
-        target_domain = str(domain or "").lower().rstrip(".")
+        project_scopes = project_scopes_from_conn(conn, domain)
         cross_origin = bool(origin_host and origin_host != response_host)
-        # A browser origin can be technically cross-origin while still being a
-        # normal first-party application relationship (app.example.com ->
-        # api.example.com).  Do not flood hypotheses for hosts already known to
-        # belong to the current target or its registrable target namespace.
         known_origin_host = bool(origin_host and conn.execute("SELECT 1 FROM hosts WHERE lower(hostname)=? LIMIT 1", (origin_host,)).fetchone())
-        target_first_party = bool(
-            origin_host and target_domain and
-            (origin_host == target_domain or origin_host.endswith("." + target_domain))
-        )
-        first_party = known_origin_host or target_first_party
-        if cross_origin and first_party:
-            # v0.17.0 could create noisy CORS hypotheses for normal sibling
-            # subdomains (app.target -> api.target).  If we observe that same
-            # relationship again, retire the old candidate instead of leaving
-            # stale noise in the workbench.
+        target_first_party = host_in_project_scope(origin_host, project_scopes)
+        ignore_origins = {x.lower().rstrip("/") for x in rulebook.rule_list(cors_cfg, "ignore_origins")}
+        trusted_suffixes = [x.lower().lstrip("*").lstrip(".") for x in rulebook.rule_list(cors_cfg, "trusted_origin_suffixes") if x.strip()]
+        origin_normalized = origin.lower().rstrip("/")
+        trusted_manual = origin_normalized in ignore_origins or any(origin_host == suf or origin_host.endswith("." + suf) for suf in trusted_suffixes)
+        first_party = (known_origin_host or target_first_party) if rulebook.rule_bool(cors_cfg, "ignore_project_scopes", True) else False
+        if cross_origin and (first_party or trusted_manual):
             stale_key=f"cors_burp:{rid}:{origin}"
             conn.execute(
                 """UPDATE leads_v2 SET status='negative',result_notes=CASE WHEN COALESCE(result_notes,'')='' THEN ? ELSE result_notes END,updated_at=?
                    WHERE lead_key=? AND status IN ('candidate','testing','interesting','postponed')""",
-                ("Origen first-party conocido dentro del mismo target/workspace; no se prioriza como CORS arbitrario.", now_iso(), stale_key),
+                ("Origin reconocido como first-party/confiable por las reglas del proyecto; no se prioriza como CORS arbitrario.", now_iso(), stale_key),
             )
-            conn.execute(
-                "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE dedupe_key=?",
-                (now_iso(), f"cors_passive:{rid}:{origin}"),
-            )
-        elif cross_origin and not first_party:
-            ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"origin":origin,"allow_origin":acao,"allow_credentials":acac}
-            pri = "high" if acac and bool(row["authenticated_observed"]) else "medium"
-            upsert_lead(conn, lead_key=f"cors_burp:{rid}:{origin}", host_id=hid, resource_id=rid,
-                lead_type="cors", title="CORS cross-origin observado en tráfico real", confidence="high", review_priority=pri,
-                evidence=[ev], why="Burp observó que el servidor reflejó exactamente un Origin de otro host. Con credenciales/datos sensibles puede ser relevante.",
-                next_test="Repite con un Origin HTTPS controlado y verifica si el navegador puede leer una respuesta autenticada sensible.",
-                confirm_if="Un origen externo arbitrario puede leer una respuesta autenticada sensible.",
-                discard_if="El Origin está allowlisted de forma esperada, no hay credenciales/datos sensibles o un origen arbitrario es rechazado.")
-            notify(kind="cors", key=f"cors_passive:{rid}:{origin}", severity=pri,
-                   title="CORS cross-origin observado", message=f"{method} {path} reflejó Origin {origin} · credentials={str(acac).lower()}", data=ev)
+            conn.execute("UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE dedupe_key=?", (now_iso(), f"cors_passive:{rid}:{origin}"))
+        else:
+            external_ok = cross_origin if rulebook.rule_bool(cors_cfg, "require_external_origin", True) else True
+            creds_ok = acac if rulebook.rule_bool(cors_cfg, "require_credentials", False) else True
+            auth_ok = bool(row["authenticated_observed"]) if rulebook.rule_bool(cors_cfg, "require_authenticated", False) else True
+            if external_ok and creds_ok and auth_ok:
+                ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"origin":origin,"allow_origin":acao,"allow_credentials":acac,
+                      "rule_match":{"external_origin":cross_origin,"exact_reflection":acao==origin,"credentials":acac,"authenticated":bool(row["authenticated_observed"])}}
+                pri = "high" if acac and bool(row["authenticated_observed"]) else "medium"
+                upsert_lead(conn, lead_key=f"cors_burp:{rid}:{origin}", host_id=hid, resource_id=rid,
+                    lead_type="cors", title="CORS cross-origin observado en tráfico real", confidence="high", review_priority=pri,
+                    evidence=[ev], why="La respuesta coincide con las condiciones CORS que configuraste. La señal NO demuestra explotación: falta probar si un origin no confiable puede leer datos sensibles en navegador.",
+                    next_test="Repite con un Origin HTTPS controlado y verifica si el navegador puede leer una respuesta autenticada sensible.",
+                    confirm_if="Un origen externo arbitrario puede leer una respuesta autenticada sensible.",
+                    discard_if="El Origin está allowlisted de forma esperada, no hay credenciales/datos sensibles o un origen arbitrario es rechazado.")
+                notify(kind="cors", key=f"cors_passive:{rid}:{origin}", severity=pri,
+                       title="CORS cross-origin observado", message=f"{method} {path} cumplió tus reglas CORS · Origin {origin} · credentials={str(acac).lower()}", data=ev)
 
     # 6) High-signal exposed surfaces and verbose errors in actual responses.
     low_path = path.lower()
     status = int(row["status_code"] or 0)
-    if status and status < 400 and any(x in low_path for x in ("/swagger", "/openapi", "/v3/api-docs", "/api-docs")):
-        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status}
-        notify(kind="api_docs", key=f"api_docs:{rid}", severity="medium", title="Documentación API observada", message=f"{method} {path} respondió HTTP {status}.", data=ev)
-    if status and status < 400 and low_path.endswith(".map"):
-        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status}
+    api_cfg = detector_settings("api_docs", conn)
+    api_tokens = [x.lower() for x in rulebook.rule_list(api_cfg, "path_tokens")]
+    api_status_ok = (status and status < 400) if rulebook.rule_bool(api_cfg, "require_success_status", True) else True
+    if api_cfg.get("enabled") and api_status_ok and any(x in low_path for x in api_tokens):
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status,"rule_match":{"path_token":next((x for x in api_tokens if x in low_path),None)}}
+        notify(kind="api_docs", key=f"api_docs:{rid}", severity="medium", title="Documentación API observada", message=f"{method} {path} respondió HTTP {status} y coincide con tus rutas API-docs.", data=ev)
+
+    sm_cfg = detector_settings("source_map", conn)
+    sm_suffixes = [x.lower() for x in rulebook.rule_list(sm_cfg, "path_suffixes")]
+    sm_status_ok = (status and status < 400) if rulebook.rule_bool(sm_cfg, "require_success_status", True) else True
+    if sm_cfg.get("enabled") and sm_status_ok and any(low_path.endswith(x) for x in sm_suffixes):
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"status":status,"rule_match":{"suffix":next((x for x in sm_suffixes if low_path.endswith(x)),None)}}
         upsert_lead(conn, lead_key=f"sourcemap_burp:{rid}", host_id=hid, resource_id=rid, lead_type="source_map", title="Source map observado desde Burp", confidence="high", review_priority="medium", evidence=[ev],
-            why="Un source map público puede revelar código original, rutas y configuración.", next_test="Ábrelo y analiza fuentes/configuración sin asumir que la exposición sola sea una vulnerabilidad.", confirm_if="El mapa revela secretos, rutas sensibles o una cadena de impacto adicional.", discard_if="Sólo contiene código público esperado sin información sensible ni impacto.")
+            why="La URL coincide con una regla de source map. Un source map público puede revelar código original, rutas y configuración; la exposición sola no implica vulnerabilidad.", next_test="Ábrelo y analiza fuentes/configuración sin asumir que la exposición sola sea una vulnerabilidad.", confirm_if="El mapa revela secretos, rutas sensibles o una cadena de impacto adicional.", discard_if="Sólo contiene código público esperado sin información sensible ni impacto.")
         notify(kind="source_map", key=f"source_map:{rid}", severity="medium", title="Source map accesible", message=f"{method} {path} · HTTP {status}", data=ev)
 
+    error_cfg = detector_settings("error_disclosure", conn)
+    enabled_error_types = {x.lower() for x in rulebook.rule_list(error_cfg, "enabled_pattern_types")}
     error_patterns = [
         ("stack_trace", r"(?:Traceback \(most recent call last\)|\bException in thread\b|\bat [a-zA-Z0-9_.$]+\([^\n]+:\d+\)|System\.[A-Za-z.]+Exception)"),
         ("sql_error", r"(?:SQL syntax.*MySQL|ORA-\d{4,5}|PostgreSQL.*ERROR|SQLite(?:3)?::|Unclosed quotation mark after the character string)"),
         ("internal_path", r"(?:/home/[A-Za-z0-9_.-]+/|/var/www/|[A-Za-z]:\\\\(?:Users|inetpub|wwwroot)\\)"),
     ]
-    for etype, pattern in error_patterns:
-        if resp_body and re.search(pattern, resp_body[:700_000], re.I):
-            ev = {"source":"burp_response","exchange_id":exchange_id,"method":method,"url":url,"error_type":etype,"status":status}
-            notify(kind="error_disclosure", key=f"error_disclosure:{etype}:{rid}", severity="medium", title="Detalle interno en respuesta", message=f"{method} {path} muestra una señal de {etype.replace('_',' ')} · exchange #{exchange_id}", data=ev)
+    custom_error_patterns = [("custom_regex", x) for x in rulebook.rule_list(error_cfg, "custom_regex")]
+    if error_cfg.get("enabled"):
+        for etype, pattern in error_patterns + custom_error_patterns:
+            if etype != "custom_regex" and enabled_error_types and etype not in enabled_error_types:
+                continue
+            try:
+                matched = bool(resp_body and re.search(pattern, resp_body[:700_000], re.I))
+            except re.error:
+                matched = False
+            if matched:
+                ev = {"source":"burp_response","exchange_id":exchange_id,"method":method,"url":url,"error_type":etype,"status":status,"rule_match":{"pattern_type":etype}}
+                notify(kind="error_disclosure", key=f"error_disclosure:{etype}:{rid}:{hashlib.sha1(pattern.encode()).hexdigest()[:8]}", severity="medium", title="Detalle interno en respuesta", message=f"{method} {path} coincide con una regla de {etype.replace('_',' ')} · exchange #{exchange_id}", data=ev)
 
-    # 7) Access Control Intelligence — passive hypotheses learned from the
-    # Access Control training module.  These clues never perform exploitation.
-    # They only point the hunter to a concrete manual comparison in Repeater.
-    param_keys = {re.sub(r"[^a-z0-9_]", "", k.lower().replace("-", "_")) for k in pmap}
-    compact_param_keys = {k.replace("_", "") for k in param_keys}
-    object_hits = sorted({
-        k for k in pmap
-        if re.sub(r"[^a-z0-9]", "", k.lower()) in {x.replace("_", "") for x in OBJECT_ID_KEYS}
-           or re.sub(r"[^a-z0-9]", "", k.lower()).endswith("id")
-    })
-    path_has_object = bool(re.search(r"/(?:\d{1,18}|[0-9a-f]{8}-[0-9a-f-]{27,})\b", path, re.I))
-    if (object_hits or path_has_object) and bool(row["authenticated_observed"]):
+    # 7) Access Control Intelligence — explicit editable rules.
+    object_cfg = detector_settings("access_object_reference", conn)
+    object_key_compact = {_compact(x) for x in rulebook.rule_list(object_cfg, "identifier_keys")}
+    object_suffixes = [_compact(x) for x in rulebook.rule_list(object_cfg, "identifier_suffixes") if _compact(x)]
+    object_ignore = {_compact(x) for x in rulebook.rule_list(object_cfg, "ignore_keys")}
+    identifier_prov=(object_cfg.get("provenance") or {}).get("identifier_keys") or {}
+    object_ignore |= {_compact(x) for x in (identifier_prov.get("excluded_personal") or [])}
+    object_ignore |= {_compact(x) for x in (identifier_prov.get("excluded_project") or [])}
+    object_locations = {x.lower() for x in rulebook.rule_list(object_cfg, "locations")}
+    object_hits: list[str] = []
+    object_match_details: list[dict[str, Any]] = []
+    if object_cfg.get("enabled"):
+        for name, items in pmap.items():
+            compact = _compact(name)
+            if compact in object_ignore:
+                continue
+            locations=sorted({_loc_base(item.get("location", "")) for item in items})
+            if object_locations and not any(loc in object_locations for loc in locations):
+                continue
+            reason=None
+            if compact in object_key_compact:
+                exact_value=next((x for x in rulebook.rule_list(object_cfg,"identifier_keys") if _compact(x)==compact),name)
+                reason=f"exact:{exact_value}"
+            else:
+                matched_suffix=next((x for x in rulebook.rule_list(object_cfg,"identifier_suffixes") if _compact(x) and compact.endswith(_compact(x))),None)
+                if matched_suffix:
+                    reason=f"suffix:{matched_suffix}"
+            if reason:
+                object_hits.append(name)
+                object_match_details.append({"name":name,"reason":reason,"locations":locations})
+    numeric_path = bool(re.search(r"/(?:\d{1,18})(?:/|$|[?#])", path)) if rulebook.rule_bool(object_cfg, "detect_numeric_path", True) else False
+    uuid_path = bool(re.search(r"/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:/|$|[?#])", path, re.I)) if rulebook.rule_bool(object_cfg, "detect_uuid_path", True) else False
+    path_has_object = numeric_path or uuid_path
+    object_auth_ok = bool(row["authenticated_observed"]) if rulebook.rule_bool(object_cfg, "require_authenticated", True) else True
+    if object_cfg.get("enabled") and (object_hits or path_has_object) and object_auth_ok:
         evidence = [{"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,
-                     "object_parameters":object_hits[:8],"path_identifier":path_has_object}]
+                     "object_parameters":sorted(object_hits)[:8],"path_identifier":path_has_object,
+                     "rule_match":{"parameter_matches":object_match_details[:8],"numeric_path":numeric_path,"uuid_path":uuid_path}}]
         object_priority = "high" if method in {"PUT","PATCH","DELETE"} else "medium"
         lead_result = upsert_lead(conn, lead_key=f"access_object:{oid}", host_id=hid, resource_id=rid,
             lead_type="access_object_reference", title="Objeto referenciado por el cliente · revisar autorización horizontal",
             confidence="medium", review_priority=object_priority, evidence=evidence,
-            why="La operación autenticada referencia un objeto mediante un ID/UUID controlado por el cliente. Eso no demuestra IDOR, pero es una superficie clásica para comparar ownership entre dos identidades autorizadas.",
+            why="La operación coincide con tus reglas de identificador de objeto. Eso no demuestra IDOR; indica dónde comparar ownership/tenant/rol entre identidades autorizadas.",
             next_test="Envía el exchange a Repeater y compara exactamente la misma operación con un objeto perteneciente a tu segunda cuenta de prueba. Mantén constante todo salvo identidad/ID y evita tocar datos de terceros.",
             confirm_if="Una identidad puede leer o modificar un objeto que pertenece a otra identidad sin autorización equivalente.",
             discard_if="El backend valida ownership/tenant/rol de forma consistente o el identificador sólo referencia datos públicos.")
         notify_new_lead(lead_result, lead_type="access_object_reference", title="Nueva hipótesis · autorización horizontal",
-                        priority=object_priority, message=f"{method} {path} referencia un objeto controlado por el cliente.",
-                        data={"object_parameters": object_hits[:8]})
+                        priority=object_priority, message=f"{method} {path} coincidió con regla(s) de objeto: {', '.join(sorted(object_hits)[:5]) or 'ID en path'}.",
+                        data={"object_parameters": sorted(object_hits)[:8]})
 
-    # Fields returned by the API but not editable by the observed request can
-    # be useful mass-assignment hypotheses (roleId, permissions, ownerId, etc.).
-    response_field_names = {re.sub(r"[^a-z0-9_]", "", k.lower().replace("-", "_")) for k, _, _ in fields}
-    compact_response_fields = {k.replace("_", "") for k in response_field_names}
-    privileged_compact = {x.replace("_", "") for x in PRIVILEGED_FIELD_KEYS}
+    # Mass assignment: configurable privileged vocabulary.
+    response_field_names = {_norm_name(k) for k, _, _ in fields}
+    compact_param_keys = {_compact(k) for k in pmap}
+    mass_cfg = detector_settings("mass_assignment", conn)
+    privileged_compact = {_compact(x) for x in rulebook.rule_list(mass_cfg, "privileged_keys")}
+    ignored_mass = {_compact(x) for x in rulebook.rule_list(mass_cfg, "ignore_keys")}
+    mass_methods = {x.upper() for x in rulebook.rule_list(mass_cfg, "methods")}
     hidden_privileged = sorted({
         k for k in response_field_names
-        if k.replace("_", "") in privileged_compact and k.replace("_", "") not in compact_param_keys
+        if _compact(k) in privileged_compact and _compact(k) not in ignored_mass
+        and (not rulebook.rule_bool(mass_cfg, "require_response_only", True) or _compact(k) not in compact_param_keys)
     })
-    if method in {"POST","PUT","PATCH"} and hidden_privileged and bool(row["authenticated_observed"]):
+    mass_auth_ok = bool(row["authenticated_observed"]) if rulebook.rule_bool(mass_cfg, "require_authenticated", True) else True
+    if mass_cfg.get("enabled") and method.upper() in mass_methods and hidden_privileged and mass_auth_ok:
         ev = {"source":"burp_access_control","exchange_id":exchange_id,"method":method,"url":url,
-              "response_only_privileged_fields":hidden_privileged[:10]}
-        mass_priority = "high" if any(x.replace('_','') in {"role","roleid","isadmin","admin","permission","permissions","ownerid"} for x in hidden_privileged) else "medium"
+              "response_only_privileged_fields":hidden_privileged[:10],"rule_match":{"privileged_fields":hidden_privileged[:10]}}
+        strong_fields={"role","roleid","isadmin","admin","permission","permissions","ownerid","privilege","privileges"}
+        mass_priority = "high" if any(_compact(x) in strong_fields for x in hidden_privileged) else "medium"
         lead_result = upsert_lead(conn, lead_key=f"mass_assignment_fields:{oid}", host_id=hid, resource_id=rid,
             lead_type="mass_assignment", title="Campos privilegiados visibles pero no editados por la interfaz",
             confidence="medium", review_priority=mass_priority,
-            evidence=[ev], why="La respuesta expone propiedades de autorización/estado que no aparecieron en el request observado. En endpoints de edición esto puede indicar campos que el binder/model acepta aunque la UI no los envíe.",
+            evidence=[ev], why="La respuesta contiene campos que TU regla clasifica como privilegiados y que no aparecieron en el request observado. Eso es una pista de binder/model demasiado amplio, no una confirmación.",
             next_test=f"En Repeater, conserva el request original y prueba uno de estos campos observados: {', '.join(hidden_privileged[:6])}. Cambia sólo datos de tu propia cuenta/objeto y verifica el estado server-side después.",
             confirm_if="El backend acepta modificar un campo privilegiado que la identidad actual no debería controlar y el cambio produce capacidad adicional.",
             discard_if="El backend ignora/rechaza esos campos o revalida autorización antes de aplicar cambios sensibles.")
         notify_new_lead(lead_result, lead_type="mass_assignment", title="Nueva hipótesis · asignación masiva",
-                        priority=mass_priority, message=f"{method} {path} devuelve campos privilegiados no enviados por la interfaz.",
+                        priority=mass_priority, message=f"{method} {path} coincidió con campo(s) privilegiados configurados: {', '.join(hidden_privileged[:5])}.",
                         data={"fields": hidden_privileged[:10]})
 
-    # Same resource observed with multiple verbs: prioritize semantic method
-    # comparisons rather than blindly spraying verbs.  Preserve the operation's
-    # parameters when translating POST/JSON into GET/query during manual tests.
-    sibling_methods = [str(x["method"]).upper() for x in conn.execute(
-        "SELECT method FROM resource_operations WHERE resource_id=? ORDER BY method", (rid,)
-    ).fetchall()]
-    if len(set(sibling_methods)) >= 2 and any(x in {"POST","PUT","PATCH","DELETE"} for x in sibling_methods):
-        ev = {"source":"burp_http_model","exchange_id":exchange_id,"url":url,"methods":sorted(set(sibling_methods))}
+    # Same resource observed with multiple verbs.
+    method_cfg = detector_settings("method_access_control", conn)
+    ignored_methods={x.upper() for x in rulebook.rule_list(method_cfg, "ignore_methods")}
+    state_methods={x.upper() for x in rulebook.rule_list(method_cfg, "state_changing_methods")}
+    sibling_methods = [str(x["method"]).upper() for x in conn.execute("SELECT method FROM resource_operations WHERE resource_id=? ORDER BY method", (rid,)).fetchall()]
+    observed_methods={x for x in sibling_methods if x not in ignored_methods}
+    method_trigger=len(observed_methods)>=2
+    if rulebook.rule_bool(method_cfg, "require_state_changing", True):
+        method_trigger = method_trigger and bool(observed_methods & state_methods)
+    if rulebook.rule_bool(method_cfg, "require_authenticated", False):
+        method_trigger = method_trigger and bool(row["authenticated_observed"])
+    if rulebook.rule_bool(method_cfg, "require_two_successful_methods", False) and method_trigger:
+        success_methods={str(x["method"]).upper() for x in conn.execute("SELECT DISTINCT o.method FROM resource_operations o JOIN http_exchanges e ON e.operation_id=o.id WHERE o.resource_id=? AND e.status_code BETWEEN 200 AND 399",(rid,)).fetchall() if str(x["method"]).upper() not in ignored_methods}
+        method_trigger=len(success_methods)>=2 and (not rulebook.rule_bool(method_cfg, "require_state_changing", True) or bool(success_methods & state_methods))
+    if method_cfg.get("enabled") and method_trigger:
+        ev = {"source":"burp_http_model","exchange_id":exchange_id,"url":url,"methods":sorted(observed_methods),"rule_match":{"methods":sorted(observed_methods),"state_changing":sorted(observed_methods & state_methods)}}
         lead_result = upsert_lead(conn, lead_key=f"method_auth:{rid}", host_id=hid, resource_id=rid,
             lead_type="method_access_control", title="Mismo recurso observado con varios métodos HTTP",
             confidence="medium", review_priority="medium", evidence=[ev],
-            why="El mismo recurso acepta varios verbos y al menos uno cambia estado. Distintas rutas de código/middleware pueden aplicar controles diferentes.",
+            why="El recurso cumple tus reglas de comparación por método. Distintas rutas de código/middleware pueden aplicar controles diferentes; todavía falta preservar la intención de negocio y validar autorización.",
             next_test="Compara la misma intención de negocio con los métodos observados. Si conviertes POST/JSON a GET, mueve los parámetros equivalentes al query string; cambiar sólo el verbo puede producir una petición incompleta y un falso negativo.",
             confirm_if="La misma acción/estado puede alcanzarse mediante un método con controles de autorización más débiles.",
             discard_if="Los métodos tienen semánticas distintas o todos aplican autorización equivalente.")
         notify_new_lead(lead_result, lead_type="method_access_control", title="Nueva hipótesis · autorización por método",
-                        priority="medium", message=f"{path} fue observado con varios métodos HTTP.",
-                        data={"methods": sorted(set(sibling_methods))})
+                        priority="medium", message=f"{path} coincidió con tus reglas de métodos: {', '.join(sorted(observed_methods))}.", data={"methods": sorted(observed_methods)})
 
-    # Redirects are not authorization.  If a 3xx still carries a meaningful
-    # body, surface it so the hunter reads the response before following Location.
-    if status in {301,302,303,307,308}:
+    # Redirects are not authorization.
+    red_cfg = detector_settings("redirect_body_access_control", conn)
+    red_statuses={int(x) for x in rulebook.rule_list(red_cfg, "statuses") if str(x).isdigit()}
+    if red_cfg.get("enabled") and status in red_statuses:
         stripped_body = resp_body.strip()
-        body_field_names = {str(k).lower().replace("-", "_") for k, _, _ in fields}
-        data_like = bool(body_field_names & (IDENTITY_KEYS | SENSITIVE_RESPONSE_KEYS | PRIVILEGED_FIELD_KEYS))
-        if len(stripped_body) >= 120 and (data_like or len(stripped_body) >= 600):
+        body_field_names = {_norm_name(k) for k, _, _ in fields}
+        interesting_keys={_compact(x) for x in rulebook.rule_list(red_cfg, "interesting_keys")}
+        interesting_fields=sorted(k for k in body_field_names if _compact(k) in interesting_keys)
+        min_chars=max(0, rulebook.rule_int(red_cfg, "minimum_body_chars", 120))
+        data_like=bool(interesting_fields)
+        trigger=len(stripped_body)>=min_chars and (data_like if rulebook.rule_bool(red_cfg, "require_interesting_field", False) else True)
+        if trigger:
             ev = {"source":"burp_redirect","exchange_id":exchange_id,"method":method,"url":url,"status":status,
                   "location":_safe_url_evidence(resp_headers.get("location", "")),"response_size":len(resp_body),
-                  "interesting_fields":sorted(body_field_names & (IDENTITY_KEYS | SENSITIVE_RESPONSE_KEYS | PRIVILEGED_FIELD_KEYS))[:10]}
+                  "interesting_fields":interesting_fields[:10],"rule_match":{"status":status,"minimum_body_chars":min_chars,"interesting_fields":interesting_fields[:10]}}
             lead_result = upsert_lead(conn, lead_key=f"redirect_body:{rid}:{status}", host_id=hid, resource_id=rid,
                 lead_type="redirect_body_access_control", title="Redirect con contenido que merece revisión",
                 confidence="high" if data_like else "medium", review_priority="medium", evidence=[ev],
-                why="El servidor respondió con redirección pero también envió un body significativo. Redirigir al navegador no evita una filtración si los datos ya salieron en la respuesta.",
+                why="El 3xx cumple las reglas de body que configuraste. Redirigir al navegador no evita una filtración si los datos ya salieron en la respuesta.",
                 next_test=f"Abre el exchange #{exchange_id} sin seguir el redirect y revisa el body completo. Compara con tu propia identidad y no uses datos de terceros fuera del scope.",
                 confirm_if="El body del 3xx contiene datos sensibles/privados que la identidad no estaba autorizada a recibir.",
                 discard_if="El body sólo contiene una página genérica de redirect sin información adicional.")
             notify_new_lead(lead_result, lead_type="redirect_body_access_control", title="Nueva hipótesis · datos en redirect",
-                            priority="medium", message=f"{method} {path} respondió {status} con un body significativo.",
-                            data={"status": status, "response_size": len(resp_body)})
+                            priority="medium", message=f"{method} {path} respondió {status} y cumplió tus reglas de body 3xx.", data={"status": status, "response_size": len(resp_body)})
 
-    # A 403 that looks like a different server/layer than a normal backend 404
-    # is a useful routing hypothesis.  Compare only passive fingerprints.
-    if status == 403:
+    # 403 layer fingerprint comparison.
+    proxy_cfg = detector_settings("proxy_path_access_control", conn)
+    blocked_statuses={int(x) for x in rulebook.rule_list(proxy_cfg, "blocked_statuses") if str(x).isdigit()}
+    comparison_statuses={int(x) for x in rulebook.rule_list(proxy_cfg, "comparison_statuses") if str(x).isdigit()}
+    if proxy_cfg.get("enabled") and status in blocked_statuses and comparison_statuses:
+        placeholders=",".join("?" for _ in comparison_statuses)
         baseline = conn.execute(
-            """SELECT e.id,e.response_size,e.response_headers_json,r.path
+            f"""SELECT e.id,e.response_size,e.response_headers_json,e.status_code,r.path
                FROM http_exchanges e JOIN resource_operations oo ON oo.id=e.operation_id
                JOIN resources r ON r.id=oo.resource_id
-               WHERE r.host_id=? AND e.status_code=404 AND e.id<>? ORDER BY e.last_seen_at DESC LIMIT 1""",
-            (hid, exchange_id),
+               WHERE r.host_id=? AND e.status_code IN ({placeholders}) AND e.id<>? ORDER BY e.last_seen_at DESC LIMIT 1""",
+            (hid, *sorted(comparison_statuses), exchange_id),
         ).fetchone()
         if baseline:
             bh = _header_map(baseline["response_headers_json"])
@@ -1724,38 +1935,76 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             ctype_a, ctype_b = resp_headers.get("content-type", "").split(";",1)[0].lower(), bh.get("content-type", "").split(";",1)[0].lower()
             size_a, size_b = int(row["response_size"] or 0), int(baseline["response_size"] or 0)
             size_ratio = max(size_a, size_b, 1) / max(min(size_a or 1, size_b or 1), 1)
-            layer_diff = bool((server_a and server_b and server_a != server_b) or (ctype_a and ctype_b and ctype_a != ctype_b) or size_ratio >= 3.0)
+            strong_layer_diff=bool((server_a and server_b and server_a != server_b) or (ctype_a and ctype_b and ctype_a != ctype_b))
+            layer_diff = strong_layer_diff if rulebook.rule_bool(proxy_cfg, "require_strong_difference", False) else bool(strong_layer_diff or size_ratio >= 3.0)
             if layer_diff:
-                ev = {"source":"burp_fingerprint","exchange_id":exchange_id,"method":method,"url":url,"status":403,
+                ev = {"source":"burp_fingerprint","exchange_id":exchange_id,"method":method,"url":url,"status":status,
                       "server":server_a or None,"content_type":ctype_a or None,"size":size_a,
-                      "baseline_404_exchange":int(baseline["id"]),"baseline_path":baseline["path"],"baseline_server":server_b or None,
-                      "baseline_content_type":ctype_b or None,"baseline_size":size_b}
+                      "baseline_exchange":int(baseline["id"]),"baseline_status":int(baseline["status_code"]),"baseline_path":baseline["path"],"baseline_server":server_b or None,
+                      "baseline_content_type":ctype_b or None,"baseline_size":size_b,"rule_match":{"strong_layer_difference":strong_layer_diff,"size_ratio":round(size_ratio,2)}}
                 lead_result = upsert_lead(conn, lead_key=f"proxy_403:{rid}", host_id=hid, resource_id=rid,
-                    lead_type="proxy_path_access_control", title="403 con fingerprint distinto al backend observado",
+                    lead_type="proxy_path_access_control", title=f"{status} con fingerprint distinto al backend observado",
                     confidence="medium", review_priority="medium", evidence=[ev],
-                    why="El 403 difiere de un 404 normal del mismo host en servidor, Content-Type o tamaño. Puede significar que proxy/WAF/frontend está bloqueando la ruta antes de la aplicación.",
+                    why="La respuesta bloqueada coincide con tus reglas de discrepancia entre capas. Puede significar proxy/WAF/frontend distinto; no demuestra un bypass.",
                     next_test="Primero confirma qué capa responde. Si la arquitectura lo justifica, prueba manualmente discrepancias de routing/normalización; X-Original-URL y X-Rewrite-URL son quick checks, no una conclusión automática.",
                     confirm_if="Una representación permitida por la capa frontal termina ejecutando una ruta que directamente estaba bloqueada y el backend no revalida autorización.",
-                    discard_if="403 y 404 provienen de la misma capa o el backend aplica autorización equivalente tras cualquier reescritura.")
+                    discard_if="Las respuestas provienen de la misma capa o el backend aplica autorización equivalente tras cualquier reescritura.")
                 notify_new_lead(lead_result, lead_type="proxy_path_access_control", title="Nueva hipótesis · capa frontal distinta",
-                                priority="medium", message=f"{path} devuelve un 403 con fingerprint distinto al 404 del backend.",
-                                data={"status": 403, "baseline_404_exchange": int(baseline["id"])})
+                                priority="medium", message=f"{path} cumple tus reglas de fingerprint para capas distintas.", data={"status": status, "baseline_exchange": int(baseline["id"])})
 
-    # Sensitive state-changing action carrying Referer: remember the technique,
-    # but keep it low priority because Referer is commonly present for benign reasons.
-    if req_headers.get("referer") and method in {"POST","PUT","PATCH","DELETE"} and any(tok in low_path for tok in SENSITIVE_ACTION_TOKENS):
-        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"referer":_safe_url_evidence(req_headers.get("referer", ""))}
+    # Referer quick check.
+    referer_cfg = detector_settings("referer_access_control", conn)
+    referer_methods={x.upper() for x in rulebook.rule_list(referer_cfg, "methods")}
+    referer_tokens=[x.lower() for x in rulebook.rule_list(referer_cfg, "sensitive_path_tokens")]
+    referer_sensitive=any(tok in low_path for tok in referer_tokens)
+    referer_trigger=bool(req_headers.get("referer") and method.upper() in referer_methods)
+    if rulebook.rule_bool(referer_cfg, "require_sensitive_path", True):
+        referer_trigger=referer_trigger and referer_sensitive
+    if rulebook.rule_bool(referer_cfg, "require_authenticated", False):
+        referer_trigger=referer_trigger and bool(row["authenticated_observed"])
+    if referer_cfg.get("enabled") and referer_trigger:
+        ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"referer":_safe_url_evidence(req_headers.get("referer", "")),"rule_match":{"sensitive_path":referer_sensitive}}
         lead_result = upsert_lead(conn, lead_key=f"referer_access:{oid}", host_id=hid, resource_id=rid,
             lead_type="referer_access_control", title="Acción sensible observada con Referer",
             confidence="low", review_priority="low", evidence=[ev],
-            why="Referer es controlado por el cliente y no debe ser la prueba de autorización. Su presencia no implica vulnerabilidad; sólo merece un quick check en una acción sensible.",
+            why="La operación coincide con tus reglas de Referer. El header es controlable por el cliente y no debe ser la prueba de autorización; su presencia sólo merece un quick check.",
             next_test="Con tu propia cuenta de prueba, compara la request original contra la misma request sin Referer y con un Referer distinto. Si el resultado de autorización depende del header, investiga por qué.",
             confirm_if="Una identidad sin privilegios ejecuta la acción únicamente al presentar un Referer privilegiado/controlado.",
             discard_if="Referer sólo participa en CSRF/telemetría o la autorización depende correctamente de la identidad/rol server-side.")
         notify_new_lead(lead_result, lead_type="referer_access_control", title="Quick check · Referer en acción sensible",
-                        priority="low", message=f"{method} {path} incluye Referer; verifica que no participe en autorización.", data={})
+                        priority="low", message=f"{method} {path} coincidió con tus reglas de Referer.", data={})
 
     return {"exchange_id": exchange_id, "signals": signals, "new_notifications": new_notifications}
+
+
+def retire_first_party_cors(conn, scopes: list[str]) -> int:
+    """Retire stale CORS hypotheses that are now known first-party project scopes."""
+    changed=0
+    rows=conn.execute("SELECT id,resource_id,evidence_json,result_notes,status FROM leads_v2 WHERE lead_type='cors'").fetchall()
+    for row in rows:
+        try:
+            evidence=json.loads(row["evidence_json"] or "[]")
+        except Exception:
+            evidence=[]
+        origins=[]
+        for ev in evidence if isinstance(evidence,list) else []:
+            if isinstance(ev,dict) and ev.get("origin"):
+                origins.append(str(ev.get("origin")))
+        first_party=False
+        for origin in origins:
+            try: host=urllib.parse.urlsplit(origin).hostname or ""
+            except Exception: host=""
+            if host_in_project_scope(host,scopes):
+                first_party=True; break
+        if not first_party:
+            continue
+        if str(row["status"] or "") in {"candidate","testing","interesting","postponed"}:
+            note=str(row["result_notes"] or "").strip() or "Origen first-party: ambos hosts pertenecen al mismo proyecto/scope. Negro deja de priorizarlo como CORS arbitrario."
+            conn.execute("UPDATE leads_v2 SET status='negative',result_notes=?,updated_at=? WHERE id=?",(note,now_iso(),int(row["id"])))
+            changed+=1
+        for origin in origins:
+            conn.execute("UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE dedupe_key=?",(now_iso(),f"cors_passive:{int(row['resource_id'] or 0)}:{origin}"))
+    return changed
 
 
 def generate_leads(conn, domain: str) -> dict[str, Any]:
@@ -1774,7 +2023,7 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
     for row, local, sm in _iter_js_analysis(conn):
         js_by_host.setdefault(int(row["host_id"]), []).append((row, local, sm))
         # Source map lead.
-        if sm and int(sm.get("sources_count") or 0) > 0:
+        if detector_enabled("source_map", conn) and sm and int(sm.get("sources_count") or 0) > 0:
             sm_det = (sm.get("analysis") or {}).get("detections", []) if isinstance(sm.get("analysis"), dict) else []
             priority = "high" if any(d.get("category") == "potential_secret" for d in sm_det if isinstance(d, dict)) else "medium"
             upsert_lead(conn,
@@ -1790,11 +2039,14 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
         merged.extend(local.get("detections", []) or [])
         if sm and isinstance(sm.get("analysis"), dict):
             merged.extend(sm["analysis"].get("detections", []) or [])
-        for d in merged:
+        configured_secret_types={x.lower() for x in detector_rule_list("secret_candidate","secret_types",conn)}
+        for d in (merged if detector_enabled("secret_candidate", conn) else []):
             if not isinstance(d, dict):
                 continue
             cat = d.get("category")
             dtype = str(d.get("type") or "config")
+            if configured_secret_types and dtype.lower() not in configured_secret_types:
+                continue
             if cat == "potential_secret":
                 pri, conf = "high", str(d.get("confidence") or "medium")
             elif dtype == "google_api_key":
@@ -1812,13 +2064,16 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
                 confirm_if="La configuración permite uso no autorizado o el secreto es real/activo y su exposición tiene impacto.",
                 discard_if="Es configuración pública esperada, fixture, valor expirado o no existe impacto demostrable.")
 
-    # URL/resource based leads.
+    # URL/resource based leads.  Use the same editable vocabulary as live Burp analysis.
+    redirect_rule_keys={str(x).lower() for x in detector_rule_list("open_redirect","parameter_keys",conn)}
+    ssrf_rule_keys={str(x).lower() for x in detector_rule_list("ssrf_surface","parameter_keys",conn)}
+    object_rule_nouns={str(x).lower() for x in detector_rule_list("access_object_reference","path_business_nouns",conn)}
     resources = conn.execute("SELECT r.*, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id").fetchall()
     for r in resources:
         query = urllib.parse.parse_qs(r["query"] or "", keep_blank_values=True)
         qkeys = {k.lower() for k in query}
-        redirect_hits = sorted(qkeys & REDIRECT_PARAMS)
-        if redirect_hits:
+        redirect_hits = sorted(qkeys & redirect_rule_keys)
+        if redirect_hits and detector_enabled("open_redirect", conn):
             sink_evidence: list[str] = []
             for _, local, sm in js_by_host.get(int(r["host_id"]), []):
                 contexts = list(local.get("contexts", []) or [])
@@ -1839,7 +2094,7 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
                 next_test="Probar una única URL HTTPS controlada en el parámetro y observar Location/navegación sin usar phishing ni terceros.",
                 confirm_if="La aplicación termina navegando/redirigiendo a un dominio externo controlado sin una allowlist efectiva.",
                 discard_if="Normaliza a rutas internas, bloquea hosts externos o aplica una allowlist estricta.")
-        ssrf_hits = sorted(qkeys & URLISH_PARAMS)
+        ssrf_hits = sorted(qkeys & ssrf_rule_keys) if detector_enabled("ssrf_surface", conn) else []
         if ssrf_hits:
             upsert_lead(conn,
                 lead_key=f"ssrf_surface:{r['id']}:{','.join(ssrf_hits)}", host_id=int(r["host_id"]), resource_id=int(r["id"]),
@@ -1850,7 +2105,7 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
                 confirm_if="El servidor realiza una solicitud saliente hacia una URL controlada por el usuario.",
                 discard_if="El valor sólo se usa client-side, se trata como dato o existe una allowlist/normalización que impide destinos arbitrarios.")
         segments = [x for x in (r["path"] or "").lower().split("/") if x]
-        if any(x in OBJECT_NOUNS for x in segments) and any(re.fullmatch(r"\d{2,}|[0-9a-f]{8}-[0-9a-f-]{20,}|[0-9a-f]{24,}", x, re.I) for x in segments):
+        if any(x in object_rule_nouns for x in segments) and any(re.fullmatch(r"\d{2,}|[0-9a-f]{8}-[0-9a-f-]{20,}|[0-9a-f]{24,}", x, re.I) for x in segments):
             upsert_lead(conn,
                 lead_key=f"bola_surface:{r['id']}", host_id=int(r["host_id"]), resource_id=int(r["id"]),
                 lead_type="bola_surface", title="Object authorization / BOLA surface", confidence="low", review_priority="medium",
@@ -1912,7 +2167,7 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
             # Form-derived redirect/SSRF candidates.
             for form in payload.get("forms", []) or []:
                 fields = [str(x.get("name", "")).lower() for x in form.get("fields", []) if isinstance(x, dict)]
-                rh = sorted(set(fields) & REDIRECT_PARAMS)
+                rh = sorted(set(fields) & redirect_rule_keys)
                 if rh:
                     key = hashlib.sha1((str(form.get("action"))+",".join(rh)).encode()).hexdigest()[:12]
                     upsert_lead(conn, lead_key=f"open_redirect_form:{hid}:{key}", host_id=hid, resource_id=None,
@@ -1922,18 +2177,31 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
                         next_test="Revisar JS/flujo y hacer una única validación con dominio HTTPS controlado si el campo realmente controla navegación.",
                         confirm_if="El valor termina en una redirección externa arbitraria.",
                         discard_if="El campo se ignora, se normaliza a rutas internas o usa allowlist.")
-        elif o["kind"] == "cors_probe" and isinstance(payload, dict):
+        elif o["kind"] == "cors_probe" and isinstance(payload, dict) and detector_enabled("cors", conn):
             hid = int(o["entity_id"]) if o["entity_type"] == "host" else None
+            cors_cfg=detector_settings("cors",conn)
             ao = payload.get("allow_origin")
+            origin_sent=str(payload.get("origin_sent") or "")
             creds = str(payload.get("allow_credentials") or "").lower() == "true"
-            reflected = ao == payload.get("origin_sent")
-            if reflected or ao == "*":
+            reflected = ao == origin_sent
+            try: origin_host=(urllib.parse.urlsplit(origin_sent).hostname or '').lower().rstrip('.')
+            except Exception: origin_host=''
+            project_scopes=project_scopes_from_conn(conn,domain)
+            first_party=host_in_project_scope(origin_host,project_scopes) if rulebook.rule_bool(cors_cfg,"ignore_project_scopes",True) else False
+            ignore_origins={x.lower().rstrip('/') for x in rulebook.rule_list(cors_cfg,"ignore_origins")}
+            trusted_suffixes=[x.lower().lstrip('*').lstrip('.') for x in rulebook.rule_list(cors_cfg,"trusted_origin_suffixes") if x.strip()]
+            trusted_manual=origin_sent.lower().rstrip('/') in ignore_origins or any(origin_host == s or origin_host.endswith('.' + s) for s in trusted_suffixes)
+            reflection_ok=reflected if rulebook.rule_bool(cors_cfg,"require_exact_reflection",True) else bool(ao)
+            creds_ok=creds if rulebook.rule_bool(cors_cfg,"require_credentials",False) else True
+            external_ok=(not first_party and not trusted_manual) if rulebook.rule_bool(cors_cfg,"require_external_origin",True) else True
+            auth_ok=bool(payload.get('authenticated')) if rulebook.rule_bool(cors_cfg,"require_authenticated",False) else True
+            if reflection_ok and creds_ok and external_ok and auth_ok:
                 conf = "high" if reflected and creds else "medium"
                 pri = "high" if reflected and creds else "low"
                 upsert_lead(conn, lead_key=f"cors:{hid}:{hashlib.sha1(str(payload.get('url')).encode()).hexdigest()[:12]}", host_id=hid, resource_id=None,
                     lead_type="cors", title="CORS permisivo / Origin reflejado", confidence=conf, review_priority=pri,
-                    evidence=[{"source":"cors_probe","url":payload.get("url"),"allow_origin":ao,"allow_credentials":payload.get("allow_credentials"),"status":payload.get("status")}],
-                    why="Aceptar un Origin arbitrario puede ser relevante si una respuesta autenticada sensible es legible cross-origin. Sin datos sensibles/credentials puede ser inocuo.",
+                    evidence=[{"source":"cors_probe","url":payload.get("url"),"allow_origin":ao,"allow_credentials":payload.get("allow_credentials"),"status":payload.get("status"),"rule_match":{"external_origin":not first_party,"exact_reflection":reflected,"credentials":creds}}],
+                    why="La prueba CORS cumplió exactamente las condiciones que configuraste. Eso sigue siendo una hipótesis hasta demostrar lectura cross-origin de datos relevantes.",
                     next_test="Con una cuenta propia de prueba, confirmar si el endpoint devuelve datos sensibles y el navegador permitiría leerlos desde el Origin externo controlado.",
                     confirm_if="Un origen externo arbitrario puede leer una respuesta autenticada sensible.",
                     discard_if="No se permiten credentials/datos sensibles, ACAO no refleja el origen o el navegador no permite lectura cross-origin.")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.17.1
+Negro Recon v0.19.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.17.1"
+VERSION = "0.19.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -125,20 +125,52 @@ def banner() -> None:
     print(f"Negro Recon v{VERSION} — olfatea donde otros no miran.\n")
 
 
-def normalize_host(host: str, domain: str) -> str | None:
+def normalize_scope(scope: str) -> str | None:
+    scope = str(scope or "").strip().lower().rstrip(".")
+    if scope.startswith("http://") or scope.startswith("https://"):
+        try:
+            scope = urllib.parse.urlsplit(scope).hostname or ""
+        except Exception:
+            return None
+    if scope.startswith("*."):
+        scope = scope[2:]
+    if not scope or " " in scope or "/" in scope:
+        return None
+    return scope
+
+
+def normalize_scopes(scopes: Iterable[str] | None, fallback_domain: str | None = None) -> list[str]:
+    values: list[str] = []
+    for item in scopes or []:
+        value = normalize_scope(item)
+        if value and value not in values:
+            values.append(value)
+    fallback = normalize_scope(fallback_domain or "")
+    if fallback and fallback not in values:
+        values.insert(0, fallback)
+    return values
+
+
+def host_matches_scope(host: str, scope: str) -> bool:
+    host = str(host or "").strip().lower().rstrip(".")
+    scope = normalize_scope(scope) or ""
+    return bool(host and scope and (host == scope or host.endswith("." + scope)))
+
+
+def normalize_host(host: str, domain: str, scopes: Iterable[str] | None = None) -> str | None:
     host = host.strip().lower().rstrip(".")
     if host.startswith("*."):
         host = host[2:]
-    domain = domain.strip().lower().rstrip(".")
-    if host == domain or host.endswith("." + domain):
+    roots = normalize_scopes(scopes, domain)
+    if any(host_matches_scope(host, root) for root in roots):
         return host
     return None
 
 
-def normalize_hosts(hosts: Iterable[str], domain: str) -> list[str]:
+def normalize_hosts(hosts: Iterable[str], domain: str, scopes: Iterable[str] | None = None) -> list[str]:
     values = set()
     for host in hosts:
-        value = normalize_host(host, domain)
+        value = normalize_host(host, domain, scopes)
         if value:
             values.add(value)
     return sorted(values)
@@ -169,6 +201,26 @@ def workspace_paths(workspace: Path) -> dict[str, Path]:
         "state_file": workspace / "inventory" / "state.json",
         "db_file": workspace / "inventory" / "negro.db",
     }
+
+
+def workspace_state(paths: dict[str, Path]) -> dict:
+    try:
+        if paths["state_file"].exists():
+            raw = json.loads(paths["state_file"].read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def workspace_scopes(paths: dict[str, Path], fallback_domain: str) -> list[str]:
+    state = workspace_state(paths)
+    return normalize_scopes(state.get("scopes") if isinstance(state.get("scopes"), list) else [], fallback_domain)
+
+
+def workspace_project_name(paths: dict[str, Path], fallback_domain: str) -> str:
+    state = workspace_state(paths)
+    return str(state.get("project_name") or fallback_domain)
 
 
 def db_connect(paths: dict[str, Path]) -> sqlite3.Connection:
@@ -492,29 +544,40 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('version', ?)", (VERSION,))
 
 
-def ensure_workspace(workspace: Path, domain: str) -> dict[str, Path]:
+def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | None = None, project_name: str | None = None) -> dict[str, Path]:
     paths = workspace_paths(workspace)
     for key in ("raw", "normalized", "delta", "inventory", "notes"):
         paths[key].mkdir(parents=True, exist_ok=True)
 
+    normalized_domain = normalize_scope(domain) or str(domain).strip().lower().rstrip(".")
+    requested_scopes = normalize_scopes(scopes, normalized_domain)
     if paths["state_file"].exists():
         state = json.loads(paths["state_file"].read_text(encoding="utf-8"))
-        existing_domain = state.get("domain")
-        if existing_domain and existing_domain != domain:
-            raise RuntimeError(f"Este workspace pertenece a {existing_domain}, no a {domain}")
+        existing_domain = normalize_scope(state.get("domain") or "")
+        existing_scopes = normalize_scopes(state.get("scopes") if isinstance(state.get("scopes"), list) else [], existing_domain or normalized_domain)
+        if existing_domain and existing_domain != normalized_domain and normalized_domain not in existing_scopes:
+            raise RuntimeError(f"Este workspace pertenece a {existing_domain}, no a {normalized_domain}")
+        if scopes is None:
+            requested_scopes = existing_scopes
     else:
-        state = {"domain": domain, "version": VERSION}
+        state = {"domain": normalized_domain, "version": VERSION}
 
+    state["domain"] = normalized_domain
+    state["project_name"] = str(project_name or state.get("project_name") or normalized_domain).strip()[:120]
+    state["scopes"] = requested_scopes
     state["version"] = VERSION
-    paths["state_file"].write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    paths["state_file"].write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     if not paths["inventory_file"].exists():
         paths["inventory_file"].write_text("", encoding="utf-8")
     if not paths["provenance_file"].exists():
         paths["provenance_file"].write_text("{}\n", encoding="utf-8")
 
-    init_db(paths, domain)
-    migrate_existing_workspace(paths, domain)
+    init_db(paths, normalized_domain)
+    with db_connect(paths) as conn:
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('project_name',?)", (state["project_name"],))
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('scopes_json',?)", (json.dumps(requested_scopes),))
+    migrate_existing_workspace(paths, normalized_domain)
     return paths
 
 
@@ -544,7 +607,7 @@ def upsert_host(conn: sqlite3.Connection, hostname: str, source: str) -> tuple[i
     return host_id, created
 
 
-def canonicalize_url(raw_url: str, domain: str) -> tuple[str, str, str, str, str] | None:
+def canonicalize_url(raw_url: str, domain: str, scopes: Iterable[str] | None = None) -> tuple[str, str, str, str, str] | None:
     raw_url = raw_url.strip()
     if not raw_url:
         return None
@@ -554,7 +617,7 @@ def canonicalize_url(raw_url: str, domain: str) -> tuple[str, str, str, str, str
         return None
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         return None
-    host = normalize_host(parsed.hostname, domain)
+    host = normalize_host(parsed.hostname, domain, scopes)
     if not host:
         return None
     scheme = parsed.scheme.lower()
@@ -567,8 +630,8 @@ def canonicalize_url(raw_url: str, domain: str) -> tuple[str, str, str, str, str
     return canonical, host, scheme, path, query
 
 
-def upsert_resource(conn: sqlite3.Connection, raw_url: str, source: str, domain: str) -> tuple[bool, bool]:
-    normalized = canonicalize_url(raw_url, domain)
+def upsert_resource(conn: sqlite3.Connection, raw_url: str, source: str, domain: str, scopes: Iterable[str] | None = None) -> tuple[bool, bool]:
+    normalized = canonicalize_url(raw_url, domain, scopes)
     if not normalized:
         return False, False
     url, host, scheme, path, query = normalized
@@ -624,9 +687,10 @@ def upsert_http_observation(
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError("URL HTTP inválida")
-    host = normalize_host(parsed.hostname, domain)
+    scopes = workspace_scopes(paths, domain)
+    host = normalize_host(parsed.hostname, domain, scopes)
     if not host:
-        raise ValueError(f"Host fuera de scope para {domain}")
+        raise ValueError(f"Host fuera de scope para el proyecto ({', '.join(scopes)})")
     netloc = host + (f":{parsed.port}" if parsed.port else "")
     path = parsed.path or "/"
     resource_url = urllib.parse.urlunsplit((parsed.scheme.lower(), netloc, path, "", ""))
@@ -647,7 +711,7 @@ def upsert_http_observation(
     fingerprint = hashlib.sha256((req_hash + ":" + resp_hash + ":" + str(status_code or "")).encode()).hexdigest()
 
     with db_connect(paths) as conn:
-        _, created_resource = upsert_resource(conn, resource_url, source, domain)
+        _, created_resource = upsert_resource(conn, resource_url, source, domain, scopes)
         r = conn.execute("SELECT id, host_id FROM resources WHERE url=?", (resource_url,)).fetchone()
         resource_id = int(r["id"])
         host_id = int(r["host_id"])
@@ -730,13 +794,14 @@ def http_inventory_stats(paths: dict[str, Path]) -> dict[str, int]:
 
 
 def migrate_existing_workspace(paths: dict[str, Path], domain: str) -> None:
-    """Importa inventarios v0.2 sin borrar ni alterar estados/notas existentes."""
+    """Importa inventarios históricos sin borrar ni alterar estados/notas existentes."""
+    scopes=workspace_scopes(paths, domain)
     imported = set()
     with db_connect(paths) as conn:
         for source in HOST_SOURCE_ORDER:
             path = source_host_file(paths, source)
             if path.exists():
-                for host in normalize_hosts(read_lines(path), domain):
+                for host in normalize_hosts(read_lines(path), domain, scopes):
                     upsert_host(conn, host, source)
                     imported.add(host)
 
@@ -744,17 +809,18 @@ def migrate_existing_workspace(paths: dict[str, Path], domain: str) -> None:
                 url_path = source_url_file(paths, source)
                 if url_path.exists():
                     for url in read_lines(url_path):
-                        upsert_resource(conn, url, source, domain)
+                        upsert_resource(conn, url, source, domain, scopes)
 
-        for host in normalize_hosts(read_lines(paths["inventory_file"]), domain):
+        for host in normalize_hosts(read_lines(paths["inventory_file"]), domain, scopes):
             if host not in imported:
                 upsert_host(conn, host, "legacy_inventory")
 
 
 def rebuild_inventory(paths: dict[str, Path], domain: str) -> tuple[int, dict[str, int]]:
+    scopes=workspace_scopes(paths, domain)
     source_sets: dict[str, set[str]] = {}
     for source in HOST_SOURCE_ORDER:
-        source_sets[source] = set(normalize_hosts(read_lines(source_host_file(paths, source)), domain))
+        source_sets[source] = set(normalize_hosts(read_lines(source_host_file(paths, source)), domain, scopes))
 
     seen: set[str] = set()
     counts: dict[str, int] = {}
@@ -768,7 +834,7 @@ def rebuild_inventory(paths: dict[str, Path], domain: str) -> tuple[int, dict[st
         seen |= current
 
     # Preserve legacy hosts that do not have a source-specific file yet.
-    legacy = set(normalize_hosts(read_lines(paths["inventory_file"]), domain))
+    legacy = set(normalize_hosts(read_lines(paths["inventory_file"]), domain, scopes))
     seen |= legacy
 
     db_source_map: dict[str, set[str]] = {}
@@ -1052,7 +1118,7 @@ def collect_gau_provider(provider: str, domain: str, paths: dict[str, Path], tim
                     continue
                 canonical, host, _, _, _ = parsed
                 normalized_urls.append(canonical)
-                host_created, resource_created = upsert_resource(conn, canonical, source, domain)
+                host_created, resource_created = upsert_resource(conn, canonical, source, domain, scopes)
                 hosts.add(host)
                 new_hosts += int(host_created)
                 new_resources += int(resource_created)
@@ -1301,9 +1367,10 @@ def print_inspection(payload: dict) -> None:
 
 def inspect_host(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 20) -> dict:
     hostname = hostname.strip().lower().rstrip(".")
-    normalized = normalize_host(hostname, domain)
+    scopes = workspace_scopes(paths, domain)
+    normalized = normalize_host(hostname, domain, scopes)
     if not normalized:
-        raise RuntimeError(f"{hostname} no pertenece al target {domain}")
+        raise RuntimeError(f"{hostname} no pertenece al proyecto ({', '.join(scopes)})")
 
     with db_connect(paths) as conn:
         host_id, created = upsert_host(conn, hostname, "manual_inspect")
@@ -1335,13 +1402,14 @@ def record_observation(conn: sqlite3.Connection, entity_type: str, entity_id: in
 
 
 def _persist_url_list(domain: str, paths: dict[str, Path], source: str, urls: Iterable[str]) -> tuple[int, int, int]:
+    scopes = workspace_scopes(paths, domain)
     normalized_urls: list[str] = []
     hosts: set[str] = set()
     new_hosts = 0
     new_resources = 0
     with db_connect(paths) as conn:
         for raw_url in urls:
-            parsed = canonicalize_url(str(raw_url), domain)
+            parsed = canonicalize_url(str(raw_url), domain, scopes)
             if not parsed:
                 continue
             canonical, host, _, _, _ = parsed
@@ -1490,14 +1558,15 @@ def collect_github_code(domain: str, paths: dict[str, Path], timeout: int = 45) 
 
 def discover_js_for_host(domain: str, paths: dict[str, Path], hostname: str, timeout: int = 30) -> dict:
     import negro_intel as intel
-    hostname = normalize_host(hostname, domain) or ""
+    scopes=workspace_scopes(paths, domain)
+    hostname = normalize_host(hostname, domain, scopes) or ""
     if not hostname:
         raise RuntimeError("Host fuera del target")
-    result = intel.discover_js(hostname, domain, timeout=timeout)
+    result = intel.discover_js(hostname, domain, scopes=scopes, timeout=timeout)
     with db_connect(paths) as conn:
         host_id, _ = upsert_host(conn, hostname, "js_discovery")
         for url in result.get("in_scope", []):
-            upsert_resource(conn, url, "js_discovery", domain)
+            upsert_resource(conn, url, "js_discovery", domain, scopes)
             conn.execute(
                 "INSERT OR IGNORE INTO js_assets(host_id, url, source, discovered_at) VALUES(?, ?, 'js_discovery', ?)",
                 (host_id, url, now_iso()),
@@ -1531,7 +1600,8 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
     raw_path.write_bytes(raw)
     text = raw.decode("utf-8", errors="replace")
     analysis_text = intel.beautify_js(text)
-    local = intel.analyze_js_text(analysis_text, final_url, domain)
+    scopes=workspace_scopes(paths, domain)
+    local = intel.analyze_js_text(analysis_text, final_url, domain, scopes=scopes)
     sourcemap_url = None
     if local.get("source_maps"):
         # Keep one representative value for compatibility. fetch_sourcemap_for_asset
@@ -1552,11 +1622,11 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
         new_urls: list[str] = []
         discovered_resource_ids: list[int] = []
         for url in local.get("in_scope_urls", []):
-            normalized = canonicalize_url(url, domain)
+            normalized = canonicalize_url(url, domain, scopes)
             if not normalized:
                 continue
             canonical = normalized[0]
-            _, created = upsert_resource(conn, canonical, "js_local", domain)
+            _, created = upsert_resource(conn, canonical, "js_local", domain, scopes)
             rr = conn.execute("SELECT id FROM resources WHERE url=?", (canonical,)).fetchone()
             if rr:
                 discovered_resource_ids.append(int(rr["id"]))
@@ -1569,14 +1639,18 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
         # One aggregated event per analyzed asset.  The JS analyzer already knew
         # these routes; v0.17.1 makes that knowledge visible to the hunter instead
         # of silently adding rows to Resources.
-        sensitive_tokens = (
-            "admin", "internal", "manage", "management", "approve", "approval",
-            "audit", "export", "delete", "role", "permission", "privilege",
-            "debug", "ops", "feature", "moderation", "staff", "backoffice",
-        )
+        js_detector=hunter.detector_settings("js_sensitive_route", conn)
+        sensitive_tokens=tuple(x.lower() for x in hunter.detector_rule_list("js_sensitive_route", "path_tokens", conn))
+        ignore_tokens=tuple(x.lower() for x in hunter.detector_rule_list("js_sensitive_route", "ignore_tokens", conn))
+        only_new_routes=hunter.detector_rule_bool("js_sensitive_route", "only_new_routes", conn, False)
         sensitive_urls = []
+        new_url_set=set(new_urls)
         for candidate in discovered_urls:
+            if only_new_routes and candidate not in new_url_set:
+                continue
             low_path = (urllib.parse.urlsplit(candidate).path or "/").lower()
+            if ignore_tokens and any(tok in low_path for tok in ignore_tokens):
+                continue
             if any(tok in low_path for tok in sensitive_tokens):
                 sensitive_urls.append(candidate)
 
@@ -1607,7 +1681,7 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
                 emit=True,
             )
 
-        if sensitive_urls:
+        if sensitive_urls and js_detector["enabled"]:
             lead_result = hunter.upsert_lead(
                 conn,
                 lead_key=f"js_sensitive_routes:{asset_id}:{sha[:16]}",
@@ -2737,21 +2811,49 @@ def targets_save(data: dict) -> None:
     TARGETS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def register_target(domain: str, workspace: Path, make_current: bool = True) -> str:
-    domain = domain.strip().lower().rstrip(".")
-    key = target_key(domain)
+def register_target(domain: str, workspace: Path, make_current: bool = True, *, name: str | None = None, scopes: Iterable[str] | None = None) -> str:
+    domain = (normalize_scope(domain) or "").strip()
+    initial_roots = normalize_scopes(scopes, domain)
+    if not initial_roots:
+        raise ValueError("El proyecto necesita al menos un scope")
+    domain = domain or initial_roots[0]
+    key = target_key(name or domain)
     if not key:
-        raise ValueError("Target inválido")
+        raise ValueError("Proyecto inválido")
     workspace = workspace.expanduser()
     data = targets_load()
-    data.setdefault("targets", {})[key] = {"domain": domain, "workspace": str(workspace)}
+    existing = data.setdefault("targets", {}).get(key, {})
+    roots = normalize_scopes(scopes if scopes is not None else existing.get("scopes"), domain)
+    display_name = str(name if name is not None else existing.get("name") or domain).strip()[:120]
+    data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
     if make_current:
         data["last_target"] = key
     targets_save(data)
     if make_current:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps({"domain": domain, "workspace": str(workspace)}, indent=2) + "\n", encoding="utf-8")
+        CONFIG_PATH.write_text(json.dumps(data["targets"][key], indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return key
+
+
+def update_target_project(key: str, *, name: str | None = None, scopes: Iterable[str] | None = None) -> dict:
+    data = targets_load()
+    target = data.get("targets", {}).get(key)
+    if not isinstance(target, dict):
+        raise KeyError(key)
+    roots = normalize_scopes(scopes if scopes is not None else target.get("scopes"), target.get("domain"))
+    if not roots:
+        raise ValueError("El proyecto necesita al menos un scope")
+    target["domain"] = normalize_scope(target.get("domain")) or roots[0]
+    target["name"] = str(name if name is not None else target.get("name") or target["domain"]).strip()[:120]
+    target["scopes"] = roots
+    data["targets"][key] = target
+    targets_save(data)
+    workspace = Path(str(target.get("workspace") or "")).expanduser()
+    ensure_workspace(workspace, target["domain"], scopes=roots, project_name=target["name"])
+    if data.get("last_target") == key:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(target, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return dict(target)
 
 
 def set_current_target(key: str) -> None:
@@ -2762,20 +2864,27 @@ def set_current_target(key: str) -> None:
     data["last_target"] = key
     targets_save(data)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(target, indent=2) + "\n", encoding="utf-8")
+    CONFIG_PATH.write_text(json.dumps(target, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def get_target(key: str) -> dict | None:
     target = targets_load().get("targets", {}).get(key)
-    return dict(target) if isinstance(target, dict) else None
+    if not isinstance(target, dict):
+        return None
+    out = dict(target)
+    out.setdefault("name", out.get("domain", key))
+    out["scopes"] = normalize_scopes(out.get("scopes") if isinstance(out.get("scopes"), list) else [], out.get("domain"))
+    return out
 
 
 def list_targets() -> list[dict]:
     data = targets_load()
     current = data.get("last_target")
     result = []
-    for key, target in sorted(data.get("targets", {}).items(), key=lambda item: item[1].get("domain", item[0])):
-        result.append({"key": key, "domain": target.get("domain", key), "workspace": target.get("workspace", ""), "current": key == current})
+    for key, target in sorted(data.get("targets", {}).items(), key=lambda item: str(item[1].get("name") or item[1].get("domain") or item[0]).lower()):
+        domain = target.get("domain", key)
+        scopes = normalize_scopes(target.get("scopes") if isinstance(target.get("scopes"), list) else [], domain)
+        result.append({"key": key, "name": target.get("name") or domain, "domain": domain, "scopes": scopes, "workspace": target.get("workspace", ""), "current": key == current})
     return result
 
 

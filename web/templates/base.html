@@ -20,10 +20,10 @@
       <a class="{% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings">Ajustes</a>
     </nav>
     <div class="target-switch-wrap">
-      <label for="target-switch">Target</label>
+      <label for="target-switch">Proyecto</label>
       <select id="target-switch" data-target-switch aria-label="Cambiar target">
         {% for t in targets %}
-          <option value="/t/{{ t.key }}/" {% if t.key==target_key %}selected{% endif %}>{{ t.domain }}</option>
+          <option value="/t/{{ t.key }}/" {% if t.key==target_key %}selected{% endif %}>{{ t.name or t.domain }}</option>
         {% endfor %}
       </select>
     </div>
@@ -34,7 +34,7 @@
   <main class="page app-main">
     {% block content %}{% endblock %}
   </main>
-  <footer class="footer"><span>{{ domain }}</span><span>Espacio local · {{ workspace }}</span></footer>
+  <footer class="footer"><span>{{ project.name if project else domain }}</span><span>Espacio local · {{ workspace }}</span></footer>
   <script src="/static/app.js?v={{ version }}"></script>
 </body>
 </html>

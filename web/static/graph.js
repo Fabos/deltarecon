@@ -12,6 +12,7 @@
   const leadPriorityWrap = root.querySelector('[data-graph-lead-priorities]');
   const empty = root.querySelector('[data-graph-empty]');
   const routesWrap = root.querySelector('[data-graph-routes]');
+  const routePanel = root.querySelector('.graph-route-panel');
   const statusEl = root.querySelector('[data-graph-layout-status]');
   const scopeStatusEl = root.querySelector('[data-graph-scope-status]');
   const api = root.dataset.api;
@@ -24,7 +25,7 @@
 
   const typeOrder = ['source','target','host','javascript','resource','operation','cluster','request','observation','lead','finding','external'];
   const typeLabel = {
-    source:'Fuentes', target:'Target', host:'Hosts', javascript:'JavaScript', resource:'Recursos',
+    source:'Fuentes', target:'Proyecto', host:'Hosts', javascript:'JavaScript', resource:'Recursos',
     operation:'Métodos', cluster:'Grupos', request:'Solicitudes', observation:'Observaciones',
     lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
   };
@@ -612,6 +613,9 @@
   function setPreset(next,button){
     preset=next;selected=null;expandedClusters=new Set();
     root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===button));
+    if(routePanel) routePanel.hidden = !['interesting','attack'].includes(next);
+    const perspectiveCopy={surface:'Superficie · ¿qué existe?',untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · ¿qué observé realmente?',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista completa'};
+    if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';
     updateLeadFilterVisibility();
     detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';applyFilters({fitAfter:true});renderRoutes();
   }
@@ -757,5 +761,14 @@
   });
 
   const initialFocus=new URLSearchParams(window.location.search).get('focus');
-  load(initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:null).then(()=>{if(initialFocus){const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}}});
+  if(routePanel) routePanel.hidden=true;
+  load(initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:null).then(()=>{
+    if(initialFocus){
+      const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);
+      if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}
+    }else if((graph.routes||[]).length){
+      const btn=root.querySelector('[data-graph-preset="attack"]');
+      if(btn)setPreset('attack',btn);
+    }
+  });
 })();

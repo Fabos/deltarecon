@@ -414,7 +414,7 @@ class _ScriptParser(HTMLParser):
             self.scripts.append(src)
 
 
-def discover_js(hostname: str, domain: str, *, timeout: int = 25) -> dict[str, Any]:
+def discover_js(hostname: str, domain: str, *, scopes: Iterable[str] | None = None, timeout: int = 25) -> dict[str, Any]:
     errors: list[str] = []
     for scheme in ("https", "http"):
         base = f"{scheme}://{hostname}/"
@@ -428,7 +428,8 @@ def discover_js(hostname: str, domain: str, *, timeout: int = 25) -> dict[str, A
             external: list[str] = []
             for url in urls:
                 host = urllib.parse.urlsplit(url).hostname or ""
-                if host == domain or host.endswith("." + domain):
+                roots=[str(x).strip().lower().rstrip('.') for x in (scopes or [domain]) if str(x).strip()]
+                if any(host == root or host.endswith("." + root) for root in roots):
                     in_scope.append(url)
                 else:
                     external.append(url)
@@ -535,7 +536,7 @@ def redact_sensitive_literals(text: str) -> str:
     return out
 
 
-def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int = 120) -> dict[str, Any]:
+def analyze_js_text(text: str, base_url: str, domain: str, *, scopes: Iterable[str] | None = None, max_contexts: int = 120) -> dict[str, Any]:
     absolute = sorted(set(m.group("url").rstrip(",);]") for m in ABS_URL_RE.finditer(text)))
     relative = sorted(set(m.group("path") for m in REL_PATH_RE.finditer(text)))
     source_maps = list(dict.fromkeys(m.group(1).strip().strip('"\'') for m in SOURCEMAP_RE.finditer(text)))
@@ -580,7 +581,8 @@ def analyze_js_text(text: str, base_url: str, domain: str, *, max_contexts: int 
             websocket_urls.append(url)
             continue
         host = parsed.hostname or ""
-        if host == domain or host.endswith("." + domain):
+        roots=[str(x).strip().lower().rstrip('.') for x in (scopes or [domain]) if str(x).strip()]
+        if any(host == root or host.endswith("." + root) for root in roots):
             in_scope_urls.append(url)
         else:
             external_urls.append(url)

@@ -24,6 +24,26 @@
 
 # Negro Recon — Roadmap posterior a v0.9.0
 
+## Implementado en v0.19.0
+
+- Knowledge Base de detectores guiada por aprendizaje;
+- reglas exactas, sufijos/patrones, ubicaciones, condiciones y exclusiones visibles;
+- herencia `built-in → biblioteca personal → proyecto`;
+- procedencia de cada regla (`Negro`, `personal`, `proyecto`);
+- evidencia `rule_match` para explicar exactamente por qué nació una hipótesis;
+- exclusiones por proyecto sin borrar conocimiento global;
+- configuración de detectores sin presets opacos de sensibilidad.
+
+## Implementado en v0.18.0
+
+- Proyecto → múltiples scopes con un solo workspace;
+- auto-routing de Burp por scope más específico;
+- detectores configurables por proyecto (base sobre la que v0.19 añade reglas transparentes);
+- reducción/limpieza de CORS first-party;
+- mapa de investigación más grande y perspectivas orientadas a preguntas;
+- siguientes pasos integrados al mapa;
+- JS cross-scope → Resources/relaciones/notificaciones.
+
 ## Implementado en el Hunter Intelligence MVP
 
 - policy profiles;

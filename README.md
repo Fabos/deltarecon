@@ -1,4 +1,18 @@
-# Negro Recon 🐕 — v0.17.1
+# Negro Recon 🐕 — v0.19.0
+
+## v0.19.0 — Guided Rule Knowledge Base
+
+Negro reemplaza la sensibilidad abstracta de detectores por un **motor de reglas transparente, editable e heredable**. Cada detector enseña primero la vulnerabilidad —qué es, cómo aparece, qué observa Negro, falsos positivos y cómo validarla manualmente— y después expone exactamente los nombres, patrones, ubicaciones, condiciones y exclusiones que generan sus señales.
+
+La resolución de reglas sigue `Negro built-in → Biblioteca personal → Proyecto`: puedes enseñar a Negro términos como `memberId`, heredarlos en futuros proyectos y excluirlos sólo donde generen ruido. Las hipótesis guardan además **qué regla coincidió** (`query.memberId`, `exact:memberId`, UUID en path, etc.) para poder explicar por qué nacieron y volver desde la hipótesis al editor del detector. No se promueven reglas automáticamente por resultados; el investigador conserva el control sobre qué conocimiento pasa a su biblioteca personal.
+
+Consulta `UPDATE-v0.19.0.md`.
+
+## v0.18.0 — Projects, Detector Lab & Investigation Map
+
+Negro agrupa una prueba como **Proyecto → múltiples scopes**, enruta Burp/JS/hipótesis al mismo workspace y usa ese contexto para reducir falsos positivos first-party como CORS entre `app.*` y `api.*`. Ajustes incorpora un **Detector Lab por proyecto** con on/off, sensibilidad Estricto/Equilibrado/Permisivo, explicación del trigger y métricas de ruido. El mapa ocupa mejor el viewport y separa perspectivas por pregunta: qué existe, qué falta revisar, dónde hay señales, qué observó Burp y qué conviene probar ahora.
+
+Consulta `UPDATE-v0.18.0.md`.
 
 ## v0.17.1 — Signal UX + JavaScript Surface
 
