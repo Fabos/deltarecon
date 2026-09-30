@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Smart Diff · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">SMART DIFF</p><h1>Compara dos exchanges</h1><p class="muted">Prioriza IDs, ownership, roles, estados, precios y otros campos de negocio. Headers sensibles se muestran enmascarados.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/parameters">← Parámetros</a></div>
+</section>
+<section class="panel">
+  <form class="diff-form" method="get"><label>Exchange A<input name="a" type="number" min="1" value="{{ a }}" required></label><label>Exchange B<input name="b" type="number" min="1" value="{{ b }}" required></label><button class="button" type="submit">Comparar</button></form>
+  {% if diff_error %}<div class="callout warning">{{ diff_error }}</div>{% endif %}
+</section>
+{% if diff %}
+<section class="diff-summary-grid">
+  <a class="panel" href="{{ target_base }}/resource/{{ diff.a.resource_id }}?exchange={{ diff.a.id }}#exchange-{{ diff.a.id }}"><p class="eyebrow">A · #{{ diff.a.id }}</p><h3>{{ diff.a.method }} <code>{{ diff.a.path }}</code></h3><small>{{ diff.a.host }} · HTTP {{ diff.a.status }}</small></a>
+  <a class="panel" href="{{ target_base }}/resource/{{ diff.b.resource_id }}?exchange={{ diff.b.id }}#exchange-{{ diff.b.id }}"><p class="eyebrow">B · #{{ diff.b.id }}</p><h3>{{ diff.b.method }} <code>{{ diff.b.path }}</code></h3><small>{{ diff.b.host }} · HTTP {{ diff.b.status }}</small></a>
+</section>
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">CAMBIOS</p><h2>{{ diff.changes|length }} diferencias</h2></div><span>{{ diff.business_changes }} de negocio · {{ diff.other_changes }} otras</span></div>
+  <div class="diff-list">
+  {% for c in diff.changes %}
+    <div class="diff-row {% if c.business %}business-diff{% endif %}"><div><span class="badge">{{ c.surface }}</span>{% if c.business %}<span class="badge">campo de negocio</span>{% endif %}<code>{{ c.key }}</code></div><div class="diff-values"><div><small>A</small><code>{{ c.a if c.a != '' else '∅' }}</code></div><div><small>B</small><code>{{ c.b if c.b != '' else '∅' }}</code></div></div></div>
+  {% else %}<p class="empty">No encontré diferencias estructuradas.</p>{% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

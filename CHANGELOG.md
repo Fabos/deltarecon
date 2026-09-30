@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.22.0
+
+- Search Everything usa un índice FTS5 **trigram** adicional: texto libre y filtros de contenido encuentran fragmentos dentro de valores mayores.
+- `1223` puede encontrar `3001112233`; `response:AIza` puede localizar una key más larga sin conocerla completa.
+- La ayuda de Buscar se simplifica a documentación de uso normal, breve y directa.
+- Añade **Parameter Explorer** con agrupación por nombre, superficie, host, recurso y exchange.
+- Añade extracción de IDs probables en path y campos escalares de response JSON, además de los parámetros de request ya existentes.
+- Añade **Follow Value** por hash exacto; los valores sensibles siguen enmascarados.
+- Añade **Find Related** con score de cercanía explicable, nunca usado como severidad.
+- Añade **Smart Diff** para dos exchanges, priorizando campos de negocio y enmascarando headers sensibles.
+- Añade backfill explícito `Parámetros → Analizar historial`; también reconstruye Search para mantener ambos índices alineados.
+- Mantiene compatibilidad con **Negro Burp Bridge v0.20.3**; no requiere cambiar el JAR.
+
 ## v0.21.0
 
 - Añade **Search Everything** sobre SQLite FTS5 para consultar URL/path, headers, cookies, parámetros, request/response bodies, Signals, notas, Hipótesis IA, Investigaciones y Findings.

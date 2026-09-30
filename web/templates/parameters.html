@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Parámetros · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero parameter-hero">
+  <div>
+    <p class="eyebrow">PARAMETER EXPLORER · v0.22</p>
+    <h1>Parámetros observados</h1>
+    <p class="muted">Agrupa nombres y valores vistos en requests y responses para seguir objetos entre exchanges, recursos y hosts.</p>
+  </div>
+  <div class="page-actions">
+    <form action="{{ target_base }}/parameters/reindex" method="post" data-job-form data-job-label="Analizando parámetros históricos">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary" type="submit">↻ Analizar historial</button>
+    </form>
+    <a class="button ghost" href="{{ target_base }}/parameters/diff">Smart Diff</a>
+  </div>
+</section>
+
+<section class="metric-grid parameter-metrics">
+  <div class="metric"><b>{{ parameter_stats.names }}</b><span>nombres</span></div>
+  <div class="metric"><b>{{ parameter_stats.values }}</b><span>valores distintos</span></div>
+  <div class="metric"><b>{{ parameter_stats.observations }}</b><span>observaciones</span></div>
+  <div class="metric"><b>{{ parameter_stats.exchanges }}</b><span>exchanges cubiertos</span></div>
+</section>
+
+<section class="panel parameter-filter-panel">
+  <form class="parameter-filters" method="get">
+    <label><span>Nombre contiene</span><input name="q" value="{{ q }}" placeholder="owner, tenant, orderId…" autocomplete="off"></label>
+    <label><span>Superficie</span><select name="location"><option value="">Todas</option>{% for x in location_options %}<option value="{{ x }}" {% if location==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+    <label><span>Host contiene</span><input name="host" value="{{ host }}" placeholder="api.example.com"></label>
+    <button class="button" type="submit">Filtrar</button>
+  </form>
+  <p class="muted small">Los valores sensibles se indexan por hash y se muestran enmascarados. “Follow Value” compara el valor exacto sin exponerlo.</p>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">ÍNDICE</p><h2>{{ parameter_rows|length }} parámetros</h2></div><small>{% if parameter_stats.rebuilt_at %}Historial analizado {{ parameter_stats.rebuilt_at }}{% else %}El tráfico nuevo se indexa automáticamente; usa “Analizar historial” para capturas anteriores.{% endif %}</small></div>
+  <div class="parameter-table-wrap">
+    <table class="parameter-table">
+      <thead><tr><th>Parámetro</th><th>Superficies</th><th>Obs.</th><th>Valores</th><th>Exchanges</th><th>Recursos</th><th>Hosts</th></tr></thead>
+      <tbody>
+      {% for p in parameter_rows %}
+        <tr>
+          <td><a href="{{ target_base }}/parameters/{{ p.normalized_name }}"><code>{{ p.name }}</code><small>{{ p.normalized_name }}</small></a></td>
+          <td><span class="muted">{{ p.locations }}</span></td>
+          <td>{{ p.observations }}</td><td>{{ p.distinct_values }}</td><td>{{ p.exchanges }}</td><td>{{ p.resources }}</td><td>{{ p.hosts }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="empty">No hay parámetros con estos filtros.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

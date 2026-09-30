@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-SEARCH_SCHEMA_VERSION = "1"
+SEARCH_SCHEMA_VERSION = "2"
 
 
 def now_iso() -> str:
@@ -68,6 +68,26 @@ def init_schema(conn: sqlite3.Connection) -> None:
                content='',
                contentless_delete=1,
                tokenize='unicode61 remove_diacritics 2'
+           )"""
+    )
+    # Trigram FTS is the substring index. It makes a plain search such as
+    # `1223` match `3001112233`, and `AIza` match a longer API key, without
+    # scanning raw HTTP blobs with LIKE. The regular FTS table remains useful
+    # for very short (1-2 char) terms and normal token/phrase semantics.
+    conn.execute(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS search_trigram USING fts5(
+               all_text,
+               url_text,
+               headers_text,
+               cookies_text,
+               params_text,
+               request_text,
+               response_text,
+               signals_text,
+               notes_text,
+               content='',
+               contentless_delete=1,
+               tokenize='trigram'
            )"""
     )
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('search_schema_version',?)", (SEARCH_SCHEMA_VERSION,))
@@ -149,6 +169,7 @@ def _replace_doc(conn: sqlite3.Connection, meta: dict[str, Any], fields: dict[st
             ),
         )
         conn.execute("DELETE FROM search_fts WHERE rowid=?", (doc_id,))
+        conn.execute("DELETE FROM search_trigram WHERE rowid=?", (doc_id,))
     else:
         cur = conn.execute(
             """INSERT INTO search_documents(doc_key,entity_type,entity_id,exchange_id,resource_id,host_id,host,path,method,status,human_state,signal_kind,preview,updated_at)
@@ -160,14 +181,18 @@ def _replace_doc(conn: sqlite3.Connection, meta: dict[str, Any], fields: dict[st
             ),
         )
         doc_id = int(cur.lastrowid)
+    values = (
+        doc_id,
+        fields.get("all_text", ""), fields.get("url_text", ""), fields.get("headers_text", ""), fields.get("cookies_text", ""),
+        fields.get("params_text", ""), fields.get("request_text", ""), fields.get("response_text", ""), fields.get("signals_text", ""), fields.get("notes_text", ""),
+    )
     conn.execute(
         """INSERT INTO search_fts(rowid,all_text,url_text,headers_text,cookies_text,params_text,request_text,response_text,signals_text,notes_text)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (
-            doc_id,
-            fields.get("all_text", ""), fields.get("url_text", ""), fields.get("headers_text", ""), fields.get("cookies_text", ""),
-            fields.get("params_text", ""), fields.get("request_text", ""), fields.get("response_text", ""), fields.get("signals_text", ""), fields.get("notes_text", ""),
-        ),
+           VALUES(?,?,?,?,?,?,?,?,?,?)""", values,
+    )
+    conn.execute(
+        """INSERT INTO search_trigram(rowid,all_text,url_text,headers_text,cookies_text,params_text,request_text,response_text,signals_text,notes_text)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""", values,
     )
     return doc_id
 
@@ -301,6 +326,7 @@ def index_knowledge(conn: sqlite3.Connection) -> int:
 def rebuild_search_index(conn: sqlite3.Connection) -> dict[str, int]:
     init_schema(conn)
     conn.execute("DELETE FROM search_fts")
+    conn.execute("DELETE FROM search_trigram")
     conn.execute("DELETE FROM search_documents")
     hosts = [int(x["id"]) for x in conn.execute("SELECT id FROM hosts ORDER BY id").fetchall()]
     resources = [int(x["id"]) for x in conn.execute("SELECT id FROM resources ORDER BY id").fetchall()]
@@ -320,8 +346,17 @@ def search_stats(conn: sqlite3.Connection) -> dict[str, Any]:
     init_schema(conn)
     documents = int(conn.execute("SELECT COUNT(*) c FROM search_documents").fetchone()["c"] or 0)
     exchanges = int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0)
-    row = conn.execute("SELECT value FROM meta WHERE key='search_rebuilt_at'").fetchone()
-    return {"documents": documents, "http_exchanges": exchanges, "rebuilt_at": row["value"] if row else None}
+    trigram_documents = int(conn.execute("SELECT COUNT(*) c FROM search_trigram").fetchone()["c"] or 0)
+    rebuilt = conn.execute("SELECT value FROM meta WHERE key='search_rebuilt_at'").fetchone()
+    version = conn.execute("SELECT value FROM meta WHERE key='search_schema_version'").fetchone()
+    return {
+        "documents": documents,
+        "http_exchanges": exchanges,
+        "trigram_documents": trigram_documents,
+        "rebuilt_at": rebuilt["value"] if rebuilt else None,
+        "schema_version": version["value"] if version else None,
+        "needs_reindex": documents > 0 and trigram_documents < documents,
+    }
 
 
 FILTER_ALIASES = {
@@ -390,17 +425,45 @@ def _fts_expr(terms: Iterable[tuple[str, str]]) -> str:
     return " AND ".join(parts)
 
 
+def _is_trigram_term(value: str) -> bool:
+    # FTS5 trigram needs at least 3 unicode characters to constrain a MATCH.
+    # Spaces/punctuation still count because the trigram tokenizer indexes them.
+    return len(str(value or "")) >= 3
+
+
 def search(conn: sqlite3.Connection, query: str, limit: int = 100) -> dict[str, Any]:
+    """Search structured metadata plus substring-capable local FTS indexes.
+
+    Free text and text-field filters use trigram matching by default for terms of
+    three or more characters, so a fragment can be found inside a larger value.
+    Example: `1223` matches `3001112233`; `response:AIza` matches a longer key.
+    One/two-character terms fall back to the regular unicode token index.
+    """
     init_schema(conn)
     parsed = parse_query(query)
     if parsed.errors:
         return {"query": query, "parsed": parsed, "results": [], "error": "; ".join(parsed.errors), "count": 0}
-    where = []
+
+    tri_terms = [(k, v) for k, v in parsed.text_terms if _is_trigram_term(v)]
+    word_terms = [(k, v) for k, v in parsed.text_terms if not _is_trigram_term(v)]
+    tri_fts = _fts_expr(tri_terms)
+    word_fts = _fts_expr(word_terms)
+
+    joins: list[str] = []
+    where: list[str] = []
     params: list[Any] = []
-    fts = _fts_expr(parsed.text_terms)
-    if fts:
+    rank_parts: list[str] = []
+    if tri_fts:
+        joins.append("JOIN search_trigram st ON st.rowid=d.id")
+        where.append("search_trigram MATCH ?")
+        params.append(tri_fts)
+        rank_parts.append("bm25(search_trigram,1.0,1.2,0.7,0.8,1.0,1.0,1.0,1.1,0.8)")
+    if word_fts:
+        joins.append("JOIN search_fts sf ON sf.rowid=d.id")
         where.append("search_fts MATCH ?")
-        params.append(fts)
+        params.append(word_fts)
+        rank_parts.append("bm25(search_fts,1.0,1.2,0.7,0.8,1.0,1.0,1.0,1.1,0.8)")
+
     for key, values in parsed.filters.items():
         if not values:
             continue
@@ -418,15 +481,23 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 100) -> dict[str, 
                 clauses.append("lower(COALESCE(d.entity_type,'')) = ?"); params.append(value.lower())
         if clauses:
             where.append("(" + " OR ".join(clauses) + ")")
-    sql = """SELECT d.*, bm25(search_fts, 1.0,1.2,0.7,0.8,1.0,1.0,1.0,1.1,0.8) AS rank
-             FROM search_documents d JOIN search_fts ON search_fts.rowid=d.id"""
+
+    rank_sql = " + ".join(rank_parts) if rank_parts else "0.0"
+    sql = f"SELECT d.*, ({rank_sql}) AS rank FROM search_documents d {' '.join(joins)}"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY rank ASC, d.updated_at DESC LIMIT ?"
     params.append(max(1, min(int(limit), 500)))
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
-    return {"query": query, "parsed": parsed, "results": rows, "error": None, "count": len(rows), "fts": fts}
-
+    return {
+        "query": query,
+        "parsed": parsed,
+        "results": rows,
+        "error": None,
+        "count": len(rows),
+        "fts": tri_fts or word_fts,
+        "match_mode": "substring" if tri_fts else "token",
+    }
 
 def save_search(conn: sqlite3.Connection, name: str, query: str) -> int:
     init_schema(conn)

@@ -1659,6 +1659,14 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     request_ct = str(row["request_content_type"] or req_headers.get("content-type") or "")
     response_ct = str(row["response_content_type"] or resp_headers.get("content-type") or "")
     params = _request_parameters(req_head, req_body, request_ct, row["query_json"])
+    # v0.22: response scalar fields also become parameter observations so Follow
+    # Value can trace a business object from a response into later requests.
+    try:
+        import negro_parameters as parameter_tools
+        params.extend(parameter_tools._path_parameters(req_head))
+        response_params = parameter_tools._response_parameters(resp_body, response_ct)
+    except Exception:
+        response_params = []
     pmap: dict[str, list[dict[str, str]]] = {}
     for p in params:
         pmap.setdefault(p["name"].lower(), []).append(p)
@@ -1667,7 +1675,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     new_notifications: list[int] = []
     rid, oid, hid = int(row["resource_id"]), int(row["operation_id"]), int(row["host_id"])
     method, path, url = str(row["method"]), str(row["path"]), str(row["url"])
-    _persist_parameter_observations(conn, exchange_id=exchange_id, operation_id=oid, resource_id=rid, params=params)
+    _persist_parameter_observations(conn, exchange_id=exchange_id, operation_id=oid, resource_id=rid, params=params + response_params)
 
     def notify(*, kind: str, key: str, severity: str, title: str, message: str, data: dict[str, Any]) -> None:
         nid, created = _upsert_notification(

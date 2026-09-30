@@ -3,14 +3,14 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH EVERYTHING · v0.21</p>
-    <h1>Busca como investigador, no como tabla</h1>
-    <p class="muted">Consulta tráfico Burp, hosts, recursos, headers, cookies, parámetros, bodies, Signals, notas, hipótesis, investigaciones y Findings desde un solo lugar.</p>
+    <p class="eyebrow">SEARCH · v0.22</p>
+    <h1>Buscar en todo el proyecto</h1>
+    <p class="muted">Busca texto completo o fragmentos dentro de tráfico Burp, hosts, recursos, headers, cookies, parámetros, bodies, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
   <div class="page-actions">
-    <form action="{{ target_base }}/search/reindex" method="post" data-job-form data-job-label="Indexando historial">
+    <form action="{{ target_base }}/search/reindex" method="post" data-job-form data-job-label="Actualizando índice">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <button class="button secondary" type="submit">↻ Indexar historial</button>
+      <button class="button secondary" type="submit">↻ Actualizar índice</button>
     </form>
   </div>
 </section>
@@ -28,13 +28,15 @@
     <span><b>{{ search_stats.http_exchanges }}</b> exchanges HTTP</span>
     <span>{% if search_stats.rebuilt_at %}Historial indexado {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
   </div>
+  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar índice” una vez para habilitar búsqueda parcial sobre todo el historial existente.</div>{% endif %}
   {% if search_result.error %}<div class="callout warning">{{ search_result.error }}</div>{% endif %}
 </section>
 
 <section class="search-layout">
   <aside class="panel search-help">
-    <p class="eyebrow">APRENDE A BUSCAR COMO HACKER</p>
-    <h2>Sintaxis</h2>
+    <p class="eyebrow">AYUDA</p>
+    <h2>Cómo buscar</h2>
+    <div class="callout search-note"><b>Texto parcial por defecto.</b> <code>1223</code> puede encontrar <code>3001112233</code>; <code>response:AIza</code> busca ese fragmento dentro de responses.</div>
     <div class="search-syntax">
       <code>host:api.example.com</code><span>acota host</span>
       <code>method:POST</code><span>método HTTP</span>
@@ -50,7 +52,7 @@
       <code>path:/orders/</code><span>URL/path</span>
       <code>type:investigation</code><span>tipo de entidad</span>
     </div>
-    <h3>Ejemplos útiles</h3>
+    <h3>Ejemplos</h3>
     <div class="search-example-list">
       <a href="{{ target_base }}/search?q={{ 'param:userId method:POST'|urlencode }}"><code>param:userId method:POST</code><span>¿Dónde controla el cliente un userId en POST?</span></a>
       <a href="{{ target_base }}/search?q={{ 'signal:authorization status:200'|urlencode }}"><code>signal:authorization status:200</code><span>Signals de autorización con respuestas exitosas.</span></a>
@@ -82,20 +84,20 @@
         <div class="search-result-meta"><span>{{ r.doc_key }}</span>{% if r.exchange_id %}<span>exchange #{{ r.exchange_id }}</span>{% endif %}</div>
       </a>
       {% else %}
-      <div class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba una palabra simple, quita filtros o indexa el historial si acabas de actualizar a v0.21.</span></div>
+      <div class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba otro fragmento, quita filtros o actualiza el índice si acabas de instalar v0.22.</span></div>
       {% endfor %}
     </section>
     {% else %}
     <section class="panel search-onboarding">
-      <p class="eyebrow">EMPIEZA POR UNA PREGUNTA</p>
-      <h2>No busques “vulnerabilidades”; busca evidencia.</h2>
-      <p>Ejemplo: después de estudiar OAuth puedes buscar <code>redirect_uri</code>, <code>client_id</code> o <code>state</code> sobre todo el tráfico histórico y volver a recursos que antes no sabías evaluar.</p>
+      <p class="eyebrow">BÚSQUEDA</p>
+      <h2>Escribe una palabra, fragmento o filtro</h2>
+      <p>La búsqueda por texto es parcial: <code>1223</code> encuentra <code>3001112233</code> y <code>AIza</code> encuentra cadenas más largas que contengan ese fragmento. Combina filtros cuando necesites acotar.</p>
     </section>
     {% endif %}
 
     {% if saved_searches %}
     <section class="panel saved-searches">
-      <div class="panel-head"><div><p class="eyebrow">SAVED SEARCHES</p><h2>Búsquedas que quieres repetir</h2></div><span>{{ saved_searches|length }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">BÚSQUEDAS GUARDADAS</p><h2>Consultas que quieres repetir</h2></div><span>{{ saved_searches|length }}</span></div>
       <div class="saved-search-list">
         {% for s in saved_searches %}
         <div class="saved-search-row"><a href="{{ target_base }}/search?q={{ s.query|urlencode }}"><b>{{ s.name }}</b><code>{{ s.query }}</code></a><form action="{{ target_base }}/search/saved/{{ s.id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" type="submit" title="Eliminar búsqueda guardada">×</button></form></div>

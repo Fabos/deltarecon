@@ -174,6 +174,20 @@ def _rebuild_search_index(paths: dict[str, Path]) -> dict[str, int]:
         return search_index.rebuild_search_index(conn)
 
 
+def _rebuild_parameter_index(paths: dict[str, Path]) -> dict[str, int]:
+    import negro_parameters as parameter_tools
+    with _db(paths) as conn:
+        result = parameter_tools.rebuild_parameter_observations(conn)
+        # Parameter text participates in Search Everything, so refresh the search
+        # index once the historical extraction is complete.
+        try:
+            import negro_search as search_index
+            search_index.rebuild_search_index(conn)
+        except Exception as exc:
+            print(f"[parameter-index] search refresh error={type(exc).__name__}: {str(exc)[:160]}")
+        return result
+
+
 def _refresh_search(conn, *, host_id: int | None = None, resource_id: int | None = None, exchange_id: int | None = None, knowledge: bool = False) -> None:
     try:
         import negro_search as search_index
@@ -2419,6 +2433,67 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             search_index.delete_saved_search(conn,search_id)
         return RedirectResponse(url=f"/t/{target_key}/search",status_code=303)
+
+    @app.get("/t/{target_key}/parameters", response_class=HTMLResponse)
+    def parameters_page(request: Request, target_key: str, q: str = "", location: str = "", host: str = ""):
+        import negro_parameters as parameter_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            parameter_stats = parameter_tools.stats(conn)
+            rows = parameter_tools.list_parameters(conn, q=q, location=location, host=host)
+            location_options = parameter_tools.locations(conn)
+        return render(request, "parameters.html", target_key, domain, workspace, q=q, location=location, host=host,
+                      parameter_stats=parameter_stats, parameter_rows=rows, location_options=location_options)
+
+    @app.post("/t/{target_key}/parameters/reindex", response_class=JSONResponse)
+    def parameters_reindex(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        job_id = _start_job("Analizar historial de parámetros", target_key, _rebuild_parameter_index, paths)
+        return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": f"/t/{target_key}/parameters"})
+
+    @app.get("/t/{target_key}/parameters/follow/{observation_id}", response_class=HTMLResponse)
+    def parameter_follow_page(request: Request, target_key: str, observation_id: int):
+        import negro_parameters as parameter_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = parameter_tools.follow_observation(conn, observation_id)
+            if not data:
+                raise HTTPException(status_code=404, detail="Observación de parámetro no encontrada")
+        return render(request, "parameter_follow.html", target_key, domain, workspace, follow=data)
+
+    @app.get("/t/{target_key}/parameters/related/{exchange_id}", response_class=HTMLResponse)
+    def related_exchange_page(request: Request, target_key: str, exchange_id: int):
+        import negro_parameters as parameter_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = parameter_tools.related_exchanges(conn, exchange_id)
+            if not data:
+                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+        return render(request, "related.html", target_key, domain, workspace, related=data)
+
+    @app.get("/t/{target_key}/parameters/diff", response_class=HTMLResponse)
+    def smart_diff_page(request: Request, target_key: str, a: int | None = None, b: int | None = None):
+        import negro_parameters as parameter_tools
+        domain, workspace, paths = _target_context(target_key)
+        result = None
+        error = None
+        if a is not None and b is not None:
+            with _db(paths) as conn:
+                result = parameter_tools.smart_diff(conn, int(a), int(b))
+            if result is None:
+                error = "No pude encontrar uno de los exchanges."
+        return render(request, "smart_diff.html", target_key, domain, workspace, a=a or "", b=b or "", diff=result, diff_error=error)
+
+    @app.get("/t/{target_key}/parameters/{normalized_name}", response_class=HTMLResponse)
+    def parameter_detail_page(request: Request, target_key: str, normalized_name: str):
+        import negro_parameters as parameter_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            detail = parameter_tools.parameter_detail(conn, normalized_name)
+            if not detail:
+                raise HTTPException(status_code=404, detail="Parámetro no encontrado")
+        return render(request, "parameter_detail.html", target_key, domain, workspace, detail=detail)
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):

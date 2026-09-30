@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.21.0
+# Negro Recon 🐕 — v0.22.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende ser un vulnerability scanner ni hacer el hacking por el usuario.
 
@@ -12,35 +12,35 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis que considera valiosa.
 - **Estados humanos / Findings**: siguen bajo control del hacker.
 
-## v0.21.0 — Search Everything + mapa observable
+## v0.22.0 — búsqueda parcial + Parameter Explorer
 
-La nueva vista **Buscar** permite consultar la memoria acumulada de Negro sin recorrer miles de requests manualmente. Usa SQLite FTS5 e índices estructurados sobre tráfico, metadata y conocimiento.
+### Buscar
 
-Ejemplos:
+La búsqueda libre ahora es **parcial por defecto** para fragmentos de 3 o más caracteres. No necesitas conocer el valor completo:
 
 ```text
-redirect_uri
-host:api.example.com method:POST
-status:403
-state:learning
-signal:authorization
-param:userId
-cookie:session
-header:X-Tenant-Id
-response:ownerId
-request:redirect_uri
-body:"roleId"
-path:/orders/
-type:investigation
+1223              # encuentra 3001112233
+AIza              # encuentra una Google API key más larga
+response:owner    # fragmento dentro de responses
+param:tenant      # fragmento dentro de parámetros
 ```
 
-La página incorpora ayuda **“Aprende a buscar como hacker”**, ejemplos ejecutables y **Saved Searches**. Al actualizar un workspace anterior, pulsa una vez **Indexar historial**; el tráfico Burp nuevo se indexa durante la ingesta.
+Los filtros estructurados siguen disponibles: `host:`, `method:`, `status:`, `state:`, `signal:`, `param:`, `cookie:`, `header:`, `body:`, `request:`, `response:`, `path:`, `type:` y `contains:`. Se pueden combinar. La ayuda integrada en **Buscar** resume la sintaxis y ejemplos sin convertirla en una guía de hacking.
 
-El mapa también cambia:
+Al actualizar desde v0.21, pulsa una vez **Actualizar índice** para construir el índice de fragmentos sobre el historial ya guardado. El tráfico nuevo se indexa automáticamente.
 
-- los proyectos pequeños materializan relaciones `Target → Host → Resource → Operation` aun sin Hipótesis IA;
-- la perspectiva **Burp** carga una proyección propia de exchanges observados, por lo que ya no depende del grafo superficial ni de que exista una hipótesis;
-- generar una Hipótesis IA ya no cambia automáticamente la perspectiva inicial del mapa.
+### Parameter Explorer
+
+La nueva pestaña **Parámetros** agrega cuatro herramientas determinísticas:
+
+- **Parameter Explorer**: agrupa nombres observados en query, path, JSON/form de request y JSON de response.
+- **Follow Value**: sigue el mismo valor exacto por hash entre exchanges, superficies, recursos y hosts. Los valores sensibles permanecen enmascarados.
+- **Find Related**: propone exchanges cercanos por valores/nombres compartidos, mismo recurso o mismo host y explica cada relación. El score es cercanía, no severidad.
+- **Smart Diff**: compara dos exchanges y prioriza diferencias de negocio como IDs, ownership, roles, estados, precios, cupones y tenant. Headers sensibles se muestran enmascarados.
+
+Para workspaces viejos pulsa una vez **Parámetros → Analizar historial** para extraer parámetros también de capturas anteriores.
+
+El mapa mantiene las correcciones de v0.21: inventario observable antes de IA y perspectiva Burp independiente de las hipótesis.
 
 ## Arranque
 
@@ -52,7 +52,7 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión al pasar de Negro v0.20.3 a v0.21.0.** La aplicación v0.21.0 sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+**No necesitas actualizar la extensión al pasar de Negro v0.20.3 a v0.22.0.** La aplicación v0.22.0 sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
 
 Si necesitas recompilarla:
 

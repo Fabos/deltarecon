@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.21.0
+# Negro Recon — Metodología v0.22.0
 
 ## Modelo mental: Rule → Signal → Hipótesis IA → Investigación
 
@@ -10,11 +10,18 @@ Negro no intenta reemplazar Burp ni decidir vulnerabilidades por el hacker.
 4. **Investigación**: línea de trabajo creada/promovida por decisión humana. Puede agrupar múltiples Signals, exchanges, recursos y notas.
 5. **Finding**: vulnerabilidad confirmada por el humano. La IA y las Rules nunca lo asignan automáticamente.
 
-## Search Everything: buscar evidencia, no “vulnerabilidades”
+## Buscar
 
-Search permite volver sobre tráfico histórico cuando aprendes una técnica nueva o quieres correlacionar una superficie grande. La búsqueda se apoya en SQLite FTS5 y filtros estructurados.
+La búsqueda es local y sirve para localizar texto o fragmentos en la memoria de Negro. Para términos de 3 o más caracteres usa un índice trigram, por lo que una consulta parcial puede coincidir dentro de un valor mayor:
 
-Sintaxis principal:
+```text
+1223
+AIza
+response:ownerId
+param:tenant
+```
+
+Filtros disponibles:
 
 ```text
 host:api.example.com
@@ -25,23 +32,26 @@ signal:authorization
 param:userId
 cookie:session
 header:X-Tenant-Id
-body:"ownerId"
-request:"redirect_uri"
-response:"roleId"
+body:ownerId
+request:redirect_uri
+response:roleId
 path:/orders/
 type:investigation
 contains:redirect_uri
 ```
 
-Los filtros se pueden combinar, por ejemplo:
+Los filtros pueden combinarse. Saved Searches guarda la consulta, no cambia estados ni crea hallazgos.
 
-```text
-host:api.example.com method:POST param:userId status:200
-cookie:session response:ownerId
-signal:authorization status:200
-```
+## Parameter Explorer / Follow Value
 
-Una **Saved Search** sirve como pregunta repetible; no altera estado ni declara hallazgos.
+`parameter_observations` es una capa derivada de la evidencia HTTP. Extrae escalares de query, IDs probables del path, JSON/form del request y JSON del response. Cada observación guarda nombre normalizado, superficie, exchange, recurso, hash del valor y un preview; valores sensibles se enmascaran.
+
+- **Parameter Explorer** responde “¿dónde aparece este nombre?”.
+- **Follow Value** responde “¿dónde vuelve a aparecer exactamente este valor?”.
+- **Find Related** usa evidencia compartida para sugerir exchanges cercanos y explica los motivos.
+- **Smart Diff** compara dos exchanges y ordena primero campos de negocio; no declara vulnerabilidades.
+
+Esta capa será la base de Identity Contexts: antes de resolver identidades necesitamos saber dónde viajan `userId`, `accountId`, `ownerId`, `tenantId`, tokens y otros identificadores.
 
 ## Mapa
 

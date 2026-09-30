@@ -175,10 +175,20 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Mapa de proyectos pequeños con relaciones determinísticas antes de IA.
 - Perspectiva Burp con proyección real de exchanges observados, independiente de las Hipótesis IA.
 
-## Siguiente fase inmediata — v0.22 Parameter Explorer / Follow Value
+## Implementado en v0.22.0 — búsqueda parcial + Parameter Explorer
 
-- explorar parámetros normalizados por nombre, superficie, host y operación;
-- Follow Value para seguir un mismo valor/objeto entre requests, responses y hosts;
-- Find Related para descubrir recursos/exchanges cercanos por evidencia compartida;
-- Smart Diff para comparar requests/responses priorizando campos de negocio;
-- reutilizar esta capa como base para Identity Contexts en v0.23.
+- búsqueda por fragmentos con FTS5 trigram (`1223` encuentra `3001112233`, `AIza` encuentra cadenas mayores);
+- ayuda de búsqueda simplificada y documentación normal en README/Metodología;
+- Parameter Explorer por nombre, superficie, host y operación;
+- extracción histórica/nueva de query, IDs de path, request body y response JSON;
+- Follow Value por hash exacto con previews sensibles enmascarados;
+- Find Related con razones transparentes de correlación;
+- Smart Diff priorizando campos de negocio y enmascarando headers sensibles.
+
+## Siguiente fase inmediata — v0.23 Identity Contexts
+
+- separar Identity de Auth Material rotatorio;
+- resolvers configurables desde JWT claims, cookies, headers y endpoints `/me`;
+- asignación/aprendizaje de identidad siempre bajo control humano;
+- comparación entre identidades y Authorization Matrix basada sólo en tráfico observado;
+- reutilizar Parameter Explorer / Follow Value para resolver identificadores estables.
