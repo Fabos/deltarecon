@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.21.0
+
+- Añade **Search Everything** sobre SQLite FTS5 para consultar URL/path, headers, cookies, parámetros, request/response bodies, Signals, notas, Hipótesis IA, Investigaciones y Findings.
+- Incorpora filtros combinables `host:`, `method:`, `status:`, `state:`, `signal:`, `param:`, `cookie:`, `header:`, `body:`, `request:`, `response:`, `path:`, `type:` y `contains:`.
+- Añade **Saved Searches** y ayuda integrada “Aprende a buscar como hacker”.
+- Incluye **Indexar historial** para backfill de workspaces existentes; el tráfico Burp nuevo se indexa durante la ingesta.
+- Corrige el mapa para que proyectos pequeños muestren relaciones determinísticas antes de ejecutar IA.
+- Corrige la perspectiva **Burp** del mapa: ahora carga una proyección acotada de exchanges Burp reales en lugar de filtrar un overview que no contenía requests.
+- El mapa ya no cambia automáticamente a “Qué probar ahora” por el mero hecho de existir rutas de Hipótesis IA.
+- Las tarjetas de Hipótesis IA dejan de presentar “Alta/Media prioridad” como scoring arbitrario visible; muestran fuerza/cantidad de evidencia y costo de prueba.
+- Mantiene compatibilidad con **Negro Burp Bridge v0.20.3**; no es necesario actualizar la extensión para v0.21.0.
+- No cambia la arquitectura de DB: continúa SQLite local-first y usa FTS5 para búsqueda eficiente.
+
 ## v0.20.3
 
 - Consolida el modelo **Rule → Signal → Hipótesis IA → Investigación humana**.

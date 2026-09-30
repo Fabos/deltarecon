@@ -629,7 +629,29 @@
       detail.innerHTML=emptyDetail();
       search.value='';
       load(`${api}?scope=routes`).then(()=>{
+        preset='attack';
         if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy.attack;
+        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
+      });
+      return;
+    }
+    if(next==='burp' && String(graph.meta?.scope||'overview')!=='burp') {
+      detail.innerHTML=emptyDetail();
+      search.value='';
+      load(`${api}?scope=burp&exchanges=160`).then(()=>{
+        preset='burp';
+        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy.burp;
+        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
+      });
+      return;
+    }
+    if(['surface','untested','interesting','all'].includes(next) && ['routes','burp'].includes(String(graph.meta?.scope||''))) {
+      detail.innerHTML=emptyDetail();
+      search.value='';
+      load(`${api}?scope=overview`).then(()=>{
+        preset=next;
+        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';
+        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
       });
       return;
     }
@@ -807,9 +829,6 @@
     if(initialFocus){
       const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);
       if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}
-    }else if((graph.routes||[]).length){
-      const btn=root.querySelector('[data-graph-preset="attack"]');
-      if(btn)setPreset('attack',btn);
     }
   });
 })();

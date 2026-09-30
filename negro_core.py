@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.20.3
+Negro Recon v0.21.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.20.3"
+VERSION = "0.21.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -626,9 +626,16 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         if "sourcemap_analyzed_at" not in js_cols:
             conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analyzed_at TEXT")
 
-        # v0.9 intelligence schema is additive and conservative.
+        # Intelligence + local search schemas are additive and conservative.
         import negro_hunter as hunter
         hunter.init_schema(conn)
+        try:
+            import negro_search as search_index
+            search_index.init_schema(conn)
+        except Exception as exc:
+            # Search must never prevent the core workspace from opening. The Search
+            # page surfaces an actionable error if the local SQLite lacks FTS5.
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('search_init_error',?)", (str(exc)[:500],))
 
         # Conservative v0.20 backfill: existing exchange-bound notifications were
         # automatic observations too. Preserve their read/unread status as the best

@@ -72,9 +72,9 @@
 
 <section class="hypothesis-list ai-hypothesis-list">
 {% for h in hypotheses %}
-<article class="hypothesis-work-card ai-hypothesis-card state-{{ h.status }} priority-view-{{ h.investigation_priority }}" id="hypothesis-{{ h.id }}">
+<article class="hypothesis-work-card ai-hypothesis-card state-{{ h.status }}" id="hypothesis-{{ h.id }}">
   <div class="hypothesis-head">
-    <div><div class="badges hypothesis-priority-row"><span class="badge hypothesis-priority priority-{{ h.investigation_priority }}">{% if h.investigation_priority=='high' %}ALTA PRIORIDAD{% elif h.investigation_priority=='medium' %}PRIORIDAD MEDIA{% else %}CHEQUEO RÁPIDO{% endif %}</span><span class="badge">{{ h.lead_type }}</span><span class="badge">🧠 IA</span>{% for reason in h.priority_reasons %}<span class="badge reason-chip">{{ reason }}</span>{% endfor %}</div><h2>{{ h.title }}</h2></div>
+    <div><div class="badges hypothesis-priority-row"><span class="badge evidence-chip">{{ h.evidence_label }} · {{ h.evidence_count }} refs</span><span class="badge cost-chip">{{ h.test_cost_label }}</span><span class="badge">{{ h.lead_type }}</span><span class="badge">🧠 IA</span></div><h2>{{ h.title }}</h2></div>
     <div class="badges">{% if h.promoted_investigation_id %}<span class="badge class-interesting">Promovida → Investigación #{{ h.promoted_investigation_id }}</span>{% else %}<span class="badge state-chip">{{ 'Guardada' if h.status=='postponed' else ('Descartada' if h.status=='discarded' else 'Propuesta') }}</span>{% endif %}</div>
   </div>
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}

@@ -166,10 +166,19 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Promoción manual `Hipótesis → Investigación` con evidencia/Signals relacionados.
 - Revisión de un Signal sin obligar a marcar el recurso como descartado.
 
-## Siguiente fase inmediata — v0.21 Search Everything
+## Implementado en v0.21.0 — Search Everything + mapa observable
 
-- índice FTS5 sobre contenido normalizado;
-- búsqueda libre en URL/path/headers/params/body/response/notas/Signals;
-- filtros `host:`, `method:`, `status:`, `state:`, `signal:`, `param:` y similares;
-- Saved Searches;
-- ayuda integrada “Aprende a buscar como hacker”.
+- SQLite FTS5 sobre tráfico y conocimiento normalizado.
+- Búsqueda libre y filtros `host:`, `method:`, `status:`, `state:`, `signal:`, `param:`, `cookie:`, `header:`, `body:`, `request:`, `response:`, `path:`, `type:` y `contains:`.
+- Saved Searches + ayuda integrada “Aprende a buscar como hacker”.
+- Backfill explícito de workspaces existentes con “Indexar historial”; tráfico nuevo se indexa al ingerirlo.
+- Mapa de proyectos pequeños con relaciones determinísticas antes de IA.
+- Perspectiva Burp con proyección real de exchanges observados, independiente de las Hipótesis IA.
+
+## Siguiente fase inmediata — v0.22 Parameter Explorer / Follow Value
+
+- explorar parámetros normalizados por nombre, superficie, host y operación;
+- Follow Value para seguir un mismo valor/objeto entre requests, responses y hosts;
+- Find Related para descubrir recursos/exchanges cercanos por evidencia compartida;
+- Smart Diff para comparar requests/responses priorizando campos de negocio;
+- reutilizar esta capa como base para Identity Contexts en v0.23.

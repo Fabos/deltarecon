@@ -168,6 +168,23 @@ def _db(paths: dict[str, Path]):
     return core.db_connect(paths)
 
 
+def _rebuild_search_index(paths: dict[str, Path]) -> dict[str, int]:
+    import negro_search as search_index
+    with _db(paths) as conn:
+        return search_index.rebuild_search_index(conn)
+
+
+def _refresh_search(conn, *, host_id: int | None = None, resource_id: int | None = None, exchange_id: int | None = None, knowledge: bool = False) -> None:
+    try:
+        import negro_search as search_index
+        if host_id: search_index.index_host(conn, int(host_id))
+        if resource_id: search_index.index_resource(conn, int(resource_id))
+        if exchange_id: search_index.index_exchange(conn, int(exchange_id))
+        if knowledge: search_index.index_knowledge(conn)
+    except Exception as exc:
+        print(f"[search-index] refresh error={type(exc).__name__}: {str(exc)[:160]}")
+
+
 def _sources(conn, entity: str, entity_id: int) -> list[str]:
     return core.get_sources(conn, entity, entity_id)
 
@@ -492,6 +509,11 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['node_ids']=resolved_node_ids
             refs=hunter.hypothesis_refs_from_nodes(conn,resolved_node_ids) if resolved_node_ids else {'evidence_refs':[],'resource_id':item.get('resource_id'),'primary_method':None,'primary_exchange_id':None}
             item.update(refs)
+            evidence_count=len(item.get('evidence_refs') or [])
+            item['evidence_count']=evidence_count
+            item['evidence_label']='EVIDENCIA MÚLTIPLE' if evidence_count>=4 else ('EVIDENCIA PARCIAL' if evidence_count>=2 else 'EVIDENCIA INICIAL')
+            steps_count=len(item.get('test_plan') or [])
+            item['test_cost_label']='COSTO BAJO' if steps_count<=4 else 'COSTO MEDIO'
             item['secret_evidence']=secret_evidence
             if item.get('resource_id') and not item.get('resource_url'):
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
@@ -1458,6 +1480,54 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 "meta": {"scope":"routes","scope_label":"Qué probar ahora · rutas de investigación","large_target":total_resources>800,"loaded_counts":counts},
             }
 
+        if scope == "burp":
+            # Project-wide, bounded Burp projection. Unlike overview this always
+            # materializes recent Burp exchanges so the Burp perspective never
+            # renders an empty canvas just because the user has not drilled into
+            # a host/resource yet.
+            rows = conn.execute(
+                """SELECT e.*,o.method,o.resource_id,r.host_id,r.url,r.path,h.hostname
+                   FROM http_exchanges e
+                   JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id
+                   JOIN hosts h ON h.id=r.host_id
+                   WHERE lower(COALESCE(e.source,'')) LIKE 'burp_%'
+                   ORDER BY e.last_seen_at DESC,e.id DESC LIMIT ?""",
+                (max(20, min(exchange_limit, 200)),),
+            ).fetchall()
+            host_nodes: dict[int,str] = {}
+            resource_nodes: dict[int,str] = {}
+            operation_nodes: dict[int,str] = {}
+            source_nodes: dict[str,str] = {}
+            for e in rows:
+                hid=int(e["host_id"]); rid=int(e["resource_id"]); oid=int(e["operation_id"])
+                if hid not in host_nodes:
+                    hr=conn.execute("SELECT * FROM hosts WHERE id=?",(hid,)).fetchone()
+                    hcov=_coverage_state(hr["review_state"]); hsig,hfind=_entity_signal(conn,"host",hid,hr["classification"])
+                    host_nodes[hid]=add_node(f"host:{hid}","host",e["hostname"],state=_visual_state(hcov,hsig),meta={"id":hid,"coverage":hcov,"signal":hsig,"review":hr["review_state"],"classification":hr["classification"],"finding_count":hfind},href=f"host/{hid}")
+                    add_edge(target,host_nodes[hid],"contains",source="burp_projection")
+                if rid not in resource_nodes:
+                    rr=conn.execute("SELECT * FROM resources WHERE id=?",(rid,)).fetchone()
+                    rcov=_coverage_state(rr["review_state"]); rsig,rfind=_entity_signal(conn,"resource",rid,rr["classification"])
+                    resource_nodes[rid]=add_node(f"resource:{rid}","resource",e["path"] or e["url"],state=_visual_state(rcov,rsig),meta={"id":rid,"url":e["url"],"host":e["hostname"],"coverage":rcov,"signal":rsig,"review":rr["review_state"],"classification":rr["classification"],"finding_count":rfind},href=f"resource/{rid}")
+                    add_edge(host_nodes[hid],resource_nodes[rid],"contains",source="burp_projection")
+                if oid not in operation_nodes:
+                    orow=conn.execute("SELECT * FROM resource_operations WHERE id=?",(oid,)).fetchone()
+                    test_summary=hunter.operation_test_summary(conn,oid)
+                    ostate="interesting" if int(test_summary.get("interesting",0))+int(test_summary.get("confirmed",0))>0 or (orow["last_status"] and int(orow["last_status"])>=500) else "normal"
+                    operation_nodes[oid]=add_node(f"operation:{oid}","operation",f"{e['method']} {e['path']}",state=ostate,meta={"id":oid,"method":e["method"],"status":orow["last_status"],"seen_count":orow["seen_count"],"authenticated":bool(orow["authenticated_observed"]),"url":e["url"],"test_summary":test_summary})
+                    add_edge(resource_nodes[rid],operation_nodes[oid],"supports",source="http_model")
+                src=str(e["source"] or "burp_other")
+                if src not in source_nodes:
+                    source_nodes[src]=add_node(f"source:{src}","source",src.replace("_"," "),meta={"source":src})
+                en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":src,"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                add_edge(operation_nodes[oid],en,"observed_in",source=src)
+                add_edge(source_nodes[src],en,"observed",source=src)
+            counts: dict[str,int]={}
+            for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
+            return {"target":project_name,"nodes":nodes,"edges":edges,"routes":[],"counts":totals,"generated_at":_now(),
+                    "meta":{"scope":"burp","scope_label":"Burp · tráfico observado","large_target":total_resources>800,"loaded_counts":counts,"exchange_count":len(rows)}}
+
         if scope == "overview" or (scope == "host" and not host_id) or (scope == "resource" and not resource_id):
             rows=conn.execute("""
                 SELECT h.*,
@@ -1492,6 +1562,32 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 if not items: continue
                 cid=add_node(f"cluster:hosts:{bucket}","cluster",f"{cluster_labels[bucket]} · {len(items)}",state=cluster_states[bucket],meta={"count":len(items),"group":"hosts","bucket":bucket,"note":"Agrupados para que el mapa siga siendo usable. Abre Inventario para filtrar/buscar."},href=cluster_hrefs[bucket])
                 add_edge(target,cid,"contains",source="progressive_disclosure")
+            # Small projects should be useful before AI exists. Materialize the
+            # deterministic Target → Host → Resource → Operation relationships
+            # immediately. Large bounty targets keep progressive disclosure.
+            if total_resources <= 220:
+                small_resources=conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id ORDER BY r.id LIMIT 260").fetchall()
+                for r in small_resources:
+                    hn=f"host:{r['host_id']}"
+                    if hn not in seen:
+                        hrow=conn.execute("SELECT * FROM hosts WHERE id=?",(r["host_id"],)).fetchone()
+                        if hrow:
+                            hcov=_coverage_state(hrow["review_state"]); hsig,hfind=_entity_signal(conn,"host",hrow["id"],hrow["classification"])
+                            add_node(hn,"host",hrow["hostname"],state=_visual_state(hcov,hsig),meta={"id":hrow["id"],"coverage":hcov,"signal":hsig,"review":hrow["review_state"],"classification":hrow["classification"],"finding_count":hfind},href=f"host/{hrow['id']}")
+                            add_edge(target,hn,"contains",source="inventory")
+                    rcov=_coverage_state(r["review_state"]); rsig,rfind=_entity_signal(conn,"resource",r["id"],r["classification"])
+                    rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(rcov,rsig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind},href=f"resource/{r['id']}")
+                    add_edge(hn,rn,"contains",source="inventory")
+                small_rids=[int(r["id"]) for r in small_resources]
+                if small_rids:
+                    marks=','.join('?'*len(small_rids))
+                    small_ops=conn.execute(f"SELECT o.*,r.path,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE o.resource_id IN ({marks}) ORDER BY o.id LIMIT 420",small_rids).fetchall()
+                    for o in small_ops:
+                        test_summary=hunter.operation_test_summary(conn,int(o["id"]))
+                        ostate="interesting" if int(test_summary.get("interesting",0))+int(test_summary.get("confirmed",0))>0 or (o["last_status"] and int(o["last_status"])>=500) else "normal"
+                        on=add_node(f"operation:{o['id']}","operation",f"{o['method']} {o['path']}",state=ostate,meta={"id":o["id"],"method":o["method"],"status":o["last_status"],"seen_count":o["seen_count"],"authenticated":bool(o["authenticated_observed"]),"url":o["url"],"test_summary":test_summary})
+                        add_edge(f"resource:{o['resource_id']}",on,"supports",source="http_model")
+
             routes=_investigation_routes(conn, limit=6)
             return {"target":project_name,"nodes":nodes,"edges":edges,"routes":routes,"counts":totals,"generated_at":_now(),
                     "meta":{"scope":"overview","large_target":total_resources>800,"scope_label":"Vista general","host_count":total_hosts,"resource_count":total_resources,"important_hosts":len(important),"grouped_hosts":sum(len(v) for v in grouped.values())}}
@@ -2224,6 +2320,8 @@ def create_app(default_domain: str, default_workspace: Path):
         _, _, paths = _target_context(target_key)
         try:
             core.update_hypothesis(paths, lead_id, status=status, result_notes=result_notes.strip())
+            with _db(paths) as conn:
+                _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
@@ -2236,6 +2334,7 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             with _db(paths) as conn:
                 inv = hunter.promote_ai_hypothesis_to_investigation(conn, lead_id)
+                _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{inv['id']}", status_code=303)
@@ -2248,6 +2347,7 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             with _db(paths) as conn:
                 hunter.update_investigation(conn, investigation_id, status=status, notes=notes.strip())
+                _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{investigation_id}", status_code=303)
@@ -2261,7 +2361,64 @@ def create_app(default_domain: str, default_workspace: Path):
             if not row:
                 raise HTTPException(status_code=404, detail="Signal no encontrado")
             conn.execute("UPDATE signal_occurrences SET reviewed_at=COALESCE(reviewed_at,?) WHERE id=?", (_now(), signal_id))
+            sr=conn.execute("SELECT exchange_id,resource_id FROM signal_occurrences WHERE id=?",(signal_id,)).fetchone()
+            if sr:
+                _refresh_search(conn, resource_id=sr["resource_id"], exchange_id=sr["exchange_id"])
         return RedirectResponse(url=f"/t/{target_key}/hypotheses", status_code=303)
+
+    @app.get("/t/{target_key}/search", response_class=HTMLResponse)
+    def search_page(request: Request, target_key: str, q: str = ""):
+        import negro_search as search_index
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            search_index.init_schema(conn)
+            # Knowledge entities are tiny compared with HTTP history, so keep them
+            # fresh on page load. HTTP exchanges are indexed during Burp ingest or
+            # through the explicit historical rebuild.
+            try:
+                search_index.index_knowledge(conn)
+            except Exception:
+                pass
+            stats = search_index.search_stats(conn)
+            saved = search_index.list_saved_searches(conn)
+            result = search_index.search(conn, q, limit=160) if q.strip() else {"results":[],"count":0,"error":None,"parsed":None,"fts":""}
+            rows = list(result.get("results") or [])
+            for item in rows:
+                typ=str(item.get("entity_type") or "")
+                if typ=="exchange" and item.get("resource_id"):
+                    item["href"]=f"/t/{target_key}/resource/{int(item['resource_id'])}?exchange={int(item['exchange_id'])}#exchange-{int(item['exchange_id'])}"
+                elif typ=="resource": item["href"]=f"/t/{target_key}/resource/{int(item['entity_id'])}"
+                elif typ=="host": item["href"]=f"/t/{target_key}/host/{int(item['entity_id'])}"
+                elif typ=="hypothesis": item["href"]=f"/t/{target_key}/hypotheses#hypothesis-{int(item['entity_id'])}"
+                elif typ=="investigation": item["href"]=f"/t/{target_key}/hypotheses#investigation-{int(item['entity_id'])}"
+                elif typ=="finding": item["href"]=f"/t/{target_key}/finding/{int(item['entity_id'])}"
+                else: item["href"]=f"/t/{target_key}/hosts"
+        return render(request,"search.html",target_key,domain,workspace,q=q,search_result=result,search_rows=rows,search_stats=stats,saved_searches=saved)
+
+    @app.post("/t/{target_key}/search/reindex", response_class=JSONResponse)
+    def search_reindex(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        job_id=_start_job("Indexar historial de búsqueda",target_key,_rebuild_search_index,paths)
+        return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":f"/t/{target_key}/search"})
+
+    @app.post("/t/{target_key}/search/save")
+    def search_save(request: Request, target_key: str, name: str = Form(...), query: str = Form(...), csrf: str = Form(...)):
+        import negro_search as search_index
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            search_index.save_search(conn,name,query)
+        return RedirectResponse(url=f"/t/{target_key}/search?q={urllib.parse.quote(query)}",status_code=303)
+
+    @app.post("/t/{target_key}/search/saved/{search_id}/delete")
+    def search_saved_delete(request: Request, target_key: str, search_id: int, csrf: str = Form(...)):
+        import negro_search as search_index
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            search_index.delete_saved_search(conn,search_id)
+        return RedirectResponse(url=f"/t/{target_key}/search",status_code=303)
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):
@@ -2414,6 +2571,7 @@ def create_app(default_domain: str, default_workspace: Path):
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
             conn.execute("UPDATE findings SET title=?,severity=?,status=?,description=?,impact=?,remediation=?,updated_at=? WHERE id=?", (title.strip()[:240], severity, status, description.strip(), impact.strip(), remediation.strip(), _now(), finding_id))
+            _refresh_search(conn, knowledge=True)
         return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}", status_code=303)
 
     @app.post("/t/{target_key}/finding/{finding_id}/retest")
@@ -2443,6 +2601,7 @@ def create_app(default_domain: str, default_workspace: Path):
             with _db(paths) as conn:
                 conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('finding',?,?,?)", (finding_id, body, _now()))
                 conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
+                _refresh_search(conn, knowledge=True)
         return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#evidence", status_code=303)
 
     @app.post("/t/{target_key}/finding/{finding_id}/evidence")
@@ -2518,6 +2677,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if not row:
                 raise HTTPException(status_code=404, detail="Recurso no encontrado")
             core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="web")
+            _refresh_search(conn, resource_id=resource_id)
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/human-state")
@@ -2533,6 +2693,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Resource state is a human workspace summary, not a detector output.
             if state != "normal":
                 core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="web", snapshot_exchange_id=exchange_id)
+            _refresh_search(conn, resource_id=resource_id, exchange_id=exchange_id)
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={exchange_id}#exchange-{exchange_id}", status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/state")
@@ -2560,6 +2721,8 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Host no encontrado")
         if body:
             core.mark_entity(paths, "host", row["hostname"], None, None, None, body)
+            with _db(paths) as conn:
+                _refresh_search(conn, host_id=host_id)
         return RedirectResponse(url=f"/t/{target_key}/host/{host_id}#notes", status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/note")
@@ -2573,6 +2736,8 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         if body:
             core.mark_entity(paths, "resource", row["url"], None, None, None, body)
+            with _db(paths) as conn:
+                _refresh_search(conn, resource_id=resource_id)
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/cors")
@@ -2979,6 +3144,15 @@ def create_app(default_domain: str, default_workspace: Path):
             import negro_hunter as hunter
             with _db(paths) as conn:
                 passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
+                # Keep Search Everything current after deterministic Signals are
+                # persisted. Search indexing is local-only and sends no network traffic.
+                try:
+                    import negro_search as search_index
+                    search_index.index_exchange(conn, int(result["exchange_id"]))
+                    search_index.index_resource(conn, int(result["resource_id"]))
+                    search_index.index_host(conn, int(result["host_id"]))
+                except Exception as search_exc:
+                    print(f"[search-index] exchange={result.get('exchange_id')} error={type(search_exc).__name__}: {str(search_exc)[:160]}")
                 # Burp must reflect the persisted truth, not only the in-memory list
                 # returned by one detector path. This also keeps an exchange cyan
                 # when an existing Signal is still pending review.
