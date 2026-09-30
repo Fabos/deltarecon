@@ -14,7 +14,7 @@
       <a class="{% if request.url.path == target_base+'/' %}active{% endif %}" href="{{ target_base }}/">Inicio</a>
       <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
       <a class="{% if '/search' in request.url.path %}active{% endif %}" href="{{ target_base }}/search">Buscar</a>
-      <a class="{% if '/parameters' in request.url.path %}active{% endif %}" href="{{ target_base }}/parameters">Parámetros</a>
+      <a class="{% if '/identities' in request.url.path %}active{% endif %}" href="{{ target_base }}/identities">Identidades</a>
       <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
       <a class="{% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence">Inteligencia</a>
       <a class="{% if '/hypotheses' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hunt</a>

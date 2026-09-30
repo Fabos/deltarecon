@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.23.0
+
+- Unifica Search y Parameter Explorer: **Buscar** es la entrada principal; Parameter Explorer queda como drill-down técnico.
+- Search muestra coincidencias estructuradas de nombre/valor con acciones directas `Follow Value`, `Find Related`, `Smart Diff`, HTTP e identidad.
+- Corrige el bug visual donde `parameter_stats.values` podía mostrarse como `<built-in method values of dict ...>`.
+- Mantiene búsqueda parcial con FTS5 trigram (`1223` dentro de `3001112233`, `AIza` dentro de una cadena mayor).
+- Añade **Identity Contexts**: Identity, Context (role/tenant) y Auth Material son entidades separadas.
+- Añade asignación humana de identidad a un exchange y aprendizaje de fingerprints de Cookie/Bearer sin mostrar el valor completo.
+- Añade resolvers de JWT por claims estables (`sub`, `userId`, `accountId`, email) para tolerar rotación de token.
+- Añade resolvers manuales desde observaciones de parámetros estables, por ejemplo un `userId` conocido en `/me`.
+- Cuando un resolver estable identifica una sesión nueva, Negro aprende el nuevo auth material para requests posteriores.
+- Los exchanges quedan `Unknown` cuando no existe una coincidencia única; no hay inferencia automática dudosa.
+- Añade `Identidades → Resolver historial`.
+- Añade **Authorization Matrix** observada: status/count por identidad y ruta; `No observado` nunca se interpreta como acceso permitido/denegado.
+- Sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+
 ## v0.22.0
 
 - Search Everything usa un índice FTS5 **trigram** adicional: texto libre y filtros de contenido encuentran fragmentos dentro de valores mayores.

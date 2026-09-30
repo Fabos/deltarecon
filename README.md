@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.22.0
+# Negro Recon 🐕 — v0.23.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende ser un vulnerability scanner ni hacer el hacking por el usuario.
 
@@ -12,35 +12,41 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis que considera valiosa.
 - **Estados humanos / Findings**: siguen bajo control del hacker.
 
-## v0.22.0 — búsqueda parcial + Parameter Explorer
+## v0.23.0 — Search unificado + Identity Contexts
 
-### Buscar
+### Buscar es la entrada principal
 
-La búsqueda libre ahora es **parcial por defecto** para fragmentos de 3 o más caracteres. No necesitas conocer el valor completo:
+Ya no necesitas decidir primero si algo es "búsqueda" o "parámetro". Escribe lo que recuerdas en **Buscar**:
 
 ```text
-1223              # encuentra 3001112233
-AIza              # encuentra una Google API key más larga
-response:owner    # fragmento dentro de responses
-param:tenant      # fragmento dentro de parámetros
+4101
+ownerId
+1223
+AIza
+host:api.example.com method:GET ownerId
 ```
 
-Los filtros estructurados siguen disponibles: `host:`, `method:`, `status:`, `state:`, `signal:`, `param:`, `cookie:`, `header:`, `body:`, `request:`, `response:`, `path:`, `type:` y `contains:`. Se pueden combinar. La ayuda integrada en **Buscar** resume la sintaxis y ejemplos sin convertirla en una guía de hacking.
+El texto libre sigue siendo parcial con FTS5 trigram. Cuando la consulta también coincide con una observación estructurada, Search muestra una tarjeta **Valor/Parámetro** con acciones directas: `HTTP`, `Follow Value`, `Explorar parámetro`, `Find Related`, `Smart Diff` y `Usar para identidad`.
 
-Al actualizar desde v0.21, pulsa una vez **Actualizar índice** para construir el índice de fragmentos sobre el historial ya guardado. El tráfico nuevo se indexa automáticamente.
+**Parameter Explorer** sigue existiendo, pero como drill-down técnico: sirve para estudiar un nombre de parámetro después de encontrarlo, no como un segundo buscador. También se corrigió el contador de `valores distintos` que en v0.22 podía renderizar el método interno de un `dict`.
 
-### Parameter Explorer
+### Identity Contexts
 
-La nueva pestaña **Parámetros** agrega cuatro herramientas determinísticas:
+La nueva vista **Identidades** separa tres cosas:
 
-- **Parameter Explorer**: agrupa nombres observados en query, path, JSON/form de request y JSON de response.
-- **Follow Value**: sigue el mismo valor exacto por hash entre exchanges, superficies, recursos y hosts. Los valores sensibles permanecen enmascarados.
-- **Find Related**: propone exchanges cercanos por valores/nombres compartidos, mismo recurso o mismo host y explica cada relación. El score es cercanía, no severidad.
-- **Smart Diff**: compara dos exchanges y prioriza diferencias de negocio como IDs, ownership, roles, estados, precios, cupones y tenant. Headers sensibles se muestran enmascarados.
+- **Identity**: la cuenta/persona que tú conoces, por ejemplo `Buyer A`.
+- **Context**: rol/tenant/contexto humano, por ejemplo `Buyer · Colombia`.
+- **Auth Material**: cookie, Bearer o sesión concreta que puede rotar.
 
-Para workspaces viejos pulsa una vez **Parámetros → Analizar historial** para extraer parámetros también de capturas anteriores.
+La asignación inicial siempre es humana. Desde un resultado HTTP puedes usar **Asignar identidad**. Negro aprende fingerprints de cookies/tokens sin mostrarlos completos. Si el Bearer es JWT, puede aprender claims estables como `sub`, `userId` o `accountId`. Cuando un token rota pero conserva ese claim estable, Negro puede resolver la nueva sesión hacia la misma identidad.
 
-El mapa mantiene las correcciones de v0.21: inventario observable antes de IA y perspectiva Burp independiente de las hipótesis.
+También puedes convertir una observación estable (por ejemplo `userId=101` en `/me`) en un **resolver de identidad** desde Search. Roles compartidos como `role=buyer` no deben usarse como identidad.
+
+Para tráfico histórico usa **Identidades → Resolver historial** después de haber enseñado al menos una identidad/resolver.
+
+### Authorization Matrix
+
+**Identidades → Authorization Matrix** compara únicamente lo que Burp observó bajo cada identidad. Una celda muestra conteos/status reales; `— No observado` significa exactamente eso y nunca se interpreta como permitido o denegado. Las rutas con IDs se agrupan visualmente como `{id}` para facilitar la comparación, manteniendo ejemplos de exchanges concretos.
 
 ## Arranque
 
@@ -52,7 +58,7 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión al pasar de Negro v0.20.3 a v0.22.0.** La aplicación v0.22.0 sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+**No necesitas actualizar la extensión para v0.23.0.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
 
 Si necesitas recompilarla:
 

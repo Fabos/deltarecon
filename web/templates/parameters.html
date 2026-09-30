@@ -3,11 +3,11 @@
 {% block content %}
 <section class="hero parameter-hero">
   <div>
-    <p class="eyebrow">PARAMETER EXPLORER · v0.22</p>
+    <p class="eyebrow">PARAMETER EXPLORER · v0.23</p>
     <h1>Parámetros observados</h1>
-    <p class="muted">Agrupa nombres y valores vistos en requests y responses para seguir objetos entre exchanges, recursos y hosts.</p>
+    <p class="muted">Vista técnica para explorar un parámetro después de encontrarlo. La entrada principal para buscar valores está en Buscar.</p>
   </div>
-  <div class="page-actions">
+  <div class="page-actions"><a class="button" href="{{ target_base }}/search">Buscar valores</a>
     <form action="{{ target_base }}/parameters/reindex" method="post" data-job-form data-job-label="Analizando parámetros históricos">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button secondary" type="submit">↻ Analizar historial</button>
@@ -18,14 +18,14 @@
 
 <section class="metric-grid parameter-metrics">
   <div class="metric"><b>{{ parameter_stats.names }}</b><span>nombres</span></div>
-  <div class="metric"><b>{{ parameter_stats.values }}</b><span>valores distintos</span></div>
+  <div class="metric"><b>{{ parameter_stats['values'] }}</b><span>valores distintos</span></div>
   <div class="metric"><b>{{ parameter_stats.observations }}</b><span>observaciones</span></div>
   <div class="metric"><b>{{ parameter_stats.exchanges }}</b><span>exchanges cubiertos</span></div>
 </section>
 
 <section class="panel parameter-filter-panel">
   <form class="parameter-filters" method="get">
-    <label><span>Nombre contiene</span><input name="q" value="{{ q }}" placeholder="owner, tenant, orderId…" autocomplete="off"></label>
+    <label><span>Nombre del parámetro contiene</span><input name="q" value="{{ q }}" placeholder="ownerId, tenantId, orderId…" autocomplete="off"></label>
     <label><span>Superficie</span><select name="location"><option value="">Todas</option>{% for x in location_options %}<option value="{{ x }}" {% if location==x %}selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
     <label><span>Host contiene</span><input name="host" value="{{ host }}" placeholder="api.example.com"></label>
     <button class="button" type="submit">Filtrar</button>

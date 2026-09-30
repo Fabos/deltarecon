@@ -468,3 +468,88 @@ def smart_diff(conn, exchange_a: int, exchange_b: int) -> dict[str, Any] | None:
         "business_changes": sum(1 for x in changes if x["business"]),
         "other_changes": sum(1 for x in changes if not x["business"]),
     }
+
+
+def search_hits(conn, terms: list[tuple[str, str]], *, host_filters: list[str] | None = None, limit: int = 80) -> list[dict[str, Any]]:
+    """Return parameter/value observations relevant to a universal Search query.
+
+    This is intentionally a drill-down companion to Search, not a second search
+    engine. It uses the normalized parameter table so Search can expose actions
+    such as Follow Value without forcing the user to open Parameter Explorer first.
+    """
+    usable = [(str(k or "contains"), str(v or "").strip()) for k, v in terms if str(v or "").strip()]
+    usable = [(k, v) for k, v in usable if k in {"contains", "param", "request", "response", "body", "path"}]
+    if not usable:
+        return []
+    clauses: list[str] = []
+    args: list[Any] = []
+    for kind, value in usable:
+        needle = f"%{value.lower()}%"
+        base = "(lower(p.name) LIKE ? OR lower(p.normalized_name) LIKE ? OR lower(COALESCE(p.value_preview,'')) LIKE ? OR lower(p.location) LIKE ?)"
+        local_args: list[Any] = [needle, needle, needle, needle]
+        if kind == "param":
+            base = "(lower(p.name) LIKE ? OR lower(p.normalized_name) LIKE ?)"
+            local_args = [needle, needle]
+        elif kind == "request":
+            base = "(" + base + " AND p.location NOT LIKE 'response_%')"
+        elif kind == "response":
+            base = "(" + base + " AND p.location LIKE 'response_%')"
+        elif kind == "path":
+            base = "(" + base + " AND p.location LIKE 'path:%')"
+        clauses.append(base)
+        args.extend(local_args)
+    if host_filters:
+        host_clauses = []
+        for host in host_filters:
+            host_clauses.append("lower(h.hostname) LIKE ?")
+            args.append(f"%{str(host).lower()}%")
+        clauses.append("(" + " OR ".join(host_clauses) + ")")
+    sql = """
+        SELECT p.id,p.exchange_id,p.operation_id,p.resource_id,p.name,p.normalized_name,p.location,p.value_hash,p.value_preview,p.first_seen_at,
+               h.hostname,r.path,o.method,e.status_code,
+               (SELECT COUNT(*) FROM parameter_observations px WHERE px.value_hash=p.value_hash) value_occurrences,
+               (SELECT COUNT(DISTINCT px.exchange_id) FROM parameter_observations px WHERE px.value_hash=p.value_hash) value_exchanges
+        FROM parameter_observations p
+        JOIN http_exchanges e ON e.id=p.exchange_id
+        JOIN resource_operations o ON o.id=p.operation_id
+        JOIN resources r ON r.id=p.resource_id
+        JOIN hosts h ON h.id=r.host_id
+    """
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY e.id DESC,p.id DESC LIMIT ?"
+    args.append(max(1, min(int(limit), 300)))
+    return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def matching_observations_for_exchange(conn, exchange_id: int, terms: list[tuple[str, str]], *, limit: int = 8) -> list[dict[str, Any]]:
+    usable = [(str(k or "contains"), str(v or "").strip().lower()) for k, v in terms if str(v or "").strip()]
+    if not usable:
+        return []
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM parameter_observations WHERE exchange_id=? ORDER BY id", (int(exchange_id),)
+    ).fetchall()]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        hay = " ".join([str(row.get("name") or ""), str(row.get("normalized_name") or ""), str(row.get("value_preview") or ""), str(row.get("location") or "")]).lower()
+        ok = True
+        for kind, value in usable:
+            if kind in {"cookie", "header", "signal"}:
+                continue
+            if kind == "param":
+                phay = (str(row.get("name") or "") + " " + str(row.get("normalized_name") or "")).lower()
+                if value not in phay:
+                    ok = False; break
+            elif kind == "response" and not str(row.get("location") or "").startswith("response_"):
+                ok = False; break
+            elif kind == "request" and str(row.get("location") or "").startswith("response_"):
+                ok = False; break
+            elif kind == "path" and not str(row.get("location") or "").startswith("path:"):
+                ok = False; break
+            elif value not in hay:
+                ok = False; break
+        if ok:
+            out.append(row)
+        if len(out) >= limit:
+            break
+    return out

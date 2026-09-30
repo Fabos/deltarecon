@@ -3,11 +3,12 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.22</p>
+    <p class="eyebrow">SEARCH · v0.23</p>
     <h1>Buscar en todo el proyecto</h1>
-    <p class="muted">Busca texto completo o fragmentos dentro de tráfico Burp, hosts, recursos, headers, cookies, parámetros, bodies, Signals, notas, hipótesis, investigaciones y Findings.</p>
+    <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
   <div class="page-actions">
+    <a class="button ghost" href="{{ target_base }}/parameters">Índice de parámetros</a>
     <form action="{{ target_base }}/search/reindex" method="post" data-job-form data-job-label="Actualizando índice">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button secondary" type="submit">↻ Actualizar índice</button>
@@ -19,79 +20,115 @@
   <form class="search-main-form" method="get">
     <label>
       <span>Consulta</span>
-      <input name="q" value="{{ q }}" placeholder='Ej. host:api.example.com method:POST param:userId status:200' autofocus autocomplete="off">
+      <input name="q" value="{{ q }}" placeholder='Ej. 4101 · ownerId · AIza · host:api.example.com method:POST' autofocus autocomplete="off">
     </label>
     <button class="button" type="submit">Buscar</button>
   </form>
   <div class="search-index-meta">
-    <span><b>{{ search_stats.documents }}</b> documentos indexados</span>
+    <span><b>{{ search_stats.documents }}</b> documentos</span>
     <span><b>{{ search_stats.http_exchanges }}</b> exchanges HTTP</span>
-    <span>{% if search_stats.rebuilt_at %}Historial indexado {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
+    <span>{% if search_stats.rebuilt_at %}Índice actualizado {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
   </div>
-  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar índice” una vez para habilitar búsqueda parcial sobre todo el historial existente.</div>{% endif %}
+  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar índice” una vez para habilitar búsqueda parcial sobre el historial.</div>{% endif %}
   {% if search_result.error %}<div class="callout warning">{{ search_result.error }}</div>{% endif %}
 </section>
 
 <section class="search-layout">
   <aside class="panel search-help">
-    <p class="eyebrow">AYUDA</p>
+    <p class="eyebrow">REFERENCIA</p>
     <h2>Cómo buscar</h2>
-    <div class="callout search-note"><b>Texto parcial por defecto.</b> <code>1223</code> puede encontrar <code>3001112233</code>; <code>response:AIza</code> busca ese fragmento dentro de responses.</div>
+    <p class="muted small">El texto libre busca fragmentos. <code>1223</code> puede encontrar <code>3001112233</code>; <code>AIza</code> puede encontrar una key más larga que contenga ese fragmento.</p>
     <div class="search-syntax">
-      <code>host:api.example.com</code><span>acota host</span>
-      <code>method:POST</code><span>método HTTP</span>
-      <code>status:403</code><span>status observado</span>
-      <code>state:learning</code><span>estado humano</span>
-      <code>signal:authorization</code><span>Signals</span>
-      <code>param:userId</code><span>parámetros</span>
-      <code>cookie:session</code><span>cookies</span>
-      <code>header:X-Tenant-Id</code><span>headers</span>
-      <code>body:"ownerId"</code><span>request o response body</span>
-      <code>response:"roleId"</code><span>solo response body</span>
-      <code>request:"redirect_uri"</code><span>solo request body</span>
-      <code>path:/orders/</code><span>URL/path</span>
-      <code>type:investigation</code><span>tipo de entidad</span>
+      <code>host:</code><span>host</span>
+      <code>method:</code><span>método HTTP</span>
+      <code>status:</code><span>código HTTP</span>
+      <code>state:</code><span>estado humano</span>
+      <code>signal:</code><span>Signal</span>
+      <code>param:</code><span>nombre de parámetro</span>
+      <code>cookie:</code><span>cookie</span>
+      <code>header:</code><span>header</span>
+      <code>request:</code><span>request</span>
+      <code>response:</code><span>response</span>
+      <code>path:</code><span>URL/path</span>
+      <code>type:</code><span>tipo de entidad</span>
     </div>
-    <h3>Ejemplos</h3>
-    <div class="search-example-list">
-      <a href="{{ target_base }}/search?q={{ 'param:userId method:POST'|urlencode }}"><code>param:userId method:POST</code><span>¿Dónde controla el cliente un userId en POST?</span></a>
-      <a href="{{ target_base }}/search?q={{ 'signal:authorization status:200'|urlencode }}"><code>signal:authorization status:200</code><span>Signals de autorización con respuestas exitosas.</span></a>
-      <a href="{{ target_base }}/search?q={{ 'cookie:session response:ownerId'|urlencode }}"><code>cookie:session response:ownerId</code><span>Sesión + ownership observado en responses.</span></a>
-      <a href="{{ target_base }}/search?q={{ 'contains:redirect_uri'|urlencode }}"><code>contains:redirect_uri</code><span>Busca redirect_uri en cualquier superficie indexada.</span></a>
-    </div>
+    <p class="muted small">Puedes combinar filtros: <code>host:api.example.com method:GET ownerId</code>.</p>
   </aside>
 
   <div class="search-results-area">
     {% if q %}
     <section class="section-heading search-results-head">
-      <div><p class="eyebrow">RESULTADOS</p><h2>{{ search_result.count }} coincidencias</h2><p class="muted">Consulta: <code>{{ q }}</code></p></div>
+      <div><p class="eyebrow">RESULTADOS</p><h2>{{ search_result.count }} documentos · {{ parameter_hits|length }} coincidencias estructuradas</h2><p class="muted">Consulta: <code>{{ q }}</code></p></div>
       <form class="saved-search-inline" action="{{ target_base }}/search/save" method="post">
         <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="query" value="{{ q }}">
         <input name="name" placeholder="Nombre de esta búsqueda" required>
         <button class="btn-secondary" type="submit">Guardar búsqueda</button>
       </form>
     </section>
+
+    {% if parameter_hits %}
+    <section class="panel unified-parameter-results">
+      <div class="panel-head"><div><p class="eyebrow">VALORES Y PARÁMETROS</p><h2>Coincidencias que Negro puede seguir</h2><p class="muted">Estas coincidencias vienen del índice estructurado y permiten Follow Value, relaciones e identidad.</p></div><span>{{ parameter_hits|length }}</span></div>
+      <div class="parameter-hit-list">
+        {% for p in parameter_hits %}
+        <article class="parameter-hit-card">
+          <div class="parameter-hit-main">
+            <div class="badges"><span class="badge">{{ p.location }}</span><span class="badge">{{ p.method }}</span><span class="badge">HTTP {{ p.status_code }}</span></div>
+            <h3><code>{{ p.name }}</code> <span>=</span> <code>{{ p.value_preview or '—' }}</code></h3>
+            <p><b>{{ p.hostname }}</b><code>{{ p.path }}</code> · exchange #{{ p.exchange_id }} · {{ p.value_occurrences }} apariciones del mismo valor</p>
+          </div>
+          <div class="row-actions parameter-hit-actions">
+            <a class="button ghost small-button" href="{{ p.http_href }}">HTTP</a>
+            <a class="button secondary small-button" href="{{ p.follow_href }}">Follow Value</a>
+            <a class="button ghost small-button" href="{{ p.parameter_href }}">Explorar parámetro</a>
+            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related</a>
+            <a class="button ghost small-button" href="{{ p.diff_href }}">Smart Diff</a>
+            <a class="button ghost small-button" href="{{ p.identity_resolver_href }}">Usar para identidad</a>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
     <section class="search-result-list">
       {% for r in search_rows %}
-      <a class="search-result-card" href="{{ r.href }}">
+      <article class="search-result-card">
         <div class="search-result-top">
-          <div class="badges"><span class="badge">{{ ui_label(r.entity_type) }}</span>{% if r.method %}<span class="badge">{{ r.method }}</span>{% endif %}{% if r.status %}<span class="badge">HTTP {{ r.status }}</span>{% endif %}{% if r.human_state and r.human_state!='normal' %}<span class="badge state-chip">{{ ui_label(r.human_state) }}</span>{% endif %}</div>
+          <div class="badges"><span class="badge">{{ ui_label(r.entity_type) }}</span>{% if r.method %}<span class="badge">{{ r.method }}</span>{% endif %}{% if r.status %}<span class="badge">HTTP {{ r.status }}</span>{% endif %}{% if r.identity %}<span class="badge identity-badge">{{ r.identity.identity_name }}{% if r.identity.context_label %} · {{ r.identity.context_label }}{% endif %}</span>{% endif %}{% if r.human_state and r.human_state!='normal' %}<span class="badge state-chip">{{ ui_label(r.human_state) }}</span>{% endif %}</div>
           <small>{{ r.updated_at }}</small>
         </div>
-        <h3>{% if r.host %}{{ r.host }}{% endif %}{% if r.path %}<code>{{ r.path }}</code>{% elif not r.host %}{{ r.doc_key }}{% endif %}</h3>
-        {% if r.signal_kind %}<div class="search-result-signals">🩵 {{ r.signal_kind }}</div>{% endif %}
-        {% if r.preview %}<p>{{ r.preview }}</p>{% endif %}
+        <a class="search-result-primary" href="{{ r.href }}">
+          <h3>{% if r.host %}{{ r.host }}{% endif %}{% if r.path %}<code>{{ r.path }}</code>{% elif not r.host %}{{ r.doc_key }}{% endif %}</h3>
+          {% if r.signal_kind %}<div class="search-result-signals">🩵 {{ r.signal_kind }}</div>{% endif %}
+          {% if r.preview %}<p>{{ r.preview }}</p>{% endif %}
+        </a>
+        {% if r.parameter_matches %}
+        <div class="search-param-inline">
+          {% for p in r.parameter_matches %}
+          <a href="{{ target_base }}/parameters/follow/{{ p.id }}"><code>{{ p.name }}={{ p.value_preview }}</code><small>{{ p.location }}</small></a>
+          {% endfor %}
+        </div>
+        {% endif %}
         <div class="search-result-meta"><span>{{ r.doc_key }}</span>{% if r.exchange_id %}<span>exchange #{{ r.exchange_id }}</span>{% endif %}</div>
-      </a>
+        {% if r.exchange_id %}
+        <div class="row-actions search-result-actions">
+          <a class="button ghost small-button" href="{{ r.href }}">Abrir HTTP</a>
+          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related</a>
+          <a class="button ghost small-button" href="{{ r.diff_href }}">Smart Diff</a>
+          <a class="button ghost small-button" href="{{ r.identity_href }}">Asignar identidad</a>
+        </div>
+        {% endif %}
+      </article>
       {% else %}
-      <div class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba otro fragmento, quita filtros o actualiza el índice si acabas de instalar v0.22.</span></div>
+        {% if not parameter_hits %}<div class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba otro fragmento, quita filtros o actualiza el índice.</span></div>{% endif %}
       {% endfor %}
     </section>
     {% else %}
     <section class="panel search-onboarding">
       <p class="eyebrow">BÚSQUEDA</p>
-      <h2>Escribe una palabra, fragmento o filtro</h2>
-      <p>La búsqueda por texto es parcial: <code>1223</code> encuentra <code>3001112233</code> y <code>AIza</code> encuentra cadenas más largas que contengan ese fragmento. Combina filtros cuando necesites acotar.</p>
+      <h2>Escribe lo que recuerdas</h2>
+      <p>Puede ser un ID, parte de una key, un nombre de parámetro, una URL o una combinación de filtros. Si el resultado corresponde a un valor estructurado, desde aquí puedes seguirlo sin cambiar de módulo.</p>
     </section>
     {% endif %}
 

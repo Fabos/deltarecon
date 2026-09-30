@@ -1,0 +1,509 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+import negro_hunter as hunter
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def init_schema(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'account',
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS identity_contexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            role TEXT,
+            tenant TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(identity_id, label),
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS auth_materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER NOT NULL,
+            context_id INTEGER,
+            material_type TEXT NOT NULL,
+            material_name TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            masked_preview TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(identity_id, context_id, material_type, material_name, fingerprint),
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE CASCADE,
+            FOREIGN KEY(context_id) REFERENCES identity_contexts(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS identity_resolvers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER NOT NULL,
+            context_id INTEGER,
+            resolver_type TEXT NOT NULL,
+            selector TEXT NOT NULL,
+            value_hash TEXT NOT NULL,
+            value_preview TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(identity_id, context_id, resolver_type, selector, value_hash),
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE CASCADE,
+            FOREIGN KEY(context_id) REFERENCES identity_contexts(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS exchange_identities (
+            exchange_id INTEGER PRIMARY KEY,
+            identity_id INTEGER NOT NULL,
+            context_id INTEGER,
+            source TEXT NOT NULL,
+            confidence TEXT NOT NULL DEFAULT 'high',
+            resolver_id INTEGER,
+            assigned_at TEXT NOT NULL,
+            notes TEXT,
+            FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE CASCADE,
+            FOREIGN KEY(context_id) REFERENCES identity_contexts(id) ON DELETE SET NULL,
+            FOREIGN KEY(resolver_id) REFERENCES identity_resolvers(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_material_fingerprint ON auth_materials(fingerprint, active);
+        CREATE INDEX IF NOT EXISTS idx_identity_resolvers_lookup ON identity_resolvers(resolver_type, selector, value_hash, enabled);
+        CREATE INDEX IF NOT EXISTS idx_exchange_identities_identity ON exchange_identities(identity_id, context_id, assigned_at);
+        """
+    )
+
+
+def _decode_b64(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return base64.b64decode(value, validate=False).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _split_http(text: str) -> tuple[str, str]:
+    if "\r\n\r\n" in text:
+        return text.split("\r\n\r\n", 1)
+    if "\n\n" in text:
+        return text.split("\n\n", 1)
+    return text, ""
+
+
+def _headers(head: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    lines = head.replace("\r\n", "\n").split("\n")
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        out.setdefault(key.strip().lower(), []).append(value.strip())
+    return out
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(str(value).encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _jwt_payload(token: str) -> dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        raw = parts[1] + "=" * (-len(parts[1]) % 4)
+        obj = json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8", errors="replace"))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _material_preview(value: str) -> str:
+    return hunter._mask_value(str(value or ""))
+
+
+def extract_auth_materials(conn, exchange_id: int) -> list[dict[str, Any]]:
+    row = conn.execute("SELECT request_b64 FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone()
+    if not row:
+        return []
+    req = _decode_b64(row["request_b64"])
+    head, _ = _split_http(req)
+    headers = _headers(head)
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for cookie_line in headers.get("cookie", []):
+        for piece in cookie_line.split(";"):
+            if "=" not in piece:
+                continue
+            name, value = piece.split("=", 1)
+            name, value = name.strip(), value.strip()
+            if not name or not value:
+                continue
+            key = ("cookie", name.lower(), _sha(value))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"material_type": "cookie", "name": name, "value": value, "fingerprint": key[2], "preview": _material_preview(value), "claims": {}})
+
+    for auth in headers.get("authorization", []):
+        raw = auth.strip()
+        if not raw:
+            continue
+        scheme, _, credential = raw.partition(" ")
+        credential = credential.strip() or raw
+        typ = "bearer" if scheme.lower() == "bearer" and credential != raw else "authorization"
+        key = (typ, scheme.lower() or "authorization", _sha(credential))
+        if key in seen:
+            continue
+        seen.add(key)
+        claims = _jwt_payload(credential) if typ == "bearer" else {}
+        out.append({"material_type": typ, "name": scheme or "Authorization", "value": credential, "fingerprint": key[2], "preview": _material_preview(credential), "claims": claims})
+    return out
+
+
+def create_identity(conn, name: str, *, kind: str = "account", notes: str = "") -> int:
+    init_schema(conn)
+    name = str(name or "").strip()[:120]
+    if not name:
+        raise ValueError("Nombre de identidad requerido")
+    now = now_iso()
+    row = conn.execute("SELECT id FROM identities WHERE lower(name)=lower(?)", (name,)).fetchone()
+    if row:
+        return int(row["id"])
+    cur = conn.execute("INSERT INTO identities(name,kind,notes,created_at,updated_at) VALUES(?,?,?,?,?)", (name, str(kind or "account")[:40], str(notes or "")[:2000], now, now))
+    return int(cur.lastrowid)
+
+
+def create_context(conn, identity_id: int, label: str, *, role: str = "", tenant: str = "", notes: str = "") -> int:
+    init_schema(conn)
+    label = str(label or "").strip()[:120]
+    if not label:
+        raise ValueError("Etiqueta de contexto requerida")
+    now = now_iso()
+    row = conn.execute("SELECT id FROM identity_contexts WHERE identity_id=? AND lower(label)=lower(?)", (int(identity_id), label)).fetchone()
+    if row:
+        return int(row["id"])
+    cur = conn.execute(
+        "INSERT INTO identity_contexts(identity_id,label,role,tenant,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        (int(identity_id), label, str(role or "")[:120], str(tenant or "")[:160], str(notes or "")[:2000], now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _context_belongs(conn, identity_id: int, context_id: int | None) -> int | None:
+    if not context_id:
+        return None
+    row = conn.execute("SELECT id FROM identity_contexts WHERE id=? AND identity_id=?", (int(context_id), int(identity_id))).fetchone()
+    if not row:
+        raise ValueError("El contexto no pertenece a la identidad")
+    return int(row["id"])
+
+
+def _learn_material(conn, identity_id: int, context_id: int | None, material: dict[str, Any], *, source: str) -> None:
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO auth_materials(identity_id,context_id,material_type,material_name,fingerprint,masked_preview,source,first_seen_at,last_seen_at,active)
+           VALUES(?,?,?,?,?,?,?,?,?,1)
+           ON CONFLICT(identity_id,context_id,material_type,material_name,fingerprint)
+           DO UPDATE SET last_seen_at=excluded.last_seen_at,active=1""",
+        (int(identity_id), context_id, material["material_type"], str(material["name"])[:160], material["fingerprint"], material["preview"], source, now, now),
+    )
+
+
+def _learn_stable_jwt_claims(conn, identity_id: int, context_id: int | None, material: dict[str, Any], *, source: str) -> int:
+    claims = material.get("claims") or {}
+    if not isinstance(claims, dict):
+        return 0
+    stable = ("sub", "user_id", "userid", "userId", "account_id", "accountid", "accountId", "email")
+    count = 0
+    now = now_iso()
+    for key in stable:
+        if key not in claims or claims[key] in (None, ""):
+            continue
+        value = str(claims[key])
+        selector = f"jwt:{key}"
+        vh = _sha(value)
+        conn.execute(
+            """INSERT OR IGNORE INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,enabled,source,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,1,?,?,?)""",
+            (int(identity_id), context_id, "jwt_claim", selector, vh, value[:120], source, now, now),
+        )
+        count += 1
+    return count
+
+
+def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int | None = None, learn_auth: bool = True, source: str = "manual", notes: str = "") -> dict[str, Any]:
+    init_schema(conn)
+    identity = conn.execute("SELECT * FROM identities WHERE id=?", (int(identity_id),)).fetchone()
+    if not identity:
+        raise ValueError("Identidad no encontrada")
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    ex = conn.execute("SELECT id FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone()
+    if not ex:
+        raise ValueError("Exchange no encontrado")
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO exchange_identities(exchange_id,identity_id,context_id,source,confidence,resolver_id,assigned_at,notes)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(exchange_id) DO UPDATE SET identity_id=excluded.identity_id,context_id=excluded.context_id,source=excluded.source,
+             confidence=excluded.confidence,resolver_id=excluded.resolver_id,assigned_at=excluded.assigned_at,notes=excluded.notes""",
+        (int(exchange_id), int(identity_id), context_id, source, "high", None, now, str(notes or "")[:2000]),
+    )
+    materials = extract_auth_materials(conn, int(exchange_id)) if learn_auth else []
+    resolvers = 0
+    for material in materials:
+        _learn_material(conn, int(identity_id), context_id, material, source=source)
+        if material["material_type"] == "bearer":
+            resolvers += _learn_stable_jwt_claims(conn, int(identity_id), context_id, material, source=source)
+    return {"exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id, "materials": len(materials), "jwt_resolvers": resolvers}
+
+
+def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, context_id: int | None = None, source: str = "manual") -> int:
+    init_schema(conn)
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    obs = conn.execute("SELECT * FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
+    if not obs:
+        raise ValueError("Observación de parámetro no encontrada")
+    selector = str(obs["normalized_name"])
+    now = now_iso()
+    conn.execute(
+        """INSERT OR IGNORE INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,enabled,source,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,1,?,?,?)""",
+        (int(identity_id), context_id, "parameter", selector, str(obs["value_hash"]), str(obs["value_preview"] or "")[:120], source, now, now),
+    )
+    row = conn.execute(
+        "SELECT id FROM identity_resolvers WHERE identity_id=? AND context_id IS ? AND resolver_type='parameter' AND selector=? AND value_hash=?",
+        (int(identity_id), context_id, selector, str(obs["value_hash"])),
+    ).fetchone()
+    return int(row["id"])
+
+
+def _material_matches(conn, materials: list[dict[str, Any]]) -> list[tuple[int, int | None, int | None, str]]:
+    matches: list[tuple[int, int | None, int | None, str]] = []
+    for material in materials:
+        for row in conn.execute(
+            "SELECT id,identity_id,context_id FROM auth_materials WHERE fingerprint=? AND active=1",
+            (material["fingerprint"],),
+        ).fetchall():
+            matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, None, "auth_material"))
+        claims = material.get("claims") or {}
+        if isinstance(claims, dict):
+            for key, value in claims.items():
+                selector = f"jwt:{key}"
+                vh = _sha(str(value))
+                for row in conn.execute(
+                    "SELECT id,identity_id,context_id FROM identity_resolvers WHERE enabled=1 AND resolver_type='jwt_claim' AND selector=? AND value_hash=?",
+                    (selector, vh),
+                ).fetchall():
+                    matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, int(row["id"]), "jwt_claim"))
+    return matches
+
+
+def resolve_exchange(conn, exchange_id: int, *, force: bool = False) -> dict[str, Any] | None:
+    init_schema(conn)
+    if not force:
+        current = conn.execute("SELECT * FROM exchange_identities WHERE exchange_id=?", (int(exchange_id),)).fetchone()
+        if current:
+            return dict(current)
+    materials = extract_auth_materials(conn, int(exchange_id))
+    matches = _material_matches(conn, materials)
+    # Parameter resolver, e.g. a stable /me id observed in this exchange.
+    for row in conn.execute(
+        """SELECT ir.id,ir.identity_id,ir.context_id FROM identity_resolvers ir
+           JOIN parameter_observations p ON p.normalized_name=ir.selector AND p.value_hash=ir.value_hash
+           WHERE ir.enabled=1 AND ir.resolver_type='parameter' AND p.exchange_id=?""",
+        (int(exchange_id),),
+    ).fetchall():
+        matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, int(row["id"]), "parameter"))
+    identities = {m[0] for m in matches}
+    if len(identities) != 1:
+        return None
+    identity_id = next(iter(identities))
+    same = [m for m in matches if m[0] == identity_id]
+    contexts = {m[1] for m in same if m[1] is not None}
+    context_id = next(iter(contexts)) if len(contexts) == 1 else None
+    resolver_id = next((m[2] for m in same if m[2] is not None), None)
+    source = "+".join(sorted({m[3] for m in same}))[:120]
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO exchange_identities(exchange_id,identity_id,context_id,source,confidence,resolver_id,assigned_at)
+           VALUES(?,?,?,?,?,?,?)
+           ON CONFLICT(exchange_id) DO UPDATE SET identity_id=excluded.identity_id,context_id=excluded.context_id,source=excluded.source,
+             confidence=excluded.confidence,resolver_id=excluded.resolver_id,assigned_at=excluded.assigned_at""",
+        (int(exchange_id), identity_id, context_id, source, "high", resolver_id, now),
+    )
+    # Important for rotating sessions: once a stable resolver identifies an exchange,
+    # remember the fresh token/cookie fingerprint for future requests in the same session.
+    for material in materials:
+        _learn_material(conn, identity_id, context_id, material, source="resolver")
+    return dict(conn.execute("SELECT * FROM exchange_identities WHERE exchange_id=?", (int(exchange_id),)).fetchone())
+
+
+def resolve_all(conn, *, limit: int = 100000) -> dict[str, int]:
+    init_schema(conn)
+    ids = [int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges ORDER BY id DESC LIMIT ?", (max(1, int(limit)),)).fetchall()]
+    resolved = 0
+    for exchange_id in ids:
+        if resolve_exchange(conn, exchange_id):
+            resolved += 1
+    return {"exchanges": len(ids), "resolved": resolved}
+
+
+def list_identities(conn) -> list[dict[str, Any]]:
+    init_schema(conn)
+    rows = conn.execute(
+        """SELECT i.*,
+                  (SELECT COUNT(*) FROM identity_contexts c WHERE c.identity_id=i.id) contexts,
+                  (SELECT COUNT(*) FROM auth_materials a WHERE a.identity_id=i.id AND a.active=1) auth_materials,
+                  (SELECT COUNT(*) FROM identity_resolvers r WHERE r.identity_id=i.id AND r.enabled=1) resolvers,
+                  (SELECT COUNT(*) FROM exchange_identities e WHERE e.identity_id=i.id) exchanges
+           FROM identities i ORDER BY lower(i.name)"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def contexts(conn, identity_id: int | None = None) -> list[dict[str, Any]]:
+    init_schema(conn)
+    if identity_id:
+        rows = conn.execute("SELECT * FROM identity_contexts WHERE identity_id=? ORDER BY lower(label)", (int(identity_id),)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM identity_contexts ORDER BY identity_id,lower(label)").fetchall()
+    return [dict(r) for r in rows]
+
+
+def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
+    init_schema(conn)
+    identity = conn.execute("SELECT * FROM identities WHERE id=?", (int(identity_id),)).fetchone()
+    if not identity:
+        return None
+    ctx = contexts(conn, int(identity_id))
+    materials = [dict(r) for r in conn.execute(
+        "SELECT * FROM auth_materials WHERE identity_id=? ORDER BY last_seen_at DESC LIMIT 100", (int(identity_id),)
+    ).fetchall()]
+    resolvers = [dict(r) for r in conn.execute(
+        "SELECT * FROM identity_resolvers WHERE identity_id=? ORDER BY enabled DESC,updated_at DESC LIMIT 100", (int(identity_id),)
+    ).fetchall()]
+    exchanges = [dict(r) for r in conn.execute(
+        """SELECT ei.*,h.hostname,r.path,o.method,e.status_code,e.first_seen_at,c.label context_label
+           FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
+           JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+           LEFT JOIN identity_contexts c ON c.id=ei.context_id
+           WHERE ei.identity_id=? ORDER BY ei.exchange_id DESC LIMIT 100""", (int(identity_id),)
+    ).fetchall()]
+    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "exchanges": exchanges}
+
+
+def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:
+    init_schema(conn)
+    row = conn.execute(
+        """SELECT e.id exchange_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not row:
+        return None
+    current = conn.execute(
+        """SELECT ei.*,i.name identity_name,c.label context_label FROM exchange_identities ei
+           JOIN identities i ON i.id=ei.identity_id LEFT JOIN identity_contexts c ON c.id=ei.context_id
+           WHERE ei.exchange_id=?""", (int(exchange_id),)
+    ).fetchone()
+    return {"exchange": dict(row), "current": dict(current) if current else None, "materials": extract_auth_materials(conn, int(exchange_id))}
+
+
+def stats(conn) -> dict[str, int]:
+    init_schema(conn)
+    total = int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0)
+    assigned = int(conn.execute("SELECT COUNT(*) c FROM exchange_identities").fetchone()["c"] or 0)
+    return {
+        "identities": int(conn.execute("SELECT COUNT(*) c FROM identities").fetchone()["c"] or 0),
+        "contexts": int(conn.execute("SELECT COUNT(*) c FROM identity_contexts").fetchone()["c"] or 0),
+        "assigned": assigned,
+        "unknown": max(0, total - assigned),
+    }
+
+
+def _route_shape(path: str) -> str:
+    raw = str(path or "/")
+    parts = []
+    uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$")
+    hex_re = re.compile(r"^[0-9a-fA-F]{12,64}$")
+    for seg in raw.split("/"):
+        if re.fullmatch(r"\d{2,}", seg or "") or uuid_re.fullmatch(seg or "") or hex_re.fullmatch(seg or ""):
+            parts.append("{id}")
+        else:
+            parts.append(seg)
+    return "/".join(parts) or "/"
+
+
+def authorization_matrix(conn, identity_ids: list[int] | None = None, *, limit_routes: int = 500) -> dict[str, Any]:
+    """Observed-only authorization matrix.
+
+    Cells describe only exchanges actually captured for an identity. Missing cells
+    are explicitly `not_observed`; they never mean allowed or denied.
+    """
+    init_schema(conn)
+    all_identities = list_identities(conn)
+    selected = [int(x) for x in (identity_ids or []) if int(x) > 0]
+    if not selected:
+        selected = [int(x["id"]) for x in all_identities]
+    selected_set = set(selected)
+    rows = conn.execute(
+        """SELECT ei.identity_id,ei.context_id,ei.exchange_id,i.name identity_name,c.label context_label,
+                  h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+           FROM exchange_identities ei
+           JOIN identities i ON i.id=ei.identity_id
+           LEFT JOIN identity_contexts c ON c.id=ei.context_id
+           JOIN http_exchanges e ON e.id=ei.exchange_id
+           JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id
+           JOIN hosts h ON h.id=r.host_id
+           ORDER BY e.id"""
+    ).fetchall()
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for r in rows:
+        iid = int(r["identity_id"])
+        if iid not in selected_set:
+            continue
+        shape = _route_shape(str(r["path"] or "/"))
+        key = (str(r["hostname"]), str(r["method"]), shape)
+        item = grouped.setdefault(key, {"host": key[0], "method": key[1], "shape": key[2], "cells": {}, "objects": set()})
+        item["objects"].add(str(r["path"] or "/"))
+        cell = item["cells"].setdefault(iid, {"count": 0, "statuses": {}, "examples": [], "contexts": set()})
+        cell["count"] += 1
+        status = str(r["status_code"] if r["status_code"] is not None else "—")
+        cell["statuses"][status] = int(cell["statuses"].get(status, 0)) + 1
+        if len(cell["examples"]) < 4:
+            cell["examples"].append({"exchange_id": int(r["exchange_id"]), "path": str(r["path"]), "status": status})
+        if r["context_label"]:
+            cell["contexts"].add(str(r["context_label"]))
+    out = []
+    for item in grouped.values():
+        cells = {}
+        for iid in selected:
+            raw = item["cells"].get(iid)
+            if not raw:
+                cells[iid] = {"observed": False, "count": 0, "statuses": {}, "examples": [], "contexts": []}
+            else:
+                cells[iid] = {**raw, "observed": True, "contexts": sorted(raw["contexts"])}
+        out.append({**item, "objects": sorted(item["objects"]), "cells": cells})
+    out.sort(key=lambda x: (x["host"], x["shape"], x["method"]))
+    identities_by_id = {int(x["id"]): x for x in all_identities if int(x["id"]) in selected_set}
+    return {"identities": [identities_by_id[i] for i in selected if i in identities_by_id], "rows": out[: max(1, min(int(limit_routes), 2000))]}

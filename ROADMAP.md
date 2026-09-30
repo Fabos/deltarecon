@@ -152,7 +152,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 
 1. Global Search + FTS5 + Saved Searches + guía “Aprende a buscar como hacker”.
 2. Parameter Explorer + Follow Value + Find Related + Smart Diff.
-3. Identity Contexts + auth material rotatorio + identity resolvers + Authorization Matrix.
+3. Identity Contexts + auth material rotatorio + identity resolvers + Authorization Matrix. ✅ v0.23.
 4. Flow Capture + Flow Compare + business-state observations.
 5. Pattern anomalies + cross-host correlation + business objects.
 6. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
@@ -185,10 +185,21 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Find Related con razones transparentes de correlación;
 - Smart Diff priorizando campos de negocio y enmascarando headers sensibles.
 
-## Siguiente fase inmediata — v0.23 Identity Contexts
+## Implementado en v0.23.0 — Search unificado + Identity Contexts
 
-- separar Identity de Auth Material rotatorio;
-- resolvers configurables desde JWT claims, cookies, headers y endpoints `/me`;
-- asignación/aprendizaje de identidad siempre bajo control humano;
-- comparación entre identidades y Authorization Matrix basada sólo en tráfico observado;
-- reutilizar Parameter Explorer / Follow Value para resolver identificadores estables.
+- Search es la entrada universal para texto, valores y parámetros;
+- resultados estructurados muestran Follow Value, Find Related, Smart Diff e Identity actions sin cambiar de módulo;
+- Parameter Explorer queda como drill-down técnico y corrige el contador `values`;
+- Identity separada de Auth Material rotatorio y de Context (role/tenant);
+- asignación manual de identidad a un exchange conocido;
+- aprendizaje local de cookie/Bearer fingerprints;
+- resolvers automáticos de claims JWT estables (`sub`, `userId`, `accountId`, email);
+- resolvers manuales desde observaciones de parámetros estables;
+- una sesión/token rotado puede resolverse a la misma Identity y luego enseñar su nuevo auth material;
+- `Unknown` se conserva si no hay coincidencia única;
+- Authorization Matrix basada **solo en tráfico observado**, con `No observado` explícito y sin inferir acceso.
+
+## Siguiente fase inmediata
+
+- Flow Capture + Flow Compare + business-state observations;
+- después, Pattern Anomalies + cross-host correlation + business objects.

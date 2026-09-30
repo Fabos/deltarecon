@@ -72,7 +72,7 @@ UI_LABELS = {
     "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual",
-    "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP",
+    "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
     "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
     "request": "Solicitud", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
@@ -186,6 +186,12 @@ def _rebuild_parameter_index(paths: dict[str, Path]) -> dict[str, int]:
         except Exception as exc:
             print(f"[parameter-index] search refresh error={type(exc).__name__}: {str(exc)[:160]}")
         return result
+
+
+def _resolve_identity_history(paths: dict[str, Path]) -> dict[str, int]:
+    import negro_identity as identity_tools
+    with _db(paths) as conn:
+        return identity_tools.resolve_all(conn)
 
 
 def _refresh_search(conn, *, host_id: int | None = None, resource_id: int | None = None, exchange_id: int | None = None, knowledge: bool = False) -> None:
@@ -2383,12 +2389,10 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/t/{target_key}/search", response_class=HTMLResponse)
     def search_page(request: Request, target_key: str, q: str = ""):
         import negro_search as search_index
+        import negro_parameters as parameter_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             search_index.init_schema(conn)
-            # Knowledge entities are tiny compared with HTTP history, so keep them
-            # fresh on page load. HTTP exchanges are indexed during Burp ingest or
-            # through the explicit historical rebuild.
             try:
                 search_index.index_knowledge(conn)
             except Exception:
@@ -2397,17 +2401,40 @@ def create_app(default_domain: str, default_workspace: Path):
             saved = search_index.list_saved_searches(conn)
             result = search_index.search(conn, q, limit=160) if q.strip() else {"results":[],"count":0,"error":None,"parsed":None,"fts":""}
             rows = list(result.get("results") or [])
+            parsed = result.get("parsed")
+            terms = list(getattr(parsed, "text_terms", []) or [])
+            filters = dict(getattr(parsed, "filters", {}) or {})
+            parameter_hits = parameter_tools.search_hits(conn, terms, host_filters=filters.get("host"), limit=80) if q.strip() and not result.get("error") else []
+            for hit in parameter_hits:
+                hit["http_href"] = f"/t/{target_key}/resource/{int(hit['resource_id'])}?exchange={int(hit['exchange_id'])}#exchange-{int(hit['exchange_id'])}"
+                hit["follow_href"] = f"/t/{target_key}/parameters/follow/{int(hit['id'])}"
+                hit["parameter_href"] = f"/t/{target_key}/parameters/{urllib.parse.quote(str(hit['normalized_name']))}"
+                hit["related_href"] = f"/t/{target_key}/parameters/related/{int(hit['exchange_id'])}"
+                hit["diff_href"] = f"/t/{target_key}/parameters/diff?a={int(hit['exchange_id'])}"
+                hit["identity_resolver_href"] = f"/t/{target_key}/identities/resolver?observation_id={int(hit['id'])}"
             for item in rows:
                 typ=str(item.get("entity_type") or "")
                 if typ=="exchange" and item.get("resource_id"):
                     item["href"]=f"/t/{target_key}/resource/{int(item['resource_id'])}?exchange={int(item['exchange_id'])}#exchange-{int(item['exchange_id'])}"
+                    item["parameter_matches"] = parameter_tools.matching_observations_for_exchange(conn, int(item["exchange_id"]), terms)
+                    item["related_href"] = f"/t/{target_key}/parameters/related/{int(item['exchange_id'])}"
+                    item["diff_href"] = f"/t/{target_key}/parameters/diff?a={int(item['exchange_id'])}"
+                    item["identity_href"] = f"/t/{target_key}/identities/assign?exchange_id={int(item['exchange_id'])}"
+                    identity_row = conn.execute(
+                        """SELECT i.name identity_name,c.label context_label,ei.source identity_source
+                           FROM exchange_identities ei JOIN identities i ON i.id=ei.identity_id
+                           LEFT JOIN identity_contexts c ON c.id=ei.context_id WHERE ei.exchange_id=?""",
+                        (int(item["exchange_id"]),),
+                    ).fetchone()
+                    item["identity"] = dict(identity_row) if identity_row else None
                 elif typ=="resource": item["href"]=f"/t/{target_key}/resource/{int(item['entity_id'])}"
                 elif typ=="host": item["href"]=f"/t/{target_key}/host/{int(item['entity_id'])}"
                 elif typ=="hypothesis": item["href"]=f"/t/{target_key}/hypotheses#hypothesis-{int(item['entity_id'])}"
                 elif typ=="investigation": item["href"]=f"/t/{target_key}/hypotheses#investigation-{int(item['entity_id'])}"
                 elif typ=="finding": item["href"]=f"/t/{target_key}/finding/{int(item['entity_id'])}"
+                elif typ=="identity": item["href"]=f"/t/{target_key}/identities/view/{int(item['entity_id'])}"
                 else: item["href"]=f"/t/{target_key}/hosts"
-        return render(request,"search.html",target_key,domain,workspace,q=q,search_result=result,search_rows=rows,search_stats=stats,saved_searches=saved)
+        return render(request,"search.html",target_key,domain,workspace,q=q,search_result=result,search_rows=rows,parameter_hits=parameter_hits,search_stats=stats,saved_searches=saved)
 
     @app.post("/t/{target_key}/search/reindex", response_class=JSONResponse)
     def search_reindex(request: Request, target_key: str, csrf: str = Form(...)):
@@ -2433,6 +2460,122 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             search_index.delete_saved_search(conn,search_id)
         return RedirectResponse(url=f"/t/{target_key}/search",status_code=303)
+
+    @app.get("/t/{target_key}/identities", response_class=HTMLResponse)
+    def identities_page(request: Request, target_key: str):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            identity_tools.init_schema(conn)
+            identity_rows = identity_tools.list_identities(conn)
+            identity_stats = identity_tools.stats(conn)
+            recent_unknown = [dict(r) for r in conn.execute(
+                """SELECT e.id exchange_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+                   FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+                   LEFT JOIN exchange_identities ei ON ei.exchange_id=e.id
+                   WHERE ei.exchange_id IS NULL ORDER BY e.id DESC LIMIT 30"""
+            ).fetchall()]
+        return render(request, "identities.html", target_key, domain, workspace, identities=identity_rows, identity_stats=identity_stats, recent_unknown=recent_unknown)
+
+    @app.post("/t/{target_key}/identities/create")
+    def identity_create(request: Request, target_key: str, name: str = Form(...), kind: str = Form("account"), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_identity as identity_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            identity_id = identity_tools.create_identity(conn, name, kind=kind, notes=notes)
+            _refresh_search(conn, knowledge=True)
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+
+    @app.get("/t/{target_key}/identities/view/{identity_id}", response_class=HTMLResponse)
+    def identity_detail_page(request: Request, target_key: str, identity_id: int):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            detail = identity_tools.identity_detail(conn, identity_id)
+            if not detail:
+                raise HTTPException(status_code=404, detail="Identidad no encontrada")
+        return render(request, "identity_detail.html", target_key, domain, workspace, identity_detail=detail)
+
+    @app.post("/t/{target_key}/identities/view/{identity_id}/context")
+    def identity_context_create(request: Request, target_key: str, identity_id: int, label: str = Form(...), role: str = Form(""), tenant: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_identity as identity_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            identity_tools.create_context(conn, identity_id, label, role=role, tenant=tenant, notes=notes)
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+
+    @app.get("/t/{target_key}/identities/assign", response_class=HTMLResponse)
+    def identity_assign_page(request: Request, target_key: str, exchange_id: int):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            ctx = identity_tools.assignment_context(conn, exchange_id)
+            if not ctx:
+                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+            identity_rows = identity_tools.list_identities(conn)
+            all_contexts = identity_tools.contexts(conn)
+        return render(request, "identity_assign.html", target_key, domain, workspace, assignment=ctx, identities=identity_rows, identity_contexts=all_contexts)
+
+    @app.post("/t/{target_key}/identities/assign")
+    def identity_assign_submit(request: Request, target_key: str, exchange_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), learn_auth: str = Form("no"), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_identity as identity_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        cid = int(context_id) if str(context_id).strip().isdigit() else None
+        with _db(paths) as conn:
+            identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=cid, learn_auth=(learn_auth == "yes"), source="manual", notes=notes)
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+
+    @app.get("/t/{target_key}/identities/resolver", response_class=HTMLResponse)
+    def identity_resolver_page(request: Request, target_key: str, observation_id: int):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            obs = conn.execute(
+                """SELECT p.*,h.hostname,r.path,o.method,e.status_code FROM parameter_observations p
+                   JOIN http_exchanges e ON e.id=p.exchange_id JOIN resource_operations o ON o.id=p.operation_id
+                   JOIN resources r ON r.id=p.resource_id JOIN hosts h ON h.id=r.host_id WHERE p.id=?""",
+                (int(observation_id),),
+            ).fetchone()
+            if not obs:
+                raise HTTPException(status_code=404, detail="Observación no encontrada")
+            identity_rows = identity_tools.list_identities(conn)
+            all_contexts = identity_tools.contexts(conn)
+        return render(request, "identity_resolver.html", target_key, domain, workspace, observation=dict(obs), identities=identity_rows, identity_contexts=all_contexts)
+
+    @app.post("/t/{target_key}/identities/resolver")
+    def identity_resolver_submit(request: Request, target_key: str, observation_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), csrf: str = Form(...)):
+        import negro_identity as identity_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        cid = int(context_id) if str(context_id).strip().isdigit() else None
+        with _db(paths) as conn:
+            identity_tools.add_parameter_resolver(conn, observation_id, identity_id, context_id=cid)
+            # The exchange that taught the resolver is a human-authorized anchor.
+            obs = conn.execute("SELECT exchange_id FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
+            if obs:
+                identity_tools.assign_exchange(conn, int(obs["exchange_id"]), identity_id, context_id=cid, learn_auth=True, source="parameter_resolver")
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+
+    @app.post("/t/{target_key}/identities/resolve-history", response_class=JSONResponse)
+    def identity_resolve_history(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        job_id = _start_job("Resolver identidades históricas", target_key, _resolve_identity_history, paths)
+        return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": f"/t/{target_key}/identities"})
+
+    @app.get("/t/{target_key}/identities/matrix", response_class=HTMLResponse)
+    def identity_matrix_page(request: Request, target_key: str, a: int | None = None, b: int | None = None):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        selected = [x for x in (a, b) if x]
+        with _db(paths) as conn:
+            matrix = identity_tools.authorization_matrix(conn, selected)
+            identity_rows = identity_tools.list_identities(conn)
+        return render(request, "identity_matrix.html", target_key, domain, workspace, matrix=matrix, identities=identity_rows, a=a or "", b=b or "")
 
     @app.get("/t/{target_key}/parameters", response_class=HTMLResponse)
     def parameters_page(request: Request, target_key: str, q: str = "", location: str = "", host: str = ""):
@@ -3219,6 +3362,13 @@ def create_app(default_domain: str, default_workspace: Path):
             import negro_hunter as hunter
             with _db(paths) as conn:
                 passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
+                # Resolve identity only from locally observed evidence. Unknown is
+                # preserved when no single human-taught resolver/material matches.
+                try:
+                    import negro_identity as identity_tools
+                    identity_tools.resolve_exchange(conn, int(result["exchange_id"]))
+                except Exception as identity_exc:
+                    print(f"[identity] exchange={result.get('exchange_id')} error={type(identity_exc).__name__}: {str(identity_exc)[:160]}")
                 # Keep Search Everything current after deterministic Signals are
                 # persisted. Search indexing is local-only and sends no network traffic.
                 try:

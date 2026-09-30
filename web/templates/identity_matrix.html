@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Authorization Matrix · Negro{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><p class="eyebrow">AUTHORIZATION MATRIX · OBSERVED ONLY</p><h1>Comparar identidades por tráfico observado</h1><p class="muted">Cada celda representa requests que Burp realmente observó bajo esa identidad. <b>— No observado</b> no significa permitido ni denegado.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
+</section>
+<section class="panel">
+  <form class="matrix-filter" method="get">
+    <label><span>Identidad A</span><select name="a"><option value="">Todas</option>{% for i in identities %}<option value="{{ i.id }}" {% if a==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select></label>
+    <label><span>Identidad B</span><select name="b"><option value="">—</option>{% for i in identities %}<option value="{{ i.id }}" {% if b==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select></label>
+    <button class="button" type="submit">Comparar</button>
+  </form>
+</section>
+<section class="panel matrix-panel">
+  <div class="panel-head"><div><p class="eyebrow">MATRIZ</p><h2>{{ matrix.rows|length }} rutas observadas</h2><p class="muted">Las rutas con IDs se agrupan visualmente como <code>{id}</code>; abre los ejemplos para ver el objeto concreto.</p></div></div>
+  <div class="matrix-wrap"><table class="authorization-matrix"><thead><tr><th>Ruta</th>{% for i in matrix.identities %}<th>{{ i.name }}</th>{% endfor %}</tr></thead><tbody>
+  {% for row in matrix.rows %}
+    <tr><td><b>{{ row.method }}</b> <code>{{ row.host }}{{ row.shape }}</code><small>{{ row.objects|length }} path(s) concretos observados</small></td>
+    {% for i in matrix.identities %}{% set cell=row.cells[i.id] %}<td>{% if cell.observed %}<div class="matrix-cell observed"><b>{{ cell.count }} obs.</b><div class="matrix-statuses">{% for status,count in cell.statuses.items() %}<span>HTTP {{ status }} ×{{ count }}</span>{% endfor %}</div>{% if cell.contexts %}<small>{{ cell.contexts|join(', ') }}</small>{% endif %}<div class="matrix-examples">{% for ex in cell.examples %}<a href="{{ target_base }}/search?q={{ ('path:' ~ ex.path)|urlencode }}">#{{ ex.exchange_id }} · {{ ex.path }}</a>{% endfor %}</div></div>{% else %}<span class="matrix-not-observed">— No observado</span>{% endif %}</td>{% endfor %}</tr>
+  {% else %}<tr><td colspan="20" class="empty">Aún no hay suficiente tráfico con identidades asignadas.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

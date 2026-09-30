@@ -320,6 +320,21 @@ def index_knowledge(conn: sqlite3.Connection) -> int:
             "human_state": "finding", "signal_kind": "finding", "preview": _safe_preview(str(row["description"] or row["title"])), "updated_at": str(row["updated_at"] or now_iso()),
         }, {"all_text": text, "signals_text": "finding " + str(row["severity"] or ""), "notes_text": "\n".join(notes)})
         count += 1
+    # Identity/context names are user-provided knowledge and are safe to index.
+    try:
+        import negro_identity as identity_tools
+        identity_tools.init_schema(conn)
+        for row in conn.execute("SELECT * FROM identities ORDER BY id").fetchall():
+            ctx = [dict(x) for x in conn.execute("SELECT label,role,tenant,notes FROM identity_contexts WHERE identity_id=? ORDER BY id", (int(row["id"]),)).fetchall()]
+            ctx_text = "\n".join(" ".join(str(x.get(k) or "") for k in ("label","role","tenant","notes")) for x in ctx)
+            text = "\n".join([str(row["name"] or ""), str(row["kind"] or ""), str(row["notes"] or ""), ctx_text])
+            _replace_doc(conn, {
+                "doc_key": f"identity:{row['id']}", "entity_type": "identity", "entity_id": int(row["id"]), "host": "", "path": "", "method": "", "status": "",
+                "human_state": "", "signal_kind": "identity", "preview": _safe_preview(ctx_text or str(row["notes"] or row["name"])), "updated_at": str(row["updated_at"] or now_iso()),
+            }, {"all_text": text, "notes_text": text})
+            count += 1
+    except Exception:
+        pass
     return count
 
 

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.22.0
+# Negro Recon — Metodología v0.23.0
 
 ## Modelo mental: Rule → Signal → Hipótesis IA → Investigación
 
@@ -12,46 +12,38 @@ Negro no intenta reemplazar Burp ni decidir vulnerabilidades por el hacker.
 
 ## Buscar
 
-La búsqueda es local y sirve para localizar texto o fragmentos en la memoria de Negro. Para términos de 3 o más caracteres usa un índice trigram, por lo que una consulta parcial puede coincidir dentro de un valor mayor:
+**Buscar** es la entrada universal. Texto libre encuentra fragmentos en tráfico y conocimiento; si además coincide con una observación estructurada, la misma pantalla ofrece acciones de Parameter Explorer. Ejemplos:
 
 ```text
-1223
+4101
+ownerId
 AIza
-response:ownerId
-param:tenant
+host:api.example.com method:GET ownerId
 ```
 
-Filtros disponibles:
+Filtros disponibles: `host:`, `method:`, `status:`, `state:`, `signal:`, `param:`, `cookie:`, `header:`, `body:`, `request:`, `response:`, `path:`, `type:` y `contains:`.
 
-```text
-host:api.example.com
-method:POST
-status:403
-state:learning
-signal:authorization
-param:userId
-cookie:session
-header:X-Tenant-Id
-body:ownerId
-request:redirect_uri
-response:roleId
-path:/orders/
-type:investigation
-contains:redirect_uri
-```
+Parameter Explorer queda como vista de detalle: **Search responde dónde aparece algo; Parameter Explorer responde cómo se comporta ese nombre/valor a lo largo del sistema.**
 
-Los filtros pueden combinarse. Saved Searches guarda la consulta, no cambia estados ni crea hallazgos.
+### Follow Value / Find Related / Smart Diff
 
-## Parameter Explorer / Follow Value
+`parameter_observations` deriva escalares de query, path, request JSON/form y response JSON. Cada observación conserva nombre normalizado, superficie, exchange, recurso, hash del valor y preview. Valores sensibles se enmascaran.
 
-`parameter_observations` es una capa derivada de la evidencia HTTP. Extrae escalares de query, IDs probables del path, JSON/form del request y JSON del response. Cada observación guarda nombre normalizado, superficie, exchange, recurso, hash del valor y un preview; valores sensibles se enmascaran.
+- **Follow Value**: mismo valor exacto por hash.
+- **Find Related**: exchanges cercanos por evidencia compartida, con razones visibles.
+- **Smart Diff**: diferencias relevantes entre dos exchanges antes del ruido de headers.
 
-- **Parameter Explorer** responde “¿dónde aparece este nombre?”.
-- **Follow Value** responde “¿dónde vuelve a aparecer exactamente este valor?”.
-- **Find Related** usa evidencia compartida para sugerir exchanges cercanos y explica los motivos.
-- **Smart Diff** compara dos exchanges y ordena primero campos de negocio; no declara vulnerabilidades.
+## Identity Contexts
 
-Esta capa será la base de Identity Contexts: antes de resolver identidades necesitamos saber dónde viajan `userId`, `accountId`, `ownerId`, `tenantId`, tokens y otros identificadores.
+Negro separa **Identity**, **Context** y **Auth Material**. La identidad representa a la cuenta/persona; el contexto representa rol/tenant; el auth material representa la credencial concreta que puede rotar.
+
+La primera asociación es humana: `Asignar identidad` sobre un exchange conocido. A partir de ahí Negro puede recordar fingerprints locales de cookies/Bearer y, si el token es JWT, resolvers de claims estables como `sub`, `userId` o `accountId`. Si un resolver estable identifica una sesión nueva, Negro aprende el auth material rotado de esa sesión para siguientes requests.
+
+También se puede enseñar un resolver desde una observación de parámetro estable (por ejemplo un `userId` de `/me`). Si no hay una coincidencia única, la identidad permanece **desconocida**; Negro no adivina.
+
+### Authorization Matrix
+
+La matriz es descriptiva, no conclusiva. Agrupa rutas observadas y muestra qué status/cantidad de exchanges existen para cada identidad. Una celda vacía se representa como **No observado**; no se infiere acceso, bloqueo ni vulnerabilidad.
 
 ## Mapa
 
