@@ -1,4 +1,11 @@
-# Negro Recon 🐕 — v0.19.0
+# Negro Recon 🐕 — v0.19.1
+
+
+## v0.19.1 — Route Canvas Hydration Fix
+
+Corrige la perspectiva **Qué probar ahora**: en v0.19.0 las tarjetas de rutas podían existir mientras el canvas quedaba vacío, porque el overview cargaba sólo hosts y las tarjetas referenciaban recursos/métodos/requests/hipótesis todavía no materializados. v0.19.1 añade una proyección compacta `scope=routes` que carga únicamente los nodos necesarios para las rutas prioritarias y la activa automáticamente al entrar en esa perspectiva.
+
+No cambia el modelo de reglas, proyectos ni el protocolo de Burp. Consulta `UPDATE-v0.19.1.md`.
 
 ## v0.19.0 — Guided Rule Knowledge Base
 

@@ -1251,6 +1251,102 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 "lead":int(conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"] or 0),
                 "finding":int(conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] or 0)}
 
+        if scope == "routes":
+            # Compact cross-resource projection used by "Qué probar ahora".
+            # The overview endpoint intentionally loads only host summaries for
+            # performance, while investigation routes reference deeper
+            # resource/operation/exchange/lead nodes.  Materialize only the
+            # top evidence-backed routes so the canvas can actually draw them
+            # without loading the entire target.
+            routes = _investigation_routes(conn, limit=8)
+            for route in routes:
+                hid = int(route.get("host_id") or 0)
+                rid = int(route.get("resource_id") or 0)
+                lead_id = int(route.get("lead_id") or 0)
+
+                hn = None
+                if hid:
+                    h = conn.execute("SELECT * FROM hosts WHERE id=?", (hid,)).fetchone()
+                    if h:
+                        hcov = _coverage_state(h["review_state"]); hsig, hfind = _entity_signal(conn, "host", hid, h["classification"])
+                        hn = add_node(
+                            f"host:{hid}", "host", h["hostname"], state=_visual_state(hcov, hsig),
+                            meta={"id":hid,"coverage":hcov,"signal":hsig,"finding_count":hfind,"review":h["review_state"],"classification":h["classification"],"priority":h["priority"]},
+                            href=f"host/{hid}",
+                        )
+                        add_edge(target, hn, "contains", source="investigation_routes")
+
+                rn = None
+                if rid:
+                    r = conn.execute("SELECT r.*,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?", (rid,)).fetchone()
+                    if r:
+                        if not hn:
+                            hid = int(r["host_id"] or 0)
+                            h = conn.execute("SELECT * FROM hosts WHERE id=?", (hid,)).fetchone()
+                            if h:
+                                hcov = _coverage_state(h["review_state"]); hsig, hfind = _entity_signal(conn, "host", hid, h["classification"])
+                                hn = add_node(f"host:{hid}", "host", h["hostname"], state=_visual_state(hcov, hsig), meta={"id":hid,"coverage":hcov,"signal":hsig,"finding_count":hfind,"review":h["review_state"],"classification":h["classification"],"priority":h["priority"]}, href=f"host/{hid}")
+                                add_edge(target, hn, "contains", source="investigation_routes")
+                        rcov = _coverage_state(r["review_state"]); rsig, rfind = _entity_signal(conn, "resource", rid, r["classification"])
+                        rn = add_node(
+                            f"resource:{rid}", "resource", r["path"] or r["url"], state=_visual_state(rcov, rsig),
+                            meta={"id":rid,"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind,"priority":r["priority"]},
+                            href=f"resource/{rid}",
+                        )
+                        if hn: add_edge(hn, rn, "contains", source="investigation_routes")
+
+                opn = None
+                op_id = 0
+                ex_id = 0
+                # route.node_ids already contains the exact evidence chain
+                # selected by _investigation_routes.
+                for node_id in route.get("node_ids") or []:
+                    if str(node_id).startswith("operation:"):
+                        try: op_id = int(str(node_id).split(":", 1)[1])
+                        except Exception: op_id = 0
+                    elif str(node_id).startswith("exchange:"):
+                        try: ex_id = int(str(node_id).split(":", 1)[1])
+                        except Exception: ex_id = 0
+
+                if op_id:
+                    o = conn.execute("SELECT o.*,r.path,r.url FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE o.id=?", (op_id,)).fetchone()
+                    if o:
+                        test_summary = hunter.operation_test_summary(conn, op_id)
+                        ostate = "interesting" if int(test_summary.get("interesting",0)) + int(test_summary.get("confirmed",0)) > 0 or (o["last_status"] and int(o["last_status"]) >= 500) else "normal"
+                        opn = add_node(f"operation:{op_id}", "operation", f"{o['method']} {o['path']}", state=ostate, meta={"id":op_id,"method":o["method"],"status":o["last_status"],"seen_count":o["seen_count"],"authenticated":bool(o["authenticated_observed"]),"last_seen_at":o["last_seen_at"],"url":o["url"],"test_summary":test_summary})
+                        parent = f"resource:{int(o['resource_id'])}"
+                        add_edge(parent, opn, "supports", source="investigation_routes")
+
+                exn = None
+                if ex_id:
+                    e = conn.execute("SELECT e.*,o.method,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?", (ex_id,)).fetchone()
+                    if e:
+                        exn = add_node(f"exchange:{ex_id}", "request", f"#{ex_id} {e['method']} · {e['status_code'] or '—'}", meta={"id":ex_id,"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                        add_edge(f"operation:{int(e['operation_id'])}", exn, "observed_in", source=e["source"] or "investigation_routes")
+
+                if lead_id:
+                    l = conn.execute("SELECT * FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()
+                    if l:
+                        lst = "tested" if l["status"] in ("discarded","negative") else "finding" if l["status"] == "confirmed" else "interesting"
+                        ln = add_node(
+                            f"lead:{lead_id}", "lead", l["title"], state=lst,
+                            meta={"id":lead_id,"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"],"result_notes":l["result_notes"] if "result_notes" in l.keys() else ""},
+                            href=f"hypotheses#hypothesis-{lead_id}",
+                        )
+                        if exn:
+                            add_edge(exn, ln, "supports_hypothesis", source=str(l["source"] or "engine").lower(), evidence={"exchange_id":ex_id})
+                        elif rn:
+                            add_edge(rn, ln, "produced_lead", source=str(l["source"] or "engine").lower())
+                        elif hn:
+                            add_edge(hn, ln, "produced_lead", source=str(l["source"] or "engine").lower())
+
+            counts: dict[str, int] = {}
+            for n in nodes: counts[n["type"]] = counts.get(n["type"], 0) + 1
+            return {
+                "target": project_name, "nodes": nodes, "edges": edges, "routes": routes, "counts": totals, "generated_at": _now(),
+                "meta": {"scope":"routes","scope_label":"Qué probar ahora · rutas de investigación","large_target":total_resources>800,"loaded_counts":counts},
+            }
+
         if scope == "overview" or (scope == "host" and not host_id) or (scope == "resource" and not resource_id):
             rows=conn.execute("""
                 SELECT h.*,

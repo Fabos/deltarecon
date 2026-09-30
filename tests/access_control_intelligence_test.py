@@ -137,6 +137,20 @@ def main():
             assert all(r["next_test"] for r in routes), routes
             assert all(str(r["id"]).startswith("route:") for r in routes), routes
 
+        # The "Qué probar ahora" projection must materialize the nodes that
+        # its route cards reference.  v0.19.0 exposed cards from overview but
+        # left the canvas empty until the user clicked one.
+        route_graph = web._graph_data(paths, domain, scope="routes")
+        assert route_graph.get("routes"), route_graph
+        route_node_ids = {nid for r in route_graph["routes"] for nid in (r.get("node_ids") or [])}
+        graph_node_ids = {n["id"] for n in route_graph["nodes"]}
+        assert any(nid.startswith("lead:") for nid in route_node_ids), route_node_ids
+        assert any(nid.startswith("resource:") for nid in route_node_ids), route_node_ids
+        assert route_node_ids & graph_node_ids, (route_node_ids, graph_node_ids)
+        for route in route_graph["routes"]:
+            essential = [nid for nid in (route.get("node_ids") or []) if nid.startswith(("host:","resource:","operation:","lead:"))]
+            assert all(nid in graph_node_ids for nid in essential), (route, graph_node_ids)
+
         # Resource detail should expose hypotheses and review aids without inventing findings.
         detail = web._resource_detail(paths, int(patch["resource_id"]))
         assert detail and detail.get("resource_hypotheses"), detail

@@ -24,6 +24,10 @@
 
 # Negro Recon — Roadmap posterior a v0.9.0
 
+## Implementado en v0.19.1
+
+- `Qué probar ahora` materializa automáticamente el subgrafo de las rutas prioritarias; las tarjetas y el canvas ya no pueden quedar desacoplados por progressive disclosure.
+
 ## Implementado en v0.19.0
 
 - Knowledge Base de detectores guiada por aprendizaje;

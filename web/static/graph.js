@@ -617,6 +617,21 @@
     const perspectiveCopy={surface:'Superficie · ¿qué existe?',untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · ¿qué observé realmente?',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista completa'};
     if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';
     updateLeadFilterVisibility();
+
+    // Overview is intentionally shallow for large targets.  Route cards can
+    // therefore exist while their resource/operation/lead nodes are not yet
+    // materialized.  When the investigator asks "Qué probar ahora", load a
+    // compact routes projection automatically instead of showing an empty
+    // canvas and forcing a card click first.
+    if(next==='attack' && String(graph.meta?.scope||'overview')!=='routes') {
+      detail.innerHTML=emptyDetail();
+      search.value='';
+      load(`${api}?scope=routes`).then(()=>{
+        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy.attack;
+      });
+      return;
+    }
+
     detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';applyFilters({fitAfter:true});renderRoutes();
   }
 
