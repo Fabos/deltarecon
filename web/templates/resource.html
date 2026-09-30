@@ -115,6 +115,17 @@
           {% for ex in op.exchanges %}
           <details class="exchange-card" id="exchange-{{ ex.id }}" {% if loop.first %}open{% endif %}>
             <summary><span>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %}</span><span>HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}×</span></summary>
+            {% if ex.focused and ex.match_evidence %}
+            <div class="exchange-focus-evidence">
+              <b>Coincidencia que te trajo a este exchange</b>
+              {% for ev in ex.match_evidence %}
+              <div class="exchange-focus-item">
+                <div class="secret-origin-grid"><span>Hipótesis</span><a href="{{ target_base }}/hypotheses#hypothesis-{{ ev.lead_id }}">#{{ ev.lead_id }} · {{ ev.lead_title }}</a><span>Detectado</span><code>{{ ev.masked_value }}</code><span>Superficie</span><code>{{ ev.surface }}</code><span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}no resuelta{% endif %}</code></div>
+                {% if ev.context_snippet %}<pre class="http-message match-context">{{ ev.context_snippet }}</pre>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
             <div class="exchange-actions">
               {% if ex.request_size and ex.request_size > 0 %}<form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><button class="button ghost small-button" type="submit">Enviar esta solicitud a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
               <details><summary>Usar como evidencia de hallazgo</summary><div class="exchange-finding-actions">

@@ -1,5 +1,11 @@
-# Negro Recon 🐕 — v0.19.2
+# Negro Recon 🐕 — v0.19.3
 
+
+## v0.19.3 — Exact Evidence Provenance
+
+Las hipótesis de secretos/configuración ahora explican exactamente de qué exchange y superficie salió la coincidencia, muestran el valor enmascarado, fingerprint, patrón, offset/línea/columna y una ventana de contexto enmascarada. Los botones abren el exchange exacto, incluso si quedó fuera de los 30 más recientes. Evidencia histórica se resuelve al abrirla, sin repetir enumeración.
+
+Consulta `UPDATE-v0.19.3.md`.
 
 ## v0.19.2 — Fullscreen Map + Local Intelligence Recalculation
 

@@ -1272,6 +1272,100 @@ def _secret_fingerprint(value: Any) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
+
+
+def _secret_pattern_entry(secret_type: str):
+    wanted = str(secret_type or "").lower()
+    for stype, label, regex, severity in SECRET_PATTERNS:
+        if stype.lower() == wanted:
+            return stype, label, regex, severity
+    return None
+
+
+def _masked_secret_context(text: str, start: int, end: int, *, radius: int = 240) -> str:
+    """Return a small forensic window without persisting raw secret values."""
+    left = max(0, int(start) - radius)
+    right = min(len(text), int(end) + radius)
+    snippet = text[left:right]
+    # Mask every secret signature we already know, not only the current match.
+    for _stype, _label, regex, _severity in SECRET_PATTERNS:
+        snippet = regex.sub(lambda m: _mask_value(m.group(0)), snippet)
+    # Also mask structured sensitive fields that may sit next to the matched secret.
+    # A provenance window must never turn into a second secret-disclosure channel.
+    sensitive_names = sorted({str(x) for x in globals().get("SENSITIVE_RESPONSE_KEYS", set()) if str(x)}, key=len, reverse=True)
+    if sensitive_names:
+        names = "|".join(re.escape(x) for x in sensitive_names)
+        kv = re.compile(r"(?i)([\"']?(?:" + names + r")[\"']?\s*[:=]\s*[\"'])([^\"'\r\n]{1,500})([\"'])")
+        snippet = kv.sub(lambda m: m.group(1) + _mask_value(m.group(2)) + m.group(3), snippet)
+    snippet = re.sub(r"(?i)(Authorization\s*:\s*(?:Bearer|Basic)\s+)([^\s\r\n]+)", lambda m: m.group(1)+_mask_value(m.group(2)), snippet)
+    # Keep the evidence readable in one card while preserving nearby code/config.
+    return snippet.replace("\x00", "").strip()[:1200]
+
+
+def secret_evidence_details(conn, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve one persisted secret clue back to the exact stored Burp exchange.
+
+    The raw secret is never returned.  This works for older leads that only stored
+    exchange_id + fingerprint, so upgrading Negro immediately makes historical
+    hypotheses explainable without re-enumerating or re-capturing traffic.
+    """
+    if not isinstance(evidence, dict):
+        return None
+    stype = str(evidence.get("secret_type") or "")
+    entry = _secret_pattern_entry(stype)
+    try:
+        exchange_id = int(evidence.get("exchange_id") or 0)
+    except Exception:
+        exchange_id = 0
+    if not entry or not exchange_id:
+        return None
+    _stype, label, regex, _severity = entry
+    row = conn.execute(
+        """SELECT e.id,e.request_b64,e.response_b64,e.status_code,e.source,e.tool,
+                  o.method,r.id AS resource_id,r.url,r.path
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id WHERE e.id=?""",
+        (exchange_id,),
+    ).fetchone()
+    if not row:
+        return None
+    surface = str(evidence.get("surface") or "response").lower()
+    full = _safe_b64_text(row["request_b64"] if surface == "request" else row["response_b64"])
+    _head, body = _split_http_message(full)
+    target_fp = str(evidence.get("fingerprint") or "")
+    match = None
+    for candidate in regex.finditer(body[:1_500_000]):
+        if not target_fp or _secret_fingerprint(candidate.group(0)) == target_fp:
+            match = candidate
+            break
+    if not match:
+        return {
+            "exchange_id": exchange_id, "resource_id": int(row["resource_id"]),
+            "method": str(row["method"] or ""), "url": str(row["url"] or ""),
+            "path": str(row["path"] or ""), "surface": surface, "secret_type": stype,
+            "label": label, "masked_value": str(evidence.get("masked_value") or ""),
+            "fingerprint": target_fp, "pattern": regex.pattern, "match_found": False,
+        }
+    start, end = match.span()
+    before_line = body.rfind("\n", 0, start)
+    line = body.count("\n", 0, start) + 1
+    column = start - before_line if before_line >= 0 else start + 1
+    context = _masked_secret_context(body, start, end)
+    low_context = context.lower()
+    context_hint = ""
+    if stype == "google_api_key" and ("google.maps" in low_context or "maps.googleapis.com" in low_context):
+        context_hint = "La coincidencia aparece junto a configuración/código de Google Maps JavaScript API; una key client-side puede ser pública por diseño y debe validarse por restricciones e impacto."
+    return {
+        "exchange_id": exchange_id, "resource_id": int(row["resource_id"]),
+        "method": str(row["method"] or ""), "url": str(row["url"] or ""),
+        "path": str(row["path"] or ""), "status_code": row["status_code"],
+        "source": str(row["source"] or ""), "tool": str(row["tool"] or ""),
+        "surface": surface, "secret_type": stype, "label": label,
+        "masked_value": _mask_value(match.group(0)), "fingerprint": _secret_fingerprint(match.group(0)),
+        "pattern": regex.pattern, "body_offset": start, "body_line": line, "body_column": column,
+        "context_snippet": context, "context_hint": context_hint, "match_found": True,
+    }
+
 def _json_fields(value: Any, prefix: str = "$") -> list[tuple[str, str, Any]]:
     out: list[tuple[str, str, Any]] = []
     if isinstance(value, dict):
@@ -1611,8 +1705,20 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             for match in list(regex.finditer(text[:1_500_000]))[:8]:
                 value = match.group(0)
                 fp = _secret_fingerprint(value)
+                start, end = match.span()
+                before_line = text.rfind("\n", 0, start)
+                line = text.count("\n", 0, start) + 1
+                column = start - before_line if before_line >= 0 else start + 1
+                context = _masked_secret_context(text, start, end)
+                low_context = context.lower()
+                context_hint = ""
+                if stype == "google_api_key" and ("google.maps" in low_context or "maps.googleapis.com" in low_context):
+                    context_hint = "La coincidencia aparece junto a configuración/código de Google Maps JavaScript API; una key client-side puede ser pública por diseño y debe validarse por restricciones e impacto."
                 ev = {"source":"burp_http","exchange_id":exchange_id,"method":method,"url":url,"surface":surface,
-                      "secret_type":stype,"masked_value":_mask_value(value),"fingerprint":fp,"rule_match":{"secret_type":stype}}
+                      "secret_type":stype,"masked_value":_mask_value(value),"fingerprint":fp,
+                      "pattern":regex.pattern,"body_offset":start,"body_line":line,"body_column":column,
+                      "context_snippet":context,"context_hint":context_hint,
+                      "rule_match":{"secret_type":stype}}
                 upsert_lead(conn, lead_key=f"burp_secret:{stype}:{fp}", host_id=hid, resource_id=rid,
                     lead_type="secret_or_client_config", title=f"{label} observada en tráfico HTTP", confidence="high", review_priority=severity,
                     evidence=[ev], why=f"Burp observó una señal de {label} en el {surface} de {method} {path}. La familia '{stype}' está habilitada en tu Knowledge Base.",

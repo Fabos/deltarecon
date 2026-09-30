@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.19.2
+# Negro Recon — Metodología v0.19.3
 
 ## Principio
 

@@ -36,10 +36,30 @@
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
   <div class="hypothesis-copy"><p><b>Por qué merece tiempo:</b> {{ h.why_interesting }}</p><p><b>Objetivo ofensivo:</b> {{ h.next_test }}</p></div>
   {% if h.rule_matches %}<div class="rule-match-box"><div><b>¿Qué regla disparó esta hipótesis?</b>{% if h.detector_id %}<a href="{{ target_base }}/settings/detectors/{{ h.detector_id }}">Abrir detector →</a>{% endif %}</div><div class="rule-match-grid">{% for match in h.rule_matches %}{% for k,v in match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}{% endfor %}</div></div>{% endif %}
-  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}#http"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Solicitud #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}{% if ref.source %} · {{ ref.source }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
+  {% if h.secret_evidence %}
+  <div class="secret-origin-box">
+    <div class="secret-origin-head"><div><b>¿De dónde salió esta coincidencia?</b><small>Negro conserva la procedencia exacta sin guardar el secreto completo en la hipótesis.</small></div></div>
+    {% for ev in h.secret_evidence %}
+    <div class="secret-origin-item">
+      <div class="secret-origin-grid">
+        <span>Detectado</span><code>{{ ev.masked_value }}</code>
+        <span>Exchange</span><a href="{{ target_base }}/resource/{{ ev.resource_id }}?exchange={{ ev.exchange_id }}#exchange-{{ ev.exchange_id }}">#{{ ev.exchange_id }} · {{ ev.method }} {{ ev.path }}</a>
+        <span>Superficie</span><code>{{ ev.surface }}</code>
+        <span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}la coincidencia histórica ya no pudo resolverse en el body guardado{% endif %}</code>
+        <span>Fingerprint</span><code>{{ ev.fingerprint }}</code>
+        <span>Patrón</span><code>{{ ev.pattern }}</code>
+      </div>
+      {% if ev.context_hint %}<p class="secret-context-hint">{{ ev.context_hint }}</p>{% endif %}
+      {% if ev.context_snippet %}<div class="secret-context"><div class="http-label">CONTEXTO EN {{ ev.surface|upper }} · valor enmascarado</div><pre class="http-message">{{ ev.context_snippet }}</pre></div>{% endif %}
+      <div class="secret-origin-actions"><a class="btn-secondary" href="{{ target_base }}/resource/{{ ev.resource_id }}?exchange={{ ev.exchange_id }}#exchange-{{ ev.exchange_id }}">Abrir exchange exacto #{{ ev.exchange_id }}</a></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}{% if ref.exchange_id %}?exchange={{ ref.exchange_id }}#exchange-{{ ref.exchange_id }}{% else %}#http{% endif %}"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Solicitud #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}{% if ref.source %} · {{ ref.source }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
   <div class="grid two hypothesis-signals"><div><b>Se vuelve interesante si</b><p>{{ h.confirm_if }}</p></div><div><b>Descártala si</b><p>{{ h.discard_if }}</p></div></div>
   <div class="hypothesis-actionbar">
-    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}#http">Abrir evidencia HTTP</a>{% endif %}
+    {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}{% if h.primary_exchange_id %}?exchange={{ h.primary_exchange_id }}#exchange-{{ h.primary_exchange_id }}{% else %}#http{% endif %}">{% if h.primary_exchange_id %}Abrir exchange #{{ h.primary_exchange_id }}{% else %}Abrir evidencia HTTP{% endif %}</a>{% endif %}
     {% if h.resource_id and h.primary_method %}<form action="{{ target_base }}/resource/{{ h.resource_id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ h.primary_method }}"><button class="btn-secondary" type="submit">Enviar a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
     {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}">Abrir recurso</a>{% endif %}
     <a class="btn-secondary" href="{{ target_base }}/graph?focus=lead:{{ h.id }}">Ver en mapa</a>

@@ -452,11 +452,22 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             except Exception:item['test_plan']=[]
             ai_meta={}
             rule_matches=[]
+            evidence_exchange_nodes=[]
+            secret_evidence=[]
             for ev in item['evidence']:
                 if isinstance(ev,dict) and ev.get('source')=='ai_graph' and not ai_meta:
                     ai_meta=ev
                 if isinstance(ev,dict) and isinstance(ev.get('rule_match'),dict):
                     rule_matches.append(ev.get('rule_match'))
+                if isinstance(ev,dict) and ev.get('exchange_id'):
+                    try:
+                        evidence_exchange_nodes.append(f"exchange:{int(ev.get('exchange_id'))}")
+                    except Exception:
+                        pass
+                if isinstance(ev,dict) and ev.get('secret_type'):
+                    detail=hunter.secret_evidence_details(conn,ev)
+                    if detail:
+                        secret_evidence.append(detail)
             detector_map={
                 'access_object_reference':'access_object_reference','mass_assignment':'mass_assignment',
                 'method_access_control':'method_access_control','redirect_body_access_control':'redirect_body_access_control',
@@ -471,9 +482,11 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['investigation_priority']=str(ai_meta.get('investigation_priority') or ('high' if item.get('review_priority')=='high' else 'medium' if item.get('review_priority')=='medium' else 'quick'))
             item['priority_reasons']=[str(x) for x in (ai_meta.get('priority_reasons') or [])][:4]
             node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
-            item['node_ids']=node_ids
-            refs=hunter.hypothesis_refs_from_nodes(conn,node_ids) if node_ids else {'evidence_refs':[],'resource_id':item.get('resource_id'),'primary_method':None,'primary_exchange_id':None}
+            resolved_node_ids=list(dict.fromkeys(node_ids+evidence_exchange_nodes))
+            item['node_ids']=resolved_node_ids
+            refs=hunter.hypothesis_refs_from_nodes(conn,resolved_node_ids) if resolved_node_ids else {'evidence_refs':[],'resource_id':item.get('resource_id'),'primary_method':None,'primary_exchange_id':None}
             item.update(refs)
+            item['secret_evidence']=secret_evidence
             if item.get('resource_id') and not item.get('resource_url'):
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
             out.append(item)
@@ -790,7 +803,7 @@ def _decode_http_blob(value: str | None, limit: int = 300000) -> str:
         return "[No se pudo decodificar el mensaje HTTP]"
 
 
-def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any] | None:
+def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id: int = 0) -> dict[str, Any] | None:
     import negro_hunter as hunter
     with _db(paths) as conn:
         row = conn.execute(
@@ -825,10 +838,31 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
         for op in conn.execute("SELECT * FROM resource_operations WHERE resource_id=? ORDER BY method", (resource_id,)).fetchall():
             sources = conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()
             exchanges = []
-            for ex in conn.execute("SELECT * FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 30", (op["id"],)).fetchall():
+            exchange_rows=list(conn.execute("SELECT * FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 30", (op["id"],)).fetchall())
+            if focus_exchange_id and not any(int(x["id"]) == int(focus_exchange_id) for x in exchange_rows):
+                focused=conn.execute("SELECT * FROM http_exchanges WHERE id=? AND operation_id=?", (focus_exchange_id,op["id"])).fetchone()
+                if focused:
+                    exchange_rows.insert(0,focused)
+            for ex in exchange_rows:
                 exd = dict(ex)
+                exd["focused"] = bool(focus_exchange_id and int(ex["id"]) == int(focus_exchange_id))
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
+                exd["match_evidence"] = []
+                if exd["focused"]:
+                    for lead in conn.execute("SELECT id,title,evidence_json FROM leads_v2 WHERE evidence_json LIKE ? ORDER BY updated_at DESC LIMIT 40", (f'%"exchange_id": {int(ex["id"])}%',)).fetchall():
+                        try:
+                            lev=json.loads(lead["evidence_json"] or "[]")
+                        except Exception:
+                            lev=[]
+                        for ev in lev if isinstance(lev,list) else []:
+                            if not isinstance(ev,dict) or int(ev.get("exchange_id") or 0) != int(ex["id"]):
+                                continue
+                            if ev.get("secret_type"):
+                                detail=hunter.secret_evidence_details(conn,ev)
+                                if detail:
+                                    detail["lead_id"]=int(lead["id"]); detail["lead_title"]=str(lead["title"] or "")
+                                    exd["match_evidence"].append(detail)
                 exchanges.append(exd)
             tests = hunter.ensure_operation_test_coverage(conn, int(op["id"]))
             test_summary = hunter.operation_test_summary(conn, int(op["id"]))
@@ -2188,7 +2222,11 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/t/{target_key}/resource/{resource_id}", response_class=HTMLResponse)
     def resource_detail(request: Request, target_key: str, resource_id: int):
         domain, workspace, paths = _target_context(target_key)
-        detail = _resource_detail(paths, resource_id)
+        try:
+            focus_exchange_id=int(request.query_params.get("exchange") or 0)
+        except Exception:
+            focus_exchange_id=0
+        detail = _resource_detail(paths, resource_id, focus_exchange_id=focus_exchange_id)
         if not detail:
             raise HTTPException(status_code=404, detail="Recurso no encontrado")
         return render(request, "resource.html", target_key, domain, workspace, **detail)

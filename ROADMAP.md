@@ -129,3 +129,10 @@ No auto-exploitation.
 No medir Negro por cantidad de módulos. Medirlo por:
 
 > ¿redujo cientos/miles de observaciones a pocos leads que llevaron a una validación útil más rápido que el análisis manual?
+
+
+## Implementado en v0.19.3
+- Proveniencia exacta para secrets/config: exchange, surface, masked value, fingerprint, regex, offset/línea/columna y contexto enmascarado.
+- “Abrir evidencia” salta al exchange real que produjo la hipótesis.
+- Un exchange histórico se carga aunque ya no esté entre los 30 más recientes del recurso.
+- Evidencia histórica obtiene contexto al abrirse sin recapturar tráfico.
