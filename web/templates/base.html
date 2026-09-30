@@ -15,7 +15,7 @@
       <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
       <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
       <a class="{% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence">Inteligencia</a>
-      <a class="{% if '/hypotheses' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
+      <a class="{% if '/hypotheses' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hunt</a>
       <a class="{% if '/finding' in request.url.path %}active{% endif %}" href="{{ target_base }}/findings">Hallazgos</a>
       <a class="{% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings">Ajustes</a>
     </nav>

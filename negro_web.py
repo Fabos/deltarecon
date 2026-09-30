@@ -494,6 +494,33 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
         return out
 
 
+def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[str, Any]]:
+    """Latest machine-observed facts that still need a human decision."""
+    with _db(paths) as conn:
+        rows = conn.execute(
+            """SELECT s.*, r.path, r.url AS resource_url, o.method, e.status_code
+               FROM signal_occurrences s
+               LEFT JOIN resources r ON r.id=s.resource_id
+               LEFT JOIN resource_operations o ON o.id=s.operation_id
+               LEFT JOIN http_exchanges e ON e.id=s.exchange_id
+               WHERE s.dismissed_at IS NULL AND s.reviewed_at IS NULL
+               ORDER BY CASE s.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+                        s.last_seen_at DESC, s.id DESC
+               LIMIT ?""",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        out=[]
+        for row in rows:
+            item=dict(row)
+            try: item['why']=json.loads(item.pop('why_json') or '{}')
+            except Exception: item['why']={}
+            try: item['evidence']=json.loads(item.pop('evidence_json') or '{}')
+            except Exception: item['evidence']={}
+            item['why_text']=str((item['why'] or {}).get('message') or '')
+            out.append(item)
+        return out
+
+
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
     # Inventory search is intentionally unified: one query can match a hostname,
     # resource path, complete URL or stored query string. Resource counts remain
@@ -2153,8 +2180,22 @@ def create_app(default_domain: str, default_workspace: Path):
         domain, workspace, paths = _target_context(target_key)
         validity = validity if validity in {"current","inactive","all"} else "current"
         rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
+        signals = _pending_signal_rows(paths, 120)
+        with _db(paths) as conn:
+            state_counts = {str(r["state"]): int(r["c"] or 0) for r in conn.execute(
+                "SELECT state,COUNT(*) c FROM entity_states GROUP BY state"
+            ).fetchall()}
+            learning_backlog = [dict(r) for r in conn.execute(
+                """SELECT COALESCE(NULLIF(TRIM(category),''),'Sin categoría') category, COUNT(*) c
+                   FROM entity_states WHERE state='learning'
+                   GROUP BY COALESCE(NULLIF(TRIM(category),''),'Sin categoría')
+                   ORDER BY c DESC, category LIMIT 12"""
+            ).fetchall()]
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
-        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind, hypothesis_kinds=kinds, hypothesis_validity=validity)
+        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals,
+                      state_counts=state_counts, learning_backlog=learning_backlog,
+                      q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind,
+                      hypothesis_kinds=kinds, hypothesis_validity=validity)
 
     @app.post("/t/{target_key}/hypothesis/{lead_id}/update")
     def hypothesis_update(request: Request, target_key: str, lead_id: int, status: str = Form(...), result_notes: str = Form(""), csrf: str = Form(...)):
@@ -2877,14 +2918,19 @@ def create_app(default_domain: str, default_workspace: Path):
         # Passive Burp intelligence: inspect only the traffic already captured. This
         # never sends a network request and stores only masked secret values.
         passive = {"signals": [], "new_notifications": []}
+        signal_count = 0
         try:
             import negro_hunter as hunter
             with _db(paths) as conn:
                 passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
+                # Burp must reflect the persisted truth, not only the in-memory list
+                # returned by one detector path. This also keeps an exchange cyan
+                # when an existing Signal is still pending review.
+                signal_count = core.unreviewed_signal_count(conn, exchange_id=int(result["exchange_id"]))
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
         return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": target.get("name") or domain, **result,
-                "signal_count": len(passive.get("signals") or []),
+                "signal_count": signal_count,
                 "new_notification_count": len(passive.get("new_notifications") or [])}
 
     @app.get("/api/bridge/findings/{target_key}", response_class=JSONResponse)
@@ -3096,7 +3142,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Legacy/orphan bridge pollers must never consume queue items.
             return JSONResponse(
                 status_code=428,
-                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.0"},
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.1"},
             )
         allowed, active_id = _bridge_consumer_allowed(bridge_id)
         if not allowed:

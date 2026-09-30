@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.20.0
+ * Negro Burp Bridge v0.20.1
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -62,6 +62,7 @@ public class NegroBurpBridge implements BurpExtension {
     private volatile String negroBaseUrl = System.getProperty("negro.url", "http://127.0.0.1:8765");
     private JLabel statusLabel;
     private Timer uiTimer;
+    private volatile long lastSuccessfulContactMs = 0L;
     private final String bridgeInstanceId = UUID.randomUUID().toString();
     private final AtomicBoolean unloading = new AtomicBoolean(false);
     private final ScheduledExecutorService bridgePoller = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "negro-repeater-bridge"); t.setDaemon(true); return t; });
@@ -70,7 +71,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.20.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.20.1 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -106,24 +107,37 @@ public class NegroBurpBridge implements BurpExtension {
         endpoint.add(apply);
         panel.add(endpoint);
 
-        statusLabel = new JLabel("Comprobando conexión…");
+        statusLabel = new JLabel("● Comprobando conexión…");
         panel.add(Box.createVerticalStrut(10));
         panel.add(statusLabel);
         panel.add(Box.createVerticalStrut(8));
 
         JLabel counters = new JLabel();
         panel.add(counters);
-        uiTimer = new Timer(1000, e -> counters.setText(
-                "Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get()));
+        final int[] healthTicks = {0};
+        uiTimer = new Timer(1000, e -> {
+            counters.setText("Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get());
+            healthTicks[0]++;
+            if (healthTicks[0] % 10 == 0) healthCheck();
+        });
         uiTimer.start();
         panel.add(Box.createVerticalStrut(16));
-        panel.add(new JLabel("Estados / Leyenda"));
-        panel.add(new JLabel("CYAN · Signal Negro (automático, sin revisar)"));
-        panel.add(new JLabel("BLUE · Pendiente aprendizaje    YELLOW · Revisar luego"));
-        panel.add(new JLabel("ORANGE · Interesante    MAGENTA · Correlacionar"));
-        panel.add(new JLabel("RED · Finding    GREEN · Descartado"));
-        panel.add(Box.createVerticalStrut(8));
-        panel.add(new JLabel("Signal = lo que Negro detectó. Estado = tu decisión humana."));
+
+        JPanel legend = new JPanel(new GridLayout(0, 2, 10, 8));
+        legend.setBorder(BorderFactory.createTitledBorder("Estados en Burp"));
+        legend.setAlignmentX(Component.LEFT_ALIGNMENT);
+        legend.add(legendItem(new Color(102, 205, 225), "Signal Negro", "Automático · pendiente de revisión"));
+        legend.add(legendItem(new Color(92, 145, 220), "Pendiente aprendizaje", "Aún no dominas la técnica"));
+        legend.add(legendItem(new Color(225, 190, 80), "Revisar luego", "Mirado, sin conclusión"));
+        legend.add(legendItem(new Color(232, 142, 72), "Interesante", "Hay evidencia para investigar"));
+        legend.add(legendItem(new Color(180, 105, 215), "Correlacionar", "Falta otra pieza/flujo/identidad"));
+        legend.add(legendItem(new Color(230, 82, 92), "Finding", "Confirmado por ti"));
+        legend.add(legendItem(new Color(92, 176, 112), "Descartado", "Pruebas suficientes para cerrar"));
+        panel.add(legend);
+        panel.add(Box.createVerticalStrut(10));
+        JLabel philosophy = new JLabel("Signal = observación de Negro · Estado = decisión humana");
+        philosophy.setFont(philosophy.getFont().deriveFont(Font.ITALIC));
+        panel.add(philosophy);
 
         apply.addActionListener(e -> {
             String value = field.getText().trim().replaceAll("/+$", "");
@@ -137,17 +151,46 @@ public class NegroBurpBridge implements BurpExtension {
         return panel;
     }
 
+    private JPanel legendItem(Color color, String title, String description) {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 2));
+        JLabel swatch = new JLabel("   ");
+        swatch.setOpaque(true);
+        swatch.setBackground(color);
+        swatch.setBorder(BorderFactory.createLineBorder(color.darker()));
+        JLabel text = new JLabel("<html><b>" + title + "</b><br><span style='font-size:9px'>" + description + "</span></html>");
+        row.add(swatch);
+        row.add(text);
+        return row;
+    }
+
+    private void markConnected(String detail) {
+        lastSuccessfulContactMs = System.currentTimeMillis();
+        SwingUtilities.invokeLater(() -> {
+            if (statusLabel != null) statusLabel.setText("● Conectado a Negro" + (detail == null || detail.isBlank() ? "" : " · " + detail));
+        });
+    }
+
+    private void markUnavailable(Throwable ex) {
+        // Do not paint a false offline state if traffic was successfully ingested
+        // moments ago (for example when the first health check raced app startup).
+        if (System.currentTimeMillis() - lastSuccessfulContactMs < 5000L) return;
+        SwingUtilities.invokeLater(() -> {
+            if (statusLabel != null) statusLabel.setText("○ Negro no disponible · " + ex.getClass().getSimpleName());
+        });
+    }
+
     private void healthCheck() {
         java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/ingest/health"))
                 .timeout(Duration.ofSeconds(10))
                 .GET().build();
         client.sendAsync(req, BodyHandlers.ofString())
-                .thenAccept(r -> SwingUtilities.invokeLater(() -> {
-                    if (statusLabel != null) statusLabel.setText(r.statusCode() == 200 ? "Conectado a Negro ✓" : "Negro respondió HTTP " + r.statusCode());
-                }))
+                .thenAccept(r -> {
+                    if (r.statusCode() == 200) markConnected("health OK");
+                    else SwingUtilities.invokeLater(() -> { if (statusLabel != null) statusLabel.setText("○ Negro respondió HTTP " + r.statusCode()); });
+                })
                 .exceptionally(ex -> {
-                    SwingUtilities.invokeLater(() -> { if (statusLabel != null) statusLabel.setText("Negro no disponible: " + ex.getClass().getSimpleName()); });
+                    markUnavailable(ex);
                     return null;
                 });
     }
@@ -184,7 +227,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.20.0")
+                    .header("X-Negro-Bridge-Version", "0.20.1")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -455,6 +498,7 @@ public class NegroBurpBridge implements BurpExtension {
                     if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                         if (body.contains("\"accepted\":true") || body.contains("\"accepted\": true")) {
                             accepted.incrementAndGet();
+                            markConnected("ingest OK");
                             long signalCount = jsonLong(body, "signal_count");
                             if (signalCount > 0 && annotations != null) {
                                 try {

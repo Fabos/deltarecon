@@ -1552,11 +1552,11 @@ def _upsert_notification(conn, *, dedupe_key: str, kind: str, severity: str, tit
                          source: str, entity_type: str | None = None, entity_id: int | None = None,
                          resource_id: int | None = None, operation_id: int | None = None,
                          exchange_id: int | None = None, data: dict[str, Any] | None = None,
-                         emit: bool = True) -> tuple[int | None, bool]:
+                         emit: bool = True, signal_kind: str | None = None) -> tuple[int | None, bool]:
     if not emit:
         return None, False
     _upsert_signal_occurrence(
-        conn, signal_key=dedupe_key, kind=kind, severity=severity, title=title, message=message,
+        conn, signal_key=dedupe_key, kind=(signal_kind or kind), severity=severity, title=title, message=message,
         source=source, resource_id=resource_id, operation_id=operation_id, exchange_id=exchange_id, data=data,
     )
     now = now_iso()
@@ -1679,7 +1679,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             severity=severity,
             title=title,
             message=message,
-            source="access_control_intelligence",
+            source="engine",
             entity_type="resource",
             entity_id=rid,
             resource_id=rid,
@@ -1687,7 +1687,11 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             exchange_id=exchange_id,
             data=payload,
             emit=True,
+            signal_kind=lead_type,
         )
+        # A deterministic investigation begins with an observable fact. Expose
+        # that fact as a Signal as well as persisting the richer investigation.
+        signals.append({"kind": lead_type, "severity": severity, "title": title, **payload})
         if made and nid:
             new_notifications.append(nid)
 
@@ -1765,7 +1769,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             discard_if="El valor se limita a rutas internas, se ignora, se normaliza o existe una allowlist estricta.",
         )
         notify(kind="open_redirect", key=f"open_redirect:{oid}:{name}", severity="high" if strong else "medium",
-               title=f"Posible Open Redirect · {name}",
+               title=f"Parámetro de navegación observado · {name}",
                message=f"{method} {path} · regla '{name}' coincidió en {', '.join(locs)} · exchange #{exchange_id}", data=ev)
 
     # 2) URL-fetch / SSRF surfaces from actual parameters. Avoid duplicate redirect-only clues.
@@ -2049,7 +2053,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             next_test="Envía el exchange a Repeater y compara exactamente la misma operación con un objeto perteneciente a tu segunda cuenta de prueba. Mantén constante todo salvo identidad/ID y evita tocar datos de terceros.",
             confirm_if="Una identidad puede leer o modificar un objeto que pertenece a otra identidad sin autorización equivalente.",
             discard_if="El backend valida ownership/tenant/rol de forma consistente o el identificador sólo referencia datos públicos.")
-        notify_new_lead(lead_result, lead_type="access_object_reference", title="Nueva hipótesis · autorización horizontal",
+        notify_new_lead(lead_result, lead_type="access_object_reference", title="Referencia de objeto controlada por el cliente",
                         priority=object_priority, message=f"{method} {path} coincidió con regla(s) de objeto: {', '.join(sorted(object_hits)[:5]) or 'ID en path'}.",
                         data={"object_parameters": sorted(object_hits)[:8]})
 
@@ -2078,7 +2082,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             next_test=f"En Repeater, conserva el request original y prueba uno de estos campos observados: {', '.join(hidden_privileged[:6])}. Cambia sólo datos de tu propia cuenta/objeto y verifica el estado server-side después.",
             confirm_if="El backend acepta modificar un campo privilegiado que la identidad actual no debería controlar y el cambio produce capacidad adicional.",
             discard_if="El backend ignora/rechaza esos campos o revalida autorización antes de aplicar cambios sensibles.")
-        notify_new_lead(lead_result, lead_type="mass_assignment", title="Nueva hipótesis · asignación masiva",
+        notify_new_lead(lead_result, lead_type="mass_assignment", title="Campos privilegiados observados fuera del request",
                         priority=mass_priority, message=f"{method} {path} coincidió con campo(s) privilegiados configurados: {', '.join(hidden_privileged[:5])}.",
                         data={"fields": hidden_privileged[:10]})
 
@@ -2105,7 +2109,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             next_test="Compara la misma intención de negocio con los métodos observados. Si conviertes POST/JSON a GET, mueve los parámetros equivalentes al query string; cambiar sólo el verbo puede producir una petición incompleta y un falso negativo.",
             confirm_if="La misma acción/estado puede alcanzarse mediante un método con controles de autorización más débiles.",
             discard_if="Los métodos tienen semánticas distintas o todos aplican autorización equivalente.")
-        notify_new_lead(lead_result, lead_type="method_access_control", title="Nueva hipótesis · autorización por método",
+        notify_new_lead(lead_result, lead_type="method_access_control", title="Mismo recurso observado con varios métodos",
                         priority="medium", message=f"{path} coincidió con tus reglas de métodos: {', '.join(sorted(observed_methods))}.", data={"methods": sorted(observed_methods)})
 
     # Redirects are not authorization.
@@ -2130,7 +2134,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
                 next_test=f"Abre el exchange #{exchange_id} sin seguir el redirect y revisa el body completo. Compara con tu propia identidad y no uses datos de terceros fuera del scope.",
                 confirm_if="El body del 3xx contiene datos sensibles/privados que la identidad no estaba autorizada a recibir.",
                 discard_if="El body sólo contiene una página genérica de redirect sin información adicional.")
-            notify_new_lead(lead_result, lead_type="redirect_body_access_control", title="Nueva hipótesis · datos en redirect",
+            notify_new_lead(lead_result, lead_type="redirect_body_access_control", title="Redirect con body relevante",
                             priority="medium", message=f"{method} {path} respondió {status} y cumplió tus reglas de body 3xx.", data={"status": status, "response_size": len(resp_body)})
 
     # 403 layer fingerprint comparison.
@@ -2166,7 +2170,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
                     next_test="Primero confirma qué capa responde. Si la arquitectura lo justifica, prueba manualmente discrepancias de routing/normalización; X-Original-URL y X-Rewrite-URL son quick checks, no una conclusión automática.",
                     confirm_if="Una representación permitida por la capa frontal termina ejecutando una ruta que directamente estaba bloqueada y el backend no revalida autorización.",
                     discard_if="Las respuestas provienen de la misma capa o el backend aplica autorización equivalente tras cualquier reescritura.")
-                notify_new_lead(lead_result, lead_type="proxy_path_access_control", title="Nueva hipótesis · capa frontal distinta",
+                notify_new_lead(lead_result, lead_type="proxy_path_access_control", title="Respuesta bloqueada con fingerprint distinto",
                                 priority="medium", message=f"{path} cumple tus reglas de fingerprint para capas distintas.", data={"status": status, "baseline_exchange": int(baseline["id"])})
 
     # Referer quick check.
@@ -2188,7 +2192,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
             next_test="Con tu propia cuenta de prueba, compara la request original contra la misma request sin Referer y con un Referer distinto. Si el resultado de autorización depende del header, investiga por qué.",
             confirm_if="Una identidad sin privilegios ejecuta la acción únicamente al presentar un Referer privilegiado/controlado.",
             discard_if="Referer sólo participa en CSRF/telemetría o la autorización depende correctamente de la identidad/rol server-side.")
-        notify_new_lead(lead_result, lead_type="referer_access_control", title="Quick check · Referer en acción sensible",
+        notify_new_lead(lead_result, lead_type="referer_access_control", title="Referer presente en acción sensible",
                         priority="low", message=f"{method} {path} coincidió con tus reglas de Referer.", data={})
 
     return {"exchange_id": exchange_id, "signals": signals, "new_notifications": new_notifications}

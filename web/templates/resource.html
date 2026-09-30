@@ -58,7 +58,7 @@
     </section>
 
     <section class="panel resource-intel-panel" id="inteligencia-recurso">
-      <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA DEL RECURSO</p><h2>Qué merece revisión aquí</h2></div><span>{{ resource_hypotheses|length }} señal{% if resource_hypotheses|length != 1 %}es{% endif %}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Qué vale la pena probar aquí</h2></div><span>{{ resource_hypotheses|length }} investigación{% if resource_hypotheses|length != 1 %}es{% endif %}</span></div>
       <p class="muted small">Negro no afirma que exista una vulnerabilidad. Correlaciona lo que ya observó en Burp/JS/recon y te recuerda pruebas concretas para este recurso.</p>
 
       {% if resource_hypotheses %}
@@ -138,7 +138,7 @@
               <b>Coincidencia que te trajo a este exchange</b>
               {% for ev in ex.match_evidence %}
               <div class="exchange-focus-item">
-                <div class="secret-origin-grid"><span>Hipótesis</span><a href="{{ target_base }}/hypotheses#hypothesis-{{ ev.lead_id }}">#{{ ev.lead_id }} · {{ ev.lead_title }}</a><span>Detectado</span><code>{{ ev.masked_value }}</code><span>Superficie</span><code>{{ ev.surface }}</code><span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}no resuelta{% endif %}</code></div>
+                <div class="secret-origin-grid"><span>Investigación</span><a href="{{ target_base }}/hypotheses#hypothesis-{{ ev.lead_id }}">#{{ ev.lead_id }} · {{ ev.lead_title }}</a><span>Detectado</span><code>{{ ev.masked_value }}</code><span>Superficie</span><code>{{ ev.surface }}</code><span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}no resuelta{% endif %}</code></div>
                 {% if ev.context_snippet %}<pre class="http-message match-context">{{ ev.context_snippet }}</pre>{% endif %}
               </div>
               {% endfor %}

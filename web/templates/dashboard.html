@@ -10,7 +10,7 @@
   </div>
   <div class="page-actions">
     <a class="button" href="{{ target_base }}/graph">Abrir mapa</a>
-    <a class="button secondary" href="{{ target_base }}/hypotheses">Ver hipótesis</a>
+    <a class="button secondary" href="{{ target_base }}/hypotheses">Abrir Hunt</a>
     <a class="button ghost" href="{{ target_base }}/backup">Crear backup ↓</a>
   </div>
 </section>
@@ -41,7 +41,7 @@
   <div class="dashboard-mini-metrics">
     <div class="summary-card"><span>Métodos HTTP</span><strong data-stat-key="operations">{{ stats.operations }}</strong><small>operaciones observadas</small></div>
     <div class="summary-card"><span>Tráfico HTTP</span><strong data-stat-key="http_exchanges">{{ stats.http_exchanges }}</strong><small>evidencia desde Burp</small></div>
-    <a class="summary-card emphasis-purple" href="{{ target_base }}/hypotheses"><span>Hipótesis</span><strong data-stat-key="hypotheses">{{ stats.hypotheses }}</strong><small>ideas persistentes</small></a>
+    <a class="summary-card emphasis-purple" href="{{ target_base }}/hypotheses"><span>Investigaciones</span><strong data-stat-key="hypotheses">{{ stats.hypotheses }}</strong><small>preguntas de prueba</small></a>
     <a class="summary-card emphasis-danger" href="{{ target_base }}/findings"><span>Hallazgos</span><strong data-stat-key="findings">{{ stats.findings }}</strong><small>confirmados / documentados</small></a>
   </div>
 </section>

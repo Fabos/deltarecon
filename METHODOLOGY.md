@@ -1,4 +1,12 @@
-# Negro Recon — Metodología v0.20.0
+# Negro Recon — Metodología v0.20.1
+
+## Modelo mental v0.20.1: Signal → Investigación → Estado humano
+
+- **Signal**: hecho observado automáticamente y ligado a evidencia concreta (idealmente un exchange exacto). Ej.: `userId` en JSON, `Origin` reflejado, una key de Maps, un identificador numérico en path.
+- **Investigación**: pregunta de prueba que usa una o más señales y propone qué validar. No es un finding. Internamente puede seguir usando el modelo histórico `leads_v2`/`hypotheses` por compatibilidad.
+- **Estado humano**: decisión del investigador (`learning`, `review_later`, `interesting`, `correlate`, `finding`, `discarded`). Negro no lo asigna automáticamente.
+
+La UI reúne Signals e Investigaciones en **Hunt** para evitar dos bandejas paralelas, pero conserva los modelos separados porque cumplen funciones distintas.
 
 ## Principio
 

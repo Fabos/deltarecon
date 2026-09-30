@@ -56,7 +56,9 @@ def main() -> None:
             assert {"entity_states", "signal_occurrences", "evidence_snapshots", "parameter_observations"}.issubset(tables), tables
 
             # Parse/index parameters from an exact captured exchange.
-            hunter.analyze_http_exchange(conn, exid, domain, emit_notifications=True)
+            passive = hunter.analyze_http_exchange(conn, exid, domain, emit_notifications=True)
+            assert passive["signals"], "deterministic engine evidence must be returned as Signals for Burp highlighting"
+            assert core.unreviewed_signal_count(conn, exchange_id=exid) >= 1
             params = conn.execute(
                 "SELECT normalized_name,location,value_preview FROM parameter_observations WHERE exchange_id=? ORDER BY normalized_name,location",
                 (exid,),
@@ -122,6 +124,7 @@ def main() -> None:
             states = {r["human_state"] for r in conn.execute("SELECT human_state FROM evidence_snapshots WHERE exchange_id=?", (exid,))}
             assert {"interesting", "correlate"}.issubset(states), states
 
+        print("[OK] Deterministic engine evidence is surfaced as pending Signals for Burp")
         print("[OK] Signals are stored separately from human state")
         print("[OK] Parameter observations are normalized and sensitive previews are masked")
         print("[OK] Important human states freeze exact historical evidence")

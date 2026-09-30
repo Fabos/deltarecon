@@ -1,22 +1,22 @@
-# Negro Recon 🐕 — v0.20.0
+# Negro Recon 🐕 — v0.20.1
 
 
-## v0.20.0 — Signals ≠ State · Evidence Memory · Burp Workflow
+## v0.20.1 — Signals ≠ State · Evidence Memory · Burp Workflow
 
 Negro separa formalmente **lo que el motor observa** de **lo que el hacker decide**. Los `Signal Occurrences` son automáticos, trazables por exchange y nunca convierten por sí solos una superficie en Interesting/Finding/Discarded. Los estados humanos son `Normal`, `Pending Learning`, `Review Later`, `Interesting`, `Correlate`, `Finding` y `Discarded`.
 
-La integración Burp v0.20.0 sincroniza colores/notes, expone estados desde el menú contextual, resalta en cyan los signals nuevos sin revisar y mantiene la filosofía **Signal = pregunta; State = decisión humana**. Los estados importantes congelan un `Evidence Snapshot` del request/response histórico para distinguirlo de un retest posterior en Repeater.
+La integración Burp v0.20.1 sincroniza colores/notas, expone estados desde el menú contextual y resalta en cyan los Signals persistidos que siguen sin revisión. La vista **Hunt** reúne Signals e Investigaciones en un único flujo sin confundir sus significados y mantiene la filosofía **Signal = observación; State = decisión humana**. Los estados importantes congelan un `Evidence Snapshot` del request/response histórico para distinguirlo de un retest posterior en Repeater.
 
-También se incorpora la base de `Parameter Observations` para futuras funciones `Follow Value`, Parameter Explorer e Identity Contexts, además de un polling de notificaciones con backoff para no golpear innecesariamente la API local.
+También incorpora la vista **Hunt** con Signals pendientes, Investigaciones y un primer **Learning Backlog** agrupado por categoría. Se mantiene la base de `Parameter Observations` para futuras funciones `Follow Value`, Parameter Explorer e Identity Contexts, además de un polling de notificaciones con backoff para no golpear innecesariamente la API local.
 
-Consulta `UPDATE-v0.20.0.md`.
+Consulta `CHANGELOG.md`.
 
 
 ## v0.19.3 — Exact Evidence Provenance
 
 Las hipótesis de secretos/configuración ahora explican exactamente de qué exchange y superficie salió la coincidencia, muestran el valor enmascarado, fingerprint, patrón, offset/línea/columna y una ventana de contexto enmascarada. Los botones abren el exchange exacto, incluso si quedó fuera de los 30 más recientes. Evidencia histórica se resuelve al abrirla, sin repetir enumeración.
 
-Consulta `UPDATE-v0.19.3.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.19.2 — Fullscreen Map + Local Intelligence Recalculation
 
@@ -30,13 +30,13 @@ Comando equivalente:
 negro TARGET -w WORKSPACE recalculate-intel
 ```
 
-Consulta `UPDATE-v0.19.2.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.19.1 — Route Canvas Hydration Fix
 
 Corrige la perspectiva **Qué probar ahora**: en v0.19.0 las tarjetas de rutas podían existir mientras el canvas quedaba vacío, porque el overview cargaba sólo hosts y las tarjetas referenciaban recursos/métodos/requests/hipótesis todavía no materializados. v0.19.1 añade una proyección compacta `scope=routes` que carga únicamente los nodos necesarios para las rutas prioritarias y la activa automáticamente al entrar en esa perspectiva.
 
-No cambia el modelo de reglas, proyectos ni el protocolo de Burp. Consulta `UPDATE-v0.19.1.md`.
+No cambia el modelo de reglas, proyectos ni el protocolo de Burp. Consulta `CHANGELOG.md`.
 
 ## v0.19.0 — Guided Rule Knowledge Base
 
@@ -44,19 +44,19 @@ Negro reemplaza la sensibilidad abstracta de detectores por un **motor de reglas
 
 La resolución de reglas sigue `Negro built-in → Biblioteca personal → Proyecto`: puedes enseñar a Negro términos como `memberId`, heredarlos en futuros proyectos y excluirlos sólo donde generen ruido. Las hipótesis guardan además **qué regla coincidió** (`query.memberId`, `exact:memberId`, UUID en path, etc.) para poder explicar por qué nacieron y volver desde la hipótesis al editor del detector. No se promueven reglas automáticamente por resultados; el investigador conserva el control sobre qué conocimiento pasa a su biblioteca personal.
 
-Consulta `UPDATE-v0.19.0.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.18.0 — Projects, Detector Lab & Investigation Map
 
 Negro agrupa una prueba como **Proyecto → múltiples scopes**, enruta Burp/JS/hipótesis al mismo workspace y usa ese contexto para reducir falsos positivos first-party como CORS entre `app.*` y `api.*`. Ajustes incorpora un **Detector Lab por proyecto** con on/off, sensibilidad Estricto/Equilibrado/Permisivo, explicación del trigger y métricas de ruido. El mapa ocupa mejor el viewport y separa perspectivas por pregunta: qué existe, qué falta revisar, dónde hay señales, qué observó Burp y qué conviene probar ahora.
 
-Consulta `UPDATE-v0.18.0.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.17.1 — Signal UX + JavaScript Surface
 
 Refina Access Control Intelligence con filtros por estado/tipo/prioridad en el mapa, edición de estado + resultado desde la propia hipótesis visual, perspectivas claramente separadas, notificaciones para nuevas hipótesis, reducción de ruido CORS first-party y relaciones `JavaScript → Resource` (incluido cross-host). `Analizar local` ahora avisa cuando el bundle amplía superficie y destaca rutas sensibles sin convertirlas automáticamente en findings.
 
-Consulta `UPDATE-v0.17.1.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.17.0 — Access Control Intelligence + Rutas de investigación
 
@@ -71,20 +71,20 @@ Negro convierte lo aprendido en el módulo de **Access Control** en ayudas pasiv
 - Los workspaces existentes pueden regenerar estas señales con el flujo normal de `generate-leads`; no se borra estado previo.
 - El protocolo Burp ↔ Negro **no cambió**: el Burp Bridge v0.16.7 existente sigue siendo compatible y no necesita recompilarse.
 
-Consulta `UPDATE-v0.17.0.md`.
+Consulta `CHANGELOG.md`.
 
 ## v0.16.7 — Hotfix de compilación Burp Bridge
 
-Corrige el helper `unescapeJson(...)` faltante en v0.16.6, que impedía compilar el JAR. No cambia el protocolo ni la lógica de Repeater. Ver `UPDATE-v0.16.7.md`.
+Corrige el helper `unescapeJson(...)` faltante en v0.16.6, que impedía compilar el JAR. No cambia el protocolo ni la lógica de Repeater. Ver `CHANGELOG.md`.
 
 ## v0.16.7 — Repeater bridge parser fix
 
-Corrige el hand-off Negro → Burp Repeater para requests grandes: el parser regex del bridge podía lanzar `StackOverflowError` al leer `request_b64` y matar silenciosamente el poller justo después de `pending=true`. Ahora usa un parser iterativo y mantiene logs/ACK robustos. Ver `UPDATE-v0.16.7.md`.
+Corrige el hand-off Negro → Burp Repeater para requests grandes: el parser regex del bridge podía lanzar `StackOverflowError` al leer `request_b64` y matar silenciosamente el poller justo después de `pending=true`. Ahora usa un parser iterativo y mantiene logs/ACK robustos. Ver `CHANGELOG.md`.
 
 
 ## v0.16.7 — Repeater Bridge orphan-poller fix
 
-Corrige la causa raíz de items que quedaban en `claimed`: bridges antiguos podían seguir ejecutando su poller después de retirar el JAR. La extensión ahora detiene sus hilos al descargarse y el backend exige un id único de bridge/lease de consumidor. Tras actualizar, reinicia Burp una vez. Ver `UPDATE-v0.16.7.md`.
+Corrige la causa raíz de items que quedaban en `claimed`: bridges antiguos podían seguir ejecutando su poller después de retirar el JAR. La extensión ahora detiene sus hilos al descargarse y el backend exige un id único de bridge/lease de consumidor. Tras actualizar, reinicia Burp una vez. Ver `CHANGELOG.md`.
 
 
 > **Olfatea donde otros no miran.**
@@ -101,43 +101,43 @@ Negro es un workspace local de recon para Bug Bounty. El CLI ejecuta discovery/i
 
 Negro ahora correlaciona **cada exchange nuevo de Burp** de forma pasiva y en tiempo real: parámetros de redirección/URL en query, form y JSON; candidatos SSRF; API keys y secretos con firma; credenciales/campos sensibles devueltos por APIs; secretos en URL; CORS observado; source maps; documentación API y errores internos. Los valores sensibles se enmascaran antes de persistirlos. Las pistas crean señales accionables con provenance exacto y notificaciones persistentes/toasts.
 
-Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `UPDATE-v0.16.7.md`.
+Para targets grandes, el Mapa pasa a **progressive disclosure**: la vista inicial ya no renderiza miles de recursos. Empieza en Target → hosts relevantes/grupos, permite entrar a un host y luego a un recurso, con límites por capa. Dashboard agrega progreso de revisión para hosts/recursos, descartados separados y alertas nuevas. Ver `CHANGELOG.md`.
 
 ## v0.15.0 — UX final para piloto de bounty
 
-Rework visual y de usabilidad: Inventario busca hosts + recursos, navegación/UI centralizadas en español y el checklist por endpoint pasa a una guía opcional cerrada por defecto y sus checks automáticos pendientes dejan de sesgar la IA. El foco queda en Burp → recursos → evidencia → hipótesis → hallazgos, sin obligar al investigador a mantener una matriz manual. Ver `UPDATE-v0.15.0.md`.
+Rework visual y de usabilidad: Inventario busca hosts + recursos, navegación/UI centralizadas en español y el checklist por endpoint pasa a una guía opcional cerrada por defecto y sus checks automáticos pendientes dejan de sesgar la IA. El foco queda en Burp → recursos → evidencia → hipótesis → hallazgos, sin obligar al investigador a mantener una matriz manual. Ver `CHANGELOG.md`.
 
 ## v0.14.5 — Robust Graph AI Responses + Diagnostics
 
-`Give me ideas` ahora comprueba el estado real de Responses API antes de parsear Structured Outputs. Usa un presupuesto propio de 6000 tokens, reintenta a 9000 cuando la respuesta queda `incomplete` por límite de salida y deja logs seguros `[AI graph]` con status/usage sin exponer tráfico sensible. Ver `UPDATE-v0.14.5.md`.
+`Give me ideas` ahora comprueba el estado real de Responses API antes de parsear Structured Outputs. Usa un presupuesto propio de 6000 tokens, reintenta a 9000 cuando la respuesta queda `incomplete` por límite de salida y deja logs seguros `[AI graph]` con status/usage sin exponer tráfico sensible. Ver `CHANGELOG.md`.
 
 ## v0.14.4 — Endpoint Test Coverage + Exploratory AI Retry
 
-Cada método observado (`GET`, `POST`, `PUT`, etc.) tiene ahora una checklist persistente de pruebas recomendadas: Authorization/IDOR, acceso sin sesión, CORS, parámetros, métodos alternativos, Content-Type, CSRF, lógica de negocio, cache, rate limiting, client-side trust y checks contextuales. Los estados `pending / testing / negative / interesting / confirmed / not_applicable` quedan guardados, aparecen en el detalle del Resource y alimentan `Give me ideas` para no repetir pruebas ya descartadas. Si la primera llamada estructurada de IA devuelve 0 hipótesis, Negro ejecuta una sola segunda pasada exploratoria acotada; la estimación de costo muestra el máximo de dos llamadas. Consulta `UPDATE-v0.14.4.md`.
+Cada método observado (`GET`, `POST`, `PUT`, etc.) tiene ahora una checklist persistente de pruebas recomendadas: Authorization/IDOR, acceso sin sesión, CORS, parámetros, métodos alternativos, Content-Type, CSRF, lógica de negocio, cache, rate limiting, client-side trust y checks contextuales. Los estados `pending / testing / negative / interesting / confirmed / not_applicable` quedan guardados, aparecen en el detalle del Resource y alimentan `Give me ideas` para no repetir pruebas ya descartadas. Si la primera llamada estructurada de IA devuelve 0 hipótesis, Negro ejecuta una sola segunda pasada exploratoria acotada; la estimación de costo muestra el máximo de dos llamadas. Consulta `CHANGELOG.md`.
 
 ## v0.14.3 — Offensive Hypothesis Prioritization
 
-`Give me ideas` prioriza superficies ofensivas nuevas y backend enforcement desconocido, separa `ALTA / MEDIA / QUICK CHECK`, pone **Prueba esto ahora** antes de la explicación, convierte lógica de negocio en validaciones server-side y muestra evidencia HTTP con acciones directas a Resource/Repeater/Mapa. El cache de IA incluye versión de prompt para no reutilizar recomendaciones antiguas. Consulta `UPDATE-v0.14.3.md`.
+`Give me ideas` prioriza superficies ofensivas nuevas y backend enforcement desconocido, separa `ALTA / MEDIA / QUICK CHECK`, pone **Prueba esto ahora** antes de la explicación, convierte lógica de negocio en validaciones server-side y muestra evidencia HTTP con acciones directas a Resource/Repeater/Mapa. El cache de IA incluye versión de prompt para no reutilizar recomendaciones antiguas. Consulta `CHANGELOG.md`.
 
 ## v0.14.1 — Structured AI Output Hotfix
 
-`Give me ideas` usa Structured Outputs con JSON Schema estricto y un parser de respaldo seguro para que una respuesta malformada del modelo no rompa el job ni deje la UI en error. Consulta `UPDATE-v0.14.1.md`.
+`Give me ideas` usa Structured Outputs con JSON Schema estricto y un parser de respaldo seguro para que una respuesta malformada del modelo no rompa el job ni deje la UI en error. Consulta `CHANGELOG.md`.
 
 ## v0.14.0 — Bug Bounty Pilot
 
-Negro ya puede acompañar una investigación de punta a punta: menú contextual en Burp para abrir/marcar/crear Findings/adjuntar evidencia/retests, Findings reales multi-entidad, separación visual **Coverage vs Signal** y backup/restore completo del workspace. El objetivo de esta versión es empezar un piloto real de bug bounty sin perder contexto ni evidencia. Consulta `UPDATE-v0.14.0.md`.
+Negro ya puede acompañar una investigación de punta a punta: menú contextual en Burp para abrir/marcar/crear Findings/adjuntar evidencia/retests, Findings reales multi-entidad, separación visual **Coverage vs Signal** y backup/restore completo del workspace. El objetivo de esta versión es empezar un piloto real de bug bounty sin perder contexto ni evidencia. Consulta `CHANGELOG.md`.
 
 ## v0.12.2 — Interactive Graph + AI Hypotheses
 
-El mapa ahora responde de forma fiable a click/tap, mantiene drag manual, permite reordenar las perspectivas según el flujo personal del investigador y añade **🧠 Give me ideas**. La IA recibe contexto estructurado del grafo (sin cuerpos HTTP completos), propone 3–5 hipótesis investigables, las persiste sobre `leads_v2`, conecta sus evidencias al mapa y conserva estados negativos para no repetir pruebas descartadas. Consulta `UPDATE-v0.12.2.md`.
+El mapa ahora responde de forma fiable a click/tap, mantiene drag manual, permite reordenar las perspectivas según el flujo personal del investigador y añade **🧠 Give me ideas**. La IA recibe contexto estructurado del grafo (sin cuerpos HTTP completos), propone 3–5 hipótesis investigables, las persiste sobre `leads_v2`, conecta sus evidencias al mapa y conserva estados negativos para no repetir pruebas descartadas. Consulta `CHANGELOG.md`.
 
 ## v0.11.3 — Investigation Workspace
 
-La v0.11 convierte Resources en unidades de investigación: detalle HTTP estilo proxy con request/response, herramientas contextuales, provenance, evidencia, Findings persistentes multi-entidad y ciclo de retest. La navegación y los estados visuales se refuerzan para usar Negro como memoria operativa durante pentests y bug bounty. Consulta `UPDATE-v0.11.3.md`.
+La v0.11 convierte Resources en unidades de investigación: detalle HTTP estilo proxy con request/response, herramientas contextuales, provenance, evidencia, Findings persistentes multi-entidad y ciclo de retest. La navegación y los estados visuales se refuerzan para usar Negro como memoria operativa durante pentests y bug bounty. Consulta `CHANGELOG.md`.
 
 ## v0.10.0 — Burp Bridge + HTTP Operations
 
-La v0.10 conecta el trabajo manual de Burp con la memoria de Negro. El tráfico observado se organiza como `Host → Resource → Operation → Exchange`, conserva métodos y evidencia, promueve JavaScript al pipeline local y permite enviar recursos desde Negro hacia Burp Repeater. También añade resúmenes visuales al terminar jobs. Consulta `UPDATE-v0.10.0.md`.
+La v0.10 conecta el trabajo manual de Burp con la memoria de Negro. El tráfico observado se organiza como `Host → Resource → Operation → Exchange`, conserva métodos y evidencia, promueve JavaScript al pipeline local y permite enviar recursos desde Negro hacia Burp Repeater. También añade resúmenes visuales al terminar jobs. Consulta `CHANGELOG.md`.
 
 ## v0.9.0 — Hunter Intelligence MVP
 
@@ -621,4 +621,4 @@ Reglas permanentes:
 
 ## v0.14.3 — AI Cache Reliability Hotfix
 
-`Give me ideas` ya no puede quedar atrapado reutilizando una respuesta malformada. Los resultados no estructurados se marcan como inválidos, no se cachean como `done`, y la UI permite reintentar. También se exige Structured Outputs real en vez de caer silenciosamente a texto libre. Consulta `UPDATE-v0.14.3.md`.
+`Give me ideas` ya no puede quedar atrapado reutilizando una respuesta malformada. Los resultados no estructurados se marcan como inválidos, no se cachean como `done`, y la UI permite reintentar. También se exige Structured Outputs real en vez de caer silenciosamente a texto libre. Consulta `CHANGELOG.md`.

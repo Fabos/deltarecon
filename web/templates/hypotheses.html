@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Hipótesis · {{ domain }} · Negro{% endblock %}
+{% block title %}Hunt · {{ domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero">
-  <div><p class="eyebrow">MEMORIA DE INVESTIGACIÓN</p><h1>Hipótesis</h1><p class="muted">Ideas persistentes y accionables: qué probar, por qué importa y qué ocurrió cuando lo intentaste.</p></div>
+  <div><p class="eyebrow">HUNT · MEMORIA DE INVESTIGACIÓN</p><h1>Signals + Investigaciones</h1><p class="muted">Negro observa hechos; tú decides qué significan. Un Signal conserva la evidencia exacta. Una Investigación convierte una o más pistas en una pregunta concreta que puedes probar.</p></div>
   <div class="page-actions">
     <a class="button secondary" href="{{ target_base }}/graph">Ver en mapa</a>
     <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local">
@@ -11,6 +11,46 @@
     </form>
   </div>
 </section>
+<section class="hunt-model panel">
+  <div class="hunt-model-item signal-model"><b>🩵 Signal</b><span>Hecho observado automáticamente en un exchange concreto.</span><small>Ej. “userId en JSON”, “Origin reflejado”, “JWT observado”.</small></div>
+  <div class="hunt-model-arrow">→</div>
+  <div class="hunt-model-item investigation-model"><b>Investigación</b><span>Pregunta de prueba construida a partir de una o más señales.</span><small>Ej. “¿Buyer B puede leer el objeto de Buyer A?”</small></div>
+  <div class="hunt-model-arrow">→</div>
+  <div class="hunt-model-item state-model"><b>Estado humano</b><span>Tu decisión: aprender, revisar, correlacionar, finding o descartar.</span><small>Negro nunca toma esa decisión por ti.</small></div>
+</section>
+
+<section class="hunt-queue">
+  <article><span>🩵 Signals pendientes</span><b>{{ signals|length }}</b></article>
+  <article><span>🔵 Pendiente aprendizaje</span><b>{{ state_counts.get('learning',0) }}</b></article>
+  <article><span>🟡 Revisar luego</span><b>{{ state_counts.get('review_later',0) }}</b></article>
+  <article><span>🟠 Interesante</span><b>{{ state_counts.get('interesting',0) }}</b></article>
+  <article><span>🟣 Correlacionar</span><b>{{ state_counts.get('correlate',0) }}</b></article>
+</section>
+{% if learning_backlog %}
+<section class="panel learning-backlog">
+  <div class="panel-head"><div><p class="eyebrow">LEARNING BACKLOG</p><h2>Superficies que decidiste estudiar antes de cerrar</h2></div></div>
+  <div class="learning-backlog-items">{% for x in learning_backlog %}<span><b>{{ x.category }}</b><em>{{ x.c }}</em></span>{% endfor %}</div>
+</section>
+{% endif %}
+
+<section class="panel hunt-signals-panel">
+  <div class="panel-head"><div><p class="eyebrow">SIGNALS PENDIENTES</p><h2>Lo que Negro observó y todavía no has revisado</h2></div><span>{{ signals|length }} mostrados</span></div>
+  {% if signals %}
+  <div class="hunt-signal-list">
+    {% for s in signals %}
+    <article class="hunt-signal severity-{{ s.severity }}">
+      <div class="hunt-signal-head"><div><span class="signal-dot">🩵</span><b>{{ s.title }}</b></div><div class="badges"><span class="badge">{{ ui_label(s.category or s.kind) }}</span><span class="badge">{{ ui_label(s.severity) }}</span></div></div>
+      {% if s.why_text %}<p>{{ s.why_text }}</p>{% endif %}
+      <div class="hunt-signal-meta"><code>{% if s.method %}{{ s.method }} {% endif %}{{ s.path or s.resource_url or 'exchange' }}</code>{% if s.exchange_id %}<span>exchange #{{ s.exchange_id }}</span>{% endif %}</div>
+      <div class="hunt-signal-actions">{% if s.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ s.resource_id }}{% if s.exchange_id %}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}</div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}<div class="empty-state compact"><strong>No hay Signals pendientes.</strong><span>Cuando el motor observe una superficie nueva aparecerá aquí y Burp podrá resaltarla en cyan.</span></div>{% endif %}
+</section>
+
+<section class="section-heading"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Qué vale la pena probar</h2><p class="muted">Estas son hipótesis de trabajo, no vulnerabilidades confirmadas.</p></div></section>
+
 <form class="filters panel" method="get">
   <label class="filter-search">Buscar<input name="q" value="{{ q }}" placeholder="feature flag, auth, refund…"></label>
   <label>Estado<select name="status"><option value="">Todos</option>{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if hypothesis_status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
@@ -35,7 +75,7 @@
   {% if h.test_plan %}<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>{% endif %}
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
   <div class="hypothesis-copy"><p><b>Por qué merece tiempo:</b> {{ h.why_interesting }}</p><p><b>Objetivo ofensivo:</b> {{ h.next_test }}</p></div>
-  {% if h.rule_matches %}<div class="rule-match-box"><div><b>¿Qué regla disparó esta hipótesis?</b>{% if h.detector_id %}<a href="{{ target_base }}/settings/detectors/{{ h.detector_id }}">Abrir detector →</a>{% endif %}</div><div class="rule-match-grid">{% for match in h.rule_matches %}{% for k,v in match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}{% endfor %}</div></div>{% endif %}
+  {% if h.rule_matches %}<div class="rule-match-box"><div><b>¿Qué regla originó esta investigación?</b>{% if h.detector_id %}<a href="{{ target_base }}/settings/detectors/{{ h.detector_id }}">Abrir detector →</a>{% endif %}</div><div class="rule-match-grid">{% for match in h.rule_matches %}{% for k,v in match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}{% endfor %}</div></div>{% endif %}
   {% if h.secret_evidence %}
   <div class="secret-origin-box">
     <div class="secret-origin-head"><div><b>¿De dónde salió esta coincidencia?</b><small>Negro conserva la procedencia exacta sin guardar el secreto completo en la hipótesis.</small></div></div>
@@ -67,6 +107,6 @@
   <form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status">{% for x in ['candidate','testing','interesting','negative','postponed','confirmed','discarded'] %}<option value="{{ x }}" {% if h.status==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label class="grow">Resultado / qué pasó<textarea name="result_notes" placeholder="Ej. Activé el flag; apareció /admin-beta, pero el backend respondió 403. Esto alimentará futuras ideas.">{{ h.result_notes or '' }}</textarea></label><button class="button" type="submit">Guardar resultado</button></form>
   <small class="muted">Actualizada {{ h.updated_at }}{% if h.last_tested_at %} · última prueba {{ h.last_tested_at }}{% endif %}</small>
 </article>
-{% else %}<section class="panel empty-state"><strong>No hay hipótesis con estos filtros.</strong><span>Genera ideas desde el Mapa cuando necesites una nueva línea de investigación.</span></section>{% endfor %}
+{% else %}<section class="panel empty-state"><strong>No hay investigaciones con estos filtros.</strong><span>Los Signals pueden convertirse en preguntas de prueba cuando exista suficiente contexto.</span></section>{% endfor %}
 </section>
 {% endblock %}
