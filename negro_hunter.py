@@ -515,9 +515,45 @@ def init_schema(conn) -> None:
             UNIQUE(operation_id, test_key),
             FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS signal_occurrences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            exchange_id INTEGER,
+            operation_id INTEGER,
+            resource_id INTEGER,
+            kind TEXT NOT NULL,
+            category TEXT,
+            severity TEXT NOT NULL DEFAULT 'info',
+            title TEXT NOT NULL,
+            why_json TEXT,
+            evidence_json TEXT,
+            source TEXT NOT NULL DEFAULT 'engine',
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            dismissed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS parameter_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exchange_id INTEGER NOT NULL,
+            operation_id INTEGER NOT NULL,
+            resource_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            location TEXT NOT NULL,
+            value_hash TEXT NOT NULL,
+            value_preview TEXT,
+            first_seen_at TEXT NOT NULL,
+            UNIQUE(exchange_id, normalized_name, location, value_hash)
+        );
         CREATE INDEX IF NOT EXISTS idx_operation_test_coverage ON operation_test_coverage(operation_id,status,test_key);
         CREATE INDEX IF NOT EXISTS idx_leads_v2_priority ON leads_v2(review_priority, confidence, updated_at);
         CREATE INDEX IF NOT EXISTS idx_relationships_src ON relationships(src_type, src_id, relation);
+        CREATE INDEX IF NOT EXISTS idx_signal_occurrences_resource ON signal_occurrences(resource_id, reviewed_at, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_signal_occurrences_exchange ON signal_occurrences(exchange_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_parameter_observations_name ON parameter_observations(normalized_name, resource_id);
+        CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
         """
     )
     # v0.12.2: leads_v2 also acts as the persistent hypothesis store.
@@ -1446,6 +1482,72 @@ def _request_parameters(req_head: str, req_body: str, request_ct: str, query_jso
     return found
 
 
+def _signal_category(kind: str) -> str:
+    k = str(kind or "").lower()
+    if any(x in k for x in ("idor", "access", "authorization", "referer", "proxy_path")):
+        return "access_control"
+    if any(x in k for x in ("oauth", "oidc", "jwt", "auth", "session")):
+        return "authentication"
+    if "cors" in k:
+        return "cors"
+    if any(x in k for x in ("redirect", "url")):
+        return "url_handling"
+    if "ssrf" in k:
+        return "ssrf"
+    if any(x in k for x in ("secret", "api_key", "credential")):
+        return "secrets"
+    if any(x in k for x in ("business", "price", "coupon", "payment", "state")):
+        return "business_logic"
+    return k or "other"
+
+
+def _upsert_signal_occurrence(conn, *, signal_key: str, kind: str, severity: str, title: str, message: str,
+                              source: str, resource_id: int | None, operation_id: int | None,
+                              exchange_id: int | None, data: dict[str, Any] | None) -> None:
+    if not exchange_id:
+        return
+    now = now_iso()
+    dedupe = f"{signal_key}:exchange:{int(exchange_id)}"
+    row = conn.execute("SELECT id FROM signal_occurrences WHERE dedupe_key=?", (dedupe,)).fetchone()
+    why = {"message": message, "rule_match": (data or {}).get("rule_match")}
+    evidence = dict(data or {})
+    if row:
+        conn.execute(
+            """UPDATE signal_occurrences SET occurrences=occurrences+1,last_seen_at=?,severity=?,title=?,why_json=?,evidence_json=? WHERE id=?""",
+            (now, severity, title, json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), int(row["id"])),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO signal_occurrences(dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,why_json,evidence_json,source,first_seen_at,last_seen_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (dedupe, int(exchange_id), operation_id, resource_id, kind, _signal_category(kind), severity, title,
+             json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), source, now, now),
+        )
+
+
+def _persist_parameter_observations(conn, *, exchange_id: int, operation_id: int, resource_id: int, params: list[dict[str, str]]) -> None:
+    now = now_iso()
+    for item in params:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        value = str(item.get("value") or "")
+        location = str(item.get("location") or "unknown")[:120]
+        normalized = re.sub(r"[^a-z0-9_]", "", name.lower().replace("-", "_"))[:160] or name.lower()[:160]
+        sensitive = any(tok in normalized for tok in ("password", "passwd", "secret", "token", "authorization", "session", "cookie", "apikey", "api_key"))
+        if sensitive:
+            preview = _mask_value(value)
+        else:
+            clean = value.replace("\r", " ").replace("\n", " ")
+            preview = clean if len(clean) <= 120 else clean[:117] + "…"
+        value_hash = hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
+        conn.execute(
+            """INSERT OR IGNORE INTO parameter_observations(exchange_id,operation_id,resource_id,name,normalized_name,location,value_hash,value_preview,first_seen_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (int(exchange_id), int(operation_id), int(resource_id), name[:240], normalized, location, value_hash, preview, now),
+        )
+
+
 def _upsert_notification(conn, *, dedupe_key: str, kind: str, severity: str, title: str, message: str,
                          source: str, entity_type: str | None = None, entity_id: int | None = None,
                          resource_id: int | None = None, operation_id: int | None = None,
@@ -1453,6 +1555,10 @@ def _upsert_notification(conn, *, dedupe_key: str, kind: str, severity: str, tit
                          emit: bool = True) -> tuple[int | None, bool]:
     if not emit:
         return None, False
+    _upsert_signal_occurrence(
+        conn, signal_key=dedupe_key, kind=kind, severity=severity, title=title, message=message,
+        source=source, resource_id=resource_id, operation_id=operation_id, exchange_id=exchange_id, data=data,
+    )
     now = now_iso()
     row = conn.execute("SELECT id FROM notifications WHERE dedupe_key=?", (dedupe_key,)).fetchone()
     payload = json.dumps(data or {}, ensure_ascii=False)
@@ -1535,6 +1641,7 @@ def analyze_http_exchange(conn, exchange_id: int, domain: str, *, emit_notificat
     new_notifications: list[int] = []
     rid, oid, hid = int(row["resource_id"]), int(row["operation_id"]), int(row["host_id"])
     method, path, url = str(row["method"]), str(row["path"]), str(row["url"])
+    _persist_parameter_observations(conn, exchange_id=exchange_id, operation_id=oid, resource_id=rid, params=params)
 
     def notify(*, kind: str, key: str, severity: str, title: str, message: str, data: dict[str, Any]) -> None:
         nid, created = _upsert_notification(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.19.
+"""Local web workspace for Negro Recon v0.20.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -63,7 +63,8 @@ UI_LABELS = {
     "unknown": "Sin clasificar", "informational": "Informativo", "lead": "Interesante",
     "discarded": "Descartado", "finding": "Hallazgo",
     "none": "Sin prioridad", "low": "Baja", "medium": "Media", "high": "Alta", "critical": "Crítica", "info": "Informativa",
-    "normal": "Normal", "untested": "Pendiente", "testing": "En prueba", "tested": "Revisado", "interesting": "Interesante",
+    "normal": "Normal", "learning": "Pendiente aprendizaje", "review_later": "Revisar luego", "correlate": "Correlacionar",
+    "untested": "Pendiente", "testing": "En prueba", "tested": "Revisado", "interesting": "Interesante",
     "candidate": "Candidata", "negative": "Negativa", "postponed": "Para después", "confirmed": "Confirmada",
     "draft": "Borrador", "reported": "Reportado", "retest_required": "Retest pendiente", "still_vulnerable": "Sigue vulnerable",
     "fixed": "Corregido", "fix_verified": "Corrección verificada", "closed": "Cerrado", "inconclusive": "No concluyente",
@@ -848,6 +849,14 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["focused"] = bool(focus_exchange_id and int(ex["id"]) == int(focus_exchange_id))
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
+                exd["request_truncated"] = int(ex["request_size"] or 0) > 300000
+                exd["response_truncated"] = int(ex["response_size"] or 0) > 300000
+                exd["human_state"] = core.get_human_state(conn, "exchange", int(ex["id"]))
+                exd["unreviewed_signal_count"] = core.unreviewed_signal_count(conn, exchange_id=int(ex["id"]))
+                exd["snapshots"] = [dict(x) for x in conn.execute(
+                    "SELECT id,human_state,request_hash,response_hash,observed_at,created_at FROM evidence_snapshots WHERE exchange_id=? ORDER BY id DESC",
+                    (int(ex["id"]),),
+                ).fetchall()]
                 exd["match_evidence"] = []
                 if exd["focused"]:
                     for lead in conn.execute("SELECT id,title,evidence_json FROM leads_v2 WHERE evidence_json LIKE ? ORDER BY updated_at DESC LIMIT 40", (f'%"exchange_id": {int(ex["id"])}%',)).fetchall():
@@ -911,6 +920,19 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                     "hint": t.get("hint"), "status": t.get("status"),
                 })
         review_aids = review_aids[:14]
+        resource_human_state = core.get_human_state(conn, "resource", resource_id)
+        resource_signals = []
+        for sr in conn.execute(
+            """SELECT * FROM signal_occurrences WHERE resource_id=? AND dismissed_at IS NULL
+               ORDER BY CASE WHEN reviewed_at IS NULL THEN 0 ELSE 1 END,last_seen_at DESC LIMIT 60""",
+            (resource_id,),
+        ).fetchall():
+            sd = dict(sr)
+            try: sd["why"] = json.loads(sd.get("why_json") or "{}")
+            except Exception: sd["why"] = {}
+            try: sd["evidence"] = json.loads(sd.get("evidence_json") or "{}")
+            except Exception: sd["evidence"] = {}
+            resource_signals.append(sd)
         all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
         coverage = _coverage_state(row["review_state"])
         signal, finding_count = _entity_signal(conn, "resource", resource_id, row["classification"])
@@ -925,6 +947,10 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
             "test_statuses": ["pending","testing","negative","interesting","confirmed","not_applicable"],
             "observations": observations,
             "resource_hypotheses": resource_hypotheses,
+            "resource_signals": resource_signals,
+            "resource_human_state": resource_human_state,
+            "human_states": core.HUMAN_STATES,
+            "unreviewed_signal_count": core.unreviewed_signal_count(conn, resource_id=resource_id),
             "review_aids": review_aids,
             "linked_findings": linked_findings,
             "all_findings": all_findings,
@@ -2386,6 +2412,32 @@ def create_app(default_domain: str, default_workspace: Path):
                 _ensure_finding_for_entity(conn, "host", host_id, f"Finding en {row['hostname']}")
         return RedirectResponse(url=f"/t/{target_key}/host/{host_id}", status_code=303)
 
+    @app.post("/t/{target_key}/resource/{resource_id}/human-state")
+    def resource_human_state(target_key: str, resource_id: int, state: str = Form(...), category: str = Form(""), note: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT id FROM resources WHERE id=?", (resource_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Recurso no encontrado")
+            core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="web")
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/human-state")
+    def exchange_human_state(target_key: str, exchange_id: int, state: str = Form(...), category: str = Form(""), note: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("""SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""", (exchange_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+            core.set_human_state(conn, "exchange", exchange_id, state, category=category, note=note, source="web")
+            resource_id = int(row["resource_id"])
+            # Resource state is a human workspace summary, not a detector output.
+            if state != "normal":
+                core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="web", snapshot_exchange_id=exchange_id)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={exchange_id}#exchange-{exchange_id}", status_code=303)
+
     @app.post("/t/{target_key}/resource/{resource_id}/state")
     def resource_state(target_key: str, resource_id: int, review_state: str = Form(...), classification: str = Form(...), priority: str = Form(...), csrf: str = Form(...)):
         verify_csrf(csrf)
@@ -2852,7 +2904,7 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=400, detail="Payload inválido")
         target_key = str(payload.get("target_key") or "").strip()
         action = str(payload.get("action") or "").strip()
-        if action not in {"open","interesting","create_finding","attach_finding","retest"}:
+        if action not in {"open","interesting","set_state","add_note","create_finding","attach_finding","retest"}:
             raise HTTPException(status_code=400, detail="Acción Burp inválida")
         _, _, paths = _target_context(target_key)
         resource_id = int(payload.get("resource_id") or 0)
@@ -2874,8 +2926,31 @@ def create_app(default_domain: str, default_workspace: Path):
             web_path = f"/t/{target_key}/resource/{resource_id}"
             if action == "open":
                 return {"ok": True, "action": action, "web_path": web_path}
+            if action == "set_state":
+                state = str(payload.get("state") or "normal").strip()
+                category = str(payload.get("category") or "").strip()[:120]
+                note = str(payload.get("note") or "").strip()[:2000]
+                if state not in core.HUMAN_STATES:
+                    raise HTTPException(status_code=400, detail="Estado humano inválido")
+                if exchange_id:
+                    state_row = core.set_human_state(conn, "exchange", exchange_id, state, category=category, note=note, source="burp")
+                else:
+                    state_row = {"snapshot_id": None}
+                core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="burp", snapshot_exchange_id=exchange_id or None)
+                if note:
+                    conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('resource',?,?,?)", (resource_id, f"Burp · {state}: {note}", _now()))
+                return {"ok": True, "action": action, "state": state, "snapshot_id": state_row.get("snapshot_id"), "resource_id": resource_id, "exchange_id": exchange_id, "web_path": web_path}
+            if action == "add_note":
+                note = str(payload.get("note") or "").strip()[:4000]
+                if not note:
+                    raise HTTPException(status_code=400, detail="Nota vacía")
+                conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('resource',?,?,?)", (resource_id, f"Burp · exchange #{exchange_id}: {note}", _now()))
+                return {"ok": True, "action": action, "resource_id": resource_id, "exchange_id": exchange_id, "web_path": web_path}
             if action == "interesting":
                 conn.execute("UPDATE resources SET classification=CASE WHEN classification='finding' THEN classification ELSE 'lead' END, review_state=CASE WHEN review_state='pending' THEN 'in_progress' ELSE review_state END, updated_at=? WHERE id=?", (_now(), resource_id))
+                if exchange_id:
+                    core.set_human_state(conn, "exchange", exchange_id, "interesting", source="burp_legacy")
+                core.set_human_state(conn, "resource", resource_id, "interesting", source="burp_legacy", snapshot_exchange_id=exchange_id or None)
                 if exchange_id:
                     conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('resource',?,?,?)", (resource_id, f"Marcado Interesting desde Burp · exchange #{exchange_id}", _now()))
                 return {"ok": True, "action": action, "target_key": target_key, "resource_id": resource_id, "web_path": web_path}
@@ -2886,6 +2961,9 @@ def create_app(default_domain: str, default_workspace: Path):
                 if operation_id: _link_finding(conn, fid, "operation", operation_id, "affected_operation")
                 if exchange_id: _link_finding(conn, fid, "exchange", exchange_id, "evidence")
                 conn.execute("UPDATE resources SET classification='finding', review_state=CASE WHEN review_state='pending' THEN 'in_progress' ELSE review_state END, updated_at=? WHERE id=?", (_now(), resource_id))
+                if exchange_id:
+                    core.set_human_state(conn, "exchange", exchange_id, "finding", source="burp_finding")
+                core.set_human_state(conn, "resource", resource_id, "finding", source="burp_finding", snapshot_exchange_id=exchange_id or None)
                 return {"ok": True, "action": action, "finding_id": fid, "web_path": f"/t/{target_key}/finding/{fid}"}
             finding_id = int(payload.get("finding_id") or 0)
             finding = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone() if finding_id else None
@@ -3018,7 +3096,7 @@ def create_app(default_domain: str, default_workspace: Path):
             # Legacy/orphan bridge pollers must never consume queue items.
             return JSONResponse(
                 status_code=428,
-                content={"pending": False, "error": "bridge_id_required", "required_version": "0.16.7"},
+                content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.0"},
             )
         allowed, active_id = _bridge_consumer_allowed(bridge_id)
         if not allowed:

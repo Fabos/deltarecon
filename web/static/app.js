@@ -61,12 +61,20 @@
       window.setTimeout(() => root.remove(), item.severity === 'high' || item.severity === 'critical' ? 14000 : 10000);
     };
 
+    let notificationsInFlight = false;
+    let notificationTimer = null;
+    const scheduleNotifications = (ms) => {
+      if (notificationTimer) window.clearTimeout(notificationTimer);
+      notificationTimer = window.setTimeout(refreshNotifications, ms);
+    };
     const refreshNotifications = async () => {
-      if (!notificationUrl) return;
+      if (!notificationUrl || notificationsInFlight) return;
+      notificationsInFlight = true;
+      let nextDelay = document.hidden ? 20000 : 5000;
       try {
         const sep = notificationUrl.includes('?') ? '&' : '?';
         const res = await fetch(`${notificationUrl}${sep}after_id=${lastId}&limit=50`, {headers:{'Accept':'application/json'}});
-        if (!res.ok) return;
+        if (!res.ok) { nextDelay = 10000; return; }
         const data = await res.json();
         if (countNode) {
           const unread = Number(data.unread || 0);
@@ -79,10 +87,19 @@
         lastId = Math.max(lastId, Number(data.latest_id || 0));
         try { sessionStorage.setItem(lastKey, String(lastId)); } catch (_) {}
         initialized = true;
-      } catch (_) {}
+        // Back off when nothing changed; foreground activity still feels realtime.
+        if (!items.length) nextDelay = document.hidden ? 30000 : 8000;
+      } catch (_) {
+        nextDelay = 12000;
+      } finally {
+        notificationsInFlight = false;
+        scheduleNotifications(nextDelay);
+      }
     };
     refreshNotifications();
-    setInterval(refreshNotifications, 4000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) scheduleNotifications(250);
+    });
   }
 
   const jobsRoot = document.querySelector('[data-jobs]');

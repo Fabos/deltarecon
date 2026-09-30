@@ -4,6 +4,8 @@ import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.core.Annotations;
+import burp.api.montoya.core.HighlightColor;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
 import burp.api.montoya.http.handler.HttpResponseReceived;
@@ -38,7 +40,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.16.7
+ * Negro Burp Bridge v0.20.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -68,7 +70,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.16.7 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.20.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -114,6 +116,14 @@ public class NegroBurpBridge implements BurpExtension {
         uiTimer = new Timer(1000, e -> counters.setText(
                 "Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get()));
         uiTimer.start();
+        panel.add(Box.createVerticalStrut(16));
+        panel.add(new JLabel("Estados / Leyenda"));
+        panel.add(new JLabel("CYAN · Signal Negro (automático, sin revisar)"));
+        panel.add(new JLabel("BLUE · Pendiente aprendizaje    YELLOW · Revisar luego"));
+        panel.add(new JLabel("ORANGE · Interesante    MAGENTA · Correlacionar"));
+        panel.add(new JLabel("RED · Finding    GREEN · Descartado"));
+        panel.add(Box.createVerticalStrut(8));
+        panel.add(new JLabel("Signal = lo que Negro detectó. Estado = tu decisión humana."));
 
         apply.addActionListener(e -> {
             String value = field.getText().trim().replaceAll("/+$", "");
@@ -153,16 +163,16 @@ public class NegroBurpBridge implements BurpExtension {
             try {
                 HttpRequest request = response.initiatingRequest();
                 if (isNegroBridgeTraffic(request.url())) {
-                    return ResponseReceivedAction.continueWith(response);
+                    return ResponseReceivedAction.continueWith(response, response.annotations());
                 }
                 String tool = response.toolSource().toolType().name();
                 String json = toJson(request, response, tool);
-                sendAsync(json, request.method(), request.url(), tool);
+                sendAsync(json, request.method(), request.url(), tool, response.annotations());
             } catch (Exception ex) {
                 errors.incrementAndGet();
                 api.logging().logToError("Negro Bridge: " + ex.getMessage());
             }
-            return ResponseReceivedAction.continueWith(response);
+            return ResponseReceivedAction.continueWith(response, response.annotations());
         }
     }
 
@@ -174,7 +184,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.16.7")
+                    .header("X-Negro-Bridge-Version", "0.20.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -427,7 +437,7 @@ public class NegroBurpBridge implements BurpExtension {
         return defaultValue;
     }
 
-    private void sendAsync(String json, String method, String observedUrl, String tool) {
+    private void sendAsync(String json, String method, String observedUrl, String tool, Annotations annotations) {
         byte[] payload = json.getBytes(StandardCharsets.UTF_8);
         String first = payload.length == 0 ? "<empty>" : String.format("0x%02x('%s')", payload[0] & 0xff, payload[0] >= 32 && payload[0] <= 126 ? Character.toString((char) payload[0]) : ".");
         api.logging().logToOutput("Negro → ingest: " + tool + " " + method + " " + observedUrl + " | payload=" + payload.length + " bytes | first=" + first);
@@ -445,7 +455,14 @@ public class NegroBurpBridge implements BurpExtension {
                     if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                         if (body.contains("\"accepted\":true") || body.contains("\"accepted\": true")) {
                             accepted.incrementAndGet();
-                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true");
+                            long signalCount = jsonLong(body, "signal_count");
+                            if (signalCount > 0 && annotations != null) {
+                                try {
+                                    annotations.setHighlightColor(HighlightColor.CYAN);
+                                    appendNegroNote(annotations, "NEGRO · 🩵 SIGNAL · " + signalCount + " indicio(s) automático(s) sin revisar");
+                                } catch (Exception ignored) {}
+                            }
+                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true · signals=" + Math.max(0, signalCount));
                         } else {
                             ignored.incrementAndGet();
                             api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=false");
@@ -536,29 +553,48 @@ public class NegroBurpBridge implements BurpExtension {
     private final class NegroContextMenu implements ContextMenuItemsProvider {
         @Override
         public List<Component> provideMenuItems(ContextMenuEvent event) {
-            HttpRequestResponse rr = selectedRequestResponse(event);
-            if (rr == null || rr.request() == null || isNegroBridgeTraffic(rr.request().url())) return List.of();
+            List<HttpRequestResponse> selected = selectedRequestResponses(event);
+            if (selected.isEmpty() || selected.get(0).request() == null || isNegroBridgeTraffic(selected.get(0).request().url())) return List.of();
             JMenu menu = new JMenu("Negro");
             JMenuItem open = new JMenuItem("Open in Negro");
-            JMenuItem interesting = new JMenuItem("Mark as Interesting");
+            JMenu stateMenu = new JMenu("State");
+            addStateItem(stateMenu, event, "🔵 Pendiente aprendizaje", "learning");
+            addStateItem(stateMenu, event, "🟡 Revisar luego", "review_later");
+            addStateItem(stateMenu, event, "🟠 Interesante", "interesting");
+            addStateItem(stateMenu, event, "🟣 Correlacionar", "correlate");
+            addStateItem(stateMenu, event, "🔴 Finding", "finding");
+            addStateItem(stateMenu, event, "🟢 Descartado", "discarded");
+            addStateItem(stateMenu, event, "⚪ Normal", "normal");
+            JMenuItem note = new JMenuItem("Add note…");
             JMenuItem createFinding = new JMenuItem("Create Finding…");
             JMenuItem attachFinding = new JMenuItem("Attach to existing Finding…");
             JMenuItem retest = new JMenuItem("Attach as Retest evidence…");
             String tool = event.toolType() == null ? "OTHER" : event.toolType().name();
-            open.addActionListener(e -> runContextAction("open", () -> openInNegro(rr, tool)));
-            interesting.addActionListener(e -> runContextAction("interesting", () -> markInteresting(rr, tool)));
-            createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(rr, tool)));
-            attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(rr, tool)));
-            retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(rr, tool)));
-            menu.add(open); menu.add(interesting); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
+            open.addActionListener(e -> runContextAction("open", () -> openInNegro(selected.get(0), tool)));
+            note.addActionListener(e -> runContextAction("note", () -> addNoteFromBurp(selected, tool)));
+            createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(selected.get(0), tool)));
+            attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(selected.get(0), tool)));
+            retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
+            menu.add(open); menu.add(stateMenu); menu.add(note); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
             return List.of(menu);
         }
     }
 
-    private HttpRequestResponse selectedRequestResponse(ContextMenuEvent event) {
+    private void addStateItem(JMenu stateMenu, ContextMenuEvent event, String label, String state) {
+        JMenuItem item = new JMenuItem(label);
+        item.addActionListener(e -> runContextAction("state-" + state, () -> setStateFromBurp(selectedRequestResponses(event), event.toolType() == null ? "OTHER" : event.toolType().name(), state)));
+        stateMenu.add(item);
+    }
+
+    private List<HttpRequestResponse> selectedRequestResponses(ContextMenuEvent event) {
         List<HttpRequestResponse> selected = event.selectedRequestResponses();
-        if (selected != null && !selected.isEmpty()) return selected.get(0);
-        return event.messageEditorRequestResponse().map(x -> x.requestResponse()).orElse(null);
+        if (selected != null && !selected.isEmpty()) return selected;
+        return event.messageEditorRequestResponse().map(x -> List.of(x.requestResponse())).orElse(List.of());
+    }
+
+    private HttpRequestResponse selectedRequestResponse(ContextMenuEvent event) {
+        List<HttpRequestResponse> selected = selectedRequestResponses(event);
+        return selected.isEmpty() ? null : selected.get(0);
     }
 
     private void runContextAction(String name, Runnable action) {
@@ -619,6 +655,81 @@ public class NegroBurpBridge implements BurpExtension {
         java.net.http.HttpResponse<String> resp = postJson("/api/bridge/action", actionJson(ctx, action, extra));
         if (resp.statusCode() < 200 || resp.statusCode() >= 300) throw new IllegalStateException("Negro action HTTP " + resp.statusCode() + ": " + resp.body());
         return resp.body();
+    }
+
+    private HighlightColor stateColor(String state) {
+        return switch (state) {
+            case "learning" -> HighlightColor.BLUE;
+            case "review_later" -> HighlightColor.YELLOW;
+            case "interesting" -> HighlightColor.ORANGE;
+            case "correlate" -> HighlightColor.MAGENTA;
+            case "finding" -> HighlightColor.RED;
+            case "discarded" -> HighlightColor.GREEN;
+            default -> HighlightColor.NONE;
+        };
+    }
+
+    private String stateLabel(String state) {
+        return switch (state) {
+            case "learning" -> "🔵 PENDIENTE APRENDIZAJE";
+            case "review_later" -> "🟡 REVISAR LUEGO";
+            case "interesting" -> "🟠 INTERESANTE";
+            case "correlate" -> "🟣 CORRELACIONAR";
+            case "finding" -> "🔴 FINDING";
+            case "discarded" -> "🟢 DESCARTADO";
+            default -> "⚪ NORMAL";
+        };
+    }
+
+    private void appendNegroNote(Annotations annotations, String line) {
+        if (annotations == null || line == null || line.isBlank()) return;
+        String current = annotations.hasNotes() ? annotations.notes() : "";
+        // Keep one current NEGRO state/signal line readable without destroying the hunter's own Burp notes.
+        if (current.contains(line)) return;
+        String next = current == null || current.isBlank() ? line : current + "\n" + line;
+        annotations.setNotes(next);
+    }
+
+    private void applyStateAnnotation(HttpRequestResponse rr, String state) {
+        try {
+            Annotations a = rr.annotations();
+            a.setHighlightColor(stateColor(state));
+            appendNegroNote(a, "NEGRO · " + stateLabel(state));
+        } catch (Exception ex) {
+            api.logging().logToError("Negro annotations: " + ex.getMessage());
+        }
+    }
+
+    private void setStateFromBurp(List<HttpRequestResponse> selected, String tool, String state) {
+        if (selected == null || selected.isEmpty()) return;
+        int changed = 0;
+        for (HttpRequestResponse rr : selected) {
+            if (rr == null || rr.request() == null || isNegroBridgeTraffic(rr.request().url())) continue;
+            BridgeContext ctx = ingestContext(rr, tool);
+            try {
+                postBridgeAction(ctx, "set_state", kv("state", state));
+                applyStateAnnotation(rr, state);
+                changed++;
+            } catch (Exception ex) { throw new IllegalStateException(ex); }
+        }
+        showMessage("Negro", changed + " item(s) → " + stateLabel(state), JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void addNoteFromBurp(List<HttpRequestResponse> selected, String tool) {
+        if (selected == null || selected.isEmpty()) return;
+        JTextArea notes = new JTextArea(5, 38); notes.setLineWrap(true); notes.setWrapStyleWord(true);
+        JPanel form = formPanel(); form.add(new JLabel("Nota para " + selected.size() + " item(s)")); form.add(new JScrollPane(notes));
+        if (confirmDialog("Negro · Add note", form) != JOptionPane.OK_OPTION) return;
+        String note = notes.getText().trim();
+        if (note.isEmpty()) return;
+        for (HttpRequestResponse rr : selected) {
+            BridgeContext ctx = ingestContext(rr, tool);
+            try {
+                postBridgeAction(ctx, "add_note", kv("note", note));
+                appendNegroNote(rr.annotations(), "NEGRO · NOTE · " + note.replace('\n', ' '));
+            } catch (Exception ex) { throw new IllegalStateException(ex); }
+        }
+        showMessage("Negro", "Nota guardada en " + selected.size() + " item(s).", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void openInNegro(HttpRequestResponse rr, String tool) {

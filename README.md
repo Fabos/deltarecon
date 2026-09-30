@@ -1,4 +1,15 @@
-# Negro Recon 🐕 — v0.19.3
+# Negro Recon 🐕 — v0.20.0
+
+
+## v0.20.0 — Signals ≠ State · Evidence Memory · Burp Workflow
+
+Negro separa formalmente **lo que el motor observa** de **lo que el hacker decide**. Los `Signal Occurrences` son automáticos, trazables por exchange y nunca convierten por sí solos una superficie en Interesting/Finding/Discarded. Los estados humanos son `Normal`, `Pending Learning`, `Review Later`, `Interesting`, `Correlate`, `Finding` y `Discarded`.
+
+La integración Burp v0.20.0 sincroniza colores/notes, expone estados desde el menú contextual, resalta en cyan los signals nuevos sin revisar y mantiene la filosofía **Signal = pregunta; State = decisión humana**. Los estados importantes congelan un `Evidence Snapshot` del request/response histórico para distinguirlo de un retest posterior en Repeater.
+
+También se incorpora la base de `Parameter Observations` para futuras funciones `Follow Value`, Parameter Explorer e Identity Contexts, además de un polling de notificaciones con backoff para no golpear innecesariamente la API local.
+
+Consulta `UPDATE-v0.20.0.md`.
 
 
 ## v0.19.3 — Exact Evidence Provenance

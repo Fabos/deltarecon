@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.19.3
+Negro Recon v0.20.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.19.3"
+VERSION = "0.20.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -76,6 +76,8 @@ GAU_PROVIDERS = {
 
 CLASSIFICATIONS = ["unknown", "informational", "lead", "discarded", "finding"]
 REVIEW_STATES = ["pending", "in_progress", "reviewed"]
+# v0.20: automatic signals and human investigation state are separate concepts.
+HUMAN_STATES = ["normal", "learning", "review_later", "interesting", "correlate", "finding", "discarded"]
 PRIORITIES = ["none", "low", "medium", "high"]
 
 SOURCE_INFO = {
@@ -224,9 +226,14 @@ def workspace_project_name(paths: dict[str, Path], fallback_domain: str) -> str:
 
 
 def db_connect(paths: dict[str, Path]) -> sqlite3.Connection:
-    conn = sqlite3.connect(paths["db_file"])
+    conn = sqlite3.connect(paths["db_file"], timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # SQLite remains a good fit for a local-first single-hunter workspace. WAL +
+    # a busy timeout make simultaneous Burp ingestion and UI reads far less brittle.
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
 
@@ -453,6 +460,78 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
             );
 
+            -- v0.20: a Signal is machine evidence; a human state is the hunter's decision.
+            CREATE TABLE IF NOT EXISTS entity_states (
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                state TEXT NOT NULL DEFAULT 'normal',
+                category TEXT,
+                note TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(entity_type, entity_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS signal_occurrences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                exchange_id INTEGER,
+                operation_id INTEGER,
+                resource_id INTEGER,
+                kind TEXT NOT NULL,
+                category TEXT,
+                severity TEXT NOT NULL DEFAULT 'info',
+                title TEXT NOT NULL,
+                why_json TEXT,
+                evidence_json TEXT,
+                source TEXT NOT NULL DEFAULT 'engine',
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                dismissed_at TEXT,
+                FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+                FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE,
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS evidence_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange_id INTEGER NOT NULL,
+                resource_id INTEGER NOT NULL,
+                human_state TEXT NOT NULL,
+                request_hash TEXT,
+                response_hash TEXT,
+                request_zlib BLOB,
+                response_zlib BLOB,
+                request_size INTEGER NOT NULL DEFAULT 0,
+                response_size INTEGER NOT NULL DEFAULT 0,
+                observed_at TEXT,
+                created_at TEXT NOT NULL,
+                note TEXT,
+                UNIQUE(exchange_id, human_state, request_hash, response_hash),
+                FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
+            -- Foundation for Follow Value / Parameter Explorer (next phase).
+            CREATE TABLE IF NOT EXISTS parameter_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange_id INTEGER NOT NULL,
+                operation_id INTEGER NOT NULL,
+                resource_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                location TEXT NOT NULL,
+                value_hash TEXT NOT NULL,
+                value_preview TEXT,
+                first_seen_at TEXT NOT NULL,
+                UNIQUE(exchange_id, normalized_name, location, value_hash),
+                FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+                FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE,
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS findings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -508,6 +587,12 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id, last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_js_assets_host ON js_assets(host_id, discovered_at);
             CREATE INDEX IF NOT EXISTS idx_ai_asset ON ai_analyses(js_asset_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_entity_states_state ON entity_states(state, entity_type, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_signal_occurrences_resource ON signal_occurrences(resource_id, reviewed_at, last_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_signal_occurrences_exchange ON signal_occurrences(exchange_id, kind);
+            CREATE INDEX IF NOT EXISTS idx_evidence_snapshots_resource ON evidence_snapshots(resource_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_parameter_observations_name ON parameter_observations(normalized_name, resource_id);
+            CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
             CREATE INDEX IF NOT EXISTS idx_operations_resource ON resource_operations(resource_id, method);
             CREATE INDEX IF NOT EXISTS idx_http_exchanges_operation ON http_exchanges(operation_id, last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_burp_queue_status ON burp_repeater_queue(status, created_at);
@@ -517,6 +602,11 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_finding_retest_entities ON finding_retest_entities(retest_id, entity_type, entity_id);
             """
         )
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:
+            pass
+
         # Conservative schema migration for workspaces created by v0.3/v0.4.
         host_cols = {row["name"] for row in conn.execute("PRAGMA table_info(hosts)")}
         resource_cols = {row["name"] for row in conn.execute("PRAGMA table_info(resources)")}
@@ -540,8 +630,108 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         import negro_hunter as hunter
         hunter.init_schema(conn)
 
+        # Conservative v0.20 backfill: existing exchange-bound notifications were
+        # automatic observations too. Preserve their read/unread status as the best
+        # migration hint for reviewed/unreviewed Signals without rewriting history.
+        conn.execute(
+            """INSERT OR IGNORE INTO signal_occurrences(
+                   dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,
+                   why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at,reviewed_at
+               )
+               SELECT n.dedupe_key || ':exchange:' || n.exchange_id, n.exchange_id, n.operation_id, n.resource_id,
+                      n.kind, n.kind, n.severity, n.title, NULL, n.data_json, n.source,
+                      COALESCE(n.occurrences,1), n.first_seen_at, n.last_seen_at, n.read_at
+               FROM notifications n
+               WHERE n.exchange_id IS NOT NULL"""
+        )
+
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('domain', ?)", (domain,))
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('version', ?)", (VERSION,))
+
+
+def get_human_state(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> dict:
+    row = conn.execute(
+        "SELECT * FROM entity_states WHERE entity_type=? AND entity_id=?",
+        (entity_type, int(entity_id)),
+    ).fetchone()
+    return dict(row) if row else {"entity_type": entity_type, "entity_id": int(entity_id), "state": "normal", "category": None, "note": None, "source": None, "updated_at": None}
+
+
+def _snapshot_exchange(conn: sqlite3.Connection, exchange_id: int, state: str, note: str | None = None) -> int | None:
+    """Freeze the exact bytes that justified an important human decision."""
+    if state not in {"interesting", "correlate", "finding"}:
+        return None
+    import base64
+    import zlib
+    row = conn.execute(
+        """SELECT e.*,o.resource_id FROM http_exchanges e
+           JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not row:
+        return None
+
+    def packed(value):
+        if not value:
+            return None
+        try:
+            return sqlite3.Binary(zlib.compress(base64.b64decode(value, validate=False), 6))
+        except Exception:
+            return None
+
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO evidence_snapshots(
+               exchange_id,resource_id,human_state,request_hash,response_hash,request_zlib,response_zlib,
+               request_size,response_size,observed_at,created_at,note
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (int(exchange_id), int(row["resource_id"]), state, row["request_hash"], row["response_hash"],
+         packed(row["request_b64"]), packed(row["response_b64"]), int(row["request_size"] or 0),
+         int(row["response_size"] or 0), row["first_seen_at"], now_iso(), (note or "")[:2000]),
+    )
+    if cur.rowcount == 1:
+        return int(cur.lastrowid)
+    existing = conn.execute(
+        """SELECT id FROM evidence_snapshots WHERE exchange_id=? AND human_state=?
+           AND COALESCE(request_hash,'')=COALESCE(?, '') AND COALESCE(response_hash,'')=COALESCE(?, '')""",
+        (int(exchange_id), state, row["request_hash"], row["response_hash"]),
+    ).fetchone()
+    return int(existing["id"]) if existing else None
+
+
+def set_human_state(conn: sqlite3.Connection, entity_type: str, entity_id: int, state: str, *, category: str | None = None, note: str | None = None, source: str = "manual", snapshot_exchange_id: int | None = None) -> dict:
+    if state not in HUMAN_STATES:
+        raise ValueError(f"Estado humano inválido: {state}")
+    ts = now_iso()
+    conn.execute(
+        """INSERT INTO entity_states(entity_type,entity_id,state,category,note,source,updated_at)
+           VALUES(?,?,?,?,?,?,?)
+           ON CONFLICT(entity_type,entity_id) DO UPDATE SET
+             state=excluded.state,category=excluded.category,note=excluded.note,source=excluded.source,updated_at=excluded.updated_at""",
+        (entity_type, int(entity_id), state, (category or "")[:120] or None, (note or "")[:2000] or None, source[:80], ts),
+    )
+    # Calling set_human_state for an exchange is an explicit human review action.
+    # Even choosing Normal means "I looked at this", so pending cyan Signals must
+    # stop presenting themselves as unreviewed without being discarded/deleted.
+    if entity_type == "exchange":
+        conn.execute("UPDATE signal_occurrences SET reviewed_at=COALESCE(reviewed_at,?) WHERE exchange_id=?", (ts, int(entity_id)))
+    snapshot_id = None
+    if snapshot_exchange_id or entity_type == "exchange":
+        snapshot_id = _snapshot_exchange(conn, snapshot_exchange_id or int(entity_id), state, note)
+    result = get_human_state(conn, entity_type, entity_id)
+    result["snapshot_id"] = snapshot_id
+    return result
+
+
+def unreviewed_signal_count(conn: sqlite3.Connection, *, resource_id: int | None = None, exchange_id: int | None = None) -> int:
+    sql = "SELECT COUNT(*) c FROM signal_occurrences WHERE reviewed_at IS NULL AND dismissed_at IS NULL"
+    params: list[object] = []
+    if resource_id is not None:
+        sql += " AND resource_id=?"
+        params.append(int(resource_id))
+    if exchange_id is not None:
+        sql += " AND exchange_id=?"
+        params.append(int(exchange_id))
+    return int(conn.execute(sql, params).fetchone()["c"] or 0)
 
 
 def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | None = None, project_name: str | None = None) -> dict[str, Path]:

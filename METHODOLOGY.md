@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.19.3
+# Negro Recon — Metodología v0.20.0
 
 ## Principio
 
@@ -227,3 +227,10 @@ Cuando cambian reglas o aparece nuevo conocimiento, `Recalcular inteligencia` vu
 - **vigencia de regla**: si la evidencia todavía coincide con la Knowledge Base actual.
 
 Si deja de coincidir, Negro no borra notas ni decisiones humanas: la marca como histórica/no vigente y la retira del mapa/rutas activas. Si una regla futura vuelve a justificarla, se reactiva usando la misma hipótesis. La recalculación no hace requests al target ni llamadas a IA.
+
+
+## Signals ≠ estado humano
+
+Un Signal es una observación automática que formula una pregunta. Nunca confirma una vulnerabilidad ni cierra una superficie. El estado humano registra la decisión del investigador: `normal`, `learning`, `review_later`, `interesting`, `correlate`, `finding` o `discarded`.
+
+Cuando un exchange se marca `interesting`, `correlate` o `finding`, Negro conserva una evidencia histórica inmutable de los bytes observados. Un envío posterior a Repeater es un **retest vivo** y puede producir una respuesta distinta.

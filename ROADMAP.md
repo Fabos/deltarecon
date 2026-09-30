@@ -136,3 +136,23 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - “Abrir evidencia” salta al exchange real que produjo la hipótesis.
 - Un exchange histórico se carga aunque ya no esté entre los 30 más recientes del recurso.
 - Evidencia histórica obtiene contexto al abrirse sin recapturar tráfico.
+
+## Implementado en v0.20.0
+
+- Signals automáticos separados de estados humanos.
+- Signal provenance por exchange (`signal_occurrences`).
+- Estados humanos `normal / learning / review_later / interesting / correlate / finding / discarded`.
+- Evidence Snapshots para `interesting / correlate / finding`.
+- Burp colors + notes + context menu de estados.
+- Parameter observations como base de Follow Value / Parameter Explorer / Identity Contexts.
+- Diferenciación UX entre evidencia histórica y retest actual en Repeater.
+- Polling de notificaciones local con backoff y sin solapamiento.
+
+## Siguientes fases de la nueva visión
+
+1. Global Search + FTS5 + Saved Searches + guía “Aprende a buscar como hacker”.
+2. Parameter Explorer + Follow Value + Find Related + Smart Diff.
+3. Identity Contexts + auth material rotatorio + identity resolvers + Authorization Matrix.
+4. Flow Capture + Flow Compare + business-state observations.
+5. Pattern anomalies + cross-host correlation + business objects.
+6. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
