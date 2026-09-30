@@ -45,6 +45,7 @@ def init_schema(conn) -> None:
             material_name TEXT NOT NULL,
             fingerprint TEXT NOT NULL,
             masked_preview TEXT,
+            raw_value TEXT,
             source TEXT NOT NULL DEFAULT 'manual',
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
@@ -61,6 +62,7 @@ def init_schema(conn) -> None:
             selector TEXT NOT NULL,
             value_hash TEXT NOT NULL,
             value_preview TEXT,
+            value_raw TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
             source TEXT NOT NULL DEFAULT 'manual',
             created_at TEXT NOT NULL,
@@ -88,6 +90,12 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_exchange_identities_identity ON exchange_identities(identity_id, context_id, assigned_at);
         """
     )
+    auth_cols = {row["name"] for row in conn.execute("PRAGMA table_info(auth_materials)")}
+    if "raw_value" not in auth_cols:
+        conn.execute("ALTER TABLE auth_materials ADD COLUMN raw_value TEXT")
+    resolver_cols = {row["name"] for row in conn.execute("PRAGMA table_info(identity_resolvers)")}
+    if "value_raw" not in resolver_cols:
+        conn.execute("ALTER TABLE identity_resolvers ADD COLUMN value_raw TEXT")
 
 
 def _decode_b64(value: str | None) -> str:
@@ -219,11 +227,11 @@ def _context_belongs(conn, identity_id: int, context_id: int | None) -> int | No
 def _learn_material(conn, identity_id: int, context_id: int | None, material: dict[str, Any], *, source: str) -> None:
     now = now_iso()
     conn.execute(
-        """INSERT INTO auth_materials(identity_id,context_id,material_type,material_name,fingerprint,masked_preview,source,first_seen_at,last_seen_at,active)
-           VALUES(?,?,?,?,?,?,?,?,?,1)
+        """INSERT INTO auth_materials(identity_id,context_id,material_type,material_name,fingerprint,masked_preview,raw_value,source,first_seen_at,last_seen_at,active)
+           VALUES(?,?,?,?,?,?,?,?,?,?,1)
            ON CONFLICT(identity_id,context_id,material_type,material_name,fingerprint)
-           DO UPDATE SET last_seen_at=excluded.last_seen_at,active=1""",
-        (int(identity_id), context_id, material["material_type"], str(material["name"])[:160], material["fingerprint"], material["preview"], source, now, now),
+           DO UPDATE SET last_seen_at=excluded.last_seen_at,active=1,masked_preview=excluded.masked_preview,raw_value=excluded.raw_value""",
+        (int(identity_id), context_id, material["material_type"], str(material["name"])[:160], material["fingerprint"], material["preview"], str(material.get("value") or ""), source, now, now),
     )
 
 
@@ -241,9 +249,11 @@ def _learn_stable_jwt_claims(conn, identity_id: int, context_id: int | None, mat
         selector = f"jwt:{key}"
         vh = _sha(value)
         conn.execute(
-            """INSERT OR IGNORE INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,enabled,source,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,1,?,?,?)""",
-            (int(identity_id), context_id, "jwt_claim", selector, vh, value[:120], source, now, now),
+            """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,1,?,?,?)
+               ON CONFLICT(identity_id,context_id,resolver_type,selector,value_hash)
+               DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=1,updated_at=excluded.updated_at""",
+            (int(identity_id), context_id, "jwt_claim", selector, vh, value[:120], value, source, now, now),
         )
         count += 1
     return count
@@ -284,9 +294,11 @@ def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, conte
     selector = str(obs["normalized_name"])
     now = now_iso()
     conn.execute(
-        """INSERT OR IGNORE INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,enabled,source,created_at,updated_at)
-           VALUES(?,?,?,?,?,?,1,?,?,?)""",
-        (int(identity_id), context_id, "parameter", selector, str(obs["value_hash"]), str(obs["value_preview"] or "")[:120], source, now, now),
+        """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,1,?,?,?)
+           ON CONFLICT(identity_id,context_id,resolver_type,selector,value_hash)
+           DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=1,updated_at=excluded.updated_at""",
+        (int(identity_id), context_id, "parameter", selector, str(obs["value_hash"]), str(obs["value_preview"] or "")[:120], str(obs["value_raw"] or obs["value_preview"] or ""), source, now, now),
     )
     row = conn.execute(
         "SELECT id FROM identity_resolvers WHERE identity_id=? AND context_id IS ? AND resolver_type='parameter' AND selector=? AND value_hash=?",
@@ -388,11 +400,41 @@ def contexts(conn, identity_id: int | None = None) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _backfill_raw_identity_values(conn, identity_id: int) -> None:
+    """Recover exact local values for workspaces created before v0.23.1."""
+    # Parameter resolvers can be recovered from the structured observation table.
+    conn.execute(
+        """UPDATE identity_resolvers
+           SET value_raw=(SELECT COALESCE(p.value_raw,p.value_preview) FROM parameter_observations p
+                          WHERE p.normalized_name=identity_resolvers.selector AND p.value_hash=identity_resolvers.value_hash
+                          AND COALESCE(p.value_raw,p.value_preview) IS NOT NULL LIMIT 1)
+           WHERE identity_id=? AND resolver_type='parameter' AND COALESCE(value_raw,'')=''""",
+        (int(identity_id),),
+    )
+    # Auth material can be recovered exactly from exchanges already associated with the identity.
+    ex_ids = [int(r["exchange_id"]) for r in conn.execute("SELECT exchange_id FROM exchange_identities WHERE identity_id=?", (int(identity_id),)).fetchall()]
+    for exchange_id in ex_ids[:500]:
+        for material in extract_auth_materials(conn, exchange_id):
+            conn.execute(
+                """UPDATE auth_materials SET raw_value=? WHERE identity_id=? AND fingerprint=? AND COALESCE(raw_value,'')=''""",
+                (str(material.get("value") or ""), int(identity_id), str(material["fingerprint"])),
+            )
+            if material.get("claims"):
+                for key, value in material["claims"].items():
+                    selector=f"jwt:{key}"
+                    vh=_sha(str(value))
+                    conn.execute(
+                        """UPDATE identity_resolvers SET value_raw=? WHERE identity_id=? AND resolver_type='jwt_claim' AND selector=? AND value_hash=? AND COALESCE(value_raw,'')=''""",
+                        (str(value), int(identity_id), selector, vh),
+                    )
+
+
 def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
     init_schema(conn)
     identity = conn.execute("SELECT * FROM identities WHERE id=?", (int(identity_id),)).fetchone()
     if not identity:
         return None
+    _backfill_raw_identity_values(conn, int(identity_id))
     ctx = contexts(conn, int(identity_id))
     materials = [dict(r) for r in conn.execute(
         "SELECT * FROM auth_materials WHERE identity_id=? ORDER BY last_seen_at DESC LIMIT 100", (int(identity_id),)
@@ -401,7 +443,7 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
         "SELECT * FROM identity_resolvers WHERE identity_id=? ORDER BY enabled DESC,updated_at DESC LIMIT 100", (int(identity_id),)
     ).fetchall()]
     exchanges = [dict(r) for r in conn.execute(
-        """SELECT ei.*,h.hostname,r.path,o.method,e.status_code,e.first_seen_at,c.label context_label
+        """SELECT ei.*,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at,c.label context_label
            FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
            LEFT JOIN identity_contexts c ON c.id=ei.context_id
@@ -413,7 +455,7 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
 def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:
     init_schema(conn)
     row = conn.execute(
-        """SELECT e.id exchange_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+        """SELECT e.id exchange_id,e.request_b64,e.response_b64,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at
            FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
            JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
         (int(exchange_id),),
@@ -425,7 +467,16 @@ def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:
            JOIN identities i ON i.id=ei.identity_id LEFT JOIN identity_contexts c ON c.id=ei.context_id
            WHERE ei.exchange_id=?""", (int(exchange_id),)
     ).fetchone()
-    return {"exchange": dict(row), "current": dict(current) if current else None, "materials": extract_auth_materials(conn, int(exchange_id))}
+    exchange = dict(row)
+    exchange["request_text"] = _decode_b64(row["request_b64"])
+    exchange["response_text"] = _decode_b64(row["response_b64"])
+    exchange.pop("request_b64", None); exchange.pop("response_b64", None)
+    observations = [dict(r) for r in conn.execute(
+        """SELECT id,name,normalized_name,location,value_hash,value_preview,value_raw FROM parameter_observations
+           WHERE exchange_id=? ORDER BY CASE WHEN location LIKE 'response_json:%' THEN 0 ELSE 1 END,id LIMIT 80""",
+        (int(exchange_id),),
+    ).fetchall()]
+    return {"exchange": exchange, "current": dict(current) if current else None, "materials": extract_auth_materials(conn, int(exchange_id)), "observations": observations}
 
 
 def stats(conn) -> dict[str, int]:

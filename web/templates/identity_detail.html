@@ -4,14 +4,23 @@
 {% set i=identity_detail.identity %}
 <section class="hero identity-detail-hero">
   <div><p class="eyebrow">IDENTIDAD #{{ i.id }}</p><h1>{{ i.name }}</h1><p class="muted">{{ i.notes or 'Sin notas.' }}</p></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/identities/matrix?a={{ i.id }}">Ver en Authorization Matrix</a><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
 </section>
+
+
+{% if assigned_exchange %}
+<div class="callout success"><b>Asignación guardada:</b> exchange #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers JWT estables. Revisa el exchange exacto abajo en “Tráfico asociado”.</div>
+{% endif %}
+{% if resolver_observation %}
+<div class="callout success"><b>Resolver guardado:</b> la observación #{{ resolver_observation }} ahora puede ayudar a reconocer <b>{{ i.name }}</b> en tráfico futuro.</div>
+{% endif %}
+<div class="callout info"><b>Cómo leer esta página:</b> la identidad es la cuenta estable que tú conoces; los contextos describen rol/tenant; Auth Material son las cookies/tokens concretos observados; los resolvers son valores estables que permiten reconocer esa misma cuenta en tráfico futuro.</div>
 
 <section class="identity-layout">
   <div class="panel">
     <div class="panel-head"><div><p class="eyebrow">CONTEXTOS</p><h2>Rol / tenant / contexto</h2></div><span>{{ identity_detail.contexts|length }}</span></div>
     <div class="identity-context-list">
-      {% for c in identity_detail.contexts %}<div class="identity-context-card"><b>{{ c.label }}</b><span>role: {{ c.role or '—' }}</span><span>tenant: {{ c.tenant or '—' }}</span>{% if c.notes %}<small>{{ c.notes }}</small>{% endif %}</div>{% else %}<p class="muted">No hay contextos todavía.</p>{% endfor %}
+      {% for c in identity_detail.contexts %}<div class="identity-context-card"><b>{{ c.label }}</b><span>role: {{ c.role or '—' }}</span><span>tenant: {{ c.tenant or '—' }}</span>{% if c.notes %}<small>{{ c.notes }}</small>{% endif %}</div>{% else %}<p class="muted">No hay contextos todavía. No son obligatorios.</p>{% endfor %}
     </div>
   </div>
   <aside class="panel">
@@ -28,23 +37,28 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">AUTH MATERIAL</p><h2>Sesiones/tokens observados</h2><p class="muted">Los valores completos no se muestran; Negro guarda fingerprint + preview enmascarado.</p></div><span>{{ identity_detail.materials|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">AUTH MATERIAL</p><h2>Cookies/tokens que Negro vio para {{ i.name }}</h2><p class="muted">Valores completos visibles porque el workspace es local. Un token nuevo no crea otra identidad: simplemente es otro Auth Material de la misma cuenta.</p></div><span>{{ identity_detail.materials|length }}</span></div>
   <div class="identity-material-list">
-    {% for a in identity_detail.materials %}<div class="identity-material-row"><div><b>{{ a.material_type }} · {{ a.material_name }}</b><code>{{ a.masked_preview }}</code></div><small>{{ a.source }} · {{ a.last_seen_at }}</small></div>{% else %}<p class="muted">Aún no se aprendieron credenciales.</p>{% endfor %}
+    {% for a in identity_detail.materials %}<div class="identity-material-row"><div><b>{{ a.material_type }} · {{ a.material_name }}</b><code class="raw-value">{{ a.raw_value or a.masked_preview or '(valor histórico no recuperable todavía)' }}</code></div><small>{{ a.source }} · first {{ a.first_seen_at }} · last {{ a.last_seen_at }}</small></div>{% else %}<p class="muted">Aún no se aprendieron credenciales.</p>{% endfor %}
   </div>
 </section>
 
-<section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo reconoce Negro esta identidad</h2></div><span>{{ identity_detail.resolvers|length }}</span></div>
+<section class="panel" id="resolvers">
+  <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplo: <code>jwt:sub=101</code> o <code>ownerId=101</code>. Debe ser un valor que realmente identifique a esta cuenta.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
   <div class="identity-resolver-list">
-    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_preview or 'hash conocido' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna un exchange con JWT o usa “Usar para identidad” sobre un parámetro estable.</p>{% endfor %}
+    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Puedes enseñar uno desde Buscar → Usar para identidad.</p>{% endfor %}
   </div>
 </section>
 
-<section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">TRÁFICO</p><h2>Exchanges asociados</h2></div><span>{{ identity_detail.exchanges|length }}</span></div>
+<section class="panel" id="traffic">
+  <div class="panel-head"><div><p class="eyebrow">TRÁFICO ASOCIADO</p><h2>Qué requests están atribuidas a {{ i.name }}</h2><p class="muted">Aquí puedes verificar exactamente qué asignaste y por qué fuente llegó la asociación.</p></div><span>{{ identity_detail.exchanges|length }}</span></div>
   <div class="unknown-exchange-list">
-    {% for e in identity_detail.exchanges %}<div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.source }}{% if e.context_label %} · {{ e.context_label }}{% endif %}</small></div><a class="button ghost small-button" href="{{ target_base }}/search?q={{ ('path:' ~ e.path)|urlencode }}">Buscar relacionados</a></div>{% else %}<p class="muted">Sin exchanges asociados.</p>{% endfor %}
+    {% for e in identity_detail.exchanges %}
+    <div class="unknown-exchange-row">
+      <div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · fuente {{ e.source }}{% if e.context_label %} · {{ e.context_label }}{% endif %}{% if e.notes %} · {{ e.notes }}{% endif %}</small></div>
+      <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Find Related</a></div>
+    </div>
+    {% else %}<p class="muted">Sin exchanges asociados.</p>{% endfor %}
   </div>
 </section>
 {% endblock %}

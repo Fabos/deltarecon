@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.23</p>
+    <p class="eyebrow">SEARCH · v0.23.1</p>
     <h1>Buscar en todo el proyecto</h1>
     <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
@@ -11,7 +11,7 @@
     <a class="button ghost" href="{{ target_base }}/parameters">Índice de parámetros</a>
     <form action="{{ target_base }}/search/reindex" method="post" data-job-form data-job-label="Actualizando índice">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <button class="button secondary" type="submit">↻ Actualizar índice</button>
+      <button class="button secondary" type="submit">↻ Actualizar datos</button>
     </form>
   </div>
 </section>
@@ -27,9 +27,9 @@
   <div class="search-index-meta">
     <span><b>{{ search_stats.documents }}</b> documentos</span>
     <span><b>{{ search_stats.http_exchanges }}</b> exchanges HTTP</span>
-    <span>{% if search_stats.rebuilt_at %}Índice actualizado {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
+    <span>{% if search_stats.rebuilt_at %}Datos actualizados {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
   </div>
-  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar índice” una vez para habilitar búsqueda parcial sobre el historial.</div>{% endif %}
+  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar datos” una vez para reconstruir búsqueda y valores estructurados del historial.</div>{% endif %}
   {% if search_result.error %}<div class="callout warning">{{ search_result.error }}</div>{% endif %}
 </section>
 
@@ -74,7 +74,7 @@
         <article class="parameter-hit-card">
           <div class="parameter-hit-main">
             <div class="badges"><span class="badge">{{ p.location }}</span><span class="badge">{{ p.method }}</span><span class="badge">HTTP {{ p.status_code }}</span></div>
-            <h3><code>{{ p.name }}</code> <span>=</span> <code>{{ p.value_preview or '—' }}</code></h3>
+            <h3><code>{{ p.name }}</code> <span>=</span> <code>{{ p.value_raw or p.value_preview or '—' }}</code></h3>
             <p><b>{{ p.hostname }}</b><code>{{ p.path }}</code> · exchange #{{ p.exchange_id }} · {{ p.value_occurrences }} apariciones del mismo valor</p>
           </div>
           <div class="row-actions parameter-hit-actions">
@@ -106,7 +106,7 @@
         {% if r.parameter_matches %}
         <div class="search-param-inline">
           {% for p in r.parameter_matches %}
-          <a href="{{ target_base }}/parameters/follow/{{ p.id }}"><code>{{ p.name }}={{ p.value_preview }}</code><small>{{ p.location }}</small></a>
+          <a href="{{ target_base }}/parameters/follow/{{ p.id }}"><code>{{ p.name }}={{ p.value_raw or p.value_preview }}</code><small>{{ p.location }}</small></a>
           {% endfor %}
         </div>
         {% endif %}

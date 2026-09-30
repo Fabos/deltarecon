@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.23.1
+
+- Corrige `Internal Server Error` al abrir **Explorar parámetro** / detalle de `ownerId`: el template colisionaba con `dict.values`.
+- Corrige errores al asignar identidad/resolver con un Context de otra Identity; la UI ahora filtra contextos por identidad y el backend devuelve un error claro en lugar de 500.
+- `Identidades → Asignar` ya no es una acción a ciegas: muestra request/response exactos, valores observados y auth material antes de guardar.
+- Después de asignar, la página de Identity confirma qué exchange se asoció y cuántos auth materials/resolvers se aprendieron.
+- La página de Identity muestra enlaces al **HTTP exacto** de cada exchange asociado y permite reasignarlo.
+- Añade almacenamiento local de valores completos: `parameter_observations.value_raw`, `auth_materials.raw_value` e `identity_resolvers.value_raw`, conservando hashes/fingerprints para correlación.
+- Identity y Parameter Detail muestran valores completos en el workspace local; previews compactos pueden seguir enmascarados sin perder el dato original.
+- Añade backfill de auth material/resolvers para identidades ya existentes cuando el valor puede recuperarse de los exchanges asociados.
+- **Buscar → Actualizar datos** ahora reconstruye también parámetros/valores históricos antes de regenerar el índice, evitando tener dos botones de mantenimiento para la misma memoria.
+- `/identities/assign` sin `exchange_id` vuelve a Identidades en vez de romper la navegación.
+- Añade regresión `v0231_identity_parameter_ux_test.py`; toda la suite queda en verde.
+- Sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+
 ## v0.23.0
 
 - Unifica Search y Parameter Explorer: **Buscar** es la entrada principal; Parameter Explorer queda como drill-down técnico.

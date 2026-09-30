@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.23.0
+# Negro Recon — Metodología v0.23.1
 
 ## Modelo mental: Rule → Signal → Hipótesis IA → Investigación
 
@@ -27,7 +27,7 @@ Parameter Explorer queda como vista de detalle: **Search responde dónde aparece
 
 ### Follow Value / Find Related / Smart Diff
 
-`parameter_observations` deriva escalares de query, path, request JSON/form y response JSON. Cada observación conserva nombre normalizado, superficie, exchange, recurso, hash del valor y preview. Valores sensibles se enmascaran.
+`parameter_observations` deriva escalares de query, path, request JSON/form y response JSON. Cada observación conserva nombre normalizado, superficie, exchange, recurso, hash del valor, preview y valor local completo (`value_raw`). El hash sirve para correlación; el valor completo permanece disponible en el workspace local para análisis manual.
 
 - **Follow Value**: mismo valor exacto por hash.
 - **Find Related**: exchanges cercanos por evidencia compartida, con razones visibles.
@@ -37,9 +37,9 @@ Parameter Explorer queda como vista de detalle: **Search responde dónde aparece
 
 Negro separa **Identity**, **Context** y **Auth Material**. La identidad representa a la cuenta/persona; el contexto representa rol/tenant; el auth material representa la credencial concreta que puede rotar.
 
-La primera asociación es humana: `Asignar identidad` sobre un exchange conocido. A partir de ahí Negro puede recordar fingerprints locales de cookies/Bearer y, si el token es JWT, resolvers de claims estables como `sub`, `userId` o `accountId`. Si un resolver estable identifica una sesión nueva, Negro aprende el auth material rotado de esa sesión para siguientes requests.
+La primera asociación es humana y se hace sobre un **exchange**, no sobre una ruta completa. Ejemplo: el `GET /me` concreto que sabes que pertenece a Buyer A. Antes de guardarlo, Negro muestra el HTTP exacto y los valores observados. A partir de ese ancla recuerda fingerprints y valores locales de cookies/Bearer y, si el token es JWT, resolvers de claims estables como `sub`, `userId` o `accountId`. Si un resolver estable identifica una sesión nueva, Negro aprende el auth material rotado de esa sesión para siguientes requests.
 
-También se puede enseñar un resolver desde una observación de parámetro estable (por ejemplo un `userId` de `/me`). Si no hay una coincidencia única, la identidad permanece **desconocida**; Negro no adivina.
+También se puede enseñar un resolver desde una observación de parámetro estable (por ejemplo un `userId` de `/me`). Si no hay una coincidencia única, la identidad permanece **desconocida**; Negro no adivina. `Context` es opcional y pertenece siempre a una sola Identity.
 
 ### Authorization Matrix
 

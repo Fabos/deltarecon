@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.23.0
+Negro Recon v0.23.1
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.23.0"
+VERSION = "0.23.1"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -525,6 +525,7 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 location TEXT NOT NULL,
                 value_hash TEXT NOT NULL,
                 value_preview TEXT,
+                value_raw TEXT,
                 first_seen_at TEXT NOT NULL,
                 UNIQUE(exchange_id, normalized_name, location, value_hash),
                 FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,

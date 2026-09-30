@@ -170,8 +170,17 @@ def _db(paths: dict[str, Path]):
 
 def _rebuild_search_index(paths: dict[str, Path]) -> dict[str, int]:
     import negro_search as search_index
+    import negro_parameters as parameter_tools
     with _db(paths) as conn:
-        return search_index.rebuild_search_index(conn)
+        # Search is the universal entry point: refreshing it also backfills the
+        # structured parameter/value layer so old workspaces gain value_raw.
+        parameter_result = parameter_tools.rebuild_parameter_observations(conn)
+        search_result = search_index.rebuild_search_index(conn)
+        return {
+            "parameter_exchanges": int(parameter_result.get("exchanges", 0)),
+            "parameter_observations": int(parameter_result.get("observations", 0)),
+            **{str(k): int(v) if isinstance(v, int) else v for k, v in search_result.items()},
+        }
 
 
 def _rebuild_parameter_index(paths: dict[str, Path]) -> dict[str, int]:
@@ -2470,7 +2479,7 @@ def create_app(default_domain: str, default_workspace: Path):
             identity_rows = identity_tools.list_identities(conn)
             identity_stats = identity_tools.stats(conn)
             recent_unknown = [dict(r) for r in conn.execute(
-                """SELECT e.id exchange_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+                """SELECT e.id exchange_id,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at
                    FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
                    JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
                    LEFT JOIN exchange_identities ei ON ei.exchange_id=e.id
@@ -2489,14 +2498,14 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
 
     @app.get("/t/{target_key}/identities/view/{identity_id}", response_class=HTMLResponse)
-    def identity_detail_page(request: Request, target_key: str, identity_id: int):
+    def identity_detail_page(request: Request, target_key: str, identity_id: int, assigned_exchange: int | None = None, learned_materials: int | None = None, learned_resolvers: int | None = None, resolver_observation: int | None = None):
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             detail = identity_tools.identity_detail(conn, identity_id)
             if not detail:
                 raise HTTPException(status_code=404, detail="Identidad no encontrada")
-        return render(request, "identity_detail.html", target_key, domain, workspace, identity_detail=detail)
+        return render(request, "identity_detail.html", target_key, domain, workspace, identity_detail=detail, assigned_exchange=assigned_exchange, learned_materials=learned_materials, learned_resolvers=learned_resolvers, resolver_observation=resolver_observation)
 
     @app.post("/t/{target_key}/identities/view/{identity_id}/context")
     def identity_context_create(request: Request, target_key: str, identity_id: int, label: str = Form(...), role: str = Form(""), tenant: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
@@ -2508,9 +2517,11 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
 
     @app.get("/t/{target_key}/identities/assign", response_class=HTMLResponse)
-    def identity_assign_page(request: Request, target_key: str, exchange_id: int):
+    def identity_assign_page(request: Request, target_key: str, exchange_id: int | None = None):
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
+        if not exchange_id:
+            return RedirectResponse(url=f"/t/{target_key}/identities", status_code=303)
         with _db(paths) as conn:
             ctx = identity_tools.assignment_context(conn, exchange_id)
             if not ctx:
@@ -2525,9 +2536,12 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         cid = int(context_id) if str(context_id).strip().isdigit() else None
-        with _db(paths) as conn:
-            identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=cid, learn_auth=(learn_auth == "yes"), source="manual", notes=notes)
-        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+        try:
+            with _db(paths) as conn:
+                learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=cid, learn_auth=(learn_auth == "yes"), source="manual", notes=notes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?assigned_exchange={exchange_id}&learned_materials={int(learned.get('materials',0))}&learned_resolvers={int(learned.get('jwt_resolvers',0))}#traffic", status_code=303)
 
     @app.get("/t/{target_key}/identities/resolver", response_class=HTMLResponse)
     def identity_resolver_page(request: Request, target_key: str, observation_id: int):
@@ -2552,13 +2566,16 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         cid = int(context_id) if str(context_id).strip().isdigit() else None
-        with _db(paths) as conn:
-            identity_tools.add_parameter_resolver(conn, observation_id, identity_id, context_id=cid)
-            # The exchange that taught the resolver is a human-authorized anchor.
-            obs = conn.execute("SELECT exchange_id FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
-            if obs:
-                identity_tools.assign_exchange(conn, int(obs["exchange_id"]), identity_id, context_id=cid, learn_auth=True, source="parameter_resolver")
-        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
+        try:
+            with _db(paths) as conn:
+                identity_tools.add_parameter_resolver(conn, observation_id, identity_id, context_id=cid)
+                # The exchange that taught the resolver is a human-authorized anchor.
+                obs = conn.execute("SELECT exchange_id FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
+                if obs:
+                    identity_tools.assign_exchange(conn, int(obs["exchange_id"]), identity_id, context_id=cid, learn_auth=True, source="parameter_resolver")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?resolver_observation={observation_id}#resolvers", status_code=303)
 
     @app.post("/t/{target_key}/identities/resolve-history", response_class=JSONResponse)
     def identity_resolve_history(request: Request, target_key: str, csrf: str = Form(...)):

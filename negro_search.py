@@ -223,11 +223,11 @@ def index_exchange(conn: sqlite3.Connection, exchange_id: int) -> int | None:
     except Exception:
         q = row["query_json"] or ""
     params = [dict(x) for x in conn.execute(
-        "SELECT name,normalized_name,location,value_preview FROM parameter_observations WHERE exchange_id=? ORDER BY id",
+        "SELECT name,normalized_name,location,value_preview,value_raw FROM parameter_observations WHERE exchange_id=? ORDER BY id",
         (int(exchange_id),),
     ).fetchall()]
     params_text = _json_text(q) + "\n" + "\n".join(
-        f"{p['location']} {p['name']} {p['normalized_name']} {p['value_preview'] or ''}" for p in params
+        f"{p['location']} {p['name']} {p['normalized_name']} {p.get('value_raw') or p['value_preview'] or ''}" for p in params
     )
     signals = [dict(x) for x in conn.execute(
         "SELECT kind,category,title,why_json,evidence_json FROM signal_occurrences WHERE exchange_id=? AND dismissed_at IS NULL ORDER BY id",

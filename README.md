@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.23.0
+# Negro Recon 🐕 — v0.23.1
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende ser un vulnerability scanner ni hacer el hacking por el usuario.
 
@@ -12,7 +12,7 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis que considera valiosa.
 - **Estados humanos / Findings**: siguen bajo control del hacker.
 
-## v0.23.0 — Search unificado + Identity Contexts
+## v0.23.1 — Identity UX + valores locales completos
 
 ### Buscar es la entrada principal
 
@@ -26,21 +26,26 @@ AIza
 host:api.example.com method:GET ownerId
 ```
 
-El texto libre sigue siendo parcial con FTS5 trigram. Cuando la consulta también coincide con una observación estructurada, Search muestra una tarjeta **Valor/Parámetro** con acciones directas: `HTTP`, `Follow Value`, `Explorar parámetro`, `Find Related`, `Smart Diff` y `Usar para identidad`.
+El texto libre sigue siendo parcial con FTS5 trigram. Cuando la consulta también coincide con una observación estructurada, Search muestra una tarjeta **Valor/Parámetro** con acciones directas: `HTTP`, `Follow Value`, `Explorar parámetro`, `Find Related`, `Smart Diff` y `Usar para identidad`. En workspaces viejos usa una vez **Buscar → Actualizar datos**; ahora ese botón reconstruye tanto búsqueda como parámetros/valores históricos.
 
 **Parameter Explorer** sigue existiendo, pero como drill-down técnico: sirve para estudiar un nombre de parámetro después de encontrarlo, no como un segundo buscador. También se corrigió el contador de `valores distintos` que en v0.22 podía renderizar el método interno de un `dict`.
 
 ### Identity Contexts
 
-La nueva vista **Identidades** separa tres cosas:
+La regla mental es simple:
 
-- **Identity**: la cuenta/persona que tú conoces, por ejemplo `Buyer A`.
-- **Context**: rol/tenant/contexto humano, por ejemplo `Buyer · Colombia`.
-- **Auth Material**: cookie, Bearer o sesión concreta que puede rotar.
+- **Identity**: la cuenta estable que tú conoces (`Buyer A`, `Buyer B`, `Seller A`).
+- **Context**: rol/tenant opcional de esa cuenta (`buyer`, `seller`, `store-123`).
+- **Auth Material**: la cookie, Bearer o JWT exacto observado para esa cuenta.
+- **Resolver**: un valor estable que ayuda a reconocerla después (`jwt:sub=101`, `userId=101`, `accountId=...`).
 
-La asignación inicial siempre es humana. Desde un resultado HTTP puedes usar **Asignar identidad**. Negro aprende fingerprints de cookies/tokens sin mostrarlos completos. Si el Bearer es JWT, puede aprender claims estables como `sub`, `userId` o `accountId`. Cuando un token rota pero conserva ese claim estable, Negro puede resolver la nueva sesión hacia la misma identidad.
+No se asigna una **ruta** a una identidad. Se asigna un **exchange concreto**: por ejemplo, el `GET /me` que viste con la sesión de Buyer A. Antes de asignarlo, Negro muestra el request/response exacto, parámetros observados y auth material. Después de guardar, la página de la identidad muestra el exchange exacto asociado y qué credenciales/resolvers aprendió.
 
-También puedes convertir una observación estable (por ejemplo `userId=101` en `/me`) en un **resolver de identidad** desde Search. Roles compartidos como `role=buyer` no deben usarse como identidad.
+Negro es local-first. Desde v0.23.1 conserva también los valores completos observados (`value_raw`, `raw_value`) para facilitar el bounty. Los hashes/fingerprints se mantienen para correlación eficiente. Algunos previews compactos pueden seguir enmascarados, pero el detalle conserva el valor exacto.
+
+Si el Bearer es JWT, Negro puede aprender claims estables como `sub`, `userId` o `accountId`. Si el token rota pero conserva ese claim, una nueva sesión puede resolverse hacia la misma Identity y el nuevo token se aprende como Auth Material adicional.
+
+Un resolver de parámetro se crea solo cuando tú sabes que el valor identifica realmente a esa cuenta. `role=buyer` no sirve; `userId=101` confirmado en `/me` sí puede servir.
 
 Para tráfico histórico usa **Identidades → Resolver historial** después de haber enseñado al menos una identidad/resolver.
 
@@ -58,7 +63,7 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión para v0.23.0.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+**No necesitas actualizar la extensión para v0.23.1.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
 
 Si necesitas recompilarla:
 

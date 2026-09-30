@@ -1,25 +1,93 @@
 {% extends "base.html" %}
 {% block title %}Asignar identidad · Exchange #{{ assignment.exchange.exchange_id }} · Negro{% endblock %}
 {% block content %}
-<section class="hero"><div><p class="eyebrow">IDENTIDAD</p><h1>Asignar exchange #{{ assignment.exchange.exchange_id }}</h1><p class="muted"><b>{{ assignment.exchange.method }}</b> {{ assignment.exchange.hostname }}<code>{{ assignment.exchange.path }}</code> · HTTP {{ assignment.exchange.status_code }}</p></div><div class="page-actions"><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div></section>
-<section class="identity-layout">
-  <div class="panel">
-    <p class="eyebrow">EVIDENCIA DE SESIÓN</p><h2>Auth material observado</h2>
-    {% if assignment.current %}<div class="callout success"><b>Actualmente:</b> {{ assignment.current.identity_name }}{% if assignment.current.context_label %} · {{ assignment.current.context_label }}{% endif %} ({{ assignment.current.source }})</div>{% endif %}
-    <div class="identity-material-list">{% for a in assignment.materials %}<div class="identity-material-row"><div><b>{{ a.material_type }} · {{ a.name }}</b><code>{{ a.preview }}</code></div>{% if a.claims %}<small>JWT claims disponibles: {{ a.claims.keys()|list|join(', ') }}</small>{% endif %}</div>{% else %}<p class="muted">No encontré Cookie ni Authorization en este request.</p>{% endfor %}</div>
+<section class="hero">
+  <div>
+    <p class="eyebrow">IDENTIDAD · ANCLA MANUAL</p>
+    <h1>¿Quién hizo este exchange?</h1>
+    <p class="muted"><b>#{{ assignment.exchange.exchange_id }} · {{ assignment.exchange.method }}</b> {{ assignment.exchange.hostname }}<code>{{ assignment.exchange.path }}</code> · HTTP {{ assignment.exchange.status_code }}</p>
   </div>
+  <div class="page-actions">
+    <a class="button ghost" href="{{ target_base }}/resource/{{ assignment.exchange.resource_id }}?exchange={{ assignment.exchange.exchange_id }}#exchange-{{ assignment.exchange.exchange_id }}">Abrir HTTP completo</a>
+    <a class="button ghost" href="{{ target_base }}/identities">← Identidades</a>
+  </div>
+</section>
+
+{% if assignment.current %}
+<div class="callout success"><b>Actualmente asignado a:</b> {{ assignment.current.identity_name }}{% if assignment.current.context_label %} · {{ assignment.current.context_label }}{% endif %} · fuente {{ assignment.current.source }}</div>
+{% endif %}
+
+<section class="identity-layout identity-assign-layout">
+  <div class="panel">
+    <p class="eyebrow">ANTES DE ASIGNAR</p>
+    <h2>Revisa la evidencia</h2>
+    <p class="muted">No tienes que asignar a ciegas. Aquí ves los valores observados y el HTTP exacto que estás etiquetando.</p>
+
+    {% if assignment.observations %}
+    <div class="identity-observation-grid">
+      {% for o in assignment.observations %}
+      <div class="identity-observation-card">
+        <span class="badge">{{ o.location }}</span>
+        <b><code>{{ o.name }}</code></b>
+        <code class="raw-value">{{ o.value_raw or o.value_preview or '(vacío)' }}</code>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <details class="http-details" open>
+      <summary>Request exacta</summary>
+      <pre>{{ assignment.exchange.request_text }}</pre>
+    </details>
+    <details class="http-details">
+      <summary>Response exacta</summary>
+      <pre>{{ assignment.exchange.response_text }}</pre>
+    </details>
+  </div>
+
   <aside class="panel">
-    <p class="eyebrow">DECISIÓN HUMANA</p><h2>Esta sesión pertenece a…</h2>
+    <p class="eyebrow">AUTH MATERIAL OBSERVADO</p>
+    <h2>Credenciales de esta request</h2>
+    <p class="muted small">Negro es local-first: v0.23.1 conserva y muestra el valor observado para que puedas distinguir sesiones y tokens durante el bounty.</p>
+    <div class="identity-material-list">
+      {% for a in assignment.materials %}
+      <div class="identity-material-row">
+        <div><b>{{ a.material_type }} · {{ a.name }}</b><code class="raw-value">{{ a.value }}</code></div>
+        {% if a.claims %}<small>JWT claims: {% for k,v in a.claims.items() %}<code>{{ k }}={{ v }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</small>{% endif %}
+      </div>
+      {% else %}<p class="muted">No encontré Cookie ni Authorization en este request.</p>{% endfor %}
+    </div>
+
+    <hr>
+    <p class="eyebrow">DECISIÓN HUMANA</p>
+    <h2>Esta request pertenece a…</h2>
     {% if identities %}
-    <form class="stack-form" action="{{ target_base }}/identities/assign" method="post">
+    <form class="stack-form" action="{{ target_base }}/identities/assign" method="post" id="identity-assign-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="exchange_id" value="{{ assignment.exchange.exchange_id }}">
-      <label><span>Identidad</span><select name="identity_id" required>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-      <label><span>Contexto (opcional)</span><select name="context_id"><option value="">Sin contexto</option>{% for c in identity_contexts %}<option value="{{ c.id }}">#{{ c.identity_id }} · {{ c.label }}{% if c.role %} · {{ c.role }}{% endif %}</option>{% endfor %}</select></label>
+      <label><span>Identidad</span><select name="identity_id" id="identity-select" required>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
+      <label><span>Contexto (opcional)</span><select name="context_id" id="context-select"><option value="">Sin contexto</option>{% for c in identity_contexts %}<option value="{{ c.id }}" data-identity-id="{{ c.identity_id }}">{{ c.label }}{% if c.role %} · {{ c.role }}{% endif %}{% if c.tenant %} · {{ c.tenant }}{% endif %}</option>{% endfor %}</select></label>
       <label class="check-row"><input type="checkbox" name="learn_auth" value="yes" checked><span>Aprender las cookies/tokens actuales y claims JWT estables</span></label>
-      <label><span>Nota</span><textarea name="notes" placeholder="Confirmé esta cuenta con /me…"></textarea></label>
-      <button class="button" type="submit">Asignar y aprender</button>
+      <label><span>Nota</span><textarea name="notes" placeholder="Ej. GET /me confirmó que esta sesión corresponde a Buyer A"></textarea></label>
+      <button class="button" type="submit">Asignar esta request</button>
     </form>
     {% else %}<div class="callout warning">Primero crea una identidad en <a href="{{ target_base }}/identities">Identidades</a>.</div>{% endif %}
   </aside>
 </section>
+<script>
+(function(){
+  const identity=document.getElementById('identity-select');
+  const context=document.getElementById('context-select');
+  if(!identity || !context) return;
+  function sync(){
+    const id=identity.value;
+    for(const opt of Array.from(context.options)){
+      if(!opt.value){ opt.hidden=false; opt.disabled=false; continue; }
+      const ok=opt.dataset.identityId===id;
+      opt.hidden=!ok; opt.disabled=!ok;
+    }
+    if(context.selectedOptions.length && context.selectedOptions[0].disabled) context.value='';
+  }
+  identity.addEventListener('change',sync); sync();
+})();
+</script>
 {% endblock %}

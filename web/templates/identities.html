@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero identity-hero">
   <div>
-    <p class="eyebrow">IDENTITY CONTEXTS · v0.23</p>
+    <p class="eyebrow">IDENTITY CONTEXTS · v0.23.1</p>
     <h1>Identidades observadas</h1>
     <p class="muted">Separa quién es la identidad de la cookie, token o sesión que use en cada momento. Negro solo asigna identidad cuando existe evidencia aprendida; lo demás queda como desconocido.</p>
   </div>
@@ -12,6 +12,16 @@
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button secondary" type="submit">↻ Resolver historial</button>
     </form>
+  </div>
+</section>
+
+<section class="panel identity-concept-panel">
+  <div class="panel-head"><div><p class="eyebrow">MODELO SIMPLE</p><h2>Qué significa cada cosa</h2></div></div>
+  <div class="identity-concept-grid">
+    <div><b>Identidad</b><span>La cuenta estable: Buyer A, Buyer B, Seller A.</span></div>
+    <div><b>Contexto</b><span>Rol/tenant de esa cuenta: buyer, seller, store-123. Es opcional.</span></div>
+    <div><b>Auth Material</b><span>Cookie, Bearer o JWT concreto observado para esa cuenta.</span></div>
+    <div><b>Resolver</b><span>Valor estable que permite reconocerla después: sub, userId, accountId.</span></div>
   </div>
 </section>
 
@@ -54,7 +64,7 @@
   <div class="panel-head"><div><p class="eyebrow">SIN RESOLVER</p><h2>Exchanges recientes sin identidad</h2><p class="muted">Asignar uno enseña a Negro los auth materials de esa sesión. Si el Bearer es JWT, también aprende claims estables como <code>sub</code>.</p></div><span>{{ recent_unknown|length }}</span></div>
   <div class="unknown-exchange-list">
     {% for e in recent_unknown %}
-    <div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.first_seen_at }}</small></div><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Asignar identidad</a></div>
+    <div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.first_seen_at }}</small></div><div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">HTTP</a><a class="button secondary small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Revisar y asignar</a></div></div>
     {% else %}<div class="empty-state"><strong>No hay exchanges recientes pendientes.</strong></div>{% endfor %}
   </div>
 </section>

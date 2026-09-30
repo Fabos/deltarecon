@@ -566,6 +566,7 @@ def init_schema(conn) -> None:
             location TEXT NOT NULL,
             value_hash TEXT NOT NULL,
             value_preview TEXT,
+            value_raw TEXT,
             first_seen_at TEXT NOT NULL,
             UNIQUE(exchange_id, normalized_name, location, value_hash)
         );
@@ -599,6 +600,10 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN last_rule_eval_at TEXT")
     if "promoted_investigation_id" not in lead_cols:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN promoted_investigation_id INTEGER")
+
+    parameter_cols = {row["name"] for row in conn.execute("PRAGMA table_info(parameter_observations)")}
+    if "value_raw" not in parameter_cols:
+        conn.execute("ALTER TABLE parameter_observations ADD COLUMN value_raw TEXT")
 
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
@@ -1561,16 +1566,15 @@ def _persist_parameter_observations(conn, *, exchange_id: int, operation_id: int
         location = str(item.get("location") or "unknown")[:120]
         normalized = re.sub(r"[^a-z0-9_]", "", name.lower().replace("-", "_"))[:160] or name.lower()[:160]
         sensitive = any(tok in normalized for tok in ("password", "passwd", "secret", "token", "authorization", "session", "cookie", "apikey", "api_key"))
-        if sensitive:
-            preview = _mask_value(value)
-        else:
-            clean = value.replace("\r", " ").replace("\n", " ")
-            preview = clean if len(clean) <= 120 else clean[:117] + "…"
+        clean = value.replace("\r", " ").replace("\n", " ")
+        preview = _mask_value(value) if sensitive else (clean if len(clean) <= 120 else clean[:117] + "…")
         value_hash = hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
         conn.execute(
-            """INSERT OR IGNORE INTO parameter_observations(exchange_id,operation_id,resource_id,name,normalized_name,location,value_hash,value_preview,first_seen_at)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
-            (int(exchange_id), int(operation_id), int(resource_id), name[:240], normalized, location, value_hash, preview, now),
+            """INSERT INTO parameter_observations(exchange_id,operation_id,resource_id,name,normalized_name,location,value_hash,value_preview,value_raw,first_seen_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(exchange_id,normalized_name,location,value_hash)
+               DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw""",
+            (int(exchange_id), int(operation_id), int(resource_id), name[:240], normalized, location, value_hash, preview, value, now),
         )
 
 

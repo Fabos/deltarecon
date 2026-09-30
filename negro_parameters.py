@@ -250,7 +250,7 @@ def parameter_detail(conn, normalized_name: str, *, limit: int = 300) -> dict[st
     if not summary:
         return None
     values = [dict(r) for r in conn.execute(
-        """SELECT p.value_hash,MIN(p.value_preview) value_preview,COUNT(*) occurrences,
+        """SELECT p.value_hash,MIN(p.value_preview) value_preview,MIN(COALESCE(p.value_raw,p.value_preview)) value_raw,COUNT(*) occurrences,
                   COUNT(DISTINCT p.exchange_id) exchanges,COUNT(DISTINCT p.resource_id) resources,
                   MAX(p.first_seen_at) last_seen_at
            FROM parameter_observations p WHERE p.normalized_name=?
@@ -485,7 +485,7 @@ def search_hits(conn, terms: list[tuple[str, str]], *, host_filters: list[str] |
     args: list[Any] = []
     for kind, value in usable:
         needle = f"%{value.lower()}%"
-        base = "(lower(p.name) LIKE ? OR lower(p.normalized_name) LIKE ? OR lower(COALESCE(p.value_preview,'')) LIKE ? OR lower(p.location) LIKE ?)"
+        base = "(lower(p.name) LIKE ? OR lower(p.normalized_name) LIKE ? OR lower(COALESCE(p.value_raw,p.value_preview,'')) LIKE ? OR lower(p.location) LIKE ?)"
         local_args: list[Any] = [needle, needle, needle, needle]
         if kind == "param":
             base = "(lower(p.name) LIKE ? OR lower(p.normalized_name) LIKE ?)"
@@ -505,7 +505,7 @@ def search_hits(conn, terms: list[tuple[str, str]], *, host_filters: list[str] |
             args.append(f"%{str(host).lower()}%")
         clauses.append("(" + " OR ".join(host_clauses) + ")")
     sql = """
-        SELECT p.id,p.exchange_id,p.operation_id,p.resource_id,p.name,p.normalized_name,p.location,p.value_hash,p.value_preview,p.first_seen_at,
+        SELECT p.id,p.exchange_id,p.operation_id,p.resource_id,p.name,p.normalized_name,p.location,p.value_hash,p.value_preview,p.value_raw,p.first_seen_at,
                h.hostname,r.path,o.method,e.status_code,
                (SELECT COUNT(*) FROM parameter_observations px WHERE px.value_hash=p.value_hash) value_occurrences,
                (SELECT COUNT(DISTINCT px.exchange_id) FROM parameter_observations px WHERE px.value_hash=p.value_hash) value_exchanges
@@ -531,7 +531,7 @@ def matching_observations_for_exchange(conn, exchange_id: int, terms: list[tuple
     ).fetchall()]
     out: list[dict[str, Any]] = []
     for row in rows:
-        hay = " ".join([str(row.get("name") or ""), str(row.get("normalized_name") or ""), str(row.get("value_preview") or ""), str(row.get("location") or "")]).lower()
+        hay = " ".join([str(row.get("name") or ""), str(row.get("normalized_name") or ""), str(row.get("value_raw") or row.get("value_preview") or ""), str(row.get("location") or "")]).lower()
         ok = True
         for kind, value in usable:
             if kind in {"cookie", "header", "signal"}:
