@@ -4,7 +4,7 @@
 <section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <header class="graph-toolbar">
     <div><div class="eyebrow">MAPA DE CONOCIMIENTO</div><h1>Mapa de investigación</h1><p>Una vista conectada de lo que existe, lo que observaste en Burp, lo que ya probaste y lo que todavía merece atención.</p></div>
-    <div class="graph-toolbar-actions"><button type="button" class="btn-secondary" data-graph-overview>Vista general</button><button type="button" class="btn-secondary" data-graph-fit>Centrar</button><button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button><button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button><button type="button" class="btn-secondary" data-graph-reset-layout>Ordenar</button><a class="btn-secondary" href="{{ target_base }}/hypotheses">Hipótesis</a><button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Dame ideas</button></div>
+    <div class="graph-toolbar-actions"><button type="button" class="btn-secondary" data-graph-fullscreen>⛶ Pantalla completa</button><button type="button" class="btn-secondary" data-graph-overview>Vista general</button><button type="button" class="btn-secondary" data-graph-fit>Centrar</button><button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button><button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button><button type="button" class="btn-secondary" data-graph-reset-layout>Ordenar</button><a class="btn-secondary" href="{{ target_base }}/hypotheses">Hipótesis</a><button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Dame ideas</button></div>
   </header>
   <div class="graph-scope-banner"><strong data-graph-scope-status>Vista general</strong><span>En proyectos grandes Negro carga el mapa por capas para no bloquear el navegador. Doble clic en un host/recurso para profundizar.</span></div>
   <div class="graph-stats">{% for kind,count in graph_counts|dictsort %}<span><b>{{ count }}</b> {{ ui_label(kind) }}</span>{% endfor %}<small data-graph-layout-status>Orden automático</small></div>
@@ -42,7 +42,7 @@
     </aside>
     <div class="graph-stage">
       <section class="graph-route-panel">
-        <div class="graph-route-head"><div><span class="eyebrow">SIGUIENTES PASOS</span><h2>Ideas para continuar</h2></div><small>Basadas en evidencia; no son exploits confirmados.</small></div>
+        <div class="graph-route-head"><div><span class="eyebrow">SIGUIENTES PASOS</span><h2>Ideas para continuar</h2></div><div class="graph-route-head-actions"><small>Basadas en evidencia; no son exploits confirmados.</small><button type="button" class="btn-secondary graph-route-toggle" data-graph-route-toggle>Ocultar ideas</button></div></div>
         <div class="graph-route-list" data-graph-routes><p class="empty">Cargando rutas…</p></div>
       </section>
       <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div><div class="graph-hint"><b>Clic</b> detalle · <b>arrastra</b> organiza · doble clic enfoca/expande</div></div>

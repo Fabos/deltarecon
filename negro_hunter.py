@@ -533,6 +533,10 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN result_notes TEXT")
     if "last_tested_at" not in lead_cols:
         conn.execute("ALTER TABLE leads_v2 ADD COLUMN last_tested_at TEXT")
+    if "rule_active" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN rule_active INTEGER NOT NULL DEFAULT 1")
+    if "last_rule_eval_at" not in lead_cols:
+        conn.execute("ALTER TABLE leads_v2 ADD COLUMN last_rule_eval_at TEXT")
 
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
@@ -1186,20 +1190,20 @@ def _priority_rank(v: str) -> int:
 
 def upsert_lead(conn, *, lead_key: str, host_id: int | None, resource_id: int | None, lead_type: str, title: str, confidence: str, review_priority: str, evidence: list[dict[str, Any]], why: str, next_test: str, confirm_if: str, discard_if: str, source: str = "ENGINE", parent_lead_id: int | None = None) -> tuple[int, bool]:
     now = now_iso()
-    existing = conn.execute("SELECT id,confidence,review_priority,status FROM leads_v2 WHERE lead_key=?", (lead_key,)).fetchone()
+    existing = conn.execute("SELECT id,confidence,review_priority,status,rule_active FROM leads_v2 WHERE lead_key=?", (lead_key,)).fetchone()
     if existing:
         # Never downgrade confidence/priority automatically and preserve human status.
         confidence = max([existing["confidence"], confidence], key=_confidence_rank)
         review_priority = max([existing["review_priority"], review_priority], key=_priority_rank)
         conn.execute(
-            "UPDATE leads_v2 SET host_id=?,resource_id=?,lead_type=?,title=?,confidence=?,review_priority=?,evidence_json=?,why_interesting=?,next_test=?,confirm_if=?,discard_if=?,source=COALESCE(source,?),parent_lead_id=COALESCE(parent_lead_id,?),updated_at=? WHERE lead_key=?",
-            (host_id, resource_id, lead_type, title, confidence, review_priority, json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, source, parent_lead_id, now, lead_key),
+            "UPDATE leads_v2 SET host_id=?,resource_id=?,lead_type=?,title=?,confidence=?,review_priority=?,evidence_json=?,why_interesting=?,next_test=?,confirm_if=?,discard_if=?,source=COALESCE(source,?),parent_lead_id=COALESCE(parent_lead_id,?),rule_active=1,last_rule_eval_at=?,updated_at=? WHERE lead_key=?",
+            (host_id, resource_id, lead_type, title, confidence, review_priority, json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, source, parent_lead_id, now, now, lead_key),
         )
         return int(existing["id"]), False
     else:
         cur = conn.execute(
-            "INSERT INTO leads_v2(lead_key,host_id,resource_id,lead_type,title,confidence,review_priority,status,evidence_json,why_interesting,next_test,confirm_if,discard_if,created_at,updated_at,source,parent_lead_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (lead_key, host_id, resource_id, lead_type, title, confidence, review_priority, "candidate", json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, now, source, parent_lead_id),
+            "INSERT INTO leads_v2(lead_key,host_id,resource_id,lead_type,title,confidence,review_priority,status,evidence_json,why_interesting,next_test,confirm_if,discard_if,created_at,updated_at,source,parent_lead_id,rule_active,last_rule_eval_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (lead_key, host_id, resource_id, lead_type, title, confidence, review_priority, "candidate", json.dumps(evidence, ensure_ascii=False), why, next_test, confirm_if, discard_if, now, now, source, parent_lead_id, 1, now),
         )
         return int(cur.lastrowid), True
 
@@ -2007,13 +2011,14 @@ def retire_first_party_cors(conn, scopes: list[str]) -> int:
     return changed
 
 
-def generate_leads(conn, domain: str) -> dict[str, Any]:
+def generate_leads(conn, domain: str, *, reprocess_all: bool = False) -> dict[str, Any]:
     init_schema(conn)
     generated_before = conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"]
 
     # Backfill deterministic Burp clues for workspaces captured before v0.16.0.
     # Notifications are disabled here to avoid flooding the user with historical toasts.
-    for _ex in conn.execute("SELECT id FROM http_exchanges ORDER BY id DESC LIMIT 5000").fetchall():
+    exchange_sql = "SELECT id FROM http_exchanges ORDER BY id DESC" if reprocess_all else "SELECT id FROM http_exchanges ORDER BY id DESC LIMIT 5000"
+    for _ex in conn.execute(exchange_sql).fetchall():
         try:
             analyze_http_exchange(conn, int(_ex["id"]), domain, emit_notifications=False)
         except Exception:
@@ -2022,6 +2027,52 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
     js_by_host: dict[int, list[tuple[Any, dict[str, Any], dict[str, Any] | None]]] = {}
     for row, local, sm in _iter_js_analysis(conn):
         js_by_host.setdefault(int(row["host_id"]), []).append((row, local, sm))
+
+        # Re-evaluate stored JavaScript routes using the CURRENT editable rules.
+        # This is intentionally local-only: no bundle is downloaded again.
+        if detector_enabled("js_sensitive_route", conn) and isinstance(local, dict):
+            sensitive_tokens=tuple(x.lower() for x in detector_rule_list("js_sensitive_route", "path_tokens", conn))
+            ignore_tokens=tuple(x.lower() for x in detector_rule_list("js_sensitive_route", "ignore_tokens", conn))
+            only_new_routes=detector_rule_bool("js_sensitive_route", "only_new_routes", conn, False)
+            stored_urls=[]
+            resource_ids=[]
+            sensitive_urls=[]
+            for candidate in local.get("in_scope_urls", []) or []:
+                candidate=str(candidate or "").strip()
+                if not candidate:
+                    continue
+                try:
+                    low_path=(urllib.parse.urlsplit(candidate).path or "/").lower()
+                except Exception:
+                    low_path=candidate.lower()
+                if ignore_tokens and any(tok in low_path for tok in ignore_tokens):
+                    continue
+                rr=conn.execute("SELECT id FROM resources WHERE url=?", (candidate,)).fetchone()
+                if rr:
+                    rid=int(rr["id"]); resource_ids.append(rid)
+                    if only_new_routes:
+                        sources={str(x["source"]) for x in conn.execute("SELECT source FROM resource_sources WHERE resource_id=?",(rid,)).fetchall()}
+                        if sources and sources != {"js_local"}:
+                            continue
+                elif only_new_routes:
+                    continue
+                stored_urls.append(candidate)
+                if any(tok in low_path for tok in sensitive_tokens):
+                    sensitive_urls.append(candidate)
+            if sensitive_urls:
+                sha=str(row["sha256"] or "stored")
+                upsert_lead(conn,
+                    lead_key=f"js_sensitive_routes:{row['id']}:{sha[:16]}", host_id=int(row["host_id"]), resource_id=None,
+                    lead_type="javascript_surface", title="JavaScript revela rutas que merecen revisión", confidence="high", review_priority="medium",
+                    evidence=[{"source":"javascript","asset_id":int(row["id"]),"url":row["url"],"routes":sensitive_urls[:30],
+                               "node_ids":[f"js:{int(row['id'])}"]+[f"resource:{x}" for x in resource_ids[:30]],
+                               "rule_match":{"path_tokens":[t for t in sensitive_tokens if any(t in (urllib.parse.urlsplit(u).path or '').lower() for u in sensitive_urls)][:20]}}],
+                    why="El análisis JavaScript ya almacenado contiene rutas in-scope que coinciden con tus reglas actuales de superficie sensible. Recalcular no volvió a descargar el bundle.",
+                    next_test="Abre las rutas descubiertas desde Resources/Mapa, identifica su método y contexto legítimo, y revisa control de acceso sin hacer fuzzing masivo.",
+                    confirm_if="Una ruta revelada expone funcionalidad sensible con controles insuficientes o habilita una cadena adicional.",
+                    discard_if="Las rutas son públicas/esperadas o aplican autenticación y autorización server-side de forma consistente.",
+                    source="JS_LOCAL")
+
         # Source map lead.
         if detector_enabled("source_map", conn) and sm and int(sm.get("sources_count") or 0) > 0:
             sm_det = (sm.get("analysis") or {}).get("detections", []) if isinstance(sm.get("analysis"), dict) else []
@@ -2256,10 +2307,75 @@ def generate_leads(conn, domain: str) -> dict[str, Any]:
     return {"before": generated_before, "after": count, "new": max(0, count - generated_before), "generated_at": now_iso()}
 
 
+def recalculate_intelligence(conn, domain: str) -> dict[str, Any]:
+    """Reinterpret all STORED evidence with the current local detector rules.
+
+    This function does not enumerate, crawl, fetch JavaScript or call AI. It only
+    replays evidence already persisted in SQLite/local analyses. Deterministic
+    hypotheses keep their human status/notes, while rule_active reflects whether
+    they still match the current rules.
+    """
+    init_schema(conn)
+    managed_sources=("ENGINE","JS_LOCAL")
+    before_rows=conn.execute(
+        "SELECT id,lead_key,rule_active,status FROM leads_v2 WHERE source IN (?,?)", managed_sources
+    ).fetchall()
+    before_all={str(r["lead_key"]):dict(r) for r in before_rows}
+    before_active={k for k,v in before_all.items() if int(v.get("rule_active") or 0)==1}
+    started=now_iso()
+
+    # Invalidate first, then let current rules reactivate matching hypotheses.
+    # The surrounding sqlite transaction makes this atomic on success.
+    conn.execute(
+        "UPDATE leads_v2 SET rule_active=0,last_rule_eval_at=? WHERE source IN (?,?)",
+        (started,*managed_sources),
+    )
+    generated=generate_leads(conn, domain, reprocess_all=True)
+    after_rows=conn.execute(
+        "SELECT id,lead_key,rule_active,status FROM leads_v2 WHERE source IN (?,?)", managed_sources
+    ).fetchall()
+    after_all={str(r["lead_key"]):dict(r) for r in after_rows}
+    after_active={k for k,v in after_all.items() if int(v.get("rule_active") or 0)==1}
+    new_keys=after_active-set(before_all)
+    reactivated=after_active-{k for k,v in before_all.items() if int(v.get("rule_active") or 0)==1}-new_keys
+    retired=before_active-after_active
+
+    retired_ids={int(after_all.get(k,before_all[k])["id"]) for k in retired if k in before_all}
+    if retired_ids:
+        # Old unread "new hypothesis" notifications should no longer demand action.
+        for n in conn.execute("SELECT id,data_json FROM notifications WHERE kind='hypothesis' AND read_at IS NULL").fetchall():
+            try: payload=json.loads(n["data_json"] or "{}")
+            except Exception: payload={}
+            if int(payload.get("lead_id") or 0) in retired_ids:
+                conn.execute("UPDATE notifications SET read_at=? WHERE id=?", (started,int(n["id"])))
+
+    summary={
+        "evaluated_exchanges": int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0),
+        "stored_resources": int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0),
+        "stored_javascript": int(conn.execute("SELECT COUNT(*) c FROM js_assets WHERE local_analysis_json IS NOT NULL").fetchone()["c"] or 0),
+        "active_before": len(before_active),
+        "active_after": len(after_active),
+        "new": len(new_keys),
+        "reactivated": len(reactivated),
+        "no_longer_matching": len(retired),
+        "recalculated_at": started,
+        "network_requests": 0,
+        "ai_calls": 0,
+    }
+    _upsert_notification(
+        conn, dedupe_key=f"intelligence_recalc:{started}", kind="intelligence_recalc", severity="low",
+        title="Inteligencia recalculada",
+        message=f"{summary['active_after']} hipótesis vigentes · {summary['new']} nuevas · {summary['no_longer_matching']} dejaron de coincidir",
+        source="rule_engine", entity_type="project", entity_id=0, data={**summary, "href":"hypotheses"}, emit=True,
+    )
+    return {**summary, "engine": generated}
+
+
 def list_leads(conn, limit: int = 200) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT l.*, h.hostname, r.url AS resource_url FROM leads_v2 l
            LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id
+           WHERE COALESCE(l.rule_active,1)=1
            ORDER BY CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                     CASE l.confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                     l.updated_at DESC LIMIT ?""", (limit,)
@@ -2559,7 +2675,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
     ][:420]
 
     existing = []
-    for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 ORDER BY updated_at DESC LIMIT 120").fetchall():
+    for row in conn.execute("SELECT id,title,lead_type,status,why_interesting,next_test,source,updated_at FROM leads_v2 WHERE COALESCE(rule_active,1)=1 ORDER BY updated_at DESC LIMIT 120").fetchall():
         existing.append(dict(row))
     findings = [dict(r) for r in conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC LIMIT 80").fetchall()]
     # Test coverage is optional UX memory, not a synthetic task list for the AI.

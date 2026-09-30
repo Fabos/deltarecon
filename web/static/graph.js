@@ -13,6 +13,8 @@
   const empty = root.querySelector('[data-graph-empty]');
   const routesWrap = root.querySelector('[data-graph-routes]');
   const routePanel = root.querySelector('.graph-route-panel');
+  const fullscreenBtn = root.querySelector('[data-graph-fullscreen]');
+  const routeToggleBtn = root.querySelector('[data-graph-route-toggle]');
   const statusEl = root.querySelector('[data-graph-layout-status]');
   const scopeStatusEl = root.querySelector('[data-graph-scope-status]');
   const api = root.dataset.api;
@@ -774,6 +776,30 @@
     }catch(err){if(aiStatus)aiStatus.textContent=`Error: ${err.message}`;}
     finally{aiRunBtn.disabled=false;}
   });
+
+  function updateFullscreenUi(){
+    const active=document.fullscreenElement===root;
+    root.classList.toggle('is-fullscreen',active);
+    if(fullscreenBtn) fullscreenBtn.textContent=active?'⤢ Salir de pantalla completa':'⛶ Pantalla completa';
+    // Re-fit after browser fullscreen transition so the canvas uses the new viewport.
+    window.setTimeout(()=>{ try{fit();}catch(_){} },120);
+  }
+  fullscreenBtn?.addEventListener('click',async()=>{
+    try{
+      if(document.fullscreenElement===root) await document.exitFullscreen();
+      else await root.requestFullscreen();
+    }catch(err){ console.warn('Fullscreen no disponible',err); }
+  });
+  document.addEventListener('fullscreenchange',updateFullscreenUi);
+
+  function setRoutesCollapsed(collapsed){
+    root.classList.toggle('routes-collapsed',!!collapsed);
+    if(routeToggleBtn) routeToggleBtn.textContent=collapsed?'Mostrar ideas':'Ocultar ideas';
+    try{ localStorage.setItem(`negro.graph.routesCollapsed:${targetKey}`,collapsed?'1':'0'); }catch(_){}
+    window.setTimeout(()=>{ try{fit();}catch(_){} },80);
+  }
+  routeToggleBtn?.addEventListener('click',()=>setRoutesCollapsed(!root.classList.contains('routes-collapsed')));
+  try{ if(localStorage.getItem(`negro.graph.routesCollapsed:${targetKey}`)==='1') setRoutesCollapsed(true); }catch(_){}
 
   const initialFocus=new URLSearchParams(window.location.search).get('focus');
   if(routePanel) routePanel.hidden=true;

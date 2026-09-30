@@ -1,5 +1,19 @@
-# Negro Recon 🐕 — v0.19.1
+# Negro Recon 🐕 — v0.19.2
 
+
+## v0.19.2 — Fullscreen Map + Local Intelligence Recalculation
+
+El mapa incorpora **pantalla completa real** y un control para plegar las tarjetas de siguientes pasos, de modo que el grafo pueda usar prácticamente todo el viewport incluso con zoom alto.
+
+La Knowledge Base ahora puede **recalcular toda la inteligencia local** sobre evidencia ya almacenada: requests/responses de Burp, Resources, análisis JavaScript guardados, crawls e inspecciones. No vuelve a enumerar, no descarga JS otra vez y no llama a OpenAI. Las hipótesis deterministas conservan estados/notas humanos, pero obtienen una vigencia separada (`rule_active`): si una regla deja de coincidir desaparecen de las vistas activas sin borrar el historial; si vuelve a coincidir se reactivan.
+
+Comando equivalente:
+
+```bash
+negro TARGET -w WORKSPACE recalculate-intel
+```
+
+Consulta `UPDATE-v0.19.2.md`.
 
 ## v0.19.1 — Route Canvas Hydration Fix
 

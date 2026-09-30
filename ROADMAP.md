@@ -24,6 +24,17 @@
 
 # Negro Recon — Roadmap posterior a v0.9.0
 
+## Implementado en v0.19.2
+
+- mapa con Fullscreen API y más viewport útil;
+- panel de siguientes pasos plegable;
+- recálculo local de toda la evidencia almacenada con las reglas actuales;
+- vigencia de regla separada del estado humano de la hipótesis;
+- retiro/reactivación automática sin borrar notas ni resultados;
+- filtro de hipótesis vigentes / históricas;
+- comando `recalculate-intel`;
+- notificación resumen del recálculo, sin inundar con alertas históricas.
+
 ## Implementado en v0.19.1
 
 - `Qué probar ahora` materializa automáticamente el subgrafo de las rutas prioritarias; las tarjetas y el canvas ya no pueden quedar desacoplados por progressive disclosure.

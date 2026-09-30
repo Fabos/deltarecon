@@ -9,6 +9,7 @@
 {% if request.query_params.get('saved') %}<div class="callout success"><b>Reglas guardadas.</b> Las nuevas requests usarán esta configuración inmediatamente.</div>{% endif %}
 {% if request.query_params.get('reset') %}<div class="callout"><b>Capa restablecida.</b> Negro volvió a heredar la configuración inferior.</div>{% endif %}
 {% if regex_warnings %}<div class="callout warning"><b>Regex ignoradas:</b>{% for x in regex_warnings %}<code>{{ x }}</code>{% endfor %}</div>{% endif %}
+<div class="detector-recalc-strip"><div><b>¿Cambiaste una regla?</b><span>Las requests nuevas usan el cambio de inmediato. Para reinterpretar TODO lo que Negro ya conoce, recalcula la inteligencia local.</span></div><form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="settings"><button class="button secondary" type="submit">↻ Recalcular histórico</button></form></div>
 
 <section class="learning-path panel">
   <div class="panel-head"><div><p class="eyebrow">APRENDER ANTES DE CONFIGURAR</p><h2>¿Qué vulnerabilidad estamos intentando reconocer?</h2></div></div>

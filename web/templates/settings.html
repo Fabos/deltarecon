@@ -20,6 +20,15 @@
   <section class="panel"><div class="panel-head"><div><p class="eyebrow">IA</p><h2>Modelo y estimación</h2></div></div><form class="state-form" action="{{ target_base }}/settings" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Modelo<select name="ai_model"><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · económico</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol · profundo</option></select></label><label>Máximo de salida<input type="number" name="ai_output_tokens" min="500" max="12000" value="{{ settings.ai_output_tokens }}"></label><label>USD → COP<input type="number" step="0.01" name="usd_cop_rate" value="{{ settings.usd_cop_rate }}"></label><button class="button" type="submit">Guardar ajustes</button></form><p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · {{ settings.usd_cop_rate_date }}.</p></section>
 </div>
 
+<section class="panel recalc-panel">
+  <div class="panel-head"><div><p class="eyebrow">REINTERPRETAR EVIDENCIA</p><h2>Recalcular inteligencia sin repetir enumeración</h2><p class="muted">Después de cambiar reglas, Negro puede volver a pasar todos sus motores locales sobre requests de Burp, Resources, análisis JavaScript, crawls e inspecciones ya guardadas. No hace nuevas peticiones al target y no consume IA.</p></div><span class="badge class-informational">local-only</span></div>
+  <div class="recalc-explainer"><span><b>Puede agregar</b> hipótesis que ahora coinciden.</span><span><b>Puede retirar</b> hipótesis que dejaron de cumplir tus reglas.</span><span><b>No borra</b> tus estados, notas ni hallazgos.</span></div>
+  <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local" class="recalc-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="settings">
+    <button class="button" type="submit">↻ Recalcular con toda la evidencia guardada</button>
+  </form>
+</section>
+
 <section class="panel detector-settings" id="detectors">
   <div class="panel-head"><div><p class="eyebrow">KNOWLEDGE BASE · MOTORES</p><h2>Alertas transparentes y editables</h2><p class="muted">Cada detector ahora es una regla que puedes estudiar, heredar y personalizar. No hay “estricto/permisivo”: puedes ver exactamente qué nombres, patrones, ubicaciones y condiciones disparan cada señal.</p></div></div>
   <div class="rule-engine-intro">

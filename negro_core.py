@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.19.1
+Negro Recon v0.19.2
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.19.1"
+VERSION = "0.19.2"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2327,6 +2327,16 @@ def generate_hunter_leads(domain: str, paths: dict[str, Path]) -> dict:
         return result
 
 
+def recalculate_hunter_intelligence(domain: str, paths: dict[str, Path]) -> dict:
+    """Re-run local rule engines against evidence already stored in the workspace."""
+    import negro_hunter as hunter
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        result = hunter.recalculate_intelligence(conn, domain)
+        conn.commit()
+        return result
+
+
 def get_hunter_leads(paths: dict[str, Path], limit: int = 200) -> list[dict]:
     import negro_hunter as hunter
     with db_connect(paths) as conn:
@@ -3129,6 +3139,7 @@ def build_parser() -> argparse.ArgumentParser:
     subs.add_parser("historical", help="Resumir inteligencia temporal de Wayback ya importada")
     subs.add_parser("search-intel", help="Generar dorks/queries dirigidas sin ejecutarlas automáticamente")
     subs.add_parser("generate-leads", help="Correlacionar evidencia y generar leads accionables")
+    subs.add_parser("recalculate-intel", help="Recalcular hipótesis con reglas actuales usando sólo evidencia almacenada")
 
     atp = subs.add_parser("ai-target-estimate", help="Estimar IA para triage global del target")
     atp.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"])
@@ -3236,6 +3247,8 @@ def cli_main(args: argparse.Namespace) -> None:
         print(json.dumps(search_intelligence(domain, paths), indent=2, ensure_ascii=False))
     elif args.command == "generate-leads":
         print(json.dumps(generate_hunter_leads(domain, paths), indent=2, ensure_ascii=False))
+    elif args.command == "recalculate-intel":
+        print(json.dumps(recalculate_hunter_intelligence(domain, paths), indent=2, ensure_ascii=False))
     elif args.command == "ai-target-estimate":
         print(json.dumps(ai_estimate_target(domain, paths, args.model), indent=2, ensure_ascii=False))
     elif args.command == "ai-target":

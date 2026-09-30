@@ -210,11 +210,11 @@ def _entity_signal(conn, entity_type: str, entity_id: int, classification: str |
         # Persistent hypotheses/leads also lift the asset visually, unless the
         # investigator already marked them negative/discarded.
         if entity_type == "resource":
-            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE resource_id=? AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
+            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE resource_id=? AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
             if lead_count:
                 return "interesting", 0
         elif entity_type == "host":
-            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE host_id=? AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
+            lead_count = int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE host_id=? AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')", (entity_id,)).fetchone()["c"] or 0)
             if lead_count:
                 return "interesting", 0
     except Exception:
@@ -339,7 +339,7 @@ def _graph_inventory_counts(paths: dict[str, Path]) -> dict[str, int]:
             "operation": int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"] or 0),
             "request": int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0),
             "observation": int(conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] or 0),
-            "lead": int(conn.execute("SELECT COUNT(*) c FROM leads_v2").fetchone()["c"] or 0),
+            "lead": int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE COALESCE(rule_active,1)=1").fetchone()["c"] or 0),
             "finding": int(conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] or 0),
         }
 
@@ -378,7 +378,7 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
             "pending": host_pending + resource_pending,
             "in_progress": host_progress + resource_progress,
             "reviewed": host_reviewed + resource_reviewed,
-            "leads": one("SELECT COUNT(*) c FROM leads_v2 WHERE status NOT IN ('negative','discarded')")
+            "leads": one("SELECT COUNT(*) c FROM leads_v2 WHERE COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')")
                      + one("SELECT COUNT(*) c FROM hosts WHERE classification='lead'")
                      + one("SELECT COUNT(*) c FROM resources WHERE classification='lead'"),
             "findings": one("SELECT COUNT(*) c FROM findings"),
@@ -386,15 +386,15 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
             "informational": one("SELECT COUNT(*) c FROM hosts WHERE classification='informational'") + one("SELECT COUNT(*) c FROM resources WHERE classification='informational'"),
             "operations": one("SELECT COUNT(*) c FROM resource_operations"),
             "http_exchanges": one("SELECT COUNT(*) c FROM http_exchanges"),
-            "hypotheses": one("SELECT COUNT(*) c FROM leads_v2"),
+            "hypotheses": one("SELECT COUNT(*) c FROM leads_v2 WHERE COALESCE(rule_active,1)=1"),
             "notifications_unread": one("SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL"),
         }
         priority = conn.execute(
             """SELECT h.*,
-                      (SELECT COUNT(*) FROM leads_v2 l WHERE l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id))) AS active_lead_count
+                      (SELECT COUNT(*) FROM leads_v2 l WHERE COALESCE(l.rule_active,1)=1 AND l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id))) AS active_lead_count
                FROM hosts h
                WHERE h.priority='high' OR h.classification IN ('lead','finding')
-                  OR EXISTS (SELECT 1 FROM leads_v2 l WHERE l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id)))
+                  OR EXISTS (SELECT 1 FROM leads_v2 l WHERE COALESCE(l.rule_active,1)=1 AND l.status NOT IN ('negative','discarded') AND (l.host_id=h.id OR l.resource_id IN (SELECT id FROM resources rr WHERE rr.host_id=h.id)))
                ORDER BY CASE h.classification WHEN 'finding' THEN 0 WHEN 'lead' THEN 1 ELSE 2 END,
                         CASE h.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                         active_lead_count DESC, h.updated_at DESC LIMIT 12"""
@@ -421,13 +421,17 @@ def _target_cards() -> list[dict[str, Any]]:
     return cards
 
 
-def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", source: str = "", kind: str = "") -> list[dict[str, Any]]:
+def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", source: str = "", kind: str = "", validity: str = "current") -> list[dict[str, Any]]:
     import negro_hunter as hunter
     with _db(paths) as conn:
         hunter.init_schema(conn)
         sql = """SELECT l.*, h.hostname, r.url AS resource_url FROM leads_v2 l
                  LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id WHERE 1=1"""
         params: list[Any] = []
+        if validity == "current":
+            sql += " AND COALESCE(l.rule_active,1)=1"
+        elif validity == "inactive":
+            sql += " AND COALESCE(l.rule_active,1)=0"
         if q:
             sql += " AND (lower(l.title) LIKE ? OR lower(COALESCE(l.why_interesting,'')) LIKE ? OR lower(COALESCE(l.next_test,'')) LIKE ?)"
             like=f"%{q.lower()}%"; params += [like,like,like]
@@ -847,7 +851,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int) -> dict[str, Any]
         # per-method coverage remains available lower in the HTTP section.
         resource_hypotheses = []
         for l in conn.execute(
-            """SELECT * FROM leads_v2 WHERE resource_id=? AND status NOT IN ('negative','discarded')
+            """SELECT * FROM leads_v2 WHERE resource_id=? AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')
                ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'interesting' THEN 1 WHEN 'testing' THEN 2
                                     WHEN 'candidate' THEN 3 WHEN 'postponed' THEN 4 ELSE 5 END,
                         CASE review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
@@ -1061,7 +1065,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
 
         # Hunter leads are already persistent investigation hypotheses/leads.
         try:
-            lead_rows = conn.execute("SELECT * FROM leads_v2 ORDER BY updated_at DESC LIMIT 150").fetchall()
+            lead_rows = conn.execute("SELECT * FROM leads_v2 WHERE COALESCE(rule_active,1)=1 ORDER BY updated_at DESC LIMIT 150").fetchall()
         except Exception:
             lead_rows = []
         for l in lead_rows:
@@ -1131,7 +1135,7 @@ def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: lis
     evidence to an active hypothesis and its next manual test.  AI hypotheses
     participate naturally because they are persisted in leads_v2 too.
     """
-    where = ["l.status NOT IN ('negative','discarded')"]
+    where = ["COALESCE(l.rule_active,1)=1", "l.status NOT IN ('negative','discarded')"]
     params: list[Any] = []
     if resource_ids:
         marks = ','.join('?' * len(resource_ids))
@@ -1355,7 +1359,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                   (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id AND r.review_state='pending' AND r.classification!='discarded') pending_resources,
                   (SELECT COUNT(*) FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE r.host_id=h.id) operation_count,
                   (SELECT COUNT(*) FROM resources r WHERE r.host_id=h.id AND r.classification='lead') interesting_resources,
-                  (SELECT COUNT(*) FROM leads_v2 l WHERE l.host_id=h.id AND l.status NOT IN ('negative','discarded')) lead_count,
+                  (SELECT COUNT(*) FROM leads_v2 l WHERE l.host_id=h.id AND COALESCE(l.rule_active,1)=1 AND l.status NOT IN ('negative','discarded')) lead_count,
                   (SELECT COUNT(DISTINCT fe.finding_id) FROM finding_entities fe LEFT JOIN resources rr ON fe.entity_type='resource' AND fe.entity_id=rr.id WHERE (fe.entity_type='host' AND fe.entity_id=h.id) OR rr.host_id=h.id) finding_count
                 FROM hosts h ORDER BY CASE WHEN h.classification='finding' THEN 0 WHEN h.classification='lead' THEN 1 WHEN h.review_state='in_progress' THEN 2 ELSE 3 END, h.hostname
             """).fetchall()
@@ -1452,7 +1456,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 on=add_node(f"observation:{o['id']}","observation",str(o["kind"]).replace('_',' '),state=st,meta={"id":o["id"],"source":o["source"],"kind":o["kind"],"value":o["value"],"observed_at":o["observed_at"]})
                 parent=f"{o['entity_type']}:{o['entity_id']}"; add_edge(parent,on,"tested_by",source=o["source"])
 
-            leads=conn.execute(f"SELECT * FROM leads_v2 WHERE host_id=? OR resource_id IN ({marks}) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
+            leads=conn.execute(f"SELECT * FROM leads_v2 WHERE COALESCE(rule_active,1)=1 AND (host_id=? OR resource_id IN ({marks})) ORDER BY updated_at DESC LIMIT 80",(host_id,*rids)).fetchall()
             for l in leads:
                 st="tested" if l["status"] in ('discarded','negative') else "finding" if l["status"]=='confirmed' else "interesting"
                 ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"source":l["source"],"why":l["why_interesting"],"next_test":l["next_test"],"result_notes":l["result_notes"] if "result_notes" in l.keys() else ""},href=f"hypotheses#hypothesis-{l['id']}")
@@ -1740,7 +1744,7 @@ def create_app(default_domain: str, default_workspace: Path):
             detector_rows=[]
             for detector_id,meta in hunter.DETECTOR_CATALOG.items():
                 lead_type=lead_type_map.get(detector_id,detector_id)
-                lead_count=int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type=? AND status NOT IN ('negative','discarded')",(lead_type,)).fetchone()["c"] or 0)
+                lead_count=int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE lead_type=? AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')",(lead_type,)).fetchone()["c"] or 0)
                 nk=notification_kind_map.get(detector_id,detector_id)
                 notif_count=int(conn.execute("SELECT COUNT(*) c FROM notifications WHERE kind=?",(nk,)).fetchone()["c"] or 0)
                 effective=hunter.detector_settings(detector_id,conn)
@@ -2037,6 +2041,17 @@ def create_app(default_domain: str, default_workspace: Path):
             return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
         return RedirectResponse(url=refresh_url, status_code=303)
 
+    @app.post("/t/{target_key}/intel/recalculate")
+    def intel_recalculate(request: Request, target_key: str, return_to: str = Form("hypotheses"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        job_id = _start_job("Recalcular inteligencia local", target_key, core.recalculate_hunter_intelligence, domain, paths)
+        destination = return_to if return_to in {"hypotheses","settings","graph","intelligence"} else "hypotheses"
+        refresh_url = f"/t/{target_key}/{destination}"
+        if request.headers.get("x-requested-with") == "NegroFetch" or "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"job_id":job_id,"job_url":f"/api/jobs/{job_id}","refresh_url":refresh_url})
+        return RedirectResponse(url=refresh_url, status_code=303)
+
     @app.get("/api/t/{target_key}/ai-target-estimate", response_class=JSONResponse)
     def ai_target_estimate(target_key: str, model: str = ""):
         domain, _, paths = _target_context(target_key)
@@ -2074,11 +2089,12 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "tree.html", target_key, domain, workspace, tree=data, q=q, review=review, classification=classification, priority=priority)
 
     @app.get("/t/{target_key}/hypotheses", response_class=HTMLResponse)
-    def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = ""):
+    def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = "", validity: str = "current"):
         domain, workspace, paths = _target_context(target_key)
-        rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind)
+        validity = validity if validity in {"current","inactive","all"} else "current"
+        rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
-        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind, hypothesis_kinds=kinds)
+        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind, hypothesis_kinds=kinds, hypothesis_validity=validity)
 
     @app.post("/t/{target_key}/hypothesis/{lead_id}/update")
     def hypothesis_update(request: Request, target_key: str, lead_id: int, status: str = Form(...), result_notes: str = Form(""), csrf: str = Form(...)):

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.19.1
+# Negro Recon — Metodología v0.19.2
 
 ## Principio
 
@@ -218,3 +218,12 @@ DISCOVERY != CONFIRMATION
 CONFIRMATION != VULNERABILITY
 VULNERABILITY != IMPACT UNTIL DEMONSTRATED
 ```
+
+## Recalcular no significa volver a escanear
+
+Cuando cambian reglas o aparece nuevo conocimiento, `Recalcular inteligencia` vuelve a ejecutar los motores locales sobre la evidencia persistida. Una hipótesis tiene dos dimensiones distintas:
+
+- **estado humano**: candidata, en prueba, interesante, negativa, confirmada, etc.;
+- **vigencia de regla**: si la evidencia todavía coincide con la Knowledge Base actual.
+
+Si deja de coincidir, Negro no borra notas ni decisiones humanas: la marca como histórica/no vigente y la retira del mapa/rutas activas. Si una regla futura vuelve a justificarla, se reactiva usando la misma hipótesis. La recalculación no hace requests al target ni llamadas a IA.
