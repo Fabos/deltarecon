@@ -75,7 +75,7 @@ def main() -> None:
             assert graph.status_code == 200, graph.text
             for phrase in ("VISTAS DE INVESTIGACIÓN", "Entiende una pregunta a la vez", "Superficie", "Identidad", "Flow", "Objeto", "Atención"):
                 assert phrase in graph.text, phrase
-            assert "Entender" in graph.text and "Recon e inteligencia" in graph.text
+            assert ">Identidades<" in graph.text and ">Flows<" in graph.text and ">Objetos<" in graph.text and ">Recon<" in graph.text
 
             js = (ROOT / "web" / "static" / "graph.js").read_text()
             for phrase in ("renderFlowNarrative", "flow-story-step", "renderIdentityIndex", "renderObjectIndex", "renderIntelligenceNarrative"):

@@ -24,6 +24,7 @@
   const objectControls = root.querySelector('[data-graph-object-controls]');
   const identitySelect = root.querySelector('[data-graph-identity-select]');
   const identityCompare = root.querySelector('[data-graph-identity-compare]');
+  const identityCompareSummary = root.querySelector('[data-identity-compare-summary]');
   const flowSelect = root.querySelector('[data-graph-flow-select]');
   const objectSelect = root.querySelector('[data-graph-object-select]');
   const pathClearBtn = root.querySelector('[data-graph-path-clear]');
@@ -82,6 +83,7 @@
   let nodeDrag = null;
   let suppressClick = false;
   let flowViewMode = (()=>{try{return localStorage.getItem(`negro.flow.map.view:${targetKey}`)||'graph';}catch(_){return 'graph';}})();
+  let identityEndpointMode = 'all';
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
@@ -104,6 +106,121 @@
   const sceneById = () => new Map(sceneNodes.map(n => [n.id,n]));
   const edgesOf = id => graph.edges.filter(e => e.source === id || e.target === id);
   const opposite = (e,id) => e.source === id ? e.target : e.source;
+
+
+  function identityEndpointSets(){
+    const primaryId=Number(graph.meta?.identity_id||0), compareId=Number(graph.meta?.compare_identity_id||0);
+    const endpointSet=iid=>new Set(graph.edges.filter(e=>e.source===`identity:${iid}`&&e.relation==='called_endpoint').map(e=>e.target));
+    const primary=primaryId?endpointSet(primaryId):new Set();
+    const compare=compareId?endpointSet(compareId):new Set();
+    const shared=new Set([...primary].filter(x=>compare.has(x)));
+    const onlyPrimary=new Set([...primary].filter(x=>!compare.has(x)));
+    const onlyCompare=new Set([...compare].filter(x=>!primary.has(x)));
+    return {primaryId,compareId,primary,compare,shared,onlyPrimary,onlyCompare};
+  }
+
+  function identityEndpointBucket(nodeId){
+    const sets=identityEndpointSets();
+    if(!sets.compareId)return '';
+    if(sets.shared.has(nodeId))return 'shared';
+    if(sets.onlyPrimary.has(nodeId))return 'only-primary';
+    if(sets.onlyCompare.has(nodeId))return 'only-compare';
+    return '';
+  }
+
+  function identityEndpointPass(n){
+    if(preset!=='identity'||identityEndpointMode==='all'||!Number(graph.meta?.compare_identity_id||0))return true;
+    const sets=identityEndpointSets();
+    const allowed=identityEndpointMode==='shared'?sets.shared:identityEndpointMode==='only-primary'?sets.onlyPrimary:sets.onlyCompare;
+    if(n.type==='identity')return n.id===`identity:${sets.primaryId}`||n.id===`identity:${sets.compareId}`;
+    if(n.type==='resource')return allowed.has(n.id);
+    if(['operation','request','object','flow'].includes(n.type)){
+      return graph.edges.some(e=>{
+        if(e.source!==n.id&&e.target!==n.id)return false;
+        const other=opposite(e,n.id);
+        if(allowed.has(other))return true;
+        if(n.type==='flow'){
+          return graph.edges.some(x=>(x.source===n.id||x.target===n.id)&&allowed.has(opposite(x,n.id)));
+        }
+        return false;
+      });
+    }
+    return true;
+  }
+
+  function renderIdentityCompareSummary(){
+    if(!identityCompareSummary)return;
+    const sets=identityEndpointSets();
+    if(preset!=='identity'||!sets.primaryId||!sets.compareId){identityCompareSummary.hidden=true;identityCompareSummary.innerHTML='';identityEndpointMode='all';return;}
+    const opts=graph.meta?.filter_options?.identities||[];
+    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identity ${id}`;
+    const buttons=[
+      ['all',`Todos · ${new Set([...sets.primary,...sets.compare]).size}`],
+      ['shared',`Compartidos · ${sets.shared.size}`],
+      ['only-primary',`Solo ${label(sets.primaryId)} · ${sets.onlyPrimary.size}`],
+      ['only-compare',`Solo ${label(sets.compareId)} · ${sets.onlyCompare.size}`],
+    ];
+    identityCompareSummary.hidden=false;
+    identityCompareSummary.innerHTML=`<span>Lectura rápida</span>${buttons.map(([mode,text])=>`<button type="button" data-identity-endpoint-mode="${mode}" class="${identityEndpointMode===mode?'active':''}">${esc(text)}</button>`).join('')}`;
+    identityCompareSummary.querySelectorAll('[data-identity-endpoint-mode]').forEach(btn=>btn.addEventListener('click',()=>{
+      identityEndpointMode=btn.dataset.identityEndpointMode||'all';
+      renderIdentityCompareSummary();applyFilters({fitAfter:true});
+    }));
+  }
+
+  function semanticCardMode(n){
+    return ['identity','flow','objects'].includes(preset)&&['identity','flow','resource'].includes(n.type);
+  }
+
+  function cardWidthFor(n){
+    const text=String(n.label||'');
+    if(n.type==='resource')return Math.max(116,Math.min(270,text.length*7.2+34));
+    if(n.type==='identity')return Math.max(104,Math.min(190,text.length*7.4+44));
+    if(n.type==='flow')return Math.max(110,Math.min(210,text.length*7.2+44));
+    return 40;
+  }
+
+  function appendNodeVisual(ng,n){
+    const r=nodeRadius(n.type);
+    const fixed=semanticCardMode(n);
+    const vg=document.createElementNS(NS,'g');vg.setAttribute('class','graph-node-visual');
+    if(fixed){const inv=1/Math.max(.18,view.k);vg.setAttribute('transform',`scale(${inv})`);}
+    let inlineLabel=false,labelAnchor=r+8;
+    const addRect=(x,y,w,h,rx,cls='node-shape')=>{const el=document.createElementNS(NS,'rect');el.setAttribute('x',String(x));el.setAttribute('y',String(y));el.setAttribute('width',String(w));el.setAttribute('height',String(h));el.setAttribute('rx',String(rx));el.setAttribute('class',cls);vg.appendChild(el);return el;};
+    const addCircle=(cx,cy,rr,cls='node-shape')=>{const el=document.createElementNS(NS,'circle');el.setAttribute('cx',String(cx));el.setAttribute('cy',String(cy));el.setAttribute('r',String(rr));el.setAttribute('class',cls);vg.appendChild(el);return el;};
+    const addPath=(d,cls='node-icon')=>{const el=document.createElementNS(NS,'path');el.setAttribute('d',d);el.setAttribute('class',cls);vg.appendChild(el);return el;};
+    const addText=(x,y,text,cls='node-inline-label',anchor='start')=>{const el=document.createElementNS(NS,'text');el.setAttribute('x',String(x));el.setAttribute('y',String(y));el.setAttribute('text-anchor',anchor);el.setAttribute('class',cls);el.textContent=text;vg.appendChild(el);return el;};
+    if(fixed&&n.type==='resource'){
+      const w=cardWidthFor(n);addRect(-w/2,-15,w,30,9,'node-shape endpoint-card');
+      addPath(`M ${-w/2+12} -4 L ${-w/2+18} 0 L ${-w/2+12} 4 M ${-w/2+18} 0 H ${-w/2+24}`,'node-icon endpoint-icon');
+      const limit=42;const text=String(n.label||'');addText(-w/2+31,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label endpoint-inline');
+      inlineLabel=true;labelAnchor=w/2+8;
+    }else if(fixed&&n.type==='identity'){
+      const w=cardWidthFor(n);addRect(-w/2,-17,w,34,11,'node-shape identity-card');
+      addCircle(-w/2+18,-5,4,'node-icon-fill identity-head');addPath(`M ${-w/2+10} 9 C ${-w/2+11} 2, ${-w/2+25} 2, ${-w/2+26} 9`,'node-icon identity-body');
+      const limit=22;const text=String(n.label||'');addText(-w/2+34,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label identity-inline');
+      inlineLabel=true;labelAnchor=w/2+8;
+    }else if(fixed&&n.type==='flow'){
+      const w=cardWidthFor(n);addRect(-w/2,-16,w,32,10,'node-shape flow-card');
+      addPath(`M ${-w/2+12} -6 H ${-w/2+20} V 0 H ${-w/2+27} M ${-w/2+20} 0 V 6 H ${-w/2+27}`,'node-icon flow-icon');
+      const limit=24;const text=String(n.label||'');addText(-w/2+35,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label flow-inline');
+      inlineLabel=true;labelAnchor=w/2+8;
+    }else if(n.type==='object'){
+      const pts='0,-8 7,-4 7,4 0,8 -7,4 -7,-4';const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points',pts);poly.setAttribute('class','node-shape object-hex');vg.appendChild(poly);labelAnchor=15;
+    }else if(n.type==='request'){
+      addRect(-6,-8,12,16,2,'node-shape request-doc');addPath('M 1 -8 V -3 H 6 M -3 1 H 3 M -3 5 H 3','node-icon request-lines');labelAnchor=14;
+    }else if(n.type==='state'){
+      const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points','0,-8 8,0 0,8 -8,0');poly.setAttribute('class','node-shape state-diamond');vg.appendChild(poly);labelAnchor=15;
+    }else if(n.type==='anomaly'){
+      const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points','0,-9 9,8 -9,8');poly.setAttribute('class','node-shape anomaly-triangle');vg.appendChild(poly);addText(0,5,'!','node-icon-mark','middle');labelAnchor=16;
+    }else if(n.type==='operation'){
+      addRect(-9,-6,18,12,6,'node-shape operation-pill');labelAnchor=15;
+    }else{
+      addCircle(0,0,r,'node-shape');
+    }
+    ng.appendChild(vg);
+    return {inlineLabel,labelAnchor,fixed};
+  }
 
   function leadPassesFilters(n){
     if(!n || n.type!=='lead') return true;
@@ -171,6 +288,7 @@
     if(preset==='identity'){
       fillSelect(identitySelect,opts.identities||[],x=>x.id,x=>`${x.name}${Number(x.request_count||0)?` · ${x.request_count} Requests`:''}`,graph.meta?.identity_id,'Todas las identidades');
       fillSelect(identityCompare,opts.identities||[],x=>x.id,x=>x.name,graph.meta?.compare_identity_id,'— ninguna —');
+      renderIdentityCompareSummary();
     } else if(preset==='flow'){
       fillSelect(flowSelect,opts.flows||[],x=>x.id,x=>`${x.name}${Number(x.step_count||0)?` · ${x.step_count} pasos`:''}`,graph.meta?.flow_id,'Elige un Flow');
     } else if(preset==='objects'){
@@ -221,7 +339,7 @@
     if(preset==='surface')return n.type!=='operation'||layerEnabled('operation');
     if(preset==='identity'){
       if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
-      if(n.type==='resource'||n.type==='identity')return true;
+      if(n.type==='resource'||n.type==='identity')return identityEndpointPass(n);
       if(['flow','object','request','operation'].includes(n.type))return layerEnabled(n.type);
       return true;
     }
@@ -758,6 +876,7 @@
     const baseNodes=sceneNodes.filter(n =>
       (n.type==='cluster'||activeTypes.has(n.type)) &&
       nodeLayerPasses(n) &&
+      identityEndpointPass(n) &&
       leadPassesFilters(n) &&
       (!q || n.label.toLowerCase().includes(q) || JSON.stringify(n.meta||{}).toLowerCase().includes(q))
     );
@@ -788,6 +907,14 @@
       if((e.source===ids[i]&&e.target===ids[i+1])||(e.target===ids[i]&&e.source===ids[i+1]))return true;
     }
     return false;
+  }
+
+  function edgeIdentityCompareClass(e){
+    if(preset!=='identity'||e.relation!=='called_endpoint')return '';
+    const primary=`identity:${Number(graph.meta?.identity_id||0)}`, compare=`identity:${Number(graph.meta?.compare_identity_id||0)}`;
+    if(e.source===primary||e.target===primary)return ' graph-edge-identity-primary';
+    if(compare!=='identity:0'&&(e.source===compare||e.target===compare))return ' graph-edge-identity-secondary';
+    return '';
   }
 
   function edgeSemanticClass(e){
@@ -822,16 +949,19 @@
       const path=document.createElementNS(NS,'path');
       const dx=Math.max(45,Math.abs(b.x-a.x)*.48), c1x=a.x+Math.sign(b.x-a.x||1)*dx, c2x=b.x-Math.sign(b.x-a.x||1)*dx;
       path.setAttribute('d',`M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`);
-      path.setAttribute('class',`graph-edge relation-${String(e.relation||'related').replace(/[^a-z0-9_-]/gi,'-')}${edgeSemanticClass(e)}${relationIsHighlight(e)?' graph-edge-highlight':''}${relationIsRoute(e)?' graph-edge-route':''}`);path.dataset.id=e.id;
+      path.setAttribute('class',`graph-edge relation-${String(e.relation||'related').replace(/[^a-z0-9_-]/gi,'-')}${edgeSemanticClass(e)}${edgeIdentityCompareClass(e)}${relationIsHighlight(e)?' graph-edge-highlight':''}${relationIsRoute(e)?' graph-edge-route':''}`);path.dataset.id=e.id;
       path.addEventListener('click',ev=>{ev.stopPropagation();showEdge(e)});g.appendChild(path);
     });
 
     visibleNodes.forEach(n=>{
       const ng=document.createElementNS(NS,'g');
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
+      const compareBucket=n.type==='resource'?identityEndpointBucket(n.id):'';
+      const primaryIdentity=n.id===`identity:${Number(graph.meta?.identity_id||0)}`;
+      const compareIdentity=n.id===`identity:${Number(graph.meta?.compare_identity_id||0)}`;
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${compareBucket?` compare-${compareBucket}`:''}${primaryIdentity?' compare-identity-primary':''}${compareIdentity?' compare-identity-secondary':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
-      const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
-      if (n.meta?.coverage && ['host','resource'].includes(n.type)) {
+      const visual=appendNodeVisual(ng,n);
+      if (n.meta?.coverage && ['host','resource'].includes(n.type) && !semanticCardMode(n)) {
         const dot=document.createElementNS(NS,'circle');
         dot.setAttribute('r','3.2'); dot.setAttribute('cx',String(-nodeRadius(n.type)+1)); dot.setAttribute('cy',String(-nodeRadius(n.type)+1));
         dot.setAttribute('class',`graph-coverage-dot coverage-${esc(n.meta.coverage)}`); ng.appendChild(dot);
@@ -839,8 +969,8 @@
       if(n.type==='cluster'){
         const inner=document.createElementNS(NS,'circle');inner.setAttribute('r',Math.max(3,nodeRadius(n.type)-4));inner.setAttribute('class','graph-cluster-inner');ng.appendChild(inner);
       }
-      if(labelVisible(n)){
-        const label=document.createElementNS(NS,'text');label.setAttribute('x',nodeRadius(n.type)+8);label.setAttribute('y','4');label.setAttribute('class',`graph-node-label label-${n.type}`);
+      if(labelVisible(n)&&!visual.inlineLabel){
+        const label=document.createElementNS(NS,'text');label.setAttribute('x',visual.labelAnchor||nodeRadius(n.type)+8);label.setAttribute('y','4');label.setAttribute('class',`graph-node-label label-${n.type}`);
         if(keepLabelScreenSize(n)){const inv=1/Math.max(.18,view.k);label.setAttribute('transform',`scale(${inv})`);}
         const limit=labelLimit(n.type);label.textContent=n.label.length>limit?n.label.slice(0,limit-1)+'…':n.label;ng.appendChild(label);
       }
@@ -877,12 +1007,51 @@
     return summary;
   }
 
+  function groupNodeRelations(n,rels,sourceGraph){
+    const groups=new Map();
+    rels.forEach(e=>{
+      const oid=e.source===n.id?e.target:e.source;
+      const other=sourceGraph.find(x=>x.id===oid)||graph.nodes.find(x=>x.id===oid);
+      if(!other)return;
+      const key=`${e.relation}|${other.type}|${other.label}`;
+      if(!groups.has(key))groups.set(key,{relation:e.relation,type:other.type,label:other.label,count:0,ids:[],nodes:[],edges:[]});
+      const g=groups.get(key);g.count++;g.ids.push(other.id);g.nodes.push(other);g.edges.push(e);
+    });
+    return [...groups.values()].sort((a,b)=>a.type.localeCompare(b.type)||a.label.localeCompare(b.label));
+  }
+
+  function relationGroupRow(group,{note=''}={}){
+    const first=group.nodes[0];
+    const count=group.count>1?`<span class="graph-relation-count">×${group.count}</span>`:'';
+    const context=note||((group.type==='object'&&first?.meta?.ui_quality==='ambiguous')?'mismo valor observado con varias clasificaciones internas':'');
+    return `<button type="button" class="graph-relation compact" data-focus="${esc(first?.id||'')}"><span>${esc(relationLabel[group.relation]||group.relation)}</span><b>${esc(group.label)}${context?` <small class="graph-relation-note">· ${esc(context)}</small>`:''}</b>${count}</button>`;
+  }
+
+  function relationSectionsHtml(n,groups){
+    if(n.type!=='resource'){
+      const rows=groups.slice(0,18).map(g=>relationGroupRow(g)).join('');
+      return `<div class="graph-detail-section"><h3>Relaciones · ${groups.length}</h3>${rows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    }
+    const identities=groups.filter(g=>g.type==='identity'&&g.relation==='called_endpoint');
+    const flows=groups.filter(g=>g.type==='flow'&&g.relation==='flow_endpoint');
+    const meaningfulObjects=groups.filter(g=>g.type==='object'&&g.relation==='observed_object'&&g.nodes.some(x=>x.meta?.ui_quality!=='ambiguous'));
+    const noisyObjects=groups.filter(g=>g.type==='object'&&g.relation==='observed_object'&&g.nodes.every(x=>x.meta?.ui_quality==='ambiguous'));
+    const consumed=new Set([...identities,...flows,...meaningfulObjects,...noisyObjects].map(g=>`${g.relation}|${g.type}|${g.label}`));
+    // Methods, host containment and individual Request edges are already explained by dedicated endpoint sections.
+    const technical=groups.filter(g=>!consumed.has(`${g.relation}|${g.type}|${g.label}`)&&!['supports','contains','calls'].includes(g.relation));
+    const section=(title,rows,copy='')=>rows.length?`<div class="graph-detail-group"><h3>${esc(title)}</h3>${copy?`<p>${esc(copy)}</p>`:''}${rows.map(g=>relationGroupRow(g)).join('')}</div>`:'';
+    const noisy=noisyObjects.length?`<details class="graph-detail-technical"><summary>Identificadores sin clasificar · ${noisyObjects.reduce((s,g)=>s+g.count,0)}</summary><p>Negro observó estos valores, pero todavía no sabe qué entidad de negocio representan.</p>${noisyObjects.map(g=>relationGroupRow(g)).join('')}</details>`:'';
+    const tech=technical.length?`<details class="graph-detail-technical"><summary>Relaciones técnicas · ${technical.length}</summary>${technical.slice(0,18).map(g=>relationGroupRow(g)).join('')}</details>`:'';
+    return `${section('Identidades que consumieron este endpoint',identities)}${section('Flows donde apareció',flows)}${section('Objetos con significado observados aquí',meaningfulObjects)}${noisy}${tech}`;
+  }
+
   function showNode(n){
     const rels=(n.virtual?sceneEdges:graph.edges).filter(e=>e.source===n.id||e.target===n.id);
     const meta=n.meta||{};
     const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting','why','next_test','result_notes'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(metaKeyLabel[k]||k.replaceAll('_',' '))}</span><b>${esc(valueLabel(v))}</b></div>`).join('');
     const sourceGraph=n.virtual?sceneNodes:graph.nodes;
-    const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(relationLabel[e.relation]||e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
+    const relationGroups=groupNodeRelations(n,rels,sourceGraph);
+    const relationHtml=relationSectionsHtml(n,relationGroups);
     const summary=summarizeNode(n);
     const endpointMethods=n.type==='resource'?[...new Set(graph.edges.filter(e=>(e.source===n.id||e.target===n.id)&&e.relation==='supports').map(e=>nodeFor(opposite(e,n.id))).filter(x=>x?.type==='operation').map(x=>String(x.meta?.method||x.label||'').toUpperCase()).filter(Boolean))]:[];
     const methodHtml=n.type==='resource'&&endpointMethods.length?`<div class="endpoint-method-strip"><small>MÉTODOS SOPORTADOS</small><div>${endpointMethods.map(m=>`<span>${esc(m)}</span>`).join('')}</div></div>`:'';
@@ -898,7 +1067,7 @@
     const exploreAction=['host','resource'].includes(n.type)?`<button type="button" class="button" data-explore-scope>Explorar ${n.type==='host'?'host':'recurso'} en mapa →</button>`:'';
     const pathAction=!pathStart?`<button type="button" class="btn-secondary" data-path-start>Camino · empezar aquí</button>`:(pathStart===n.id?`<button type="button" class="btn-secondary" data-path-clear-local>Cancelar inicio de camino</button>`:`<button type="button" class="button" data-path-to>Ver camino desde ${esc((sceneNodes.find(x=>x.id===pathStart)||graph.nodes.find(x=>x.id===pathStart))?.label||'inicio')}</button><button type="button" class="btn-secondary" data-path-start>Cambiar inicio</button>`);
     const hypothesisHtml=n.type==='lead'?`<div class="graph-detail-section graph-hypothesis-editor"><h3>Trabajo de hipótesis</h3>${meta.why?`<p><b>Por qué:</b> ${esc(meta.why)}</p>`:''}${meta.next_test?`<p><b>Siguiente prueba:</b> ${esc(meta.next_test)}</p>`:''}<label>Estado<select data-lead-edit-status>${['candidate','testing','interesting','negative','postponed','confirmed','discarded'].map(s=>`<option value="${s}" ${String(meta.status||'candidate')===s?'selected':''}>${esc(valueLabel(s))}</option>`).join('')}</select></label><label>Resultado / qué pasó<textarea data-lead-edit-notes placeholder="Qué probaste, por qué falló o qué evidencia confirmó la hipótesis…">${esc(meta.result_notes||'')}</textarea></label><button type="button" class="button" data-lead-edit-save>Guardar en la misma hipótesis</button><small data-lead-edit-feedback></small></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}${relationHtml}`;
     detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
@@ -1077,10 +1246,12 @@
   root.querySelectorAll('[data-graph-preset]').forEach(b=>b.addEventListener('click',()=>setPreset(b.dataset.graphPreset,b)));
   root.querySelector('[data-graph-overview]')?.addEventListener('click',()=>{const b=root.querySelector('[data-graph-preset="surface"]');setPreset('surface',b);});
   identitySelect?.addEventListener('change',()=>{
+    identityEndpointMode='all';
     const iid=Number(identitySelect.value||0),cid=Number(identityCompare?.value||0);
     load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();renderExperience();});
   });
   identityCompare?.addEventListener('change',()=>{
+    identityEndpointMode='all';
     const iid=Number(identitySelect?.value||0),cid=Number(identityCompare.value||0);
     if(!iid&&cid){identitySelect.value=String(cid);identityCompare.value='';return identitySelect.dispatchEvent(new Event('change'));}
     load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();renderExperience();});

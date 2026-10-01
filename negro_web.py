@@ -4268,6 +4268,26 @@ def create_app(default_domain: str, default_workspace: Path):
                 valid = {int(r["id"]) for r in conn.execute(f"SELECT id FROM http_exchanges WHERE id IN ({','.join('?' for _ in exchange_ids)})", exchange_ids).fetchall()}
                 if len(valid) != len(exchange_ids):
                     raise HTTPException(status_code=400, detail="Una o más Requests no pertenecen a este target")
+                if name == "Flow from Burp selection":
+                    rows = conn.execute(
+                        f"""SELECT e.id,o.method,r.path FROM http_exchanges e
+                            JOIN resource_operations o ON o.id=e.operation_id
+                            JOIN resources r ON r.id=o.resource_id
+                            WHERE e.id IN ({','.join('?' for _ in exchange_ids)})""",
+                        exchange_ids,
+                    ).fetchall()
+                    by_id = {int(r["id"]): r for r in rows}
+                    ordered = [by_id[x] for x in exchange_ids if x in by_id]
+                    if ordered:
+                        first = ordered[0]
+                        last = ordered[-1]
+                        first_label = f"{str(first['method'] or 'REQUEST').upper()} {first['path']}"
+                        last_label = f"{str(last['method'] or 'REQUEST').upper()} {last['path']}"
+                        name = f"Burp · {first_label}" if len(ordered) == 1 else f"Burp · {first_label} → {last_label}"
+                        name = name[:150]
+                        duplicate_count = int(conn.execute("SELECT COUNT(*) c FROM flows WHERE name LIKE ?", (name + "%",)).fetchone()["c"] or 0)
+                        if duplicate_count:
+                            name = f"{name[:142]} · #{duplicate_count + 1}"
                 flow_id = flow_tools.create_flow(conn, name, description=str(payload.get("description") or "")[:2000])
                 for exid in exchange_ids:
                     flow_tools.add_step(conn, flow_id, exid, candidate=True)

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.33.0
+
+- Sustituye bolitas genéricas por una gramática SVG por tipo: Identity, Endpoint, Flow, Object, Request, State y Anomaly.
+- Mantiene tarjetas/labels de Identity, Endpoint y Flow legibles al hacer zoom en vistas semánticas.
+- Agrupa relaciones duplicadas del panel de detalle; valores/Flows repetidos muestran contador en vez de filas idénticas.
+- Endpoint detail separa Identidades, Flows, objetos con significado e identificadores sin clasificar.
+- Identity Compare añade filtros `Todos`, `Compartidos`, `Sólo A` y `Sólo B`, además de estilos de arista por identidad.
+- Reemplaza los menús `Entender` y `Más` por navegación superior directa y explícita.
+- El nombre por defecto de un Flow creado desde una selección Burp se deriva de sus endpoints y se desambigua si ya existe.
+- Añade regresión `v033_semantic_graph_polish_test.py`.
+
 ## v0.32.0
 
 - Devuelve el **grafo como vista principal de Identidad** cuando se selecciona una Identity Context; ya no exige un botón adicional para “ver relaciones”.

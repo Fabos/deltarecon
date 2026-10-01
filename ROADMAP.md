@@ -160,6 +160,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 6.6. Investigation Experience / Map 2.0 + Focus Mode + Path Finder + lenguaje Request-first. ✅ v0.29.0
 6.7. Investigation Views / Map 3.0 + simplificación global + timeline de Flow + evidencia ambigua fuera del foco. ✅ v0.30.0
 6.8. Evidence-first UX: Identity/Object Request-first, objetos ambiguos como key=value, Flow Compare sin ruido y navegación corregida. ✅ v0.32.0
+6.9. Semantic graph polish: iconos por tipo, relaciones deduplicadas, compare Shared/Only y navegación directa. ✅ v0.33.0
 7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
@@ -221,6 +222,15 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Capas opcionales para métodos, objetos y Requests individuales.
 - Labels de endpoint persistentes al cambiar zoom y métodos soportados en el detalle.
 - Jerarquía visual consistente por tipo de nodo.
+
+## Implementado en v0.33.0 — Semantic graph polish
+
+- Iconografía SVG por tipo de nodo sin depender de emojis.
+- Endpoints persistentes y legibles en vistas semánticas.
+- Relaciones del detalle agrupadas y evidencia ambigua plegada.
+- Identity Compare con Shared / Only A / Only B.
+- Navegación superior directa, sin categorías opacas.
+- Nombres contextuales para Flows Burp creados con el nombre por defecto.
 
 ## Siguiente fase inmediata
 

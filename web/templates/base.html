@@ -10,29 +10,21 @@
 <body>
   <header class="topbar app-header">
     <a class="brand" href="{{ target_base }}/" aria-label="Ir al inicio de Negro"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
-    <nav class="main-nav" aria-label="Navegación principal">
+    <nav class="main-nav direct-nav" aria-label="Navegación principal">
       <a class="{% if request.url.path == target_base+'/' %}active{% endif %}" href="{{ target_base }}/">Inicio</a>
       <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
       <a class="{% if '/search' in request.url.path %}active{% endif %}" href="{{ target_base }}/search">Buscar</a>
-      <details class="nav-group {% if '/identities' in request.url.path or '/flows' in request.url.path or '/objects' in request.url.path %}active{% endif %}">
-        <summary>Entender</summary>
-        <div class="nav-group-menu">
-          <a href="{{ target_base }}/identities"><b>Identidades</b><small>quién hizo la Request</small></a>
-          <a href="{{ target_base }}/flows"><b>Flows</b><small>qué ocurrió y en qué orden</small></a>
-          <a href="{{ target_base }}/objects"><b>Objetos</b><small>sobre qué cosa ocurrió</small></a>
-        </div>
-      </details>
+      <span class="nav-divider" aria-hidden="true"></span>
+      <a class="{% if '/identities' in request.url.path %}active{% endif %}" href="{{ target_base }}/identities">Identidades</a>
+      <a class="{% if '/flows' in request.url.path %}active{% endif %}" href="{{ target_base }}/flows">Flows</a>
+      <a class="{% if '/objects' in request.url.path %}active{% endif %}" href="{{ target_base }}/objects">Objetos</a>
       <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
+      <span class="nav-divider" aria-hidden="true"></span>
       <a class="{% if '/hypotheses' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hunt</a>
       <a class="{% if '/finding' in request.url.path %}active{% endif %}" href="{{ target_base }}/findings">Hallazgos</a>
-      <details class="nav-group {% if '/intelligence' in request.url.path or '/settings' in request.url.path or '/guide' in request.url.path %}active{% endif %}">
-        <summary>Más</summary>
-        <div class="nav-group-menu nav-group-menu-right">
-          <a href="{{ target_base }}/intelligence"><b>Recon e inteligencia</b><small>fuentes, señales y correlación</small></a>
-          <a href="{{ target_base }}/guide"><b>Guía</b><small>cómo usar Negro sin perderte</small></a>
-          <a href="{{ target_base }}/settings"><b>Ajustes</b><small>políticas, reglas e integraciones</small></a>
-        </div>
-      </details>
+      <a class="nav-utility {% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence" title="Recon e inteligencia">Recon</a>
+      <a class="nav-utility {% if '/guide' in request.url.path %}active{% endif %}" href="{{ target_base }}/guide" title="Guía de Negro">Guía</a>
+      <a class="nav-utility {% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings" title="Ajustes">Ajustes</a>
     </nav>
     <div class="target-switch-wrap">
       <label for="target-switch">Proyecto</label>

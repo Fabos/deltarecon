@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.32.0
+# Negro Recon 🐕 — v0.33.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,19 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.33.0 — Semantic graph polish: iconos, relaciones legibles y comparación A/B
+
+Esta iteración no añade otro motor de detección. Hace que el grafo explique mejor la evidencia que Negro ya conoce.
+
+- Los nodos semánticos dejan de ser círculos indistinguibles: **Identity** usa tarjeta/persona, **Endpoint** una pill persistente con la ruta, **Flow** una tarjeta de proceso, **Object** un hexágono, **Request** documento, **State** rombo y **Anomaly** triángulo.
+- En vistas Identity/Object/Flow, Identity, Endpoint y Flow mantienen tamaño/label legible al cambiar zoom; Superficie conserva su comportamiento conocido.
+- El panel de un endpoint agrupa relaciones por significado. Repeticiones como `id=102` o dos Flows con el mismo nombre ya no aparecen como líneas idénticas: se condensan con contador y la evidencia ambigua queda separada como “identificadores sin clasificar”.
+- Identity Compare añade una lectura rápida **Compartidos / Sólo A / Sólo B**, con filtros directos sobre el grafo y líneas visuales diferenciadas para cada identidad.
+- La navegación superior elimina `Entender` / `Más` y deja accesos directos a Identidades, Flows, Objetos, Mapa, Recon, Guía y Ajustes.
+- Nuevos Flows creados desde la selección por defecto de Burp reciben un nombre contextual basado en el primer/último endpoint, evitando listas de `Flow from Burp selection` indistinguibles.
+
+La regla visual sigue siendo: **Identity + Endpoint + Flow explican la historia; Object añade contexto; Request/Method son detalle progresivo.**
 
 ## v0.32.0 — Graph-first semantic views: Identidades, endpoints y objetos legibles
 

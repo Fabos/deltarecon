@@ -102,8 +102,8 @@ def main() -> None:
             for phrase in ("renderIdentityNarrative", "renderObjectNarrative", "Campos / contexto observado", "Ver relaciones gráficas · avanzado"):
                 assert phrase in js, phrase
             css = (ROOT / "web" / "static" / "style.css").read_text()
-            assert ".main-nav{gap:2px;min-width:0;overflow:visible" in css
-            assert ".nav-group[open]{z-index:130}" in css
+            assert ".direct-nav" in css
+            assert ".nav-divider" in css
         finally:
             core.TARGETS_PATH = old_targets
 
@@ -111,7 +111,7 @@ def main() -> None:
     print("[OK] ambiguous objects render as key=value instead of meaningless type/value pairs")
     print("[OK] Object view starts from Requests where the value appeared")
     print("[OK] Flow Compare demotes ambiguous object-count deltas to advanced context")
-    print("[OK] navigation dropdowns are no longer clipped by the main nav overflow")
+    print("[OK] navigation stays explicit and direct without opaque dropdown groups")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.32.0
+# Negro Recon — Metodología v0.33.0
 
 ## Modelo mental
 
@@ -160,3 +160,8 @@ Signals / IA / Investigaciones
 - Finding y Discarded siguen siendo decisiones humanas.
 - Evidencia histórica y retest actual son conceptos distintos.
 - Negro debe reducir ruido y conservar procedencia exacta, no esconder datos útiles del hunter local.
+
+
+## Lectura visual v0.33.0
+
+En vistas semánticas, Negro prioriza tres conceptos: **Identity (quién)**, **Endpoint (qué ruta)** y **Flow (qué historia)**. Business Objects aparecen como contexto y Requests/Métodos se revelan bajo demanda. Cuando se comparan dos identidades, el investigador puede aislar endpoints compartidos o exclusivos; esto es una ayuda de navegación y no una afirmación de vulnerabilidad. Relaciones repetidas se agrupan visualmente, conservando la evidencia original debajo.
