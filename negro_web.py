@@ -1485,9 +1485,23 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         def add_resource(rid: int) -> str | None:
             row = conn.execute("SELECT r.id,r.path,r.url,r.host_id,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?", (int(rid),)).fetchone()
             if not row: return None
+            ops = conn.execute("SELECT id,method FROM resource_operations WHERE resource_id=? ORDER BY method,id", (int(rid),)).fetchall()
+            methods = [str(x["method"] or "?").upper() for x in ops]
             hn=add_host(int(row["host_id"]))
-            rn=add_node(f"resource:{rid}", "resource", row["path"] or row["url"], meta={"id":rid,"url":row["url"],"host":row["hostname"]}, href=f"resource/{rid}")
+            rn=add_node(
+                f"resource:{rid}", "resource", row["path"] or row["url"],
+                meta={
+                    "id":rid,"url":row["url"],"host":row["hostname"],
+                    "methods":" · ".join(methods),"method_count":len(methods)
+                }, href=f"resource/{rid}"
+            )
             if hn: add_edge(hn,rn,"contains",source="inventory")
+            # Semantic views always carry method nodes in the payload, but the UI
+            # decides whether they deserve visual weight. This lets endpoints stay
+            # primary while methods can be toggled on without another round trip.
+            for op in ops:
+                on=add_node(f"operation:{int(op['id'])}", "operation", str(op["method"] or "?").upper(), meta={"id":int(op['id']),"method":str(op["method"] or "?").upper(),"resource_id":int(rid)}, href=f"resource/{rid}")
+                add_edge(rn,on,"supports",source="inventory")
             return rn
 
         def add_request(exid: int) -> str | None:
@@ -1547,6 +1561,36 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     add_edge(request_node,obj,"touches",source="business_object",evidence={"request_id":exid})
                     if flow_node: add_edge(flow_node,obj,"touches_object",source="flow")
 
+        def request_resource_id(exid: int) -> int | None:
+            rr = conn.execute(
+                """SELECT o.resource_id FROM http_exchanges e
+                   JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""",
+                (int(exid),),
+            ).fetchone()
+            return int(rr["resource_id"]) if rr and rr["resource_id"] else None
+
+        def connect_endpoint_context(exid: int, resource_node: str, *, include_actor: bool = True, flow_node: str | None = None) -> None:
+            """Connect an endpoint to the human context observed around one Request.
+
+            Requests stay available as evidence, but Identity/Object views can now
+            read Identity → endpoint and Object → endpoint without routing every
+            relationship through opaque Request IDs.
+            """
+            if include_actor:
+                actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()
+                if actor and actor["identity_id"]:
+                    ident = add_identity(int(actor["identity_id"]))
+                    if ident: add_edge(ident, resource_node, "called_endpoint", source="identity", evidence={"request_id": int(exid)})
+            for orow in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE exchange_id=? ORDER BY business_object_id", (int(exid),)).fetchall():
+                obj = add_object(int(orow["business_object_id"]))
+                if obj:
+                    add_edge(resource_node, obj, "observed_object", source="business_object", evidence={"request_id": int(exid)})
+                    if flow_node: add_edge(flow_node, obj, "touches_object", source="flow")
+            for fr in conn.execute("SELECT DISTINCT flow_id FROM flow_steps WHERE exchange_id=? AND included=1 ORDER BY flow_id", (int(exid),)).fetchall():
+                fn = add_flow(int(fr["flow_id"]))
+                if fn:
+                    add_edge(fn, resource_node, "flow_endpoint", source="flow", evidence={"request_id": int(exid)})
+
         def add_object_states(oid: int) -> None:
             od=object_tools.object_detail(conn,int(oid))
             if not od: return
@@ -1572,14 +1616,36 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     inode=add_identity(int(iid))
                     if inode: add_edge(target,inode,"contains",source="identity_focus")
                     rows=conn.execute(
-                        """SELECT e.id FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
-                           WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT ?""", (int(iid),max(20,min(limit,180)))
+                        """SELECT e.id,o.resource_id,o.method,e.status_code,e.last_seen_at
+                           FROM exchange_identities ei
+                           JOIN http_exchanges e ON e.id=ei.exchange_id
+                           JOIN resource_operations o ON o.id=e.operation_id
+                           WHERE ei.identity_id=?
+                           ORDER BY e.last_seen_at DESC,e.id DESC LIMIT ?""",
+                        (int(iid),max(20,min(limit,180)))
                     ).fetchall()
                     request_ids=[int(r["id"]) for r in rows]
-                    for exid in request_ids:
-                        rn=add_request(exid)
-                        if rn and inode: add_edge(inode,rn,"performed",source="identity",evidence={"request_id":exid})
-                        if rn: connect_request_context(exid,rn)
+                    by_resource: dict[int, dict[str, Any]] = {}
+                    for r in rows:
+                        rid=int(r["resource_id"]); bucket=by_resource.setdefault(rid,{"request_ids":[],"methods":set(),"statuses":set()})
+                        bucket["request_ids"].append(int(r["id"])); bucket["methods"].add(str(r["method"] or "?").upper())
+                        if r["status_code"] is not None: bucket["statuses"].add(str(r["status_code"]))
+                    for rid,bucket in by_resource.items():
+                        resource=add_resource(rid)
+                        if resource and inode:
+                            add_edge(inode,resource,"called_endpoint",source="identity",evidence={
+                                "request_count":len(bucket["request_ids"]),
+                                "methods":sorted(bucket["methods"]),
+                                "statuses":sorted(bucket["statuses"]),
+                                "request_ids":bucket["request_ids"][:12],
+                            })
+                        # Keep Request evidence available behind the optional Request layer.
+                        for exid in bucket["request_ids"]:
+                            rn=add_request(exid)
+                            if rn and inode: add_edge(inode,rn,"performed",source="identity",evidence={"request_id":exid})
+                            if rn and resource: add_edge(rn,resource,"calls",source="http",evidence={"request_id":exid})
+                            if resource: connect_endpoint_context(exid,resource,include_actor=False)
+                            if rn: connect_request_context(exid,rn)
                     if request_ids:
                         marks=','.join('?'*len(request_ids))
                         for fr in conn.execute(f"SELECT DISTINCT f.id FROM flows f JOIN flow_steps fs ON fs.flow_id=f.id WHERE fs.exchange_id IN ({marks}) AND fs.included=1 ORDER BY f.updated_at DESC LIMIT 40", request_ids).fetchall():
@@ -1641,8 +1707,16 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 if on: add_edge(target,on,"contains",source="object_focus")
                 od=object_tools.object_detail(conn,int(object_id))
                 if od:
+                    resource_requests: dict[int, list[int]] = {}
                     for row in (od.get("timeline") or [])[:max(20,min(limit,200))]:
                         exid=int(row["exchange_id"]); rn=add_request(exid)
+                        rid=request_resource_id(exid)
+                        resource=add_resource(rid) if rid else None
+                        if resource and on:
+                            add_edge(on,resource,"appeared_in_endpoint",source="business_object",evidence={"request_id":exid})
+                            resource_requests.setdefault(int(rid),[]).append(exid)
+                            connect_endpoint_context(exid,resource,include_actor=True)
+                        if rn and resource: add_edge(rn,resource,"calls",source="http",evidence={"request_id":exid})
                         if rn and on: add_edge(rn,on,"touches",source="business_object",evidence={"request_id":exid})
                         if rn: connect_request_context(exid,rn)
                     for rel in od.get("related") or []:

@@ -1,15 +1,17 @@
 # Changelog
 
-## v0.31.0
+## v0.32.0
 
-- Cambia la lente **Identidad** a una vista Request-first: método, endpoint, HTTP status y host son protagonistas; el grafo queda como opción avanzada.
-- Cambia la lente **Objeto** a una vista Request-first: primero muestra dónde apareció el valor y qué ocurrió alrededor.
-- Los objetos ambiguos dejan de mostrarse como pares sin significado (`111 102`, `Object 7`) y pasan a verse como **`key=value`** (`orderid=102`, `ownerid=7`).
-- La ficha de Object explica explícitamente cuándo Negro sólo conoce un identificador pero todavía no sabe qué entidad representa.
-- Tipos contextuales como `owner` y `role` se degradan visualmente por defecto para evitar tratarlos como entidades de negocio sin confirmación humana.
-- Flow Compare pone la **alineación de Requests** primero; las diferencias de tipos de objeto quedan en `Contexto de objetos · avanzado` y los tipos ambiguos se ocultan.
-- Corrige el menú `Entender` / `Más`: el overflow de la navegación ya no recorta los dropdowns.
-- Añade regresión `v031_evidence_first_ux_test.py`; toda la suite histórica continúa en verde.
+- Devuelve el **grafo como vista principal de Identidad** cuando se selecciona una Identity Context; ya no exige un botón adicional para “ver relaciones”.
+- Identity Compare proyecta **identidades a los lados y endpoints en el centro**, usando relaciones directas `Identity → Endpoint` respaldadas por Requests observadas.
+- Añade capas rápidas para mostrar/ocultar **Flows, Business Objects, Requests individuales y métodos HTTP** según la vista.
+- Endpoints pasan a ser nodos de primera clase en las vistas semánticas y sus labels no desaparecen al alejar el zoom.
+- Define jerarquía visual estable: Identity azul y de mayor peso, Flow ámbar, Endpoint cian/azul y Object verde con menor peso.
+- La vista **Objeto** abre directamente un grafo focal `Object → Endpoint`, añadiendo Identidades y Flows relacionados a los lados; objetos secundarios permanecen opcionales.
+- Los endpoints exponen sus **métodos soportados en el panel de detalle**, incluso cuando la capa visual de métodos está desactivada.
+- **Flow** permite alternar entre `Grafo` y `Línea de tiempo`; Flow Compare permanece Request-first y el contexto ambiguo de Business Objects sigue plegado.
+- Superficie conserva su lectura actual y añade toggle de métodos sin cambiar su comportamiento por defecto.
+- Añade regresión `v032_graph_first_semantic_test.py` y mantiene compatibilidad con las vistas/DB anteriores.
 
 ## v0.30.0
 

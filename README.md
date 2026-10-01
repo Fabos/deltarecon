@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.31.0
+# Negro Recon 🐕 — v0.32.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -12,9 +12,18 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
 
-## v0.31.0 — Evidence-first UX: Identity/Object readability + Flow Compare cleanup
+## v0.32.0 — Graph-first semantic views: Identidades, endpoints y objetos legibles
 
-Esta iteración corrige ruido detectado en uso real del Map 3.0. La vista **Identidad** ya no abre un grafo como respuesta principal: muestra método, endpoint, status, host y contexto de cada Request. La vista **Objeto** empieza por las Requests donde apareció el valor y deja el grafo como opción avanzada. Los objetos ambiguos se muestran como `key=value` (por ejemplo `orderid=4101`) en vez de pares sin sentido como `111 4101`. Flow Compare pone la alineación de Requests primero y relega diferencias de tipos de objeto a un bloque avanzado, ocultando tipos ambiguos. También se corrigió el clipping de los menús `Entender` y `Más`.
+Esta iteración corrige el exceso de simplificación de v0.31: el grafo vuelve a ser la vista principal cuando realmente ayuda a comparar relaciones, pero con una jerarquía visual explícita.
+
+- **Identidad**: una o dos Identity Contexts quedan a los lados y los **endpoints** aparecen en el centro. Un endpoint compartido converge visualmente; uno exclusivo queda conectado sólo a la identidad que lo observó. Flows, objetos, Requests individuales y métodos son capas opcionales.
+- **Objeto**: el objeto focal conecta directamente con los endpoints donde apareció. Identidades y Flows relacionados quedan como contexto lateral; objetos secundarios y Requests individuales se pueden activar si hacen falta.
+- **Flow**: ofrece dos lecturas del mismo dato, **Grafo** y **Línea de tiempo**. El grafo conserva la secuencia entre Requests; la línea de tiempo mantiene la lectura paso a paso que ya funcionaba bien.
+- **Superficie**: conserva el comportamiento conocido; los métodos HTTP siguen visibles por defecto, pero ahora pueden ocultarse con un check.
+- **Endpoints**: sus labels nunca se suprimen por nivel de zoom en las vistas semánticas importantes. El detalle del endpoint muestra siempre los métodos soportados, aunque la capa de métodos esté apagada.
+- Jerarquía visual estable: **Identity = azul**, **Flow = ámbar**, **Endpoint = azul/cian**, **Object = verde y menor peso**.
+
+La idea no es mostrar más nodos: es que el grafo responda visualmente preguntas como “¿qué endpoints comparten estas dos sesiones?” o “¿en qué rutas apareció Order 4101?”.
 
 ## v0.30.0 — Investigation Views / Map 3.0 + UX simplification
 

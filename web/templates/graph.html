@@ -5,7 +5,7 @@
   <span class="sr-only">INVESTIGATION MAP · Identidades · Flows · Objetos · Inteligencia · Negro no asume buyer, seller, admin ni ningún rol.</span>
   <header class="graph-toolbar simplified-toolbar">
     <div>
-      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.31.0</div>
+      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.32.0</div>
       <h1>Entiende una pregunta a la vez</h1>
       <p>Negro ya tiene mucha evidencia. Aquí no intentamos mostrarla toda: eliges <b>qué quieres entender</b> y la vista cambia para responderlo.</p>
     </div>
@@ -40,15 +40,19 @@
     <div data-graph-identity-controls hidden>
       <label><span>Ver identidad</span><select data-graph-identity-select><option value="">Elige una cuenta / sesión</option></select></label>
       <label><span>Comparar con</span><select data-graph-identity-compare><option value="">— opcional —</option></select></label>
-      <small>Usa exactamente las identidades que creaste para este negocio.</small>
+      <small>Las identidades quedan a los lados y los endpoints compartidos en el centro. Así puedes ver de un vistazo qué consumió cada cuenta/sesión.</small>
     </div>
     <div data-graph-flow-controls hidden>
       <label><span>Ver Flow</span><select data-graph-flow-select><option value="">Elige un Flow</option></select></label>
-      <small>Un Flow es una historia ordenada de Requests. Aquí importa la secuencia, no el grafo.</small>
+      <div class="flow-view-switch" data-flow-view-switch hidden>
+        <button type="button" class="active" data-flow-view="graph">Grafo</button>
+        <button type="button" data-flow-view="timeline">Línea de tiempo</button>
+      </div>
+      <small>Puedes leer el mismo Flow como relaciones visuales o como secuencia temporal. Flow Compare sigue disponible desde la ficha del Flow.</small>
     </div>
     <div data-graph-object-controls hidden>
       <label><span>Seguir objeto</span><select data-graph-object-select><option value="">Elige un objeto</option></select></label>
-      <small>Ejemplo: <code>Order 123</code>. Los objetos ambiguos quedan fuera de la vista principal.</small>
+      <small>El objeto queda como foco y los endpoints donde apareció tienen el protagonismo. Identidades y Flows aparecen como contexto lateral.</small>
     </div>
   </div>
 
@@ -59,6 +63,14 @@
       <div class="view-explainer" data-view-explainer>
         <b>Superficie</b>
         <p>Empieza por hosts y recursos. Expande sólo lo que estés investigando.</p>
+      </div>
+
+      <div class="graph-quick-layers" data-graph-layer-controls>
+        <div class="graph-filter-title">Capas visuales</div>
+        <label data-layer-wrap="flow"><input type="checkbox" data-graph-layer="flow"> <span>Flows</span></label>
+        <label data-layer-wrap="object"><input type="checkbox" data-graph-layer="object"> <span>Objetos</span></label>
+        <label data-layer-wrap="request"><input type="checkbox" data-graph-layer="request"> <span>Requests individuales</span></label>
+        <label data-layer-wrap="operation"><input type="checkbox" data-graph-layer="operation"> <span>Métodos HTTP</span></label>
       </div>
 
       <details class="graph-advanced-controls">
@@ -80,9 +92,9 @@
 
       <div class="graph-semantic-mini">
         <span><i class="legend-dot legend-identity"></i>Identidad = quién</span>
-        <span><i class="legend-dot legend-request"></i>Request = llamada</span>
+        <span><i class="legend-dot legend-endpoint"></i>Endpoint = ruta</span>
         <span><i class="legend-dot legend-flow"></i>Flow = historia</span>
-        <span><i class="legend-dot legend-object"></i>Objeto = cosa</span>
+        <span><i class="legend-dot legend-object"></i>Objeto = contexto</span>
       </div>
     </aside>
 

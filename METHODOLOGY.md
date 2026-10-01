@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.31.0
+# Negro Recon — Metodología v0.32.0
 
 ## Modelo mental
 
@@ -8,7 +8,7 @@ Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué 
 
 ## Cómo no perderse en Negro
 
-Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.31 las Investigation Views son **evidence-first**: Flow usa timeline, Identity muestra primero las Requests/endpoints atribuidas, Object empieza por las Requests donde apareció el valor, Surface conserva mapa/árbol y Attention es una bandeja reducida. El grafo de relaciones queda como herramienta avanzada, no como respuesta por defecto. La UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
+Desde v0.28 cada pantalla principal incluye ayuda contextual. En v0.32 las Investigation Views pasan a un modelo **graph-first cuando la relación visual aporta valor**: Identity compara cuentas/sesiones contra endpoints, Object parte del objeto focal hacia los endpoints donde apareció, Flow permite grafo o timeline, Surface conserva su mapa/árbol y Attention sigue siendo una bandeja reducida. No todas las capas se muestran a la vez: objetos, Requests individuales y métodos pueden activarse sólo cuando hacen falta. La UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
 
 ```text
 ¿Qué existe?              → Inventario / Host tools
@@ -24,15 +24,15 @@ Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.31 las In
 El Access Control Lab se usa como ejemplo común en la guía para separar `Ana` (Identity), `Order 123` (Business Object) y `ownerId=101` (propiedad/ownership).
 
 
-## Investigation Views / Map 3.1
+## Investigation Views / Map 3.2
 
 Responde visualmente distintas preguntas sin duplicar los datos:
 
 ```text
-Superficie → ¿qué existe y dónde?           → mapa/árbol
-Identidad  → ¿quién hizo qué?                → Requests / endpoints primero
-Flow       → ¿qué ocurrió y en qué orden?    → timeline
-Objeto     → ¿dónde apareció este valor?     → Requests primero; grafo opcional
+Superficie → ¿qué existe y dónde?           → mapa/árbol; métodos opcionales
+Identidad  → ¿qué endpoints tocó cada actor? → grafo Identity ↔ Endpoint
+Flow       → ¿qué ocurrió y en qué orden?    → grafo o timeline
+Objeto     → ¿dónde apareció este valor?     → grafo Object → Endpoint
 Atención   → ¿qué merece volver a mirar?     → bandeja corta
 ```
 

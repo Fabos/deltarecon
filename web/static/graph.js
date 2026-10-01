@@ -30,6 +30,10 @@
   const narrative = root.querySelector('[data-graph-narrative]');
   const canvasShell = root.querySelector('[data-graph-canvas-shell]');
   const viewExplainer = root.querySelector('[data-view-explainer]');
+  const layerControls = root.querySelector('[data-graph-layer-controls]');
+  const layerInputs = [...root.querySelectorAll('[data-graph-layer]')];
+  const flowViewSwitch = root.querySelector('[data-flow-view-switch]');
+  const flowViewButtons = [...root.querySelectorAll('[data-flow-view]')];
   const api = root.dataset.api;
   const base = root.dataset.base;
   const targetKey = root.dataset.target || 'target';
@@ -40,15 +44,15 @@
 
   const typeOrder = ['target','identity','flow','object','request','state','anomaly','host','resource','operation','javascript','source','observation','lead','finding','cluster','external'];
   const typeLabel = {
-    source:'Fuentes', target:'Proyecto', host:'Hosts', javascript:'JavaScript', resource:'Recursos',
+    source:'Fuentes', target:'Proyecto', host:'Hosts', javascript:'JavaScript', resource:'Endpoints',
     operation:'Métodos', cluster:'Grupos', request:'Requests', observation:'Observaciones', identity:'Identidades',
     flow:'Flows', object:'Objetos', state:'Estados', anomaly:'Anomalías', lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
   };
   const stateLabel = {normal:'Normal',untested:'Pendiente',testing:'En prueba',interesting:'Interesante',finding:'Hallazgo',tested:'Revisado'};
   const coverageLabel = {untested:'Pendiente',testing:'En prueba',tested:'Revisado'};
   const signalLabel = {normal:'Normal',interesting:'Interesante',finding:'Hallazgo'};
-  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo interno',identifier:'Valor observado',identifier_field:'Campo identificador',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
-  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flow',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención'};
+  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo interno',identifier:'Valor observado',identifier_field:'Campo identificador',methods:'Métodos soportados',method_count:'Métodos',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
+  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flow',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención',called_endpoint:'consumió endpoint',appeared_in_endpoint:'apareció en endpoint',flow_endpoint:'Flow usó endpoint'};
   const valueLabel = v => ({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada',pending:'Pendiente',in_progress:'En revisión',reviewed:'Revisado',unknown:'Sin clasificar',lead:'Interesante',finding:'Hallazgo',high:'Alta',medium:'Media',low:'Baja',none:'Sin prioridad'}[String(v)] || v);
   const leadKindLabel = {
     access_object_reference:'IDOR / autorización horizontal', mass_assignment:'Asignación masiva',
@@ -77,10 +81,23 @@
   let panDrag = null;
   let nodeDrag = null;
   let suppressClick = false;
+  let flowViewMode = (()=>{try{return localStorage.getItem(`negro.flow.map.view:${targetKey}`)||'graph';}catch(_){return 'graph';}})();
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
-  const nodeRadius = t => t === 'target' ? 13 : t === 'identity' ? 12 : t === 'flow' ? 12 : t === 'object' ? 12 : t === 'host' ? 11 : t === 'resource' ? 10 : t === 'finding' ? 11 : t === 'anomaly' ? 10 : t === 'cluster' ? 10 : 7;
+  function nodeRadius(t){
+    if(t==='identity')return 16;
+    if(t==='flow')return 14;
+    if(t==='resource')return 11;
+    if(t==='object')return 7.5;
+    if(t==='request')return preset==='flow'?10:6.5;
+    if(t==='operation')return 5.5;
+    if(t==='target')return 11;
+    if(t==='host')return 10;
+    if(t==='finding')return 11;
+    if(t==='anomaly'||t==='cluster')return 9;
+    return 7;
+  }
   const labelLimit = t => ['resource','operation','request','object'].includes(t) ? 52 : 36;
   const edgeId = (a,b,r) => `virtual:${a}:${r}:${b}`;
   const byId = () => new Map(graph.nodes.map(n => [n.id,n]));
@@ -160,6 +177,71 @@
       const objects=[...(opts.objects||[])].sort((a,b)=>(a.ui_quality==='ambiguous')-(b.ui_quality==='ambiguous'));
       fillSelect(objectSelect,objects,x=>x.id,x=>x.ui_quality==='ambiguous'?`Sin clasificar · ${x.identifier_field||'identifier'}=${x.identifier}`:`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Elige un objeto');
     }
+  }
+
+  const layerDefaults={
+    surface:{operation:true,flow:false,object:false,request:false},
+    identity:{operation:false,flow:false,object:false,request:false},
+    flow:{operation:false,flow:true,object:false,request:true},
+    objects:{operation:false,flow:true,object:false,request:false},
+    intelligence:{operation:false,flow:true,object:true,request:false}
+  };
+  const layerPrefs={};
+  function layerEnabled(type){
+    const bucket=layerPrefs[preset]||{};
+    if(Object.prototype.hasOwnProperty.call(bucket,type))return !!bucket[type];
+    return !!(layerDefaults[preset]?.[type]);
+  }
+  function setLayer(type,value){
+    layerPrefs[preset]=layerPrefs[preset]||{};layerPrefs[preset][type]=!!value;
+    try{localStorage.setItem(`negro.graph.layers:${targetKey}:${preset}`,JSON.stringify(layerPrefs[preset]));}catch(_){ }
+  }
+  function restoreLayerPrefs(){
+    try{const v=JSON.parse(localStorage.getItem(`negro.graph.layers:${targetKey}:${preset}`)||'{}');if(v&&typeof v==='object')layerPrefs[preset]={...v};}catch(_){ }
+  }
+  function configureLayerControls(){
+    restoreLayerPrefs();
+    const relevance={
+      surface:new Set(['operation']),
+      identity:new Set(['flow','object','request','operation']),
+      flow:new Set(['object']),
+      objects:new Set(['flow','object','request','operation']),
+      intelligence:new Set([])
+    }[preset]||new Set();
+    if(layerControls)layerControls.hidden=relevance.size===0;
+    layerInputs.forEach(input=>{
+      const typ=input.dataset.graphLayer;const wrap=root.querySelector(`[data-layer-wrap="${typ}"]`);
+      if(wrap)wrap.hidden=!relevance.has(typ);
+      input.checked=layerEnabled(typ);
+    });
+    if(flowViewSwitch)flowViewSwitch.hidden=!(preset==='flow'&&Number(graph.meta?.flow_id||0)>0);
+    flowViewButtons.forEach(b=>b.classList.toggle('active',b.dataset.flowView===flowViewMode));
+  }
+  function nodeLayerPasses(n){
+    if(preset==='surface')return n.type!=='operation'||layerEnabled('operation');
+    if(preset==='identity'){
+      if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
+      if(n.type==='resource'||n.type==='identity')return true;
+      if(['flow','object','request','operation'].includes(n.type))return layerEnabled(n.type);
+      return true;
+    }
+    if(preset==='flow'){
+      if(n.type==='target'||n.type==='host'||n.type==='resource'||n.type==='operation'||n.type==='state'||n.type==='anomaly')return false;
+      if(n.type==='flow'||n.type==='identity'||n.type==='request')return true;
+      if(n.type==='object')return layerEnabled('object');
+      return true;
+    }
+    if(preset==='objects'){
+      if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
+      if(n.type==='resource'||n.type==='identity')return true;
+      if(n.type==='flow')return layerEnabled('flow');
+      if(n.type==='request'||n.type==='operation')return layerEnabled(n.type);
+      if(n.type==='object'){
+        const focus=`object:${Number(graph.meta?.object_id||0)}`;return n.id===focus||layerEnabled('object');
+      }
+      return true;
+    }
+    return true;
   }
 
   function nodeFor(id){ return graph.nodes.find(n=>n.id===id) || sceneNodes.find(n=>n.id===id); }
@@ -284,15 +366,33 @@
   }
   function renderExperience(){
     if(!narrative||!canvasShell)return;
-    const narrativeMode=['identity','flow','objects','intelligence'].includes(preset);
-    narrative.hidden=!narrativeMode; canvasShell.hidden=narrativeMode;
-    const explanations={surface:['Superficie','Hosts, rutas y métodos. Empieza amplio y profundiza sólo cuando una pieza te interese.'],identity:['Identidad','Método + endpoint + status primero. Los IDs sólo aparecen con la key que les da contexto.'],flow:['Flow','Línea de tiempo: qué Request ocurrió primero, cuál siguió y qué objeto/estado apareció.'],objects:['Objeto','Primero mira dónde apareció el valor. Las relaciones gráficas quedan como vista avanzada.'],intelligence:['Atención','Sólo diferencias, hipótesis y hallazgos que justifican volver a mirar.']};
+    configureLayerControls();
+    const hasIdentity=Number(graph.meta?.identity_id||0)>0;
+    const hasFlow=Number(graph.meta?.flow_id||0)>0;
+    const hasObject=Number(graph.meta?.object_id||0)>0;
+    const showNarrative = preset==='intelligence' ||
+      (preset==='identity'&&!hasIdentity) ||
+      (preset==='objects'&&!hasObject) ||
+      (preset==='flow'&&(!hasFlow||flowViewMode==='timeline'));
+    narrative.hidden=!showNarrative; canvasShell.hidden=showNarrative;
+    const explanations={
+      surface:['Superficie','Hosts y endpoints primero. Los métodos se pueden ocultar o mostrar sin perder la ruta.'],
+      identity:['Identidad','Identidades a los lados, endpoints en el centro. Los objetos son contexto opcional, no protagonistas.'],
+      flow:['Flow','Alterna entre grafo y línea de tiempo. En ambos casos la secuencia y los endpoints deben ser evidentes.'],
+      objects:['Objeto','Objeto focal → endpoints donde apareció → identidades/Flows relacionados. Los objetos secundarios son opcionales.'],
+      intelligence:['Atención','Sólo diferencias, hipótesis y hallazgos que justifican volver a mirar.']
+    };
     const x=explanations[preset]||[valueLabel(preset),'Vista avanzada']; if(viewExplainer)viewExplainer.innerHTML=`<b>${esc(x[0])}</b><p>${esc(x[1])}</p>`;
-    if(preset==='flow')renderFlowNarrative();
-    else if(preset==='identity')renderIdentityNarrative();
-    else if(preset==='objects')renderObjectNarrative();
-    else if(preset==='intelligence')renderIntelligenceNarrative();
-    if(!narrativeMode)window.setTimeout(()=>{try{fit();}catch(_){}},20);
+    if(showNarrative){
+      if(preset==='flow')renderFlowNarrative();
+      else if(preset==='identity')renderIdentityNarrative();
+      else if(preset==='objects')renderObjectIndex();
+      else if(preset==='intelligence')renderIntelligenceNarrative();
+    } else {
+      buildScene();buildTypeFilters();applyFilters({fitAfter:true});
+      const focus=graph.meta?.focus_node;
+      if(focus){selected=focus;const n=sceneNodes.find(x=>x.id===focus)||graph.nodes.find(x=>x.id===focus);if(n)showNode(n);}
+    }
   }
 
   function scopeKey(){ const m=graph.meta||{}; return `${m.scope||'overview'}:${m.host_id||0}:${m.resource_id||0}`; }
@@ -404,9 +504,9 @@
       const selectedIdentity=Number(graph.meta?.identity_id||0)>0;
       const selectedObject=Number(graph.meta?.object_id||0)>0;
       const allowed = preset==='identity' && selectedIdentity
-        ? new Set(['identity','flow','request','object','state','anomaly'])
+        ? new Set(['identity','flow','request','resource','operation','object','state','anomaly'])
         : preset==='objects' && selectedObject
-          ? new Set(['identity','flow','request','object','state','anomaly'])
+          ? new Set(['identity','flow','request','resource','operation','object','state','anomaly'])
           : preset==='context'
             ? new Set(['identity','flow','request','object','state','anomaly'])
             : null;
@@ -495,6 +595,14 @@
 
     sceneNodes = nodes;
     sceneEdges = edges.filter(e => include.has(e.source) && include.has(e.target));
+    if(preset==='flow' && Number(graph.meta?.flow_id||0)>0){
+      const stepEdges=sceneEdges.filter(e=>e.relation==='flow_step').sort((a,b)=>Number(a.meta?.evidence?.position||999999)-Number(b.meta?.evidence?.position||999999));
+      const keepFirst=stepEdges[0]?.id;
+      const flowNode=`flow:${Number(graph.meta?.flow_id||0)}`;
+      const actorIds=[...new Set(sceneEdges.filter(e=>e.relation==='performed').map(e=>e.source).filter(id=>String(id).startsWith('identity:')))];
+      sceneEdges=sceneEdges.filter(e=>(e.relation!=='flow_step'||e.id===keepFirst)&&e.relation!=='performed');
+      actorIds.forEach(id=>{if(!sceneEdges.some(e=>(e.source===id&&e.target===flowNode)||(e.target===id&&e.source===flowNode)))sceneEdges.push({id:edgeId(id,flowNode,'flow_actor'),source:id,target:flowNode,relation:'flow_actor',meta:{source:'flow_projection'}});});
+    }
     autoLayout();
   }
 
@@ -512,8 +620,79 @@
     return {source:0,target:0,host:1,javascript:2,resource:2,operation:3,cluster:4,request:5,observation:5,lead:6,finding:6,external:6}[n.type] ?? 6;
   }
 
+  function spreadNodes(arr,x,start,end,sorter=null){
+    if(sorter)arr.sort(sorter);
+    if(!arr.length)return;
+    const span=Math.max(0,end-start),gap=arr.length===1?0:span/(arr.length-1);
+    arr.forEach((n,i)=>{n.x=x;n.y=arr.length===1?(start+end)/2:start+i*gap;n.manual=false;});
+  }
+
+  function autoLayoutIdentity(width,height){
+    const ids=sceneNodes.filter(n=>n.type==='identity');
+    const resources=sceneNodes.filter(n=>n.type==='resource');
+    const flows=sceneNodes.filter(n=>n.type==='flow');
+    const objects=sceneNodes.filter(n=>n.type==='object');
+    const requests=sceneNodes.filter(n=>n.type==='request');
+    const ops=sceneNodes.filter(n=>n.type==='operation');
+    const primary=`identity:${Number(graph.meta?.identity_id||0)}`, compare=`identity:${Number(graph.meta?.compare_identity_id||0)}`;
+    const a=ids.find(n=>n.id===primary)||ids[0], b=ids.find(n=>n.id===compare);
+    if(a){a.x=105;a.y=height/2;a.manual=false;}
+    if(b){b.x=width-105;b.y=height/2;b.manual=false;}
+    ids.filter(n=>n!==a&&n!==b).forEach((n,i)=>{n.x=105;n.y=90+i*70;n.manual=false;});
+    const identityDegree=n=>sceneEdges.filter(e=>(e.source===n.id||e.target===n.id)&&['called_endpoint'].includes(e.relation)).length;
+    spreadNodes(resources,width/2,75,height-75,(x,y)=>identityDegree(y)-identityDegree(x)||x.label.localeCompare(y.label));
+    const sideForFlow=f=>{
+      const rel=sceneEdges.find(e=>(e.source===f.id||e.target===f.id)&&['participates_in','flow_actor'].includes(e.relation));
+      const other=rel?opposite(rel,f.id):'';return b&&other===b.id?'right':'left';
+    };
+    const leftFlows=flows.filter(f=>sideForFlow(f)==='left'),rightFlows=flows.filter(f=>sideForFlow(f)==='right');
+    spreadNodes(leftFlows,235,75,height-75,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(rightFlows,width-235,75,height-75,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(objects,width/2+230,90,height-90,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(requests,width/2-150,70,height-70,(x,y)=>Number(x.meta?.id||0)-Number(y.meta?.id||0));
+    // Methods sit close to their endpoint and are hidden by default.
+    ops.forEach((n,i)=>{
+      const e=sceneEdges.find(e=>(e.source===n.id||e.target===n.id)&&e.relation==='supports');const r=e?sceneNodes.find(x=>x.id===opposite(e,n.id)):null;
+      n.x=(r?.x||width/2)+155;n.y=(r?.y||80)+(i%3-1)*18;n.manual=false;
+    });
+  }
+
+  function autoLayoutObject(width,height){
+    const focus=`object:${Number(graph.meta?.object_id||0)}`;
+    const object=sceneNodes.find(n=>n.id===focus);
+    const related=sceneNodes.filter(n=>n.type==='object'&&n.id!==focus);
+    const resources=sceneNodes.filter(n=>n.type==='resource');
+    const identities=sceneNodes.filter(n=>n.type==='identity');
+    const flows=sceneNodes.filter(n=>n.type==='flow');
+    const requests=sceneNodes.filter(n=>n.type==='request');
+    const ops=sceneNodes.filter(n=>n.type==='operation');
+    if(object){object.x=105;object.y=height/2;object.manual=false;}
+    spreadNodes(resources,width*.43,75,height-75,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(identities,width-115,70,Math.max(120,height*.45),(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(flows,width-115,Math.min(height*.55,height-150),height-70,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(related,width*.68,80,height-80,(x,y)=>x.label.localeCompare(y.label));
+    spreadNodes(requests,width*.62,70,height-70,(x,y)=>Number(x.meta?.id||0)-Number(y.meta?.id||0));
+    ops.forEach((n,i)=>{const e=sceneEdges.find(e=>(e.source===n.id||e.target===n.id)&&e.relation==='supports');const r=e?sceneNodes.find(x=>x.id===opposite(e,n.id)):null;n.x=(r?.x||width*.43)+155;n.y=(r?.y||80)+(i%3-1)*18;n.manual=false;});
+  }
+
+  function autoLayoutFlow(width,height){
+    const fid=`flow:${Number(graph.meta?.flow_id||0)}`;
+    const flow=sceneNodes.find(n=>n.id===fid);
+    const identities=sceneNodes.filter(n=>n.type==='identity');
+    const requests=sceneNodes.filter(n=>n.type==='request');
+    const objects=sceneNodes.filter(n=>n.type==='object');
+    if(flow){flow.x=105;flow.y=80;flow.manual=false;}
+    spreadNodes(identities,105,165,Math.min(height-80,300),(x,y)=>x.label.localeCompare(y.label));
+    const pos=n=>{const e=graph.edges.find(e=>e.source===fid&&e.target===n.id&&e.relation==='flow_step');return Number(e?.meta?.evidence?.position||n.meta?.id||999999);};
+    spreadNodes(requests,width*.49,70,height-70,(x,y)=>pos(x)-pos(y));
+    spreadNodes(objects,width-120,80,height-80,(x,y)=>x.label.localeCompare(y.label));
+  }
+
   function autoLayout(){
     const width=Math.max(980,svg.clientWidth||1100), height=Math.max(620,svg.clientHeight||680);
+    if(preset==='identity' && Number(graph.meta?.identity_id||0)>0){autoLayoutIdentity(width,height);return applySavedLayout();}
+    if(preset==='objects' && Number(graph.meta?.object_id||0)>0){autoLayoutObject(width,height);return applySavedLayout();}
+    if(preset==='flow' && Number(graph.meta?.flow_id||0)>0){autoLayoutFlow(width,height);return applySavedLayout();}
     const lanes = new Map();
     sceneNodes.forEach(n=>{const lane=laneFor(n);const arr=lanes.get(lane)||[];arr.push(n);lanes.set(lane,arr);});
     const maxLane = Math.max(1,...lanes.keys());
@@ -548,16 +727,25 @@
       });
     }
 
+    applySavedLayout();
+  }
+
+  function applySavedLayout(){
     const saved=readSavedLayout();
     sceneNodes.forEach(n=>{ if(saved[n.id] && Number.isFinite(saved[n.id].x) && Number.isFinite(saved[n.id].y)){ n.x=saved[n.id].x;n.y=saved[n.id].y;n.manual=true; } });
     setLayoutStatus(Object.keys(saved).length ? 'Disposición personalizada guardada' : 'Layout automático');
   }
 
+  function layerManagedTypes(){
+    return {surface:new Set(['operation']),identity:new Set(['flow','object','request','operation']),flow:new Set(['object']),objects:new Set(['flow','object','request','operation'])}[preset]||new Set();
+  }
+
   function buildTypeFilters(){
     const present=new Set(sceneNodes.map(n=>n.type).filter(t=>t!=='cluster'));
     activeTypes=new Set(present);
+    const managed=layerManagedTypes();
     typeWrap.innerHTML='';
-    typeOrder.filter(t=>present.has(t)).forEach(t=>{
+    typeOrder.filter(t=>present.has(t)&&!managed.has(t)).forEach(t=>{
       const b=document.createElement('button');b.type='button';b.className='graph-type active';b.dataset.type=t;
       b.textContent=`${typeLabel[t]||t} · ${sceneNodes.filter(n=>n.type===t).length}`;
       b.addEventListener('click',()=>{activeTypes.has(t)?activeTypes.delete(t):activeTypes.add(t);b.classList.toggle('active',activeTypes.has(t));applyFilters();});
@@ -569,6 +757,7 @@
     const q=(search.value||'').trim().toLowerCase();
     const baseNodes=sceneNodes.filter(n =>
       (n.type==='cluster'||activeTypes.has(n.type)) &&
+      nodeLayerPasses(n) &&
       leadPassesFilters(n) &&
       (!q || n.label.toLowerCase().includes(q) || JSON.stringify(n.meta||{}).toLowerCase().includes(q))
     );
@@ -613,8 +802,14 @@
 
   function labelVisible(n){
     if(selected===n.id)return true;
-    if(['target','host','resource','operation','finding','lead','cluster','identity','flow','object','anomaly','state'].includes(n.type))return true;
+    if(n.type==='resource')return true; // endpoints never disappear with zoom
+    if(preset==='flow'&&n.type==='request')return true; // each Flow step is an endpoint-bearing Request
+    if(['target','host','operation','finding','lead','cluster','identity','flow','object','anomaly','state'].includes(n.type))return true;
     return view.k>=1.15;
+  }
+
+  function keepLabelScreenSize(n){
+    return n.type==='identity'||n.type==='flow'||n.type==='resource'||(preset==='flow'&&n.type==='request');
   }
 
   function render(){
@@ -627,13 +822,13 @@
       const path=document.createElementNS(NS,'path');
       const dx=Math.max(45,Math.abs(b.x-a.x)*.48), c1x=a.x+Math.sign(b.x-a.x||1)*dx, c2x=b.x-Math.sign(b.x-a.x||1)*dx;
       path.setAttribute('d',`M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`);
-      path.setAttribute('class',`graph-edge${edgeSemanticClass(e)}${relationIsHighlight(e)?' graph-edge-highlight':''}${relationIsRoute(e)?' graph-edge-route':''}`);path.dataset.id=e.id;
+      path.setAttribute('class',`graph-edge relation-${String(e.relation||'related').replace(/[^a-z0-9_-]/gi,'-')}${edgeSemanticClass(e)}${relationIsHighlight(e)?' graph-edge-highlight':''}${relationIsRoute(e)?' graph-edge-route':''}`);path.dataset.id=e.id;
       path.addEventListener('click',ev=>{ev.stopPropagation();showEdge(e)});g.appendChild(path);
     });
 
     visibleNodes.forEach(n=>{
       const ng=document.createElementNS(NS,'g');
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
       if (n.meta?.coverage && ['host','resource'].includes(n.type)) {
@@ -645,7 +840,8 @@
         const inner=document.createElementNS(NS,'circle');inner.setAttribute('r',Math.max(3,nodeRadius(n.type)-4));inner.setAttribute('class','graph-cluster-inner');ng.appendChild(inner);
       }
       if(labelVisible(n)){
-        const label=document.createElementNS(NS,'text');label.setAttribute('x',nodeRadius(n.type)+7);label.setAttribute('y','4');label.setAttribute('class','graph-node-label');
+        const label=document.createElementNS(NS,'text');label.setAttribute('x',nodeRadius(n.type)+8);label.setAttribute('y','4');label.setAttribute('class',`graph-node-label label-${n.type}`);
+        if(keepLabelScreenSize(n)){const inv=1/Math.max(.18,view.k);label.setAttribute('transform',`scale(${inv})`);}
         const limit=labelLimit(n.type);label.textContent=n.label.length>limit?n.label.slice(0,limit-1)+'…':n.label;ng.appendChild(label);
       }
       ng.setAttribute('tabindex','0'); ng.setAttribute('role','button'); ng.setAttribute('aria-label',n.label);
@@ -688,6 +884,8 @@
     const sourceGraph=n.virtual?sceneNodes:graph.nodes;
     const relationRows=rels.slice(0,16).map(e=>{const other=sourceGraph.find(x=>x.id===(e.source===n.id?e.target:e.source))||graph.nodes.find(x=>x.id===(e.source===n.id?e.target:e.source));return `<button type="button" class="graph-relation" data-focus="${esc(other?.id||'')}"><span>${esc(relationLabel[e.relation]||e.relation)}</span><b>${esc(other?.label||'')}</b></button>`;}).join('');
     const summary=summarizeNode(n);
+    const endpointMethods=n.type==='resource'?[...new Set(graph.edges.filter(e=>(e.source===n.id||e.target===n.id)&&e.relation==='supports').map(e=>nodeFor(opposite(e,n.id))).filter(x=>x?.type==='operation').map(x=>String(x.meta?.method||x.label||'').toUpperCase()).filter(Boolean))]:[];
+    const methodHtml=n.type==='resource'&&endpointMethods.length?`<div class="endpoint-method-strip"><small>MÉTODOS SOPORTADOS</small><div>${endpointMethods.map(m=>`<span>${esc(m)}</span>`).join('')}</div></div>`:'';
     const testSummary=meta.test_summary||{};
     const trackedTests=Object.values(testSummary).reduce((a,b)=>a+Number(b||0),0);
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
@@ -700,7 +898,7 @@
     const exploreAction=['host','resource'].includes(n.type)?`<button type="button" class="button" data-explore-scope>Explorar ${n.type==='host'?'host':'recurso'} en mapa →</button>`:'';
     const pathAction=!pathStart?`<button type="button" class="btn-secondary" data-path-start>Camino · empezar aquí</button>`:(pathStart===n.id?`<button type="button" class="btn-secondary" data-path-clear-local>Cancelar inicio de camino</button>`:`<button type="button" class="button" data-path-to>Ver camino desde ${esc((sceneNodes.find(x=>x.id===pathStart)||graph.nodes.find(x=>x.id===pathStart))?.label||'inicio')}</button><button type="button" class="btn-secondary" data-path-start>Cambiar inicio</button>`);
     const hypothesisHtml=n.type==='lead'?`<div class="graph-detail-section graph-hypothesis-editor"><h3>Trabajo de hipótesis</h3>${meta.why?`<p><b>Por qué:</b> ${esc(meta.why)}</p>`:''}${meta.next_test?`<p><b>Siguiente prueba:</b> ${esc(meta.next_test)}</p>`:''}<label>Estado<select data-lead-edit-status>${['candidate','testing','interesting','negative','postponed','confirmed','discarded'].map(s=>`<option value="${s}" ${String(meta.status||'candidate')===s?'selected':''}>${esc(valueLabel(s))}</option>`).join('')}</select></label><label>Resultado / qué pasó<textarea data-lead-edit-notes placeholder="Qué probaste, por qué falló o qué evidencia confirmó la hipótesis…">${esc(meta.result_notes||'')}</textarea></label><button type="button" class="button" data-lead-edit-save>Guardar en la misma hipótesis</button><small data-lead-edit-feedback></small></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
     detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
@@ -837,10 +1035,10 @@
     root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===button));
     if(routePanel) routePanel.hidden = !['interesting','attack'].includes(next);
     const perspectiveCopy={
-      surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿quién tocó qué?',flow:'Flows · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿qué cosas están relacionadas?',intelligence:'Inteligencia · ¿qué merece atención?',
+      surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿qué endpoints tocó cada cuenta/sesión?',flow:'Flows · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿en qué endpoints apareció esta cosa?',intelligence:'Inteligencia · ¿qué merece atención?',
       untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · Requests observadas',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista técnica ampliada'
     };
-    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona cualquier Identity Context que tú hayas creado. Negro no presupone roles.',flow:'Lee la historia de arriba hacia abajo: Request, resultado, identidad y objeto. Sin líneas cruzadas.',objects:'Elige una cosa con significado. Los objetos ambiguos se esconden por defecto para no contaminar la lectura.',intelligence:'Una bandeja corta de diferencias, hipótesis y hallazgos. Si no aporta una decisión, no aparece aquí.'};
+    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona una o dos identidades: quedan a los lados y los endpoints compartidos en el centro.',flow:'Alterna entre grafo y línea de tiempo. Las rutas siempre conservan protagonismo.',objects:'Selecciona un objeto y mira directamente los endpoints donde apareció; identidades y Flows quedan como contexto lateral.',intelligence:'Una bandeja corta de diferencias, hipótesis y hallazgos. Si no aporta una decisión, no aparece aquí.'};
     if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Mapa de investigación';
     if(scopeCopyEl) scopeCopyEl.textContent=helpCopy[next]||'Cambia de lente sin perder la evidencia original.';
     updateLeadFilterVisibility();
@@ -889,6 +1087,13 @@
   });
   flowSelect?.addEventListener('change',()=>{const id=Number(flowSelect.value||0);load(id?`${api}?scope=flow&flow_id=${id}`:`${api}?scope=flows`).then(()=>{preset='flow';populateContextControls();renderExperience();});});
   objectSelect?.addEventListener('change',()=>{const id=Number(objectSelect.value||0);load(id?`${api}?scope=object&object_id=${id}`:`${api}?scope=objects`).then(()=>{preset='objects';populateContextControls();renderExperience();});});
+  layerInputs.forEach(input=>input.addEventListener('change',()=>{setLayer(input.dataset.graphLayer,input.checked);buildScene();buildTypeFilters();applyFilters({fitAfter:true});configureLayerControls();}));
+  flowViewButtons.forEach(btn=>btn.addEventListener('click',()=>{
+    flowViewMode=btn.dataset.flowView||'graph';
+    try{localStorage.setItem(`negro.flow.map.view:${targetKey}`,flowViewMode);}catch(_){ }
+    flowViewButtons.forEach(x=>x.classList.toggle('active',x===btn));
+    renderExperience();
+  }));
   pathClearBtn?.addEventListener('click',clearPath);
   root.querySelector('[data-graph-fit]')?.addEventListener('click',fit);
   root.querySelector('[data-graph-reset-layout]')?.addEventListener('click',()=>{clearSavedLayout();autoLayout();applyFilters({fitAfter:true});});
@@ -1064,7 +1269,7 @@
     if(initialFocus){
       const canonical=graph.meta?.focus_node||initialFocus;
       const n=sceneNodes.find(x=>x.id===canonical)||graph.nodes?.find(x=>x.id===canonical);
-      if(n){selected=n.id;showNode(n);if(!canvasShell?.hidden)focusNeighborhood(n.id,1);}
+      if(n){selected=n.id;showNode(n);if(!canvasShell?.hidden){if(['identity','flow','objects'].includes(inferred))fit();else focusNeighborhood(n.id,1);}}
     }
   });
 })();
