@@ -785,6 +785,16 @@ def _timeline_semantics(flow_data: dict[str, Any]) -> dict[str, list[dict[str, A
     return out
 
 
+
+def _flow_object_type_quality(name: str) -> str:
+    """Presentation hint for Flow Compare; never changes stored object evidence."""
+    raw = str(name or "").strip()
+    low = raw.lower()
+    noisy = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "owner", "role", "item", "entity", "entidad", "unknown", "desconocido"}
+    if not raw or raw.isdigit() or low in noisy or len(raw) <= 2:
+        return "ambiguous"
+    return "meaningful"
+
 def compare_flows(conn, flow_a: int, flow_b: int) -> dict[str, Any] | None:
     a = get_flow(conn, int(flow_a))
     b = get_flow(conn, int(flow_b))
@@ -825,7 +835,9 @@ def compare_flows(conn, flow_a: int, flow_b: int) -> dict[str, Any] | None:
     a_types = Counter(str(x.get("object_type") or "Object") for x in (a.get("business_objects") or []))
     b_types = Counter(str(x.get("object_type") or "Object") for x in (b.get("business_objects") or []))
     object_type_changes = []
+    object_type_changes_hidden = []
     for name in sorted(set(a_types) | set(b_types), key=str.lower):
         if a_types.get(name, 0) != b_types.get(name, 0):
-            object_type_changes.append({"object_type": name, "a_count": int(a_types.get(name, 0)), "b_count": int(b_types.get(name, 0))})
-    return {"a": a, "b": b, "aligned": aligned, "state_changes": state_changes, "object_type_changes": object_type_changes}
+            row = {"object_type": name, "a_count": int(a_types.get(name, 0)), "b_count": int(b_types.get(name, 0)), "ui_quality": _flow_object_type_quality(name)}
+            (object_type_changes if row["ui_quality"] == "meaningful" else object_type_changes_hidden).append(row)
+    return {"a": a, "b": b, "aligned": aligned, "state_changes": state_changes, "object_type_changes": object_type_changes, "object_type_changes_hidden": object_type_changes_hidden}

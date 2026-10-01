@@ -159,6 +159,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 6.5. Guided UX + Learning Center + contextual help + Business Object clarity. ✅ v0.28.0
 6.6. Investigation Experience / Map 2.0 + Focus Mode + Path Finder + lenguaje Request-first. ✅ v0.29.0
 6.7. Investigation Views / Map 3.0 + simplificación global + timeline de Flow + evidencia ambigua fuera del foco. ✅ v0.30.0
+6.8. Evidence-first UX: Identity/Object Request-first, objetos ambiguos como key=value, Flow Compare sin ruido y navegación corregida. ✅ v0.31.0
 7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento

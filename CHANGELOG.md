@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.31.0
+
+- Cambia la lente **Identidad** a una vista Request-first: método, endpoint, HTTP status y host son protagonistas; el grafo queda como opción avanzada.
+- Cambia la lente **Objeto** a una vista Request-first: primero muestra dónde apareció el valor y qué ocurrió alrededor.
+- Los objetos ambiguos dejan de mostrarse como pares sin significado (`111 102`, `Object 7`) y pasan a verse como **`key=value`** (`orderid=102`, `ownerid=7`).
+- La ficha de Object explica explícitamente cuándo Negro sólo conoce un identificador pero todavía no sabe qué entidad representa.
+- Tipos contextuales como `owner` y `role` se degradan visualmente por defecto para evitar tratarlos como entidades de negocio sin confirmación humana.
+- Flow Compare pone la **alineación de Requests** primero; las diferencias de tipos de objeto quedan en `Contexto de objetos · avanzado` y los tipos ambiguos se ocultan.
+- Corrige el menú `Entender` / `Más`: el overflow de la navegación ya no recorta los dropdowns.
+- Añade regresión `v031_evidence_first_ux_test.py`; toda la suite histórica continúa en verde.
+
 ## v0.30.0
 
 - Reemplaza el enfoque de “un grafo para todo” por **Investigation Views / Map 3.0**.

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.30.0
+# Negro Recon — Metodología v0.31.0
 
 ## Modelo mental
 
@@ -8,7 +8,7 @@ Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué 
 
 ## Cómo no perderse en Negro
 
-Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.30 las Investigation Views usan una visualización distinta según la pregunta: timeline para Flow, grafo focal para Identity/Object, mapa para Surface y bandeja reducida para Attention. La UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
+Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.31 las Investigation Views son **evidence-first**: Flow usa timeline, Identity muestra primero las Requests/endpoints atribuidas, Object empieza por las Requests donde apareció el valor, Surface conserva mapa/árbol y Attention es una bandeja reducida. El grafo de relaciones queda como herramienta avanzada, no como respuesta por defecto. La UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
 
 ```text
 ¿Qué existe?              → Inventario / Host tools
@@ -24,21 +24,21 @@ Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.30 las In
 El Access Control Lab se usa como ejemplo común en la guía para separar `Ana` (Identity), `Order 123` (Business Object) y `ownerId=101` (propiedad/ownership).
 
 
-## Investigation Views / Map 3.0
+## Investigation Views / Map 3.1
 
 Responde visualmente distintas preguntas sin duplicar los datos:
 
 ```text
 Superficie → ¿qué existe y dónde?           → mapa/árbol
-Identidad  → ¿quién hizo qué?                → grafo focal
+Identidad  → ¿quién hizo qué?                → Requests / endpoints primero
 Flow       → ¿qué ocurrió y en qué orden?    → timeline
-Objeto     → ¿qué sabemos de esta cosa?      → grafo focal
+Objeto     → ¿dónde apareció este valor?     → Requests primero; grafo opcional
 Atención   → ¿qué merece volver a mirar?     → bandeja corta
 ```
 
 Los Identity Contexts son dinámicos: el mapa usa los nombres reales definidos en el proyecto. No existe lógica fija para Buyer A/B, seller o admin.
 
-Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
+Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Identity/Object abren primero una lectura narrativa y permiten pasar explícitamente a **relaciones gráficas · avanzado**. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
 
 La visualización es una herramienta de comprensión. No todo conocimiento debe dibujarse: Negro conserva evidencia técnica, pero sólo muestra por defecto lo que ayuda a responder la pregunta actual. Una línea significa relación observada, no causalidad, ownership ni vulnerabilidad.
 

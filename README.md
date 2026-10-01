@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.30.0
+# Negro Recon 🐕 — v0.31.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,10 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.31.0 — Evidence-first UX: Identity/Object readability + Flow Compare cleanup
+
+Esta iteración corrige ruido detectado en uso real del Map 3.0. La vista **Identidad** ya no abre un grafo como respuesta principal: muestra método, endpoint, status, host y contexto de cada Request. La vista **Objeto** empieza por las Requests donde apareció el valor y deja el grafo como opción avanzada. Los objetos ambiguos se muestran como `key=value` (por ejemplo `orderid=4101`) en vez de pares sin sentido como `111 4101`. Flow Compare pone la alineación de Requests primero y relega diferencias de tipos de objeto a un bloque avanzado, ocultando tipos ambiguos. También se corrigió el clipping de los menús `Entender` y `Más`.
 
 ## v0.30.0 — Investigation Views / Map 3.0 + UX simplification
 

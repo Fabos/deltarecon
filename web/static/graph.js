@@ -47,7 +47,7 @@
   const stateLabel = {normal:'Normal',untested:'Pendiente',testing:'En prueba',interesting:'Interesante',finding:'Hallazgo',tested:'Revisado'};
   const coverageLabel = {untested:'Pendiente',testing:'En prueba',tested:'Revisado'};
   const signalLabel = {normal:'Normal',interesting:'Interesante',finding:'Hallazgo'};
-  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo de objeto',identifier:'Identificador',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
+  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo interno',identifier:'Valor observado',identifier_field:'Campo identificador',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
   const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flow',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención'};
   const valueLabel = v => ({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada',pending:'Pendiente',in_progress:'En revisión',reviewed:'Revisado',unknown:'Sin clasificar',lead:'Interesante',finding:'Hallazgo',high:'Alta',medium:'Media',low:'Baja',none:'Sin prioridad'}[String(v)] || v);
   const leadKindLabel = {
@@ -157,7 +157,8 @@
     } else if(preset==='flow'){
       fillSelect(flowSelect,opts.flows||[],x=>x.id,x=>`${x.name}${Number(x.step_count||0)?` · ${x.step_count} pasos`:''}`,graph.meta?.flow_id,'Elige un Flow');
     } else if(preset==='objects'){
-      fillSelect(objectSelect,(opts.objects||[]).filter(x=>x.ui_quality!=='ambiguous'),x=>x.id,x=>`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Elige un objeto');
+      const objects=[...(opts.objects||[])].sort((a,b)=>(a.ui_quality==='ambiguous')-(b.ui_quality==='ambiguous'));
+      fillSelect(objectSelect,objects,x=>x.id,x=>x.ui_quality==='ambiguous'?`Sin clasificar · ${x.identifier_field||'identifier'}=${x.identifier}`:`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Elige un objeto');
     }
   }
 
@@ -211,17 +212,65 @@
     narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">FLOW · HISTORIA</span><h2>${esc(flow?.label||`Flow ${fid}`)}</h2><p>${actor?`Actor observado: <b>${esc(actor)}</b> · `:''}${steps.length} Requests incluidas. Lee de arriba hacia abajo.</p></div><div class="narrative-actions"><a class="btn-secondary" href="${base}/flows/${fid}">Editar Flow</a><a class="btn-secondary" href="${base}/flows/compare?a=${fid}">Comparar</a></div></div>${stepHtml?`<div class="flow-story">${stepHtml}</div>`:`<div class="empty-state friendly"><b>Este Flow no tiene Requests incluidas.</b><span>Abre el Flow y marca qué pasos forman realmente la historia.</span></div>`}`;
     bindNarrativeActions();
   }
+  function objectContextLabel(o){
+    const m=o?.meta||{};
+    if(m.ui_quality==='ambiguous') return `${m.identifier_field||'identifier'}=${m.identifier||o?.label||'?'}`;
+    return o?.label||`${m.object_type||'Object'} ${m.identifier||''}`;
+  }
+  function requestNarrativeCard(n,{compact=false}={}){
+    if(!n)return '';
+    const m=n.meta||{},ctx=requestContext(n);
+    const meaningful=ctx.objects.filter(o=>o.meta?.ui_quality!=='ambiguous');
+    const contextual=ctx.objects.filter(o=>o.meta?.ui_quality==='ambiguous');
+    const states=ctx.states||[];
+    const semantic=meaningful.slice(0,4).map(o=>`<button type="button" class="story-chip object" data-object-node="${esc(o.id)}">${esc(objectContextLabel(o))}</button>`).join('');
+    const context=contextual.slice(0,5).map(o=>`<span class="story-chip context">${esc(objectContextLabel(o))}</span>`).join('');
+    const stateHtml=states.slice(0,4).map(st=>`<span class="story-chip state">${esc(st.meta?.field||'state')}: ${esc(st.label)}</span>`).join('');
+    return `<article class="identity-request-card${compact?' compact':''}"><div class="identity-request-main"><div><b>${esc(m.method||'REQUEST')}</b><code>${esc(m.path||n.label)}</code></div><span class="http-status ${statusClass(m.status)}">${esc(m.status??'—')}</span></div><div class="flow-story-meta">${m.host?`<span>${esc(m.host)}</span>`:''}<span>Request #${Number(m.id||0)}</span></div>${semantic?`<div class="request-context-line"><small>Objetos claros</small>${semantic}</div>`:''}${context?`<div class="request-context-line muted-context"><small>Campos / contexto observado</small>${context}</div>`:''}${stateHtml?`<div class="request-context-line"><small>Estados</small>${stateHtml}</div>`:''}<div class="flow-story-actions"><button type="button" class="btn-secondary" data-request-node="${esc(n.id)}">Ver Request</button>${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir HTTP</a>`:''}</div></article>`;
+  }
   function renderIdentityIndex(){
     const rows=graph.meta?.filter_options?.identities||[];
     narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">IDENTIDAD · QUIÉN</span><h2>Elige una cuenta o sesión</h2><p>Negro no presupone Buyer, Seller ni Admin. Tú defines las identidades de cada negocio.</p></div><a class="btn-secondary" href="${base}/identities">Administrar identidades</a></div><div class="narrative-card-grid">${rows.length?rows.map(i=>`<button class="narrative-choice" data-select-identity="${Number(i.id)}"><b>${esc(i.name)}</b><span>${Number(i.request_count||0)} Requests observadas${i.kind?` · ${esc(i.kind)}`:''}</span></button>`).join(''):`<div class="empty-state friendly"><b>No hay identidades todavía.</b><span>Crea una desde una Request de Burp o desde Identidades.</span><a href="${base}/identities">Crear identidad →</a></div>`}</div>`;
     bindNarrativeActions();
   }
+  function renderIdentityNarrative(){
+    const ids=[Number(graph.meta?.identity_id||0),Number(graph.meta?.compare_identity_id||0)].filter(Boolean);
+    if(!ids.length)return renderIdentityIndex();
+    const sections=ids.map(iid=>{
+      const inode=nodeFor(`identity:${iid}`); if(!inode)return '';
+      const requests=graph.edges.filter(e=>e.source===inode.id&&e.relation==='performed').map(e=>nodeFor(e.target)).filter(n=>n?.type==='request');
+      const unique=[];const seen=new Set(); requests.forEach(n=>{if(!seen.has(n.id)){seen.add(n.id);unique.push(n);}});
+      const flows=relatedNodes(inode.id).filter(n=>n.type==='flow');
+      return `<section class="identity-story-section"><div class="identity-story-head"><div><span class="eyebrow">IDENTIDAD</span><h2>${esc(inode.label)}</h2><p>${unique.length} Requests atribuidas${flows.length?` · ${flows.length} Flow(s) relacionados`:''}. Aquí el endpoint es protagonista; los IDs sólo aparecen con la key que les dio contexto.</p></div><div class="narrative-actions"><a class="btn-secondary" href="${base}/identities/view/${iid}">Abrir identidad</a><button type="button" class="btn-secondary" data-open-current-graph>Ver relaciones gráficas · avanzado</button></div></div>${flows.length?`<div class="identity-flow-strip"><small>Flows observados</small>${flows.slice(0,10).map(f=>`<a href="${base}/${esc(f.href||`flows/${f.meta?.id||''}`)}">${esc(f.label)}</a>`).join('')}</div>`:''}<div class="identity-request-list">${unique.length?unique.map(n=>requestNarrativeCard(n)).join(''):`<div class="empty-state friendly"><b>No hay Requests atribuidas a esta identidad.</b><span>Asigna una Request desde Burp o revisa sus resolvers.</span></div>`}</div></section>`;
+    }).join('');
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">IDENTIDAD · QUÉ HIZO</span><h2>${ids.length>1?'Compara el tráfico de dos identidades':'Requests de la identidad'}</h2><p>Primero mira <b>método + endpoint + HTTP status</b>. Los objetos ambiguos se muestran sólo como <code>key=value</code>, no como entidades inventadas.</p></div><a class="btn-secondary" href="${base}/guide#identities">Cómo leer esta vista</a></div><div class="identity-story-grid ${ids.length>1?'compare':''}">${sections}</div>`;
+    bindNarrativeActions();
+    narrative.querySelectorAll('[data-open-current-graph]').forEach(b=>b.addEventListener('click',()=>{narrative.hidden=true;canvasShell.hidden=false;buildScene();buildTypeFilters();applyFilters({fitAfter:true});}));
+  }
   function renderObjectIndex(){
     const rows=graph.meta?.filter_options?.objects||[];
     const good=rows.filter(o=>o.ui_quality!=='ambiguous'), noisy=rows.filter(o=>o.ui_quality==='ambiguous');
-    const card=o=>`<button class="narrative-choice" data-select-object="${Number(o.id)}"><b>${esc(o.object_type)} <code>${esc(o.identifier)}</code></b><span>último: ${esc(o.last_seen_at||'—')}</span></button>`;
-    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">OBJETO · QUÉ COSA</span><h2>Elige una cosa con significado</h2><p>Prioriza <b>Order 123</b>, <b>User 101</b>, <b>Invoice 77</b>. Tipos como <code>111 101</code> o <code>Object 7</code> generan ruido y quedan ocultos.</p></div><a class="btn-secondary" href="${base}/objects">Administrar objetos</a></div><div class="narrative-card-grid">${good.length?good.slice(0,80).map(card).join(''):`<div class="empty-state friendly"><b>No hay objetos suficientemente claros.</b><span>Enseña un tipo de dominio inequívoco, por ejemplo <code>orderId → Order</code>.</span><a href="${base}/objects">Revisar objetos →</a></div>`}</div>${noisy.length?`<details class="noisy-object-list"><summary>Mostrar ${noisy.length} objetos ambiguos</summary><p>Están guardados, pero Negro no les da protagonismo porque el tipo no explica qué representan.</p><div class="narrative-card-grid">${noisy.slice(0,60).map(card).join('')}</div></details>`:''}`;
+    const card=o=>{const label=o.ui_quality==='ambiguous'?`${o.identifier_field||'identifier'}=${o.identifier}`:`${o.object_type} ${o.identifier}`;return `<button class="narrative-choice" data-select-object="${Number(o.id)}"><b>${esc(label)}</b><span>${o.ui_quality==='ambiguous'?'sin clasificar · ':''}último: ${esc(o.last_seen_at||'—')}</span></button>`;};
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">OBJETO · QUÉ COSA</span><h2>Elige una cosa con significado</h2><p>Prioriza <b>Order 123</b>, <b>User 101</b>, <b>Invoice 77</b>. Si sólo conocemos una key, Negro la muestra como <code>order_id=4101</code> en vez de inventar un nombre.</p></div><a class="btn-secondary" href="${base}/objects">Administrar objetos</a></div><div class="narrative-card-grid">${good.length?good.slice(0,80).map(card).join(''):`<div class="empty-state friendly"><b>No hay objetos suficientemente claros.</b><span>Enseña un tipo de dominio inequívoco, por ejemplo <code>orderId → Order</code>.</span><a href="${base}/objects">Revisar objetos →</a></div>`}</div>${noisy.length?`<details class="noisy-object-list"><summary>Mostrar ${noisy.length} identificadores sin clasificar</summary><p>Negro conserva la evidencia, pero no afirma que estos valores sean User, Order u otra entidad hasta que tú lo confirmes.</p><div class="narrative-card-grid">${noisy.slice(0,60).map(card).join('')}</div></details>`:''}`;
     bindNarrativeActions();
+  }
+  function renderObjectNarrative(){
+    const oid=Number(graph.meta?.object_id||0); if(!oid)return renderObjectIndex();
+    const obj=nodeFor(`object:${oid}`); if(!obj)return renderObjectIndex();
+    const m=obj.meta||{};
+    const requests=graph.edges.filter(e=>(e.source===obj.id||e.target===obj.id)&&e.relation==='touches').map(e=>nodeFor(opposite(e,obj.id))).filter(n=>n?.type==='request');
+    const unique=[];const seen=new Set();requests.forEach(n=>{if(!seen.has(n.id)){seen.add(n.id);unique.push(n);}});
+    const related=graph.edges.filter(e=>(e.source===obj.id||e.target===obj.id)&&e.relation==='co_observed').map(e=>nodeFor(opposite(e,obj.id))).filter(n=>n?.type==='object');
+    const meaningful=related.filter(o=>o.meta?.ui_quality!=='ambiguous'), ambiguous=related.filter(o=>o.meta?.ui_quality==='ambiguous');
+    const flows=relatedNodes(obj.id).filter(n=>n.type==='flow');
+    const states=relatedNodes(obj.id,'state_observed').filter(n=>n.type==='state');
+    const title=m.ui_quality==='ambiguous'?`${m.identifier_field||'identifier'} = ${m.identifier||'?'}`:obj.label;
+    const intro=m.ui_quality==='ambiguous'?`<div class="callout warning object-meaning-warning"><b>Esto todavía no es una entidad entendida.</b> Negro sólo sabe que la key <code>${esc(m.identifier_field||'identifier')}</code> tuvo el valor <code>${esc(m.identifier||'?')}</code> y apareció en estas Requests. No asumas que representa User, Role, Order, etc. hasta clasificarla.</div>`:`<div class="object-meaning-line"><span>Tipo</span><b>${esc(m.object_type||'Object')}</b><span>Campo observado</span><code>${esc(m.identifier_field||'—')}</code><span>Valor</span><code>${esc(m.identifier||'—')}</code></div>`;
+    const relationCards=meaningful.map(o=>`<button type="button" class="narrative-choice mini" data-select-object="${Number(o.meta?.id||String(o.id).split(':')[1]||0)}"><b>${esc(objectContextLabel(o))}</b><span>objeto relacionado observado</span></button>`).join('');
+    const noisy=ambiguous.map(o=>`<span class="story-chip context">${esc(objectContextLabel(o))}</span>`).join('');
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">OBJETO · CONTEXTO</span><h2>${esc(title)}</h2><p>${unique.length} Requests · ${Number(m.hosts||0)} host(s). La pregunta aquí es: <b>¿dónde apareció este valor y qué pasó alrededor?</b></p></div><div class="narrative-actions"><a class="btn-secondary" href="${base}/objects/${oid}">Abrir ficha completa</a><button type="button" class="btn-secondary" data-open-current-graph>Ver relaciones gráficas · avanzado</button></div></div>${intro}${states.length?`<div class="object-state-story"><small>Estados observados</small>${states.map(st=>`<span class="story-chip state">${esc(st.meta?.field||'state')}: ${esc(st.label)}</span>`).join('')}</div>`:''}<section class="narrative-section"><div class="section-heading"><span class="eyebrow">DÓNDE APARECIÓ</span><h2>Requests que contienen o tocan este valor</h2></div><div class="identity-request-list">${unique.length?unique.map(n=>requestNarrativeCard(n,{compact:true})).join(''):`<div class="empty-state friendly"><b>No hay Requests enlazadas.</b><span>La evidencia del objeto puede necesitar una reconstrucción.</span></div>`}</div></section>${flows.length?`<section class="narrative-section"><div class="section-heading"><span class="eyebrow">FLOWS</span><h2>Historias donde apareció</h2></div><div class="identity-flow-strip">${flows.map(f=>`<a href="${base}/${esc(f.href||`flows/${f.meta?.id||''}`)}">${esc(f.label)}</a>`).join('')}</div></section>`:''}${meaningful.length?`<section class="narrative-section"><div class="section-heading"><span class="eyebrow">RELACIONES ÚTILES</span><h2>Objetos con significado vistos junto a éste</h2></div><div class="narrative-card-grid">${relationCards}</div></section>`:''}${ambiguous.length?`<details class="noisy-object-list"><summary>Mostrar ${ambiguous.length} relaciones sin clasificar</summary><p>Se muestran como <code>key=value</code> porque todavía no sabemos qué entidad representan.</p><div class="request-context-line muted-context">${noisy}</div></details>`:''}`;
+    bindNarrativeActions();
+    narrative.querySelector('[data-open-current-graph]')?.addEventListener('click',()=>{narrative.hidden=true;canvasShell.hidden=false;selected=obj.id;buildScene();buildTypeFilters();applyFilters({fitAfter:true});showNode(obj);focusNeighborhood(obj.id,1);});
   }
   function renderIntelligenceNarrative(){
     const cards=graph.nodes.filter(n=>['anomaly','lead','finding'].includes(n.type));
@@ -235,16 +284,14 @@
   }
   function renderExperience(){
     if(!narrative||!canvasShell)return;
-    const noSelectionIdentity=preset==='identity' && !Number(graph.meta?.identity_id||0);
-    const noSelectionObject=preset==='objects' && !Number(graph.meta?.object_id||0);
-    const narrativeMode=preset==='flow'||preset==='intelligence'||noSelectionIdentity||noSelectionObject;
+    const narrativeMode=['identity','flow','objects','intelligence'].includes(preset);
     narrative.hidden=!narrativeMode; canvasShell.hidden=narrativeMode;
-    const explanations={surface:['Superficie','Hosts, rutas y métodos. Empieza amplio y profundiza sólo cuando una pieza te interese.'],identity:['Identidad','Selecciona una cuenta/sesión. Verás únicamente las Requests, Flows y objetos que aportan contexto.'],flow:['Flow','Línea de tiempo: qué Request ocurrió primero, cuál siguió y qué objeto/estado apareció.'],objects:['Objeto','Sigue una sola cosa de negocio y expande sus relaciones sólo cuando hagan falta.'],intelligence:['Atención','Sólo diferencias, hipótesis y hallazgos que justifican volver a mirar.']};
+    const explanations={surface:['Superficie','Hosts, rutas y métodos. Empieza amplio y profundiza sólo cuando una pieza te interese.'],identity:['Identidad','Método + endpoint + status primero. Los IDs sólo aparecen con la key que les da contexto.'],flow:['Flow','Línea de tiempo: qué Request ocurrió primero, cuál siguió y qué objeto/estado apareció.'],objects:['Objeto','Primero mira dónde apareció el valor. Las relaciones gráficas quedan como vista avanzada.'],intelligence:['Atención','Sólo diferencias, hipótesis y hallazgos que justifican volver a mirar.']};
     const x=explanations[preset]||[valueLabel(preset),'Vista avanzada']; if(viewExplainer)viewExplainer.innerHTML=`<b>${esc(x[0])}</b><p>${esc(x[1])}</p>`;
     if(preset==='flow')renderFlowNarrative();
+    else if(preset==='identity')renderIdentityNarrative();
+    else if(preset==='objects')renderObjectNarrative();
     else if(preset==='intelligence')renderIntelligenceNarrative();
-    else if(noSelectionIdentity)renderIdentityIndex();
-    else if(noSelectionObject)renderObjectIndex();
     if(!narrativeMode)window.setTimeout(()=>{try{fit();}catch(_){}},20);
   }
 

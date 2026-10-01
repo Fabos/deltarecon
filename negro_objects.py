@@ -377,7 +377,7 @@ def _ui_object_quality(type_name: str) -> tuple[str, str]:
     """Presentation hint only: keep ambiguous evidence, but do not promote it by default."""
     name = str(type_name or "").strip()
     low = name.lower()
-    generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido"}
+    generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido", "owner", "role"}
     if not name or name.isdigit() or low in generic or len(name) <= 2:
         return "ambiguous", "El tipo todavía no explica qué cosa del negocio representa."
     return "meaningful", "Tipo de dominio legible."
@@ -456,7 +456,11 @@ def list_objects(conn, *, type_id: int | None = None, q: str = "", limit: int = 
                (SELECT COUNT(*) FROM business_object_observations x WHERE x.business_object_id=bo.id) observation_count,
                (SELECT COUNT(DISTINCT host_id) FROM business_object_observations x WHERE x.business_object_id=bo.id) host_count,
                (SELECT COUNT(DISTINCT COALESCE(ei.identity_id,0)) FROM business_object_observations x LEFT JOIN exchange_identities ei ON ei.exchange_id=x.exchange_id WHERE x.business_object_id=bo.id AND ei.identity_id IS NOT NULL) identity_count,
-               (SELECT COUNT(DISTINCT CASE WHEN rr.object_a_id=bo.id THEN rr.object_b_id ELSE rr.object_a_id END) FROM business_object_relation_observations rr WHERE rr.object_a_id=bo.id OR rr.object_b_id=bo.id) relation_count
+               (SELECT COUNT(DISTINCT CASE WHEN rr.object_a_id=bo.id THEN rr.object_b_id ELSE rr.object_a_id END) FROM business_object_relation_observations rr WHERE rr.object_a_id=bo.id OR rr.object_b_id=bo.id) relation_count,
+               (SELECT bi.normalized_name FROM business_object_observations boo
+                  JOIN business_object_identifiers bi ON bi.id=boo.identifier_id
+                 WHERE boo.business_object_id=bo.id
+                 GROUP BY bi.normalized_name ORDER BY COUNT(*) DESC,bi.normalized_name LIMIT 1) identifier_field
         FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id
     """
     if where:
@@ -490,7 +494,11 @@ def _observation_rows(conn, object_id: int) -> list[dict[str, Any]]:
 def _related_objects(conn, object_id: int) -> list[dict[str, Any]]:
     rows = [dict(r) for r in conn.execute(
         """SELECT other.id,other.identifier_raw,other.identifier_preview,bt.name object_type,
-                  COUNT(DISTINCT rel.exchange_id) occurrences,MIN(rel.created_at) first_seen_at,MAX(rel.created_at) last_seen_at
+                  COUNT(DISTINCT rel.exchange_id) occurrences,MIN(rel.created_at) first_seen_at,MAX(rel.created_at) last_seen_at,
+                  (SELECT bi.normalized_name FROM business_object_observations boo
+                     JOIN business_object_identifiers bi ON bi.id=boo.identifier_id
+                    WHERE boo.business_object_id=other.id
+                    GROUP BY bi.normalized_name ORDER BY COUNT(*) DESC,bi.normalized_name LIMIT 1) identifier_field
            FROM business_object_relation_observations rel
            JOIN business_objects other ON other.id=CASE WHEN rel.object_a_id=? THEN rel.object_b_id ELSE rel.object_a_id END
            JOIN business_object_types bt ON bt.id=other.object_type_id
@@ -498,6 +506,10 @@ def _related_objects(conn, object_id: int) -> list[dict[str, Any]]:
            GROUP BY other.id ORDER BY occurrences DESC,lower(bt.name),other.id""",
         (int(object_id), int(object_id), int(object_id)),
     ).fetchall()]
+    for row in rows:
+        quality, reason = _ui_object_quality(row.get("object_type") or "")
+        row["ui_quality"] = quality
+        row["ui_quality_reason"] = reason
     return rows
 
 
@@ -715,6 +727,14 @@ def object_detail(conn, object_id: int) -> dict[str, Any] | None:
     related = _related_objects(conn, int(object_id))
     anomalies = pattern_anomalies(conn, int(object_id))
     base["display_value"] = str(base.get("identifier_raw") or base.get("identifier_preview") or "")
+    base["identifier_field"] = str(aliases[0].get("normalized_name") or "") if aliases else ""
+    quality, reason = _ui_object_quality(base.get("object_type") or "")
+    base["ui_quality"] = quality
+    base["ui_quality_reason"] = reason
+    base["display_label"] = (
+        f"{base['object_type']} {base['display_value']}" if quality != "ambiguous"
+        else f"{base['identifier_field'] or 'identifier'}={base['display_value']}"
+    )
     base["cross_host"] = len(hosts) > 1
     return {
         "object": base, "observations": observations, "timeline": timeline, "hosts": hosts, "identities": identities,
@@ -726,7 +746,11 @@ def objects_for_flow(conn, flow_id: int) -> list[dict[str, Any]]:
     init_schema(conn)
     return [dict(r) for r in conn.execute(
         """SELECT bo.id,bo.identifier_raw,bo.identifier_preview,bt.name object_type,
-                  COUNT(DISTINCT fs.id) step_count,COUNT(DISTINCT boo.host_id) host_count,MIN(fs.position) first_position
+                  COUNT(DISTINCT fs.id) step_count,COUNT(DISTINCT boo.host_id) host_count,MIN(fs.position) first_position,
+                  (SELECT bi.normalized_name FROM business_object_observations x
+                     JOIN business_object_identifiers bi ON bi.id=x.identifier_id
+                    WHERE x.business_object_id=bo.id
+                    GROUP BY bi.normalized_name ORDER BY COUNT(*) DESC,bi.normalized_name LIMIT 1) identifier_field
            FROM flow_steps fs JOIN business_object_observations boo ON boo.exchange_id=fs.exchange_id
            JOIN business_objects bo ON bo.id=boo.business_object_id JOIN business_object_types bt ON bt.id=bo.object_type_id
            WHERE fs.flow_id=? AND fs.included=1

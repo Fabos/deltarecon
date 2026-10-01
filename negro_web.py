@@ -1408,7 +1408,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         """Presentation-only quality hint. It never changes stored Business Objects."""
         name = str(type_name or "").strip()
         low = name.lower()
-        generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido"}
+        generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido", "owner", "role"}
         if not name or name.isdigit() or low in generic:
             return "ambiguous", "El tipo no expresa todavía qué cosa del negocio representa."
         if len(name) <= 2:
@@ -1452,7 +1452,11 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         ).fetchall()]
         object_options = [dict(r) for r in conn.execute(
             """SELECT bo.id,bt.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview,'') identifier,
-                      bo.last_seen_at
+                      bo.last_seen_at,
+                      (SELECT bi.normalized_name FROM business_object_observations boo
+                         JOIN business_object_identifiers bi ON bi.id=boo.identifier_id
+                        WHERE boo.business_object_id=bo.id
+                        GROUP BY bi.normalized_name ORDER BY COUNT(*) DESC,bi.normalized_name LIMIT 1) identifier_field
                FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id
                ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 240"""
         ).fetchall()]
@@ -1518,13 +1522,19 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
             row = conn.execute(
                 """SELECT bo.*,bt.name object_type,
                           (SELECT COUNT(*) FROM business_object_observations x WHERE x.business_object_id=bo.id) request_count,
-                          (SELECT COUNT(DISTINCT x.host_id) FROM business_object_observations x WHERE x.business_object_id=bo.id) host_count
+                          (SELECT COUNT(DISTINCT x.host_id) FROM business_object_observations x WHERE x.business_object_id=bo.id) host_count,
+                          (SELECT bi.normalized_name FROM business_object_observations x
+                             JOIN business_object_identifiers bi ON bi.id=x.identifier_id
+                            WHERE x.business_object_id=bo.id
+                            GROUP BY bi.normalized_name ORDER BY COUNT(*) DESC,bi.normalized_name LIMIT 1) identifier_field
                    FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id WHERE bo.id=?""", (int(oid),)
             ).fetchone()
             if not row: return None
             value=str(row["identifier_raw"] or row["identifier_preview"] or "?")
+            field=str(row["identifier_field"] or "")
             quality, reason = object_ui_quality(row["object_type"], value)
-            return add_node(f"object:{oid}", "object", f"{row['object_type']} {value}", meta={"id":oid,"object_type":row["object_type"],"identifier":value,"requests":int(row["request_count"] or 0),"hosts":int(row["host_count"] or 0),"last_seen_at":row["last_seen_at"],"ui_quality":quality,"ui_quality_reason":reason}, href=f"objects/{oid}")
+            label=f"{row['object_type']} {value}" if quality != "ambiguous" else f"{field or 'identifier'}={value}"
+            return add_node(f"object:{oid}", "object", label, meta={"id":oid,"object_type":row["object_type"],"identifier":value,"identifier_field":field,"requests":int(row["request_count"] or 0),"hosts":int(row["host_count"] or 0),"last_seen_at":row["last_seen_at"],"ui_quality":quality,"ui_quality_reason":reason}, href=f"objects/{oid}")
 
         def connect_request_context(exid: int, request_node: str, *, flow_node: str | None = None) -> None:
             actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()

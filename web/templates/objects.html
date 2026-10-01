@@ -4,7 +4,7 @@
 <section class="hero compact-hero">
   <span class="sr-only">Access Control Lab</span>
   <div>
-    <p class="eyebrow">BUSINESS OBJECTS · v0.30.0</p>
+    <p class="eyebrow">BUSINESS OBJECTS · v0.31.0</p>
     <h1>Sigue una cosa del negocio</h1>
     <p class="muted">Ejemplo: <code>Order 123</code>. Negro reúne dónde apareció, qué Requests lo tocaron, qué identidades lo vieron y qué estados observó.</p>
   </div>
@@ -67,7 +67,7 @@
       {% set object_rows = objects_data.objects if q or type_id else objects_data.meaningful_objects %}
       {% for o in object_rows %}
         <tr>
-          <td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code>{% if o.cross_host %}<small>↔ visto en varios hosts</small>{% endif %}</a></td>
+          <td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code>{% if o.identifier_field %}<small>key: {{ o.identifier_field }}</small>{% endif %}{% if o.cross_host %}<small>↔ visto en varios hosts</small>{% endif %}</a></td>
           <td>{{ o.observation_count }}</td><td>{{ o.host_count }}</td><td>{{ o.identity_count }}</td><td>{{ o.relation_count }}</td><td>{{ o.last_seen_at }}</td>
         </tr>
       {% else %}<tr><td colspan="6"><div class="empty-state friendly"><b>No hay objetos claros con este filtro.</b><span>{% if not objects_data.types %}Primero enseña un tipo abajo.{% elif objects_data.ambiguous_objects and not q and not type_id %}Hay {{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos para no generar ruido.{% else %}Prueba limpiar el texto/tipo o confirma que el identificador fue observado.{% endif %}</span>{% if q or type_id %}<a href="{{ target_base }}/objects">Limpiar filtros</a>{% endif %}</div></td></tr>{% endfor %}
@@ -81,7 +81,7 @@
   <summary><b>{{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos</b><span>Se conservan como evidencia, pero no aparecen en la vista principal.</span></summary>
   <p class="muted small">Úsalos sólo si ya sabes qué representan. Ejemplos de ruido: tipos numéricos, <code>Object</code>, <code>id</code> o <code>reference</code> sin contexto.</p>
   <div class="parameter-table-wrap"><table class="parameter-table"><thead><tr><th>Objeto</th><th>Por qué está oculto</th><th>Requests</th></tr></thead><tbody>
-  {% for o in objects_data.ambiguous_objects[:80] %}<tr><td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></a></td><td>{{ o.ui_quality_reason }}</td><td>{{ o.observation_count }}</td></tr>{% endfor %}
+  {% for o in objects_data.ambiguous_objects[:80] %}<tr><td><a href="{{ target_base }}/objects/{{ o.id }}"><code>{{ o.identifier_field or 'identifier' }}={{ o.identifier_raw or o.identifier_preview }}</code><small>tipo interno: {{ o.object_type }}</small></a></td><td>{{ o.ui_quality_reason }} Negro conserva dónde apareció este valor, pero no le asigna significado de negocio.</td><td>{{ o.observation_count }}</td></tr>{% endfor %}
   </tbody></table></div>
 </details>
 {% endif %}
