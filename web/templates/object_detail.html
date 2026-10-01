@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}{{ object_data.object.object_type }} {{ object_data.object.display_value }} · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">BUSINESS OBJECT #{{ object_data.object.id }}</p>
+    <h1>{{ object_data.object.object_type }} <code>{{ object_data.object.display_value }}</code></h1>
+    <p class="muted">Instancia correlacionada desde evidencia HTTP observada. {% if object_data.object.cross_host %}<b>Esta instancia cruza {{ object_data.hosts|length }} hosts.</b>{% endif %}</p>
+    <div class="hero-meta">{% for a in object_data.aliases %}<span class="badge"><code>{{ a.normalized_name }}</code> · {{ a.observations }}</span>{% endfor %}</div>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/objects">← Objetos</a></div>
+</section>
+
+{% if object_data.anomalies %}
+<section class="panel callout warning">
+  <p class="eyebrow">PATTERN ANOMALIES</p>
+  {% for a in object_data.anomalies %}<div class="pattern-anomaly-row"><span class="badge">{{ a.kind }}</span><div><b>{{ a.title }}</b><p>{{ a.message }}</p>{% if a.baseline is defined %}<small>Patrón: <code>{{ a.baseline }}</code> · instancia: <code>{{ a.current }}</code></small>{% endif %}</div></div>{% endfor %}
+  <small>No implica que el comportamiento sea incorrecto. Es una diferencia frente a evidencia repetida de objetos comparables.</small>
+</section>
+{% endif %}
+
+<section class="object-summary-grid">
+  <article class="panel"><p class="eyebrow">HOSTS</p><h2>{{ object_data.hosts|length }}</h2>{% for h in object_data.hosts %}<div class="object-fact-row"><b>{{ h.hostname }}</b><span>{{ h.exchanges }} exchange(s)</span></div>{% else %}<p class="empty">—</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">IDENTIDADES</p><h2>{{ object_data.identities|length }}</h2>{% for i in object_data.identities %}<div class="object-fact-row"><a href="{{ target_base }}/identities/view/{{ i.id }}">{{ i.name }}</a><span>{{ i.exchanges }} exchange(s)</span></div>{% else %}<p class="empty">No asociadas todavía.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">FLOWS</p><h2>{{ object_data.flows|length }}</h2>{% for f in object_data.flows %}<div class="object-fact-row"><a href="{{ target_base }}/flows/{{ f.id }}">{{ f.name }}</a><span>{{ f.steps }} paso(s)</span></div>{% else %}<p class="empty">No aparece en un Flow incluido.</p>{% endfor %}</article>
+</section>
+
+{% if object_data.states %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">BUSINESS STATE</p><h2>Estados observados</h2></div><small>Mismo tipo + mismo identifier hash.</small></div>
+  <div class="state-sequence object-state-sequence">{% for s in object_data.states %}<a class="state-node" href="{{ target_base }}/resource/{{ s.resource_id }}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}"><span>{{ s.state }}</span><small>#{{ s.exchange_id }} · {{ s.hostname }}{% if s.identity_name %} · {{ s.identity_name }}{% endif %}</small></a>{% if not loop.last %}<span class="state-arrow">→</span>{% endif %}{% endfor %}</div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">RELACIONES</p><h2>Objetos vistos juntos</h2></div><small>Relación de co-observación en uno o más exchanges; no implica causalidad.</small></div>
+  <div class="related-object-grid">
+  {% for r in object_data.related %}<a class="related-object-card" href="{{ target_base }}/objects/{{ r.id }}"><div><b>{{ r.object_type }}</b> <code>{{ r.identifier_raw or r.identifier_preview }}</code></div><small>{{ r.occurrences }} exchange(s) compartidos</small></a>{% else %}<p class="empty">Todavía no hay otros Business Objects co-observados con esta instancia.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">CROSS-HOST TIMELINE</p><h2>{{ object_data.timeline|length }} exchanges</h2></div><small>Abre cualquier evidencia para continuar con Follow Value, Find Related, Smart Compare o Repeater.</small></div>
+  <div class="timeline object-timeline">
+  {% for o in object_data.timeline %}
+    <div class="timeline-item"><span class="timeline-dot"></span><div class="trace-card">
+      <div><b>#{{ o.exchange_id }} · {{ o.method }} <code>{{ o.path }}</code></b><span class="badge">{{ o.hostname }}</span>{% if o.identity_name %}<span class="badge identity-badge">{{ o.identity_name }}</span>{% endif %}</div>
+      <small>HTTP {{ o.status_code or '—' }} · {{ o.first_seen_at }} · identifier <code>{{ o.identifier_name }}</code></small>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ o.resource_id }}?exchange={{ o.exchange_id }}#exchange-{{ o.exchange_id }}">HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Find Related</a></div>
+    </div></div>
+  {% else %}<p class="empty">No hay observaciones.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}

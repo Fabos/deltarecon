@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.27.0
+
+- Añade **Business Objects** con tipos configurables e identifiers/aliases explícitos.
+- Unifica instancias por `object type + exact value hash`, permitiendo seguir el mismo objeto aunque cambie de campo, endpoint o host.
+- Añade vista **Objetos** con tipos, candidatos, instancias, hosts, identidades, Flows, estados, relaciones y timeline HTTP.
+- Añade **cross-host correlation**: una instancia muestra todos los hosts donde fue observada sin inferir causalidad.
+- Añade relaciones conservadoras de co-observación entre objetos, por ejemplo `Order ↔ Payment` y `Order ↔ Shipment`.
+- Business State Tracks enseñan automáticamente el identifier correspondiente al modelo de Business Objects.
+- Flow Detail muestra Business Objects y Flow Compare muestra diferencias por tipos de objeto observados.
+- Añade **Pattern Anomalies** para status HTTP por Identity + operación normalizada, relaciones, cobertura de identidades y huella de hosts.
+- Las anomalías requieren un patrón repetido y se presentan sólo como diferencias observadas, nunca como vulnerabilidades.
+- Añade regresión `v027_business_objects_test.py`; suite completa en verde.
+- Negro Burp Bridge v0.26.0 sigue siendo compatible; esta fase no requiere cambios en el JAR.
+
 ## v0.26.0
 
 - Burp pasa a ser entrada de primera clase para **Flows**: `Start Flow from here`, `Add to current Flow`, `End Flow here` y `Create Flow from selected exchanges`.

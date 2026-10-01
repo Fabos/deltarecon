@@ -155,7 +155,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 3. Identity Contexts + auth material rotatorio + actor resolvers + Authorization Matrix. ✅ v0.23.2
 4. Correlation clarity: Find Related con paths completos + Smart Compare con coincidencias/alias por valor. ✅ v0.25.0
 5. Flow Capture + Flow Compare + Burp-native Identity/Flows + object-bound business-state observations. ✅ v0.26.0
-6. Pattern anomalies + cross-host correlation + business objects.
+6. Pattern anomalies + cross-host correlation + business objects. ✅ v0.27.0
 7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
@@ -211,5 +211,5 @@ No medir Negro por cantidad de módulos. Medirlo por:
 
 ## Siguiente fase inmediata
 
-- **Business Objects + Pattern Anomalies + cross-host correlation** sobre la base ya existente de Identity + Exchange + Flow + State;
-- después, **Custom Signals** sobre la Knowledge Base existente, sin crear otro motor paralelo.
+- **Custom Signals** sobre la Knowledge Base existente, sin crear otro motor paralelo.
+- Después: Hypothesis Engine 2.0 y pulido/performance, usando Identity + Exchange + Flow + State + Business Objects como contexto estructurado.

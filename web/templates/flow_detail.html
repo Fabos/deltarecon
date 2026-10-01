@@ -32,6 +32,13 @@
   {% else %}<p class="empty">Todavía no hay tracks de estado aplicables a este flow. En un paso que muestre <code>status/state/stage/phase</code>, abre “Track as business state”.</p>{% endif %}
 </section>
 
+{% if flow_data.business_objects %}
+<section class="panel" id="flow-business-objects">
+  <div class="panel-head"><div><p class="eyebrow">BUSINESS OBJECTS</p><h2>Objetos observados en este Flow</h2></div><small>Misma instancia correlacionada por tipo + valor exacto.</small></div>
+  <div class="related-object-grid">{% for o in flow_data.business_objects %}<a class="related-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · {{ o.host_count }} host(s)</small></a>{% endfor %}</div>
+</section>
+{% endif %}
+
 {% if flow_data.transitions and not flow_data.state_timelines %}
 <section class="panel">
   <div class="panel-head"><div><p class="eyebrow">STATE HINTS</p><h2>Cambios adyacentes detectados</h2></div><small>Son pistas genéricas hasta que enseñes a Negro cuál es el identificador del objeto.</small></div>
@@ -48,6 +55,18 @@
       <div class="flow-step-main">
         <div class="flow-step-head"><div><h3>{{ s.method }} <code>{{ s.path }}</code></h3><small>#{{ s.exchange_id }} · {{ s.hostname }} · HTTP {{ s.status_code or '—' }} · {{ s.first_seen_at }}</small></div><div>{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if not s.included %}<span class="badge">Ignored</span>{% elif s.noise_suggested %}<span class="badge noise-badge" title="{{ s.noise_reason }}">possible background</span>{% endif %}</div></div>
         {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
+
+        {% if s.identifier_values %}
+        <details class="flow-step-edit state-track-editor"><summary>Track identifier as Business Object</summary>
+          <form class="stack-form" action="{{ target_base }}/objects/track" method="post">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="{{ request.url.path }}">
+            <label><span>Identifier</span><select name="observation_id">{% for v in s.identifier_values %}<option value="{{ v.id }}">{{ v.normalized_name }} = {{ v.value }}</option>{% endfor %}</select></label>
+            <label><span>Object type</span><input name="object_type" placeholder="Order / Payment / Shipment" required></label>
+            <small>Si luego otro host usa un alias distinto, enséñalo con el mismo Object type y Negro unificará por valor exacto.</small>
+            <button class="button ghost" type="submit">Track object</button>
+          </form>
+        </details>
+        {% endif %}
 
         {% if s.state_values and s.identifier_values %}
         <details class="flow-step-edit state-track-editor"><summary>Track as business state</summary>

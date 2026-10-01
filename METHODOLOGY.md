@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.26.0
+# Negro Recon — Metodología v0.27.0
 
 ## Modelo mental
 
@@ -73,7 +73,7 @@ Puedes capturar un rango de exchanges o agregarlos uno por uno. El orden se cons
 
 ### Business states
 
-Negro extrae campos cuyo nombre sugiere estado (`status`, `state`, `paymentStatus`, `orderStatus`, etc.) y muestra cambios vistos entre pasos consecutivos. Sólo documenta transiciones observadas; no afirma que una transición ausente sea inválida.
+El hunter enseña una definición ligada a una instancia, por ejemplo `Order = orderId + status`. Negro conserva las observaciones exactas de cada `Order` y puede mostrar `CREATED → PAID → SHIPPED` con sus exchanges e identidades. Las pistas adyacentes genéricas siguen existiendo sólo como ayuda hasta que el objeto quede definido.
 
 ### Flow Compare
 
@@ -87,6 +87,14 @@ Flow B: cart → order
 ```
 
 La ausencia de `payment` en B es una diferencia de recorrido que merece entenderse, no una vulnerabilidad automática.
+
+## Business Objects
+
+Responde: **¿dónde viaja la misma instancia y qué objetos aparecen relacionados con ella?**
+
+Un tipo puede tener aliases explícitos, por ejemplo `Order: orderId` y `Order: order_id`. Negro unifica instancias por tipo + valor exacto, por lo que `Order 98127` puede aparecer en `api`, `payments` y `shipping` sin perder el hilo. Las relaciones `Order ↔ Payment` o `Order ↔ Shipment` significan únicamente que fueron co-observadas en exchanges; no prueban causalidad.
+
+**Pattern Anomalies** compara sólo contra patrones ya repetidos de status HTTP por Identity + operación normalizada, relaciones, identidades o hosts. Una diferencia sólo significa “esto se comportó distinto de sus pares observados”.
 
 ## Mapa mental de módulos
 
@@ -102,6 +110,8 @@ Smart Compare       (coincidencias + diferencias entre A/B)
 Identidades         (actor/sesión)
   ↓
 Flows               (secuencia de negocio)
+  ↓
+Business Objects    (instancias + relaciones + cross-host)
   ↓
 Signals / IA / Investigaciones
 ```

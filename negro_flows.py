@@ -561,6 +561,16 @@ def create_state_track(conn, state_observation_id: int, object_observation_id: i
     ).fetchone()
     track_id = int(row["id"])
     refresh_state_track(conn, track_id)
+    # v0.27: a taught state schema also teaches the underlying Business Object
+    # identifier. This reuses the same object type rather than creating a second
+    # entity model for Flow states.
+    try:
+        import negro_objects as object_tools
+        object_tools.ensure_identifier(conn, object_type, identifier_name, source_observation_id=int(object_observation_id))
+    except Exception:
+        # State tracking must remain usable even if an older workspace has a
+        # partially migrated Business Object schema.
+        pass
     return track_id
 
 
@@ -735,7 +745,13 @@ def get_flow(conn, flow_id: int) -> dict[str, Any] | None:
     transitions = _legacy_adjacent_transitions(included_steps)
     timelines = _state_timelines_for_flow(conn, int(flow_id))
     anomalies = _repeated_sequence_anomalies(conn, int(flow_id), timelines) if timelines else []
-    return {"flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions, "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn)}
+    business_objects = []
+    try:
+        import negro_objects as object_tools
+        business_objects = object_tools.objects_for_flow(conn, int(flow_id))
+    except Exception:
+        business_objects = []
+    return {"flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions, "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn), "business_objects": business_objects}
 
 
 def _align_steps(a_steps: list[dict[str, Any]], b_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -806,4 +822,10 @@ def compare_flows(conn, flow_a: int, flow_b: int) -> dict[str, Any] | None:
                     "state_field": (aa or bb or {}).get("state_field"),
                     "a": aa, "b": bb, "a_sequence": a_seq, "b_sequence": b_seq,
                 })
-    return {"a": a, "b": b, "aligned": aligned, "state_changes": state_changes}
+    a_types = Counter(str(x.get("object_type") or "Object") for x in (a.get("business_objects") or []))
+    b_types = Counter(str(x.get("object_type") or "Object") for x in (b.get("business_objects") or []))
+    object_type_changes = []
+    for name in sorted(set(a_types) | set(b_types), key=str.lower):
+        if a_types.get(name, 0) != b_types.get(name, 0):
+            object_type_changes.append({"object_type": name, "a_count": int(a_types.get(name, 0)), "b_count": int(b_types.get(name, 0))})
+    return {"a": a, "b": b, "aligned": aligned, "state_changes": state_changes, "object_type_changes": object_type_changes}

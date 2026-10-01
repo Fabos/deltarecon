@@ -203,6 +203,12 @@ def _resolve_identity_history(paths: dict[str, Path]) -> dict[str, int]:
         return identity_tools.resolve_all(conn)
 
 
+def _rebuild_business_objects(paths: dict[str, Path]) -> dict[str, int]:
+    import negro_objects as object_tools
+    with _db(paths) as conn:
+        return object_tools.rebuild(conn)
+
+
 def _refresh_search(conn, *, host_id: int | None = None, resource_id: int | None = None, exchange_id: int | None = None, knowledge: bool = False) -> None:
     try:
         import negro_search as search_index
@@ -2780,6 +2786,47 @@ def create_app(default_domain: str, default_workspace: Path):
             identity_rows = identity_tools.list_identities(conn)
         return render(request, "identity_matrix.html", target_key, domain, workspace, matrix=matrix, identities=identity_rows, a=a or "", b=b or "")
 
+    @app.get("/t/{target_key}/objects", response_class=HTMLResponse)
+    def objects_page(request: Request, target_key: str, q: str = "", type_id: int | None = None, tracked: int | None = None):
+        import negro_objects as object_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = object_tools.overview(conn, q=q, type_id=type_id)
+        return render(request, "objects.html", target_key, domain, workspace, objects_data=data, q=q, type_id=type_id or "", tracked=tracked)
+
+    @app.get("/t/{target_key}/objects/{object_id}", response_class=HTMLResponse)
+    def object_detail_page(request: Request, target_key: str, object_id: int):
+        import negro_objects as object_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = object_tools.object_detail(conn, int(object_id))
+            if not data:
+                raise HTTPException(status_code=404, detail="Business Object no encontrado")
+        return render(request, "object_detail.html", target_key, domain, workspace, object_data=data)
+
+    @app.post("/t/{target_key}/objects/track")
+    def object_track(request: Request, target_key: str, observation_id: int = Form(...), object_type: str = Form(""), return_to: str = Form(""), csrf: str = Form(...)):
+        import negro_objects as object_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                result = object_tools.track_observation(conn, int(observation_id), object_type=object_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if result.get("business_object_id"):
+            return RedirectResponse(url=f"/t/{target_key}/objects/{int(result['business_object_id'])}", status_code=303)
+        if str(return_to or "").startswith(f"/t/{target_key}/"):
+            return RedirectResponse(url=str(return_to), status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/objects?tracked={int(result['identifier_id'])}", status_code=303)
+
+    @app.post("/t/{target_key}/objects/refresh", response_class=JSONResponse)
+    def objects_refresh(request: Request, target_key: str, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        job_id = _start_job("Reconstruir Business Objects", target_key, _rebuild_business_objects, paths)
+        return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": f"/t/{target_key}/objects"})
+
     @app.get("/t/{target_key}/parameters", response_class=HTMLResponse)
     def parameters_page(request: Request, target_key: str, q: str = "", location: str = "", host: str = ""):
         import negro_parameters as parameter_tools
@@ -3572,6 +3619,11 @@ def create_app(default_domain: str, default_workspace: Path):
                     identity_tools.resolve_exchange(conn, int(result["exchange_id"]))
                 except Exception as identity_exc:
                     print(f"[identity] exchange={result.get('exchange_id')} error={type(identity_exc).__name__}: {str(identity_exc)[:160]}")
+                try:
+                    import negro_objects as object_tools
+                    object_tools.refresh_exchange(conn, int(result["exchange_id"]))
+                except Exception as object_exc:
+                    print(f"[business-object] exchange={result.get('exchange_id')} error={type(object_exc).__name__}: {str(object_exc)[:160]}")
                 # Keep Search Everything current after deterministic Signals are
                 # persisted. Search indexing is local-only and sends no network traffic.
                 try:

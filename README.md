@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.26.0
+# Negro Recon 🐕 — v0.27.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,23 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.27.0 — Business Objects + cross-host correlation + Pattern Anomalies
+
+Negro ahora puede aprender tipos de objeto como `Order`, `Payment`, `Shipment`, `Account` o cualquier concepto propio del target. Un tipo acepta varios identifiers/aliases, por ejemplo `Order: orderId` y `Order: order_id`; las instancias se unifican por **tipo + valor exacto**.
+
+Una instancia muestra en una sola vista:
+
+- hosts y endpoints donde apareció;
+- identidades observadas;
+- Flows donde participó;
+- estados ya aprendidos;
+- objetos co-observados;
+- timeline HTTP cross-host.
+
+Pattern Anomalies compara únicamente contra patrones que ya se repitieron varias veces. Puede señalar un status HTTP distinto para la misma Identity + operación normalizada, un conjunto diferente de objetos relacionados, una cobertura de identidades distinta o una huella de hosts diferente. Siempre se presenta como **diferencia observada**, nunca como IDOR, bypass o vulnerabilidad confirmada.
+
+Business State Tracks enseñan automáticamente su identificador al modelo de Business Objects, por lo que `Order = orderId + status` no crea dos sistemas paralelos. Flow Detail muestra objetos observados y Flow Compare añade diferencias por tipos de objeto.
 
 ## v0.26.0 — Burp-native Flows + Identity + Business States
 
@@ -97,7 +114,7 @@ negro web
 
 ## Extensión Burp
 
-Para usar las acciones de Flow/Identity de esta versión, carga **Negro Burp Bridge v0.26.0**.
+Para las acciones de Flow/Identity sigue siendo compatible **Negro Burp Bridge v0.26.0**; v0.27 no requiere cambios en el JAR.
 
 Para compilarla:
 

@@ -12,6 +12,7 @@
   <article class="panel guide-card" id="smart-compare"><p class="eyebrow">SMART COMPARE</p><h2>¿Qué coincide y qué cambia entre A y B?</h2><p>Primero muestra valores exactos compartidos, incluso bajo nombres/rutas distintas; después muestra diferencias estructuradas.</p><code>userId=102 ↔ memberId=102</code><p class="muted small">“Posible alias” significa misma evidencia de valor, no equivalencia semántica confirmada.</p></article>
   <article class="panel guide-card" id="identities"><p class="eyebrow">IDENTIDADES</p><h2>¿Quién hizo este tráfico?</h2><p>Separa Identity, Auth Material y Resolver. Una cookie/token puede rotar sin crear otra identidad.</p><code>ANA → /me.id=101 → sesión nueva → misma Identity</code><p class="muted small">Resolvers identifican al actor; ownerId/orderId describen objetos y no deben resolver al actor.</p></article>
   <article class="panel guide-card" id="flows"><p class="eyebrow">FLOWS</p><h2>¿Qué historia de negocio forman varios exchanges?</h2><p>Abre una Capture Window desde Negro o marca Start/End directamente en Burp. Todo entra primero como candidato: tú eliges Include/Ignore y los límites reales del recorrido.</p><code>login → cart → checkout → payment → order</code><p>Si enseñas una definición como <code>Order = orderId + status</code>, Negro sigue los estados de cada objeto real y los compara entre flows.</p><p class="muted small">Una secuencia diferente es una observación para investigar, no una vulnerabilidad declarada.</p></article>
+  <article class="panel guide-card" id="objects"><p class="eyebrow">BUSINESS OBJECTS</p><h2>¿Dónde viaja la misma instancia y qué se relaciona con ella?</h2><p>Enseña identificadores como <code>Order: orderId</code> y aliases del mismo tipo. Negro unifica por tipo + valor exacto, aunque cambie de host, endpoint o nombre de campo.</p><code>Order 98127 → api → payments → shipping</code><p>Pattern Anomalies sólo compara contra patrones repetidos de status, relaciones, identidades o hosts.</p><p class="muted small">Una diferencia observada es una pista para revisar, nunca un IDOR/bypass declarado automáticamente.</p></article>
 </section>
 
 <section class="panel">
@@ -27,6 +28,8 @@ Smart Compare ─→ entender coincidencias y diferencias
 Identidades ───→ saber quién produjo el tráfico
    ↓
 Flows ─────────→ reconstruir y comparar la historia de negocio
+   ↓
+Business Objects → unir instancias, hosts, relaciones y patrones
    ↓
 Signals / IA / Investigation → decidir qué merece probarse</pre>
 </section>
