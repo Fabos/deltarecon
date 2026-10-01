@@ -15,6 +15,12 @@
   </div>
 </section>
 
+<section class="dashboard-goals">
+  <a href="{{ target_base }}/hosts"><span>1</span><div><b>Ordenar superficie</b><small>Qué hosts/endpoints existen y qué falta revisar.</small></div></a>
+  <a href="{{ target_base }}/graph"><span>2</span><div><b>Entender tráfico</b><small>Quién actuó, qué Flow ocurrió y qué objeto tocó.</small></div></a>
+  <a href="{{ target_base }}/hypotheses"><span>3</span><div><b>Investigar una pista</b><small>Convertir evidencia en una prueba manual y luego en hallazgo.</small></div></a>
+</section>
+
 <section class="dashboard-progress" data-summary-url="/api/t/{{ target_key }}/summary">
   <article class="review-progress-card hosts-progress">
     <div class="review-progress-head"><div><span class="eyebrow">HOSTS</span><strong data-stat-key="hosts">{{ stats.hosts }}</strong></div><a href="{{ target_base }}/hosts">Abrir inventario →</a></div>

@@ -373,9 +373,19 @@ def rebuild(conn) -> dict[str, int]:
     }
 
 
+def _ui_object_quality(type_name: str) -> tuple[str, str]:
+    """Presentation hint only: keep ambiguous evidence, but do not promote it by default."""
+    name = str(type_name or "").strip()
+    low = name.lower()
+    generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido"}
+    if not name or name.isdigit() or low in generic or len(name) <= 2:
+        return "ambiguous", "El tipo todavía no explica qué cosa del negocio representa."
+    return "meaningful", "Tipo de dominio legible."
+
+
 def list_types(conn) -> list[dict[str, Any]]:
     init_schema(conn)
-    return [dict(r) for r in conn.execute(
+    rows = [dict(r) for r in conn.execute(
         """SELECT bt.*,
                   (SELECT COUNT(*) FROM business_object_identifiers bi WHERE bi.object_type_id=bt.id) identifier_count,
                   (SELECT COUNT(*) FROM business_objects bo WHERE bo.object_type_id=bt.id) object_count,
@@ -383,6 +393,11 @@ def list_types(conn) -> list[dict[str, Any]]:
                   (SELECT COUNT(*) FROM business_objects bo WHERE bo.object_type_id=bt.id AND (SELECT COUNT(DISTINCT host_id) FROM business_object_observations x WHERE x.business_object_id=bo.id)>1) cross_host_objects
            FROM business_object_types bt ORDER BY lower(bt.name)"""
     ).fetchall()]
+    for row in rows:
+        quality, reason = _ui_object_quality(row.get("name") or "")
+        row["ui_quality"] = quality
+        row["ui_quality_reason"] = reason
+    return rows
 
 
 def _candidate_guidance(identifier_name: str) -> tuple[str, str]:
@@ -451,6 +466,9 @@ def list_objects(conn, *, type_id: int | None = None, q: str = "", limit: int = 
     rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
     for row in rows:
         row["cross_host"] = int(row.get("host_count") or 0) > 1
+        quality, reason = _ui_object_quality(row.get("object_type") or "")
+        row["ui_quality"] = quality
+        row["ui_quality_reason"] = reason
     return rows
 
 
@@ -721,6 +739,8 @@ def overview(conn, *, q: str = "", type_id: int | None = None, limit: int = 250)
     init_schema(conn)
     types = list_types(conn)
     objects = list_objects(conn, type_id=type_id, q=q, limit=limit)
+    meaningful_objects = [x for x in objects if x.get("ui_quality") != "ambiguous"]
+    ambiguous_objects = [x for x in objects if x.get("ui_quality") == "ambiguous"]
     candidates = candidate_identifiers(conn, limit=50)
     stats_row = conn.execute(
         """SELECT (SELECT COUNT(*) FROM business_object_types) types,
@@ -732,10 +752,10 @@ def overview(conn, *, q: str = "", type_id: int | None = None, limit: int = 250)
     ).fetchone()
     # Keep page cost bounded. Only evaluate recent/high-evidence objects for pattern cards.
     anomaly_cards: list[dict[str, Any]] = []
-    for obj in objects[:24]:
+    for obj in meaningful_objects[:24]:
         items = pattern_anomalies(conn, int(obj["id"]))
         if items:
             anomaly_cards.append({"object": obj, "items": items})
             if len(anomaly_cards) >= 20:
                 break
-    return {"stats": dict(stats_row), "types": types, "objects": objects, "candidates": candidates, "anomaly_cards": anomaly_cards}
+    return {"stats": dict(stats_row), "types": types, "objects": objects, "meaningful_objects": meaningful_objects, "ambiguous_objects": ambiguous_objects, "candidates": candidates, "anomaly_cards": anomaly_cards}

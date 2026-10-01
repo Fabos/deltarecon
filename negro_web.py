@@ -1403,6 +1403,18 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
     import negro_objects as object_tools
 
     scope = str(scope or "identities").lower()
+
+    def object_ui_quality(type_name: str, identifier: str = "") -> tuple[str, str]:
+        """Presentation-only quality hint. It never changes stored Business Objects."""
+        name = str(type_name or "").strip()
+        low = name.lower()
+        generic = {"object", "objeto", "id", "uuid", "ref", "reference", "referencia", "item", "entity", "entidad", "unknown", "desconocido"}
+        if not name or name.isdigit() or low in generic:
+            return "ambiguous", "El tipo no expresa todavía qué cosa del negocio representa."
+        if len(name) <= 2:
+            return "ambiguous", "El nombre del tipo es demasiado corto para aportar contexto."
+        return "meaningful", "Tipo con nombre de dominio legible."
+
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
@@ -1444,6 +1456,10 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id
                ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 240"""
         ).fetchall()]
+        for option in object_options:
+            quality, reason = object_ui_quality(option.get("object_type") or "", option.get("identifier") or "")
+            option["ui_quality"] = quality
+            option["ui_quality_reason"] = reason
         object_type_options = [dict(r) for r in conn.execute("SELECT id,name FROM business_object_types ORDER BY lower(name)").fetchall()]
 
         def add_identity(iid: int) -> str | None:
@@ -1507,7 +1523,8 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
             ).fetchone()
             if not row: return None
             value=str(row["identifier_raw"] or row["identifier_preview"] or "?")
-            return add_node(f"object:{oid}", "object", f"{row['object_type']} {value}", meta={"id":oid,"object_type":row["object_type"],"identifier":value,"requests":int(row["request_count"] or 0),"hosts":int(row["host_count"] or 0),"last_seen_at":row["last_seen_at"]}, href=f"objects/{oid}")
+            quality, reason = object_ui_quality(row["object_type"], value)
+            return add_node(f"object:{oid}", "object", f"{row['object_type']} {value}", meta={"id":oid,"object_type":row["object_type"],"identifier":value,"requests":int(row["request_count"] or 0),"hosts":int(row["host_count"] or 0),"last_seen_at":row["last_seen_at"],"ui_quality":quality,"ui_quality_reason":reason}, href=f"objects/{oid}")
 
         def connect_request_context(exid: int, request_node: str, *, flow_node: str | None = None) -> None:
             actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()
@@ -2139,7 +2156,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Flow Compare","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flows","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Business Objects","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
-            (r"^/graph", {"anchor":"map","title":"Investigation Map","question":"¿Qué quiero entender visualmente de esta investigación?","when":"Cambia de lente: Superficie para qué existe, Identidades para quién tocó qué, Flows para secuencias, Objetos para relaciones e Inteligencia para diferencias que merecen atención.","example":"En el lab selecciona Ana, compárala con Diego y enfoca Order 123; luego usa 1/2 saltos o Camino para explicar cómo se conecta una Request con el objeto y el Flow.","caution":"Las líneas representan evidencia observada o correlaciones guardadas. No demuestran causalidad, ownership ni vulnerabilidad por sí solas."}),
+            (r"^/graph", {"anchor":"map","title":"Investigation Views","question":"¿Qué pregunta quiero responder sin ver todo el ruido?","when":"Usa Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"En el lab, Flow muestra en timeline GET /admin→403 y luego la variante con X-Original-URL→200; sólo después enfocas Ana/Diego u Order 123 si necesitas contexto.","caution":"Cada vista oculta evidencia secundaria a propósito. Una línea o diferencia observada no demuestra vulnerabilidad por sí sola."}),
             (r"^/$", default),
         ]
         for pattern, meta in rules:

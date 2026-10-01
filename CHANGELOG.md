@@ -1,18 +1,18 @@
 # Changelog
 
-## v0.29.0
+## v0.30.0
 
-- Rediseña el mapa como **Investigation Map 2.0** con cinco lentes principales: Superficie, Identidades, Flows, Objetos e Inteligencia.
-- Añade proyecciones visuales semánticas que reutilizan Identity Contexts, Flow Steps, Business Objects, Business States y Pattern Anomalies existentes; no crea una segunda fuente de verdad.
-- La vista de Identidades usa nombres y cantidad de cuentas completamente dinámicos. Permite seleccionar cualquier Identity Context y compararlo con cualquier otro sin asumir buyer/seller/admin.
-- Añade filtros contextuales para Identity, Flow y Business Object.
-- Añade **Focus Mode** desde Request, Identity, Flow, Object y Finding mediante `Ver en mapa`.
-- Añade expansión visual de 1/2 saltos y **Path Finder** entre dos nodos usando únicamente relaciones presentes en la escena cargada.
-- Añade gramática visual estable: `Identity = quién`, `Request = llamada`, `Flow = historia`, `Object = cosa`, `State = estado`, `Anomaly = diferencia`.
-- Cambia la terminología visible **Exchange → Request** en la experiencia de usuario, conservando `exchange_id` internamente para compatibilidad.
-- Amplía el Centro de Aprendizaje con las lentes del Investigation Map y su uso en el Access Control Lab.
-- Añade regresión `v029_map2_ux_test.py`; toda la suite existente continúa en verde.
-- Negro Burp Bridge permanece compatible; esta iteración no requiere cambiar el JAR.
+- Reemplaza el enfoque de “un grafo para todo” por **Investigation Views / Map 3.0**.
+- Flow se renderiza como timeline ordenado de Requests; endpoint, status, identidad, objeto y estado quedan visibles en la historia.
+- Identidad y Objeto son vistas focales: primero se elige una cuenta/sesión o cosa concreta; luego se muestra sólo su contexto útil.
+- Inteligencia visual pasa a llamarse **Atención** y muestra únicamente diferencias, hipótesis activas y hallazgos relevantes.
+- Business Objects aplica una regla de presentación `meaningful / ambiguous`: evidencia ambigua se conserva pero no protagoniza mapas/listas por defecto.
+- Agrupa Identidades / Flows / Objetos bajo el menú **Entender** y Recon / Guía / Ajustes bajo **Más**.
+- Refuerza la ayuda contextual con “Esta pantalla responde…”.
+- Simplifica páginas de Flows, Identidades y Objetos; formularios/manuales y métricas técnicas quedan progresivamente revelados.
+- Inicio añade tres rutas simples: ordenar superficie, entender tráfico e investigar una pista.
+- Mantiene Request-first UX y compatibilidad interna con `exchange_id`.
+- Toda la suite histórica sigue en verde y se añade regresión de v0.30.
 
 ## v0.28.0
 

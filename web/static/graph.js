@@ -27,6 +27,9 @@
   const flowSelect = root.querySelector('[data-graph-flow-select]');
   const objectSelect = root.querySelector('[data-graph-object-select]');
   const pathClearBtn = root.querySelector('[data-graph-path-clear]');
+  const narrative = root.querySelector('[data-graph-narrative]');
+  const canvasShell = root.querySelector('[data-graph-canvas-shell]');
+  const viewExplainer = root.querySelector('[data-view-explainer]');
   const api = root.dataset.api;
   const base = root.dataset.base;
   const targetKey = root.dataset.target || 'target';
@@ -152,10 +155,97 @@
       fillSelect(identitySelect,opts.identities||[],x=>x.id,x=>`${x.name}${Number(x.request_count||0)?` · ${x.request_count} Requests`:''}`,graph.meta?.identity_id,'Todas las identidades');
       fillSelect(identityCompare,opts.identities||[],x=>x.id,x=>x.name,graph.meta?.compare_identity_id,'— ninguna —');
     } else if(preset==='flow'){
-      fillSelect(flowSelect,opts.flows||[],x=>x.id,x=>`${x.name}${Number(x.step_count||0)?` · ${x.step_count} pasos`:''}`,graph.meta?.flow_id,'Todos los Flows');
+      fillSelect(flowSelect,opts.flows||[],x=>x.id,x=>`${x.name}${Number(x.step_count||0)?` · ${x.step_count} pasos`:''}`,graph.meta?.flow_id,'Elige un Flow');
     } else if(preset==='objects'){
-      fillSelect(objectSelect,opts.objects||[],x=>x.id,x=>`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Objetos recientes');
+      fillSelect(objectSelect,(opts.objects||[]).filter(x=>x.ui_quality!=='ambiguous'),x=>x.id,x=>`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Elige un objeto');
     }
+  }
+
+  function nodeFor(id){ return graph.nodes.find(n=>n.id===id) || sceneNodes.find(n=>n.id===id); }
+  function relatedNodes(id, relation=null){
+    return graph.edges.filter(e=>(e.source===id||e.target===id) && (!relation || e.relation===relation)).map(e=>nodeFor(opposite(e,id))).filter(Boolean);
+  }
+  function statusClass(status){ const n=Number(status||0); return n>=200&&n<300?'ok':n>=300&&n<400?'redirect':n>=400?'bad':'neutral'; }
+  function requestContext(requestNode){
+    const rels=graph.edges.filter(e=>e.source===requestNode.id||e.target===requestNode.id);
+    const identities=[], objects=[];
+    rels.forEach(e=>{
+      const other=nodeFor(opposite(e,requestNode.id)); if(!other)return;
+      if(other.type==='identity' && !identities.some(x=>x.id===other.id))identities.push(other);
+      if(other.type==='object' && !objects.some(x=>x.id===other.id))objects.push(other);
+    });
+    const states=graph.nodes.filter(n=>n.type==='state' && Number(n.meta?.request_id||0)===Number(requestNode.meta?.id||0));
+    return {identities,objects,states};
+  }
+  function bindNarrativeActions(){
+    narrative?.querySelectorAll('[data-select-flow]').forEach(b=>b.addEventListener('click',()=>{if(flowSelect){flowSelect.value=String(b.dataset.selectFlow);flowSelect.dispatchEvent(new Event('change'));}}));
+    narrative?.querySelectorAll('[data-select-identity]').forEach(b=>b.addEventListener('click',()=>{if(identitySelect){identitySelect.value=String(b.dataset.selectIdentity);identitySelect.dispatchEvent(new Event('change'));}}));
+    narrative?.querySelectorAll('[data-select-object]').forEach(b=>b.addEventListener('click',()=>{if(objectSelect){objectSelect.value=String(b.dataset.selectObject);objectSelect.dispatchEvent(new Event('change'));}}));
+    narrative?.querySelectorAll('[data-request-node]').forEach(b=>b.addEventListener('click',()=>{const n=nodeFor(b.dataset.requestNode);if(n){selected=n.id;showNode(n);}}));
+    narrative?.querySelectorAll('[data-object-node]').forEach(b=>b.addEventListener('click',()=>{const n=nodeFor(b.dataset.objectNode);if(n){selected=n.id;showNode(n);}}));
+    narrative?.querySelectorAll('[data-open-graph-focus]').forEach(b=>b.addEventListener('click',()=>{
+      const n=nodeFor(b.dataset.openGraphFocus); if(!n)return;
+      narrative.hidden=true; canvasShell.hidden=false; selected=n.id; buildScene(); buildTypeFilters(); applyFilters({fitAfter:true}); showNode(n); focusNeighborhood(n.id,1);
+    }));
+  }
+  function renderFlowNarrative(){
+    const opts=graph.meta?.filter_options||{};
+    const fid=Number(graph.meta?.flow_id||0);
+    if(!fid){
+      const rows=opts.flows||[];
+      narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">FLOW</span><h2>Elige una historia</h2><p>Un Flow sólo tiene valor cuando puedes leer sus Requests en orden. No mostramos objetos ni líneas hasta que elijas uno.</p></div><a class="btn-secondary" href="${base}/flows">Administrar Flows</a></div><div class="narrative-card-grid">${rows.length?rows.map(f=>`<button class="narrative-choice" data-select-flow="${Number(f.id)}"><b>${esc(f.name)}</b><span>${Number(f.step_count||0)} pasos${f.capture_status==='capturing'?' · capturando':''}</span></button>`).join(''):`<div class="empty-state friendly"><b>No hay Flows todavía.</b><span>Captura una operación desde Burp o desde la pantalla Flows.</span><a href="${base}/flows">Crear Flow →</a></div>`}</div>`;
+      bindNarrativeActions(); return;
+    }
+    const flow=nodeFor(`flow:${fid}`);
+    const steps=graph.edges.filter(e=>e.source===`flow:${fid}`&&e.relation==='flow_step')
+      .map(e=>({edge:e,node:nodeFor(e.target),position:Number(e.meta?.evidence?.position||999999)})).filter(x=>x.node).sort((a,b)=>a.position-b.position);
+    const actor=flow?.meta?.identity||relatedNodes(`flow:${fid}`,'flow_actor')[0]?.label||'';
+    const stepHtml=steps.map((x,idx)=>{
+      const n=x.node,m=n.meta||{},ctx=requestContext(n);
+      const objs=ctx.objects.filter(o=>o.meta?.ui_quality!=='ambiguous');
+      const identity=ctx.identities[0]?.label||actor||'';
+      const states=ctx.states.map(st=>`<span class="story-chip state">${esc(st.meta?.field||'state')}: ${esc(st.label)}</span>`).join('');
+      const objectChips=objs.slice(0,4).map(o=>`<button type="button" class="story-chip object" data-object-node="${esc(o.id)}">${esc(o.label)}</button>`).join('');
+      return `<article class="flow-story-step"><div class="flow-story-rail"><span>${idx+1}</span>${idx<steps.length-1?'<i></i>':''}</div><div class="flow-story-card"><div class="flow-story-request"><div><b>${esc(m.method||'REQUEST')}</b><code>${esc(m.path||n.label)}</code></div><span class="http-status ${statusClass(m.status)}">${esc(m.status??'—')}</span></div><div class="flow-story-meta">${m.host?`<span>${esc(m.host)}</span>`:''}${identity?`<span>👤 ${esc(identity)}</span>`:''}<span>Request #${Number(m.id||0)}</span></div>${objectChips||states?`<div class="flow-story-context">${objectChips}${states}</div>`:''}<div class="flow-story-actions"><button type="button" class="btn-secondary" data-request-node="${esc(n.id)}">Ver Request</button>${objs.length?`<button type="button" class="btn-secondary" data-open-graph-focus="${esc(objs[0].id)}">Ver relaciones de ${esc(objs[0].label)}</button>`:''}</div></div></article>`;
+    }).join('');
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">FLOW · HISTORIA</span><h2>${esc(flow?.label||`Flow ${fid}`)}</h2><p>${actor?`Actor observado: <b>${esc(actor)}</b> · `:''}${steps.length} Requests incluidas. Lee de arriba hacia abajo.</p></div><div class="narrative-actions"><a class="btn-secondary" href="${base}/flows/${fid}">Editar Flow</a><a class="btn-secondary" href="${base}/flows/compare?a=${fid}">Comparar</a></div></div>${stepHtml?`<div class="flow-story">${stepHtml}</div>`:`<div class="empty-state friendly"><b>Este Flow no tiene Requests incluidas.</b><span>Abre el Flow y marca qué pasos forman realmente la historia.</span></div>`}`;
+    bindNarrativeActions();
+  }
+  function renderIdentityIndex(){
+    const rows=graph.meta?.filter_options?.identities||[];
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">IDENTIDAD · QUIÉN</span><h2>Elige una cuenta o sesión</h2><p>Negro no presupone Buyer, Seller ni Admin. Tú defines las identidades de cada negocio.</p></div><a class="btn-secondary" href="${base}/identities">Administrar identidades</a></div><div class="narrative-card-grid">${rows.length?rows.map(i=>`<button class="narrative-choice" data-select-identity="${Number(i.id)}"><b>${esc(i.name)}</b><span>${Number(i.request_count||0)} Requests observadas${i.kind?` · ${esc(i.kind)}`:''}</span></button>`).join(''):`<div class="empty-state friendly"><b>No hay identidades todavía.</b><span>Crea una desde una Request de Burp o desde Identidades.</span><a href="${base}/identities">Crear identidad →</a></div>`}</div>`;
+    bindNarrativeActions();
+  }
+  function renderObjectIndex(){
+    const rows=graph.meta?.filter_options?.objects||[];
+    const good=rows.filter(o=>o.ui_quality!=='ambiguous'), noisy=rows.filter(o=>o.ui_quality==='ambiguous');
+    const card=o=>`<button class="narrative-choice" data-select-object="${Number(o.id)}"><b>${esc(o.object_type)} <code>${esc(o.identifier)}</code></b><span>último: ${esc(o.last_seen_at||'—')}</span></button>`;
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">OBJETO · QUÉ COSA</span><h2>Elige una cosa con significado</h2><p>Prioriza <b>Order 123</b>, <b>User 101</b>, <b>Invoice 77</b>. Tipos como <code>111 101</code> o <code>Object 7</code> generan ruido y quedan ocultos.</p></div><a class="btn-secondary" href="${base}/objects">Administrar objetos</a></div><div class="narrative-card-grid">${good.length?good.slice(0,80).map(card).join(''):`<div class="empty-state friendly"><b>No hay objetos suficientemente claros.</b><span>Enseña un tipo de dominio inequívoco, por ejemplo <code>orderId → Order</code>.</span><a href="${base}/objects">Revisar objetos →</a></div>`}</div>${noisy.length?`<details class="noisy-object-list"><summary>Mostrar ${noisy.length} objetos ambiguos</summary><p>Están guardados, pero Negro no les da protagonismo porque el tipo no explica qué representan.</p><div class="narrative-card-grid">${noisy.slice(0,60).map(card).join('')}</div></details>`:''}`;
+    bindNarrativeActions();
+  }
+  function renderIntelligenceNarrative(){
+    const cards=graph.nodes.filter(n=>['anomaly','lead','finding'].includes(n.type));
+    const order={finding:0,anomaly:1,lead:2}; cards.sort((a,b)=>(order[a.type]??9)-(order[b.type]??9));
+    const html=cards.map(n=>{
+      const m=n.meta||{}; const parents=graph.edges.filter(e=>e.target===n.id||e.source===n.id).map(e=>nodeFor(opposite(e,n.id))).filter(Boolean).filter(x=>!['target'].includes(x.type));
+      const why=m.message||m.why||''; const next=m.next_test||'';
+      return `<article class="attention-card attention-${esc(n.type)}"><div class="attention-card-head"><span>${n.type==='finding'?'HALLAZGO':n.type==='anomaly'?'DIFERENCIA OBSERVADA':'HIPÓTESIS'}</span><b>${esc(n.label)}</b></div>${why?`<p>${esc(why)}</p>`:''}${parents.length?`<div class="attention-context">Contexto: ${parents.slice(0,3).map(x=>`<code>${esc(x.label)}</code>`).join(' ')}</div>`:''}${m.baseline||m.current?`<div class="attention-diff">${m.baseline?`<span><small>Patrón</small>${esc(m.baseline)}</span>`:''}${m.current?`<span><small>Observado</small>${esc(m.current)}</span>`:''}</div>`:''}${next?`<p><b>Siguiente prueba:</b> ${esc(next)}</p>`:''}<div class="flow-story-actions">${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir detalle</a>`:''}</div></article>`;
+    }).join('');
+    narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">ATENCIÓN</span><h2>Sólo lo que merece una segunda mirada</h2><p>Esta vista es deliberadamente corta: diferencias, hipótesis activas y hallazgos. Nada de superficie completa.</p></div><a class="btn-secondary" href="${base}/hypotheses">Abrir Hunt</a></div><div class="attention-board">${html||`<div class="empty-state friendly"><b>No hay señales prioritarias.</b><span>Sigue navegando y probando; Negro mostrará aquí únicamente diferencias o investigaciones con contexto.</span></div>`}</div>`;
+  }
+  function renderExperience(){
+    if(!narrative||!canvasShell)return;
+    const noSelectionIdentity=preset==='identity' && !Number(graph.meta?.identity_id||0);
+    const noSelectionObject=preset==='objects' && !Number(graph.meta?.object_id||0);
+    const narrativeMode=preset==='flow'||preset==='intelligence'||noSelectionIdentity||noSelectionObject;
+    narrative.hidden=!narrativeMode; canvasShell.hidden=narrativeMode;
+    const explanations={surface:['Superficie','Hosts, rutas y métodos. Empieza amplio y profundiza sólo cuando una pieza te interese.'],identity:['Identidad','Selecciona una cuenta/sesión. Verás únicamente las Requests, Flows y objetos que aportan contexto.'],flow:['Flow','Línea de tiempo: qué Request ocurrió primero, cuál siguió y qué objeto/estado apareció.'],objects:['Objeto','Sigue una sola cosa de negocio y expande sus relaciones sólo cuando hagan falta.'],intelligence:['Atención','Sólo diferencias, hipótesis y hallazgos que justifican volver a mirar.']};
+    const x=explanations[preset]||[valueLabel(preset),'Vista avanzada']; if(viewExplainer)viewExplainer.innerHTML=`<b>${esc(x[0])}</b><p>${esc(x[1])}</p>`;
+    if(preset==='flow')renderFlowNarrative();
+    else if(preset==='intelligence')renderIntelligenceNarrative();
+    else if(noSelectionIdentity)renderIdentityIndex();
+    else if(noSelectionObject)renderObjectIndex();
+    if(!narrativeMode)window.setTimeout(()=>{try{fit();}catch(_){}},20);
   }
 
   function scopeKey(){ const m=graph.meta||{}; return `${m.scope||'overview'}:${m.host_id||0}:${m.resource_id||0}`; }
@@ -192,6 +282,7 @@
         populateContextControls();
         buildScene(); buildTypeFilters(); buildLeadFilters(); updateLeadFilterVisibility(); applyFilters({fitAfter:true});
         renderRoutes();
+        renderExperience();
         detail.innerHTML=emptyDetail();
       })
       .catch(err => { detail.innerHTML = `<div class="graph-detail-empty"><h3>No se pudo cargar el mapa</h3><p>${esc(err.message)}</p></div>`; });
@@ -263,7 +354,16 @@
     };
 
     if (['identity','flow','objects','intelligence','context'].includes(preset)) {
-      graph.nodes.forEach(addNode);
+      const selectedIdentity=Number(graph.meta?.identity_id||0)>0;
+      const selectedObject=Number(graph.meta?.object_id||0)>0;
+      const allowed = preset==='identity' && selectedIdentity
+        ? new Set(['identity','flow','request','object','state','anomaly'])
+        : preset==='objects' && selectedObject
+          ? new Set(['identity','flow','request','object','state','anomaly'])
+          : preset==='context'
+            ? new Set(['identity','flow','request','object','state','anomaly'])
+            : null;
+      graph.nodes.filter(n=>!allowed||allowed.has(n.type)).forEach(addNode);
       graph.edges.filter(e => include.has(e.source) && include.has(e.target)).forEach(addEdge);
     } else if (preset === 'surface' || preset === 'resources') {
       graph.nodes.filter(n => ['target','host','resource','operation','cluster'].includes(n.type)).forEach(addNode);
@@ -693,7 +793,7 @@
       surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿quién tocó qué?',flow:'Flows · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿qué cosas están relacionadas?',intelligence:'Inteligencia · ¿qué merece atención?',
       untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · Requests observadas',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista técnica ampliada'
     };
-    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona cualquier Identity Context que tú hayas creado. Negro no presupone roles.',flow:'Una historia de negocio une Requests, actor, objetos y estados observados.',objects:'Sigue una misma cosa del negocio aunque aparezca en varios hosts y Requests.',intelligence:'Anomalías, hipótesis y hallazgos: diferencias que justifican mirar más de cerca.'};
+    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona cualquier Identity Context que tú hayas creado. Negro no presupone roles.',flow:'Lee la historia de arriba hacia abajo: Request, resultado, identidad y objeto. Sin líneas cruzadas.',objects:'Elige una cosa con significado. Los objetos ambiguos se esconden por defecto para no contaminar la lectura.',intelligence:'Una bandeja corta de diferencias, hipótesis y hallazgos. Si no aporta una decisión, no aparece aquí.'};
     if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Mapa de investigación';
     if(scopeCopyEl) scopeCopyEl.textContent=helpCopy[next]||'Cambia de lente sin perder la evidencia original.';
     updateLeadFilterVisibility();
@@ -725,7 +825,7 @@
       load(`${api}?scope=overview`).then(()=>{preset=next;if(scopeStatusEl)scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();});
       return;
     }
-    detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';populateContextControls();applyFilters({fitAfter:true});renderRoutes();
+    detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';populateContextControls();applyFilters({fitAfter:true});renderRoutes();renderExperience();
   }
 
   search.addEventListener('input',()=>applyFilters());
@@ -733,15 +833,15 @@
   root.querySelector('[data-graph-overview]')?.addEventListener('click',()=>{const b=root.querySelector('[data-graph-preset="surface"]');setPreset('surface',b);});
   identitySelect?.addEventListener('change',()=>{
     const iid=Number(identitySelect.value||0),cid=Number(identityCompare?.value||0);
-    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();});
+    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();renderExperience();});
   });
   identityCompare?.addEventListener('change',()=>{
     const iid=Number(identitySelect?.value||0),cid=Number(identityCompare.value||0);
     if(!iid&&cid){identitySelect.value=String(cid);identityCompare.value='';return identitySelect.dispatchEvent(new Event('change'));}
-    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();});
+    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();renderExperience();});
   });
-  flowSelect?.addEventListener('change',()=>{const id=Number(flowSelect.value||0);load(id?`${api}?scope=flow&flow_id=${id}`:`${api}?scope=flows`).then(()=>{preset='flow';populateContextControls();});});
-  objectSelect?.addEventListener('change',()=>{const id=Number(objectSelect.value||0);load(id?`${api}?scope=object&object_id=${id}`:`${api}?scope=objects`).then(()=>{preset='objects';populateContextControls();});});
+  flowSelect?.addEventListener('change',()=>{const id=Number(flowSelect.value||0);load(id?`${api}?scope=flow&flow_id=${id}`:`${api}?scope=flows`).then(()=>{preset='flow';populateContextControls();renderExperience();});});
+  objectSelect?.addEventListener('change',()=>{const id=Number(objectSelect.value||0);load(id?`${api}?scope=object&object_id=${id}`:`${api}?scope=objects`).then(()=>{preset='objects';populateContextControls();renderExperience();});});
   pathClearBtn?.addEventListener('click',clearPath);
   root.querySelector('[data-graph-fit]')?.addEventListener('click',fit);
   root.querySelector('[data-graph-reset-layout]')?.addEventListener('click',()=>{clearSavedLayout();autoLayout();applyFilters({fitAfter:true});});
@@ -826,7 +926,7 @@
   }
   async function refreshGraphData(){
     const m=graph.meta||{};let u=`${api}?scope=${encodeURIComponent(m.scope||'overview')}`;if(m.host_id)u+=`&host_id=${encodeURIComponent(m.host_id)}`;if(m.resource_id)u+=`&resource_id=${encodeURIComponent(m.resource_id)}`;if(m.identity_id)u+=`&identity_id=${encodeURIComponent(m.identity_id)}`;if(m.compare_identity_id)u+=`&compare_identity_id=${encodeURIComponent(m.compare_identity_id)}`;if(m.flow_id)u+=`&flow_id=${encodeURIComponent(m.flow_id)}`;if(m.object_id)u+=`&object_id=${encodeURIComponent(m.object_id)}`;if(m.request_id)u+=`&request_id=${encodeURIComponent(m.request_id)}`;if(m.finding_id)u+=`&finding_id=${encodeURIComponent(m.finding_id)}`;
-    const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();initLeadFilters();buildScene();buildTypeFilters();buildLeadFilters();updateLeadFilterVisibility();applyFilters({fitAfter:false});renderRoutes();
+    const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();initLeadFilters();buildScene();buildTypeFilters();buildLeadFilters();updateLeadFilterVisibility();applyFilters({fitAfter:false});renderRoutes();renderExperience();
   }
   function bindIdeaCards(){
     aiResults?.querySelectorAll('[data-idea]').forEach(card=>{
@@ -917,7 +1017,7 @@
     if(initialFocus){
       const canonical=graph.meta?.focus_node||initialFocus;
       const n=sceneNodes.find(x=>x.id===canonical)||graph.nodes?.find(x=>x.id===canonical);
-      if(n){selected=n.id;showNode(n);focusNeighborhood(n.id,1);}
+      if(n){selected=n.id;showNode(n);if(!canvasShell?.hidden)focusNeighborhood(n.id,1);}
     }
   });
 })();

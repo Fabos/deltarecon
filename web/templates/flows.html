@@ -2,7 +2,7 @@
 {% block title %}Flows · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">FLOW WORKBENCH</p><h1>Historias de negocio</h1><p class="muted">Captura ventanas de tráfico y conviértelas después en una secuencia lógica. Negro conserva candidatos; tú decides qué pertenece al flow.</p></div>
+  <div><p class="eyebrow">FLOWS</p><h1>Qué ocurrió y en qué orden</h1><p class="muted">Un Flow debe poder leerse como una historia: Request 1 → Request 2 → Request 3. Captura primero; limpia el ruido después.</p></div>
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button secondary" href="{{ target_base }}/flows/compare">Comparar flows</a></div>
 </section>
 
@@ -29,16 +29,17 @@
       <p class="muted small">Start abre una ventana. Stop guarda todo lo observado como candidato, incluyendo ruido y OPTIONS. Nada se elimina automáticamente.</p>
       <button class="button" type="submit">● Start Flow</button>
     </form>
-    <hr>
-    <p class="eyebrow">FLOW MANUAL</p><h3>Ya conoces el rango</h3>
-    <form class="stack-form" action="{{ target_base }}/flows/create" method="post">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label><span>Nombre</span><input name="name" required placeholder="Compra normal · Cuenta principal"></label>
-      <label><span>Descripción</span><textarea name="description"></textarea></label>
-      <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-      <div class="range-grid"><label><span>Desde Request #</span><input name="start_exchange" type="number" min="1"></label><label><span>Hasta Request #</span><input name="end_exchange" type="number" min="1"></label></div>
-      <button class="button ghost" type="submit">Crear flow manual</button>
-    </form>
+    <details class="advanced-inline-form">
+      <summary>Ya conozco las Requests exactas</summary>
+      <form class="stack-form" action="{{ target_base }}/flows/create" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label><span>Nombre</span><input name="name" required placeholder="Compra normal · Cuenta principal"></label>
+        <label><span>Descripción</span><textarea name="description"></textarea></label>
+        <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
+        <div class="range-grid"><label><span>Desde Request #</span><input name="start_exchange" type="number" min="1"></label><label><span>Hasta Request #</span><input name="end_exchange" type="number" min="1"></label></div>
+        <button class="button ghost" type="submit">Crear Flow con rango</button>
+      </form>
+    </details>
   </aside>
 </section>
 {% endblock %}

@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.29.0
+# Negro Recon — Metodología v0.30.0
 
 ## Modelo mental
 
@@ -8,7 +8,7 @@ Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué 
 
 ## Cómo no perderse en Negro
 
-Desde v0.28 cada pantalla principal incluye una ayuda contextual. Desde v0.29 el Investigation Map permite leer el mismo conocimiento por lentes visuales y la UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
+Desde v0.28 cada pantalla principal incluye ayuda contextual. Desde v0.30 las Investigation Views usan una visualización distinta según la pregunta: timeline para Flow, grafo focal para Identity/Object, mapa para Surface y bandeja reducida para Attention. La UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
 
 ```text
 ¿Qué existe?              → Inventario / Host tools
@@ -24,23 +24,23 @@ Desde v0.28 cada pantalla principal incluye una ayuda contextual. Desde v0.29 el
 El Access Control Lab se usa como ejemplo común en la guía para separar `Ana` (Identity), `Order 123` (Business Object) y `ownerId=101` (propiedad/ownership).
 
 
-## Investigation Map 2.0
+## Investigation Views / Map 3.0
 
 Responde visualmente distintas preguntas sin duplicar los datos:
 
 ```text
-Superficie   → ¿qué existe y dónde?
-Identidades  → ¿quién tocó qué?
-Flows        → ¿qué ocurrió y en qué orden?
-Objetos      → ¿qué cosas están relacionadas?
-Inteligencia → ¿qué rompe patrones o merece atención?
+Superficie → ¿qué existe y dónde?           → mapa/árbol
+Identidad  → ¿quién hizo qué?                → grafo focal
+Flow       → ¿qué ocurrió y en qué orden?    → timeline
+Objeto     → ¿qué sabemos de esta cosa?      → grafo focal
+Atención   → ¿qué merece volver a mirar?     → bandeja corta
 ```
 
 Los Identity Contexts son dinámicos: el mapa usa los nombres reales definidos en el proyecto. No existe lógica fija para Buyer A/B, seller o admin.
 
 Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
 
-El mapa es una herramienta de comprensión. Una línea significa que Negro tiene evidencia de esa relación; no demuestra causalidad, ownership ni vulnerabilidad por sí sola.
+La visualización es una herramienta de comprensión. No todo conocimiento debe dibujarse: Negro conserva evidencia técnica, pero sólo muestra por defecto lo que ayuda a responder la pregunta actual. Una línea significa relación observada, no causalidad, ownership ni vulnerabilidad.
 
 ## Buscar
 

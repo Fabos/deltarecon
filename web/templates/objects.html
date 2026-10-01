@@ -2,10 +2,11 @@
 {% block title %}Objetos · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
+  <span class="sr-only">Access Control Lab</span>
   <div>
-    <p class="eyebrow">BUSINESS OBJECTS · v0.29.0</p>
-    <h1>Objetos de negocio</h1>
-    <p class="muted">Un objeto es una <b>cosa estable del dominio</b> —por ejemplo <code>Order 123</code>—, no la cuenta que actúa ni cualquier campo que termine en <code>Id</code>.</p>
+    <p class="eyebrow">BUSINESS OBJECTS · v0.30.0</p>
+    <h1>Sigue una cosa del negocio</h1>
+    <p class="muted">Ejemplo: <code>Order 123</code>. Negro reúne dónde apareció, qué Requests lo tocaron, qué identidades lo vieron y qué estados observó.</p>
   </div>
   <div class="page-actions">
     <form action="{{ target_base }}/objects/refresh" method="post" data-job-form data-job-label="Reconstruyendo Business Objects"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">↻ Reconstruir</button></form>
@@ -13,32 +14,36 @@
   </div>
 </section>
 
-<section class="panel object-onboarding">
-  <div class="panel-head"><div><p class="eyebrow">MODELO MENTAL</p><h2>Access Control Lab</h2></div><a href="{{ target_base }}/guide#lab">Ver ejemplo completo →</a></div>
+<details class="panel object-onboarding compact-learning">
+  <summary><b>¿Identity, Object o propiedad? Ver ejemplo rápido</b><span>Ana → Order 123 → ownerId=101</span></summary>
   <div class="object-concept-demo">
     <div><span>IDENTITY · QUIÉN</span><b>Ana</b><small>actor / cuenta</small></div>
     <strong>actúa sobre</strong>
-    <div><span>BUSINESS OBJECT · QUÉ</span><b>Order 123</b><small>misma entidad en varias requests</small></div>
+    <div><span>OBJECT · QUÉ</span><b>Order 123</b><small>misma cosa en varias Requests</small></div>
     <strong>tiene</strong>
-    <div><span>PROPIEDAD</span><b>ownerId=101</b><small>dato del Order, no Identity</small></div>
+    <div><span>PROPIEDAD</span><b>ownerId=101</b><small>dato del Order</small></div>
   </div>
-  <p class="muted small">Si ves <code>/api/orders/123</code>, <code>orderId=123</code> y <code>/api/orders/123/invoice</code>, puedes enseñar <b>Order</b> para que Negro los trate como la misma instancia. No enseñes <code>id</code>, <code>roleId</code> o <code>reference</code> sólo porque aparecen en sugerencias: primero entiende qué representan.</p>
-</section>
+  <p class="muted small">Enseña objetos sólo cuando el nombre tenga significado estable. <code>orderId → Order</code> sí; <code>id → Object</code> normalmente no.</p>
+  <a href="{{ target_base }}/guide#lab">Ver ejemplo completo →</a>
+</details>
 
-<section class="metric-grid parameter-metrics">
-  <div class="metric"><b>{{ objects_data.stats.types }}</b><span>tipos enseñados</span></div>
-  <div class="metric"><b>{{ objects_data.stats.identifiers }}</b><span>campos / aliases</span></div>
-  <div class="metric"><b>{{ objects_data.stats.objects }}</b><span>instancias</span></div>
-  <div class="metric"><b>{{ objects_data.stats.cross_host_objects }}</b><span>instancias cross-host</span></div>
-  <div class="metric"><b>{{ objects_data.stats.relation_observations }}</b><span>co-observaciones</span></div>
-</section>
+<details class="panel compact-metrics-details">
+  <summary>Ver métricas técnicas</summary>
+  <section class="metric-grid parameter-metrics">
+    <div class="metric"><b>{{ objects_data.stats.types }}</b><span>tipos enseñados</span></div>
+    <div class="metric"><b>{{ objects_data.stats.identifiers }}</b><span>campos / aliases</span></div>
+    <div class="metric"><b>{{ objects_data.stats.objects }}</b><span>instancias</span></div>
+    <div class="metric"><b>{{ objects_data.stats.cross_host_objects }}</b><span>cross-host</span></div>
+    <div class="metric"><b>{{ objects_data.stats.relation_observations }}</b><span>co-observaciones</span></div>
+  </section>
+</details>
 
 {% if tracked %}<section class="panel callout success"><b>Objeto aprendido.</b> Negro reconstruyó el historial que usa ese identificador. Recuerda: la relación encontrada es evidencia observada, no una vulnerabilidad.</section>{% endif %}
 
 <section class="panel">
   <div class="panel-head"><div><p class="eyebrow">TIPOS ENSEÑADOS</p><h2>{{ objects_data.types|length }} tipos</h2></div><small>Un tipo puede reconocer varios nombres de campo.</small></div>
   <div class="object-type-grid">
-    {% for t in objects_data.types %}
+    {% for t in objects_data.types if t.ui_quality != 'ambiguous' %}
     <a class="object-type-card" href="{{ target_base }}/objects?type_id={{ t.id }}">
       <div><b>{{ t.name }}</b><small>{{ t.identifier_count }} campo{% if t.identifier_count != 1 %}s{% endif %} · {{ t.object_count }} instancia{% if t.object_count != 1 %}s{% endif %}</small></div>
       <div><span class="badge">{{ t.host_count }} hosts</span>{% if t.cross_host_objects %}<span class="badge state-chip">{{ t.cross_host_objects }} cross-host</span>{% endif %}</div>
@@ -59,16 +64,27 @@
     <table class="parameter-table object-table">
       <thead><tr><th>Objeto</th><th>Observaciones</th><th>Hosts</th><th>Identidades</th><th>Relaciones</th><th>Último</th></tr></thead>
       <tbody>
-      {% for o in objects_data.objects %}
+      {% set object_rows = objects_data.objects if q or type_id else objects_data.meaningful_objects %}
+      {% for o in object_rows %}
         <tr>
           <td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code>{% if o.cross_host %}<small>↔ visto en varios hosts</small>{% endif %}</a></td>
           <td>{{ o.observation_count }}</td><td>{{ o.host_count }}</td><td>{{ o.identity_count }}</td><td>{{ o.relation_count }}</td><td>{{ o.last_seen_at }}</td>
         </tr>
-      {% else %}<tr><td colspan="6"><div class="empty-state friendly"><b>No hay objetos con este filtro.</b><span>{% if not objects_data.types %}Primero enseña un tipo abajo.{% else %}Prueba limpiar el texto/tipo o revisa si el valor realmente fue observado después de enseñar el identificador.{% endif %}</span>{% if q or type_id %}<a href="{{ target_base }}/objects">Limpiar filtros</a>{% endif %}</div></td></tr>{% endfor %}
+      {% else %}<tr><td colspan="6"><div class="empty-state friendly"><b>No hay objetos claros con este filtro.</b><span>{% if not objects_data.types %}Primero enseña un tipo abajo.{% elif objects_data.ambiguous_objects and not q and not type_id %}Hay {{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos para no generar ruido.{% else %}Prueba limpiar el texto/tipo o confirma que el identificador fue observado.{% endif %}</span>{% if q or type_id %}<a href="{{ target_base }}/objects">Limpiar filtros</a>{% endif %}</div></td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
+{% if objects_data.ambiguous_objects and not q and not type_id %}
+<details class="panel noisy-evidence-details">
+  <summary><b>{{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos</b><span>Se conservan como evidencia, pero no aparecen en la vista principal.</span></summary>
+  <p class="muted small">Úsalos sólo si ya sabes qué representan. Ejemplos de ruido: tipos numéricos, <code>Object</code>, <code>id</code> o <code>reference</code> sin contexto.</p>
+  <div class="parameter-table-wrap"><table class="parameter-table"><thead><tr><th>Objeto</th><th>Por qué está oculto</th><th>Requests</th></tr></thead><tbody>
+  {% for o in objects_data.ambiguous_objects[:80] %}<tr><td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></a></td><td>{{ o.ui_quality_reason }}</td><td>{{ o.observation_count }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</details>
+{% endif %}
 
 {% if objects_data.anomaly_cards %}
 <section class="panel">

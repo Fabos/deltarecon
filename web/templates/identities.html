@@ -4,8 +4,8 @@
 <section class="hero identity-hero">
   <div>
     <p class="eyebrow">IDENTITY CONTEXTS</p>
-    <h1>Identidades observadas</h1>
-    <p class="muted">Separa quién es la identidad de la cookie, token o sesión que use en cada momento. Negro solo asigna identidad cuando existe evidencia aprendida; lo demás queda como desconocido.</p>
+    <h1>Quién hizo cada Request</h1>
+    <p class="muted">La identidad es la cuenta estable. Cookie, Bearer o sesión pueden cambiar sin crear otra persona/cuenta.</p>
   </div>
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#identities">¿Cómo funciona?</a><a class="button" href="{{ target_base }}/identities/matrix">Authorization Matrix</a>
     <form action="{{ target_base }}/identities/resolve-history" method="post" data-job-form data-job-label="Resolviendo identidades históricas">
@@ -15,15 +15,15 @@
   </div>
 </section>
 
-<section class="panel identity-concept-panel">
-  <div class="panel-head"><div><p class="eyebrow">MODELO SIMPLE</p><h2>Qué significa cada cosa</h2></div></div>
+<details class="panel identity-concept-panel compact-learning">
+  <summary><b>¿Identity, sesión o resolver? Ver conceptos</b><span>Cuenta estable ≠ token actual</span></summary>
   <div class="identity-concept-grid">
-    <div><b>Identidad</b><span>La cuenta estable que tú defines: Cuenta personal, Cuenta secundaria, Operador, Tienda sandbox, etc.</span></div>
-    <div><b>Contexto</b><span>Rol/tenant de esa cuenta: member, operator, store-123, etc. Es opcional.</span></div>
-    <div><b>Auth Material</b><span>Cookie, Bearer o JWT concreto observado para esa cuenta.</span></div>
-    <div><b>Resolver</b><span>Valor estable que permite reconocerla después: sub, userId, accountId.</span></div>
+    <div><b>Identidad</b><span>Cuenta estable que tú defines.</span></div>
+    <div><b>Contexto</b><span>Rol/tenant opcional de esa cuenta.</span></div>
+    <div><b>Auth Material</b><span>Cookie, Bearer o JWT observado ahora.</span></div>
+    <div><b>Resolver</b><span>Valor estable que permite reconocerla después.</span></div>
   </div>
-</section>
+</details>
 
 <section class="metric-grid identity-metrics">
   <div class="metric"><b>{{ identity_stats.identities }}</b><span>identidades</span></div>

@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.29.0
+# Negro Recon 🐕 — v0.30.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -12,17 +12,21 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
 
-## v0.29.0 — Investigation Experience / Map 2.0
+## v0.30.0 — Investigation Views / Map 3.0 + UX simplification
 
-Esta iteración no añade otro scanner. Convierte el mapa en una **lente visual de investigación** sobre los datos que Negro ya conoce. La misma evidencia puede verse como **Superficie**, **Identidades**, **Flows**, **Objetos** o **Inteligencia**.
+Esta iteración no añade nuevas detecciones. Reduce ruido y cambia el mapa desde un grafo universal hacia **vistas que responden preguntas concretas**.
 
-Las identidades son completamente dinámicas: Negro usa exactamente los Identity Contexts creados por el investigador y nunca presupone `buyer`, `seller`, `admin` ni una cantidad fija de cuentas. Desde la lente Identidades se puede seleccionar una identidad y compararla visualmente con cualquier otra.
+- **Superficie** sigue usando mapa/árbol para responder qué existe.
+- **Identidad** usa un grafo focal alrededor de una cuenta/sesión elegida dinámicamente.
+- **Flow** deja de ser un grafo: ahora es una **línea de tiempo de Requests**, con método, endpoint, HTTP status, identidad, objetos y estados visibles sin abrir detalle.
+- **Objeto** obliga a elegir una cosa concreta antes de mostrar relaciones. Tipos ambiguos como `111`, `Object`, `id` o `reference` se conservan, pero quedan ocultos por defecto.
+- **Atención** deja de mostrar toda la superficie y se convierte en una bandeja corta de anomalías, hipótesis activas y hallazgos.
 
-`View in Map` / **Ver en mapa** está disponible desde Request, Identity, Flow, Business Object y Finding. El foco carga sólo el contexto relevante y puede expandirse a **1 salto** o **2 saltos**. El nuevo **Path Finder** permite seleccionar dos nodos y mostrar el camino más corto respaldado por relaciones observadas.
+La navegación principal también se simplifica: Identidades, Flows y Objetos se agrupan bajo **Entender**; Recon/Guía/Ajustes quedan en **Más**. Todas las páginas mantienen ayuda contextual, pero ahora la pregunta que responde la pantalla es la pieza visible principal.
 
-La UI adopta **Request** como término humano en lugar de Exchange. Los nombres internos `http_exchanges` / `exchange_id` se conservan para compatibilidad de base de datos y APIs, pero el usuario ya no necesita conocer ese término.
+La regla de UX oficial pasa a ser: **guardado no significa protagonista**. Negro puede conservar evidencia técnica sin obligar al investigador a verla en cada pantalla.
 
-El mapa sigue siendo descriptivo: una arista indica evidencia almacenada o correlación registrada; no demuestra causalidad ni una vulnerabilidad.
+La terminología visible sigue siendo **Request**; `exchange_id` permanece únicamente como compatibilidad interna.
 
 ## v0.28.0 — Guided UX + Learning Center
 
