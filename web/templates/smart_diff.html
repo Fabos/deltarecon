@@ -2,11 +2,11 @@
 {% block title %}Smart Compare · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">SMART COMPARE</p><h1>Compara dos exchanges</h1><p class="muted">Muestra dos cosas distintas: <b>coincidencias</b> que conectan ambos exchanges, incluso si el campo cambia de nombre, y <b>diferencias</b> que cambian entre A y B.</p></div>
+  <div><p class="eyebrow">SMART COMPARE</p><h1>Compara dos Requests</h1><p class="muted">Muestra dos cosas distintas: <b>coincidencias</b> que conectan ambas Requests, incluso si el campo cambia de nombre, y <b>diferencias</b> que cambian entre A y B.</p></div>
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#smart-compare">¿Cómo funciona?</a></div>
 </section>
 <section class="panel">
-  <form class="diff-form" method="get"><label>Exchange A<input name="a" type="number" min="1" value="{{ a }}" required></label><label>Exchange B<input name="b" type="number" min="1" value="{{ b }}" required></label><button class="button" type="submit">Comparar</button></form>
+  <form class="diff-form" method="get"><label>Request A<input name="a" type="number" min="1" value="{{ a }}" required></label><label>Request B<input name="b" type="number" min="1" value="{{ b }}" required></label><button class="button" type="submit">Comparar</button></form>
   {% if diff_error %}<div class="callout warning">{{ diff_error }}</div>{% endif %}
 </section>
 {% if diff %}
@@ -23,7 +23,7 @@
     <div class="correlation-row {% if c.alias_candidate %}alias-candidate{% endif %}">
       <div><span class="badge">{{ 'fuerte' if c.strength=='strong' else 'media' }}</span>{% if c.alias_candidate %}<span class="badge">posible alias</span>{% endif %}<code class="correlation-value">{{ c.value }}</code></div>
       <div class="correlation-sides"><span><small>A</small><code>{{ c.a_location }}</code><b>{{ c.a_name }}</b></span><span><small>B</small><code>{{ c.b_location }}</code><b>{{ c.b_name }}</b></span></div>
-      <small>observado en {{ c.frequency }} exchange{{ 's' if c.frequency != 1 else '' }} del proyecto</small>
+      <small>observado en {{ c.frequency }} Request{{ 's' if c.frequency != 1 else '' }} del proyecto</small>
     </div>
   {% else %}<p class="empty">No encontré valores exactos suficientemente útiles compartidos entre A y B.</p>{% endfor %}
   </div>

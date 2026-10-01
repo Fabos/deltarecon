@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero compact-hero guide-hero" id="start">
   <div>
-    <p class="eyebrow">CENTRO DE APRENDIZAJE · v0.28.0</p>
+    <p class="eyebrow">CENTRO DE APRENDIZAJE · v0.29.0</p>
     <h1>No memorices módulos: parte de una pregunta</h1>
     <p class="muted">Negro creció. Esta guía reorganiza el aplicativo alrededor del trabajo real del hacker: descubrir superficie, entender evidencia, comparar actores, reconstruir procesos, correlacionar objetos y documentar lo confirmado.</p>
   </div>
@@ -13,7 +13,7 @@
   <div class="panel-head"><div><p class="eyebrow">EMPIEZA AQUÍ</p><h2>¿Qué quieres hacer?</h2></div><small>Elige la intención, no el nombre de la herramienta.</small></div>
   <div class="intent-grid">
     <a href="#inventory" class="intent-card"><b>1. Ya enumeré mucho</b><span>Ordenar hosts/rutas y saber qué falta revisar.</span><small>Inventario → Host → Resource</small></a>
-    <a href="#search" class="intent-card"><b>2. Tengo un ID, header o pista</b><span>Encontrar dónde aparece y qué exchanges conecta.</span><small>Search → Follow Value → Find Related</small></a>
+    <a href="#search" class="intent-card"><b>2. Tengo un ID, header o pista</b><span>Encontrar dónde aparece y qué Requests conecta.</span><small>Search → Follow Value → Find Related</small></a>
     <a href="#identities" class="intent-card"><b>3. Tengo dos cuentas/sesiones</b><span>Comparar autorización sin mezclar tokens con actores.</span><small>Identities → Matrix → Smart Compare</small></a>
     <a href="#flows" class="intent-card"><b>4. La posible vuln depende de una secuencia</b><span>Capturar el proceso normal y compararlo con una variante.</span><small>Flow → State → Compare</small></a>
     <a href="#objects" class="intent-card"><b>5. El mismo ID aparece por todas partes</b><span>Seguir la misma entidad de negocio entre hosts y rutas.</span><small>Business Objects → Pattern Anomalies</small></a>
@@ -27,7 +27,7 @@
     <div class="lab-model-card"><span>ACTOR</span><b>Identity: Ana</b><p>La cuenta/persona que hace requests. Puede renovar cookie o Bearer y seguir siendo la misma Identity.</p><code>/me.id = 101</code></div>
     <div class="lab-model-card"><span>COSA</span><b>Business Object: Order 123</b><p>La entidad estable sobre la que Ana o Diego actúan.</p><code>/api/orders/123 · orderId=123</code></div>
     <div class="lab-model-card"><span>PROPIEDAD</span><b>ownerId = 101</b><p>Describe ownership del Order. Puede relacionarlo con Ana, pero no debe convertirse automáticamente en resolver de identidad.</p><code>Order 123 → ownerId 101</code></div>
-    <div class="lab-model-card"><span>HISTORIA</span><b>Flow</b><p>La secuencia de exchanges que forma una acción de negocio.</p><code>order → invoice → cancel</code></div>
+    <div class="lab-model-card"><span>HISTORIA</span><b>Flow</b><p>La secuencia de Requests que forma una acción de negocio.</p><code>order → invoice → cancel</code></div>
   </div>
   <ol class="walkthrough-steps">
     <li><b>Inventario.</b> Mantienes <code>app.accesslab.local</code> y <code>api.accesslab.local</code> en alcance y no mezclas <code>score.accesslab.local</code>.</li>
@@ -35,7 +35,7 @@
     <li><b>Search / Follow Value.</b> Sigues <code>101</code>, <code>ownerId</code> o <code>orderId=123</code> para descubrir en qué otras requests reaparecen.</li>
     <li><b>Find Related.</b> Unes por evidencia <code>/api/orders/123</code>, <code>/invoice</code> y <code>/cancel</code>. Esto crea contexto, no una vulnerabilidad.</li>
     <li><b>Authorization Matrix.</b> Comparas la misma superficie con Ana/Diego/Anonymous. Si los Orders ajenos suelen dar <code>403</code> pero un endpoint da <code>200</code>, ya tienes algo que investigar.</li>
-    <li><b>Smart Compare.</b> Abres los dos exchanges y separas lo importante: auth cambió, <code>orderId</code> no, status/response sí.</li>
+    <li><b>Smart Compare.</b> Abres las dos Requests y separas lo importante: auth cambió, <code>orderId</code> no, status/response sí.</li>
     <li><b>Flow.</b> Si el caso es method bypass, multi-step o Referer, capturas el recorrido normal y una variante. Flow Compare te enseña pasos ausentes/cambiados.</li>
     <li><b>Business Object.</b> Enseñas <code>Order: orderId</code>. Desde entonces Negro entiende que <code>123</code> es la misma instancia aunque aparezca en path, body o distintos endpoints.</li>
     <li><b>Hypothesis → Finding.</b> Sólo después de reproducir impacto promueves la evidencia a hallazgo.</li>
@@ -48,8 +48,8 @@
     <article class="panel guide-card"><h3>Inicio / Dashboard</h3><p>Resumen del target, progreso, señales y trabajos recientes. Úsalo para orientarte, no para investigar un endpoint en detalle.</p><p class="guide-example"><b>Lab:</b> ver cuántos hosts/rutas ya entraron y si quedó trabajo pendiente.</p></article>
     <article class="panel guide-card"><h3>Inventario</h3><p>Lista persistente de hosts y recursos con estados humanos. Te permite marcar pendiente, revisado, interesante o revisitar.</p><p class="guide-example"><b>Lab:</b> app/api están in-scope; scoreboard queda fuera.</p></article>
     <article class="panel guide-card" id="enumeration"><h3>Herramientas del host</h3><p><b>Inspección básica:</b> DNS/HTTP/TLS. <b>Recon web:</b> robots/sitemap/.well-known. <b>Crawler:</b> enlaces navegables. <b>JS:</b> bundles. <b>TLS SAN/DNS pasivo:</b> nombres relacionados. <b>CORS/VHost:</b> comprobaciones puntuales.</p><p class="guide-example"><b>Lab:</b> Recon web puede descubrir <code>/.well-known/openid-configuration</code>.</p><p class="guide-caution">Ejecuta una herramienta porque responde una pregunta; no por llenar métricas.</p></article>
-    <article class="panel guide-card" id="resources"><h3>Resource / Operation / Exchange</h3><p><b>Resource</b> es la ruta. <b>Operation</b> es método+ruta. <b>Exchange</b> es una request/response concreta observada.</p><code>Resource /api/orders/123 → GET → Exchange #442</code><p class="guide-example">Esto evita confundir “el endpoint” con una única request histórica.</p></article>
-    <article class="panel guide-card" id="map"><h3>Mapa</h3><p>Vista visual para navegar lo ya conocido. Sirve para orientación y pivotes, no para demostrar dependencias.</p><p class="guide-example"><b>Lab:</b> partes de api.accesslab.local y saltas a recursos que tienen tráfico Burp.</p></article>
+    <article class="panel guide-card" id="resources"><h3>Resource / Operation / Request</h3><p><b>Resource</b> es la ruta. <b>Operation</b> es método+ruta. <b>Request</b> es una llamada HTTP concreta observada junto con su response.</p><code>Resource /api/orders/123 → GET → Request #442</code><p class="guide-example">Esto evita confundir “el endpoint” con una única request histórica.</p></article>
+    <article class="panel guide-card" id="map"><h3>Investigation Map</h3><p>No es sólo un grafo de hosts: es una <b>lente visual</b> sobre la misma evidencia de Negro. Cambia de vista según la pregunta que quieras responder.</p><div class="guide-map-lenses"><span><b>Superficie</b> · qué existe</span><span><b>Identidades</b> · quién tocó qué</span><span><b>Flows</b> · qué ocurrió y en qué orden</span><span><b>Objetos</b> · qué cosas están relacionadas</span><span><b>Inteligencia</b> · qué merece atención</span></div><p class="guide-example"><b>Lab:</b> selecciona Ana, compárala con Diego, enfoca <code>Order 123</code> y usa Camino para entender cómo una Request, un Flow y un objeto se conectan.</p><p class="guide-caution">Las conexiones representan evidencia observada. El mapa ayuda a comprender y formular preguntas; no convierte una relación visual en vulnerabilidad.</p></article>
   </div>
   <div class="tool-catalog panel">
     <div class="panel-head"><div><p class="eyebrow">CATÁLOGO · HOST</p><h3>Qué hace cada herramienta de enumeración</h3></div></div>
@@ -72,7 +72,7 @@
     <article class="panel guide-card"><h3>Search</h3><p>Entrada universal cuando ya tienes texto o contexto.</p><code>ownerId · 101 · X-Original-URL · host:api... method:GET</code><p class="guide-example"><b>Lab:</b> buscar <code>ownerId</code> encuentra todos los recursos que hablan de ownership.</p></article>
     <article class="panel guide-card" id="parameters"><h3>Parameter Explorer</h3><p>Agrupa campos observados por nombre, ubicación, valores y frecuencia.</p><p class="guide-example"><b>Lab:</b> diferencia <code>/me.id=101</code> de <code>orderId=123</code> y <code>ownerId=101</code>.</p><p class="guide-caution">Que dos campos terminen en “Id” no los vuelve equivalentes.</p></article>
     <article class="panel guide-card" id="follow-value"><h3>Follow Value</h3><p>Sigue un valor exacto aunque cambie de nombre o ubicación.</p><code>101 → /me.id → ownerId → response.user.id</code><p class="guide-example">Útil para entender propagación de IDs sin asumir semántica.</p></article>
-    <article class="panel guide-card" id="find-related"><h3>Find Related</h3><p>Toma valores útiles de un exchange y busca otros exchanges con coincidencias fuertes.</p><code>/orders/123 ↔ /orders/123/invoice</code><p class="guide-caution">“Relacionado” significa evidencia compartida, no causalidad.</p></article>
+    <article class="panel guide-card" id="find-related"><h3>Find Related</h3><p>Toma valores útiles de una Request y busca otras Requests con coincidencias fuertes.</p><code>/orders/123 ↔ /orders/123/invoice</code><p class="guide-caution">“Relacionado” significa evidencia compartida, no causalidad.</p></article>
     <article class="panel guide-card" id="smart-compare"><h3>Smart Compare</h3><p>Compara dos requests/responses y separa ruido de diferencias de negocio.</p><code>Ana / orderId=123 / 200 ↔ Diego / orderId=123 / 403</code><p class="guide-example">Ideal después de Send as Identity o Authorization Matrix.</p></article>
   </div>
 </section>
@@ -95,7 +95,7 @@
 </section>
 
 <section class="guide-section" id="objects">
-  <div class="guide-section-head"><p class="eyebrow">FASE 5 · COSAS DE NEGOCIO</p><h2>Business Objects y anomalías</h2><p>Pregunta central: <b>¿cuál es la misma entidad a través de muchos exchanges?</b></p></div>
+  <div class="guide-section-head"><p class="eyebrow">FASE 5 · COSAS DE NEGOCIO</p><h2>Business Objects y anomalías</h2><p>Pregunta central: <b>¿cuál es la misma entidad a través de muchas Requests?</b></p></div>
   <div class="object-concept-demo panel">
     <div><span>Identity</span><b>Ana</b><small>quién actúa</small></div><strong>→</strong><div><span>Business Object</span><b>Order 123</b><small>sobre qué actúa</small></div><strong>→</strong><div><span>Propiedad</span><b>ownerId=101</b><small>dato del objeto</small></div>
   </div>
@@ -131,7 +131,7 @@
       <div><b>Recalcular inteligencia</b><span>Vuelve a aplicar motores locales a evidencia guardada después de cambiar reglas. No toca el target ni consume IA.</span></div>
       <div><b>Detectores / Knowledge Base</b><span>Activa, aprende o personaliza las reglas que producen señales determinísticas.</span></div>
       <div><b>Secretos</b><span>Muestra si las integraciones tienen credenciales configuradas sin revelar sus valores.</span></div>
-      <div><b>Burp Bridge</b><span>Explica salud/ingesta local y el modelo Proyecto → Host → Resource → Operation → Exchange.</span></div>
+      <div><b>Burp Bridge</b><span>Explica salud/ingesta local y el modelo Proyecto → Host → Resource → Operation → Request.</span></div>
     </div>
   </div>
 </section>
@@ -142,11 +142,11 @@
     <div><b>Host</b><span>Nombre/servidor dentro de la superficie.</span></div>
     <div><b>Resource</b><span>Ruta lógica, por ejemplo /api/orders/123.</span></div>
     <div><b>Operation</b><span>Método + Resource, por ejemplo GET /api/orders/123.</span></div>
-    <div><b>Exchange</b><span>Request/response concreta observada.</span></div>
-    <div><b>Identity</b><span>Actor estable: Ana, Diego, Buyer A.</span></div>
+    <div><b>Request</b><span>Llamada HTTP concreta observada junto con su response.</span></div>
+    <div><b>Identity</b><span>Actor estable definido por ti: Ana, Diego, Cuenta principal, Operador, etc.</span></div>
     <div><b>Auth Material</b><span>Cookie/Bearer/API key que autentica una sesión y puede rotar.</span></div>
     <div><b>Resolver</b><span>Valor estable que ayuda a reconocer la Identity.</span></div>
-    <div><b>Flow</b><span>Secuencia ordenada de Exchanges.</span></div>
+    <div><b>Flow</b><span>Secuencia ordenada de Requests.</span></div>
     <div><b>Business Object</b><span>Entidad estable del dominio: Order 123.</span></div>
     <div><b>State</b><span>Estado observado de una instancia: PAID, SHIPPED.</span></div>
     <div><b>Signal</b><span>Pista determinística que merece atención.</span></div>

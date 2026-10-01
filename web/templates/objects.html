@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero compact-hero">
   <div>
-    <p class="eyebrow">BUSINESS OBJECTS · v0.28.0</p>
+    <p class="eyebrow">BUSINESS OBJECTS · v0.29.0</p>
     <h1>Objetos de negocio</h1>
     <p class="muted">Un objeto es una <b>cosa estable del dominio</b> —por ejemplo <code>Order 123</code>—, no la cuenta que actúa ni cualquier campo que termine en <code>Id</code>.</p>
   </div>
@@ -93,7 +93,7 @@
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="observation_id" value="{{ c.sample_observation_id }}">
       <div class="candidate-object-main">
         <div class="candidate-field"><span>CAMPO OBSERVADO</span><code>{{ c.name }}</code></div>
-        <div class="candidate-metrics"><span class="badge candidate-{{ c.candidate_quality }}">{% if c.candidate_quality=='strong' %}Buen candidato{% elif c.candidate_quality=='generic' %}Genérico{% else %}Revisar contexto{% endif %}</span><span class="badge">{{ c.distinct_values }} valores</span><span class="badge">{{ c.exchanges }} exchanges</span><span class="badge">{{ c.hosts }} hosts</span></div>
+        <div class="candidate-metrics"><span class="badge candidate-{{ c.candidate_quality }}">{% if c.candidate_quality=='strong' %}Buen candidato{% elif c.candidate_quality=='generic' %}Genérico{% else %}Revisar contexto{% endif %}</span><span class="badge">{{ c.distinct_values }} valores</span><span class="badge">{{ c.exchanges }} Requests</span><span class="badge">{{ c.hosts }} hosts</span></div>
         <p>{{ c.candidate_guidance }}</p>
       </div>
       <div class="candidate-object-action">

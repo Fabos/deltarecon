@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero parameter-hero">
   <div>
-    <p class="eyebrow">PARAMETER EXPLORER · v0.28.0</p>
+    <p class="eyebrow">PARAMETER EXPLORER · v0.29.0</p>
     <h1>Parámetros observados</h1>
     <p class="muted">Vista técnica para explorar un parámetro después de encontrarlo. La entrada principal para buscar valores está en Buscar.</p>
   </div>
@@ -20,7 +20,7 @@
   <div class="metric"><b>{{ parameter_stats.names }}</b><span>nombres</span></div>
   <div class="metric"><b>{{ parameter_stats['values'] }}</b><span>valores distintos</span></div>
   <div class="metric"><b>{{ parameter_stats.observations }}</b><span>observaciones</span></div>
-  <div class="metric"><b>{{ parameter_stats.exchanges }}</b><span>exchanges cubiertos</span></div>
+  <div class="metric"><b>{{ parameter_stats.exchanges }}</b><span>Requests cubiertas</span></div>
 </section>
 
 <section class="panel parameter-filter-panel">
@@ -30,14 +30,14 @@
     <label><span>Host contiene</span><input name="host" value="{{ host }}" placeholder="api.example.com"></label>
     <button class="button" type="submit">Filtrar</button>
   </form>
-  <p class="muted small">Negro corre localmente y conserva los valores observados para facilitar el análisis. “Follow Value” usa además un hash estable para correlacionar el mismo valor entre exchanges.</p>
+  <p class="muted small">Negro corre localmente y conserva los valores observados para facilitar el análisis. “Follow Value” usa además un hash estable para correlacionar el mismo valor entre Requests.</p>
 </section>
 
 <section class="panel">
   <div class="panel-head"><div><p class="eyebrow">ÍNDICE</p><h2>{{ parameter_rows|length }} parámetros</h2></div><small>{% if parameter_stats.rebuilt_at %}Historial analizado {{ parameter_stats.rebuilt_at }}{% else %}El tráfico nuevo se indexa automáticamente; usa “Analizar historial” para capturas anteriores.{% endif %}</small></div>
   <div class="parameter-table-wrap">
     <table class="parameter-table">
-      <thead><tr><th>Parámetro</th><th>Superficies</th><th>Obs.</th><th>Valores</th><th>Exchanges</th><th>Recursos</th><th>Hosts</th></tr></thead>
+      <thead><tr><th>Parámetro</th><th>Superficies</th><th>Obs.</th><th>Valores</th><th>Requests</th><th>Recursos</th><th>Hosts</th></tr></thead>
       <tbody>
       {% for p in parameter_rows %}
         <tr>

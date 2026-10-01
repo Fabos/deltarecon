@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.28.0
+# Negro Recon — Metodología v0.29.0
 
 ## Modelo mental
 
@@ -8,7 +8,7 @@ Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué 
 
 ## Cómo no perderse en Negro
 
-Desde v0.28 cada pantalla principal incluye una ayuda contextual. La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
+Desde v0.28 cada pantalla principal incluye una ayuda contextual. Desde v0.29 el Investigation Map permite leer el mismo conocimiento por lentes visuales y la UI llama **Request** a cada llamada HTTP observada (aunque internamente se conserve `exchange_id`). La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
 
 ```text
 ¿Qué existe?              → Inventario / Host tools
@@ -23,6 +23,25 @@ Desde v0.28 cada pantalla principal incluye una ayuda contextual. La ruta recome
 
 El Access Control Lab se usa como ejemplo común en la guía para separar `Ana` (Identity), `Order 123` (Business Object) y `ownerId=101` (propiedad/ownership).
 
+
+## Investigation Map 2.0
+
+Responde visualmente distintas preguntas sin duplicar los datos:
+
+```text
+Superficie   → ¿qué existe y dónde?
+Identidades  → ¿quién tocó qué?
+Flows        → ¿qué ocurrió y en qué orden?
+Objetos      → ¿qué cosas están relacionadas?
+Inteligencia → ¿qué rompe patrones o merece atención?
+```
+
+Los Identity Contexts son dinámicos: el mapa usa los nombres reales definidos en el proyecto. No existe lógica fija para Buyer A/B, seller o admin.
+
+Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
+
+El mapa es una herramienta de comprensión. Una línea significa que Negro tiene evidencia de esa relación; no demuestra causalidad, ownership ni vulnerabilidad por sí sola.
+
 ## Buscar
 
 **Buscar** responde: **¿dónde aparece esto?**
@@ -35,11 +54,11 @@ Responde: **¿dónde reaparece exactamente este valor?**
 
 Seleccionas un valor concreto y Negro sigue su hash exacto por requests, responses, paths, endpoints o hosts. Si `diego@example.test` aparece como `email` en un login y luego en `/me`, Follow Value muestra ambas apariciones.
 
-## Find Related Exchange
+## Find Related Request
 
-Responde: **¿qué otros exchanges comparten evidencia con este exchange completo?**
+Responde: **¿qué otras Requests comparten evidencia con esta Request completa?**
 
-Toma los valores útiles de request + response del exchange de origen y busca coincidencias exactas en otros exchanges. Valores genéricos, booleanos y atributos muy comunes se penalizan; `mismo host` por sí solo no genera una relación. `OPTIONS` se oculta cuando no es relevante.
+Toma los valores útiles de request + response de la Request de origen y busca coincidencias exactas en otras Requests. Valores genéricos, booleanos y atributos muy comunes se penalizan; `mismo host` por sí solo no genera una relación. `OPTIONS` se oculta cuando no es relevante.
 
 Una relación no significa “mismo objeto”, “mismo usuario” ni vulnerabilidad. Es una pista de correlación que debe ser interpretada con su path y nombre de campo.
 
@@ -63,7 +82,7 @@ Eso es evidencia de igualdad del valor, no de equivalencia semántica. Después,
 
 Responde: **¿quién hizo este tráfico?**
 
-Negro separa Identity, Context, Auth Material y Resolver. La primera asociación es humana sobre un exchange concreto. Auth Material puede rotar; resolvers estables ayudan a reconocer la misma cuenta en sesiones nuevas.
+Negro separa Identity, Context, Auth Material y Resolver. La primera asociación es humana sobre una Request concreta. Auth Material puede rotar; resolvers estables ayudan a reconocer la misma cuenta en sesiones nuevas.
 
 La separación crítica es **actor vs ownership**:
 
@@ -74,7 +93,7 @@ La Authorization Matrix es descriptiva: sólo muestra lo que Burp observó bajo 
 
 ## Flow Workbench
 
-Responde: **¿qué historia de negocio forman varios exchanges?**
+Responde: **¿qué historia de negocio forman varias Requests?**
 
 Un Flow es una secuencia manual/observada, por ejemplo:
 
@@ -86,11 +105,11 @@ POST /payment
 GET  /orders/{id}
 ```
 
-Puedes capturar un rango de exchanges o agregarlos uno por uno. El orden se conserva y cada paso enlaza al HTTP exacto.
+Puedes capturar un rango de Requests o agregarlos uno por uno. El orden se conserva y cada paso enlaza al HTTP exacto.
 
 ### Business states
 
-El hunter enseña una definición ligada a una instancia, por ejemplo `Order = orderId + status`. Negro conserva las observaciones exactas de cada `Order` y puede mostrar `CREATED → PAID → SHIPPED` con sus exchanges e identidades. Las pistas adyacentes genéricas siguen existiendo sólo como ayuda hasta que el objeto quede definido.
+El hunter enseña una definición ligada a una instancia, por ejemplo `Order = orderId + status`. Negro conserva las observaciones exactas de cada `Order` y puede mostrar `CREATED → PAID → SHIPPED` con sus Requests e identidades. Las pistas adyacentes genéricas siguen existiendo sólo como ayuda hasta que el objeto quede definido.
 
 ### Flow Compare
 

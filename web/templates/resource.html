@@ -50,7 +50,7 @@
         <article class="signal-occurrence {% if not sg.reviewed_at %}unreviewed{% else %}reviewed{% endif %}">
           <div><span class="signal-dot">{% if not sg.reviewed_at %}🩵{% else %}·{% endif %}</span><strong>{{ sg.title }}</strong><span class="chip">{{ ui_label(sg.category) }}</span>{% if sg.occurrences>1 %}<span class="chip">{{ sg.occurrences }}×</span>{% endif %}</div>
           <p>{{ sg.why.message or 'Coincidió con una regla automática de Negro.' }}</p>
-          <small>Exchange #{{ sg.exchange_id }} · {{ sg.source }} · {{ sg.first_seen_at }}{% if sg.reviewed_at %} · revisado {{ sg.reviewed_at }}{% endif %}</small>
+          <small>Request #{{ sg.exchange_id }} · {{ sg.source }} · {{ sg.first_seen_at }}{% if sg.reviewed_at %} · revisado {{ sg.reviewed_at }}{% endif %}</small>
           <div class="signal-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ resource.id }}?exchange={{ sg.exchange_id }}#exchange-{{ sg.exchange_id }}">Abrir evidencia exacta</a></div>
         </article>
       {% endfor %}
@@ -145,7 +145,7 @@
             </div>
             {% endif %}
             <div class="exchange-actions">
-              <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Find Related Exchange</a>
+              <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ ex.id }}">Ver en mapa</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Find Related Request</a>
               <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ ex.id }}">Smart Compare</a>
               <a class="button ghost small-button" href="{{ target_base }}/flows/add?exchange_id={{ ex.id }}">Agregar a Flow</a>
               {% if ex.request_size and ex.request_size > 0 %}<form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><button class="button ghost small-button" type="submit">Reprobar ahora en Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}

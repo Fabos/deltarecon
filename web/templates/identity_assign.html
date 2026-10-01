@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Asignar identidad · Exchange #{{ assignment.exchange.exchange_id }} · Negro{% endblock %}
+{% block title %}Asignar identidad · Request #{{ assignment.exchange.exchange_id }} · Negro{% endblock %}
 {% block content %}
 <section class="hero">
   <div>
     <p class="eyebrow">IDENTIDAD · ANCLA MANUAL</p>
-    <h1>¿Quién hizo este exchange?</h1>
+    <h1>¿Quién hizo esta Request?</h1>
     <p class="muted"><b>#{{ assignment.exchange.exchange_id }} · {{ assignment.exchange.method }}</b> {{ assignment.exchange.hostname }}<code>{{ assignment.exchange.path }}</code> · HTTP {{ assignment.exchange.status_code }}</p>
   </div>
   <div class="page-actions">
@@ -40,7 +40,7 @@
     <hr>
     <p class="eyebrow">IDENTIFICADORES CANDIDATOS</p>
     <h2>¿Cómo reconocer esta misma cuenta después?</h2>
-    <p class="muted small">Como este exchange parece describir a la identidad actual, Negro puede aprender valores estables además de la cookie/token. Los recomendados vienen preseleccionados; tú decides.</p>
+    <p class="muted small">Como esta Request parece describir a la identidad actual, Negro puede aprender valores estables además de la cookie/token. Los recomendados vienen preseleccionados; tú decides.</p>
     {% if assignment.resolver_candidates %}
     <div class="identity-resolver-candidates">
       {% for c in assignment.resolver_candidates %}
@@ -95,7 +95,7 @@
       <label><span>Identidad</span><select name="identity_id" id="identity-select" required>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
       <label><span>Contexto (opcional)</span><select name="context_id" id="context-select"><option value="">Sin contexto</option>{% for c in identity_contexts %}<option value="{{ c.id }}" data-identity-id="{{ c.identity_id }}">{{ c.label }}{% if c.role %} · {{ c.role }}{% endif %}{% if c.tenant %} · {{ c.tenant }}{% endif %}</option>{% endfor %}</select></label>
       <label class="check-row"><input type="checkbox" name="learn_auth" value="yes" checked><span>Aprender cookies/tokens actuales y claims JWT estables</span></label>
-      <label><span>Nota</span><textarea name="notes" placeholder="Ej. GET /me confirmó que esta sesión corresponde a Buyer A"></textarea></label>
+      <label><span>Nota</span><textarea name="notes" placeholder="Ej. GET /me confirmó que esta sesión corresponde a Cuenta principal"></textarea></label>
       <button class="button" type="submit">Guardar identidad y aprendizaje</button>
     </form>
     {% else %}<div class="callout warning">Primero crea una identidad en <a href="{{ target_base }}/identities">Identidades</a>.</div>{% endif %}

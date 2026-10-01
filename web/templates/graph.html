@@ -3,10 +3,10 @@
 {% block content %}
 <section class="graph-page" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <header class="graph-toolbar">
-    <div><div class="eyebrow">MAPA DE CONOCIMIENTO</div><h1>Mapa de investigación</h1><p>Una vista conectada de lo que existe, lo que observaste en Burp, lo que ya probaste y lo que todavía merece atención.</p></div>
-    <div class="graph-toolbar-actions"><button type="button" class="btn-secondary" data-graph-fullscreen>⛶ Pantalla completa</button><button type="button" class="btn-secondary" data-graph-overview>Vista general</button><button type="button" class="btn-secondary" data-graph-fit>Centrar</button><button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button><button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button><button type="button" class="btn-secondary" data-graph-reset-layout>Ordenar</button><a class="btn-secondary" href="{{ target_base }}/hypotheses">Investigaciones</a><button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Dame ideas</button></div>
+    <div><div class="eyebrow">INVESTIGATION MAP · v0.29.0</div><h1>Entiende el target, no el ruido</h1><p>El mismo conocimiento de Negro visto con distintas lentes: <b>qué existe</b>, <b>quién actuó</b>, <b>qué ocurrió</b>, <b>qué objeto estás siguiendo</b> y <b>qué merece atención</b>.</p></div>
+    <div class="graph-toolbar-actions"><button type="button" class="btn-secondary" data-graph-fullscreen>⛶ Pantalla completa</button><button type="button" class="btn-secondary" data-graph-overview>Vista general</button><button type="button" class="btn-secondary" data-graph-fit>Centrar</button><button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button><button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button><button type="button" class="btn-secondary" data-graph-reset-layout>Ordenar</button><button type="button" class="btn-secondary" data-graph-path-clear hidden>Limpiar camino</button><a class="btn-secondary" href="{{ target_base }}/guide#map">¿Cómo leer el mapa?</a><button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Dame ideas</button></div>
   </header>
-  <div class="graph-scope-banner"><strong data-graph-scope-status>Vista general</strong><span>En proyectos grandes Negro carga el mapa por capas para no bloquear el navegador. Doble clic en un host/recurso para profundizar.</span></div>
+  <div class="graph-scope-banner"><strong data-graph-scope-status>Superficie · ¿qué existe?</strong><span data-graph-scope-copy>Elige una lente. Negro cambia la visualización, no duplica tus datos.</span></div>
   <div class="graph-stats">{% for kind,count in graph_counts|dictsort %}<span><b>{{ count }}</b> {{ ui_label(kind) }}</span>{% endfor %}<small data-graph-layout-status>Orden automático</small></div>
 
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
@@ -19,36 +19,56 @@
 
   <div class="graph-workspace">
     <aside class="graph-controls">
-      <label class="graph-search"><span>Buscar</span><input type="search" placeholder="host, endpoint, hallazgo…" data-graph-search></label>
-      <div class="graph-filter-title graph-filter-title-row"><span>Perspectiva</span><button type="button" class="graph-order-reset" data-graph-preset-order-reset title="Restablecer orden">↺</button></div>
-      <div class="graph-presets" data-graph-presets>
-        <button class="graph-filter active" draggable="true" data-graph-preset="surface"><span class="graph-drag-handle">⋮⋮</span><span><b>Superficie</b><small>¿Qué existe?</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="untested"><span class="graph-drag-handle">⋮⋮</span><span><b>Pendientes</b><small>¿Qué no he revisado?</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="interesting"><span class="graph-drag-handle">⋮⋮</span><span><b>Interesante</b><small>¿Dónde hay señales?</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="burp"><span class="graph-drag-handle">⋮⋮</span><span><b>Burp</b><small>¿Qué observé realmente?</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="attack"><span class="graph-drag-handle">⋮⋮</span><span><b>Qué probar ahora</b><small>Evidencia → hipótesis → siguiente prueba</small></span></button>
-        <button class="graph-filter" draggable="true" data-graph-preset="all"><span class="graph-drag-handle">⋮⋮</span><span><b>Todo</b><small>Vista completa con ruido agrupado</small></span></button>
+      <label class="graph-search"><span>Buscar en esta vista</span><input type="search" placeholder="identidad, flow, Order 123, endpoint…" data-graph-search></label>
+      <div class="graph-filter-title">¿Qué quieres entender?</div>
+      <div class="graph-presets graph-primary-presets" data-graph-presets>
+        <button class="graph-filter active" data-graph-preset="surface"><span><b>Superficie</b><small>¿Qué existe y dónde?</small></span></button>
+        <button class="graph-filter" data-graph-preset="identity"><span><b>Identidades</b><small>¿Quién tocó qué?</small></span></button>
+        <button class="graph-filter" data-graph-preset="flow"><span><b>Flows</b><small>¿Qué ocurrió y en qué orden?</small></span></button>
+        <button class="graph-filter" data-graph-preset="objects"><span><b>Objetos</b><small>¿Qué cosas están relacionadas?</small></span></button>
+        <button class="graph-filter" data-graph-preset="intelligence"><span><b>Inteligencia</b><small>¿Qué merece mi atención?</small></span></button>
       </div>
+
+      <section class="graph-context-panel" data-graph-context-panel hidden>
+        <div class="graph-filter-title">Contexto de la vista</div>
+        <div data-graph-identity-controls hidden>
+          <label><span>Identidad</span><select data-graph-identity-select><option value="">Todas</option></select></label>
+          <label><span>Comparar con</span><select data-graph-identity-compare><option value="">— ninguna —</option></select></label>
+          <small>Usa los nombres que tú creaste. Negro no asume buyer, seller, admin ni ningún rol.</small>
+        </div>
+        <div data-graph-flow-controls hidden><label><span>Flow</span><select data-graph-flow-select><option value="">Todos</option></select></label><small>Selecciona una historia para ver Requests, identidades, objetos y estados en contexto.</small></div>
+        <div data-graph-object-controls hidden><label><span>Objeto</span><select data-graph-object-select><option value="">Objetos recientes</option></select></label><small>Ej. <code>Order 123</code>. El foco reúne hosts, Requests, identidades, flows, estados y relaciones.</small></div>
+      </section>
+
+      <details class="graph-more-views">
+        <summary>Más vistas</summary>
+        <div class="graph-secondary-presets">
+          <button class="graph-filter" data-graph-preset="untested"><span><b>Pendientes</b><small>¿Qué no he revisado?</small></span></button>
+          <button class="graph-filter" data-graph-preset="burp"><span><b>Burp</b><small>Requests observadas realmente</small></span></button>
+          <button class="graph-filter" data-graph-preset="attack"><span><b>Qué probar ahora</b><small>Evidencia → hipótesis → prueba</small></span></button>
+          <button class="graph-filter" data-graph-preset="all"><span><b>Todo</b><small>Vista técnica ampliada</small></span></button>
+        </div>
+      </details>
+
       <div data-graph-hypothesis-filters hidden>
         <div class="graph-filter-title graph-filter-title-row"><span>Filtros de hipótesis</span><button type="button" class="graph-order-reset" data-graph-lead-filter-reset title="Restablecer filtros">↺</button></div>
-        <small class="graph-filter-help">Afectan Interesante, Rutas de investigación y sus tarjetas.</small>
+        <small class="graph-filter-help">Afectan Inteligencia / Qué probar ahora.</small>
         <div class="graph-filter-title sub">Estado</div><div class="graph-mini-filters" data-graph-lead-statuses></div>
         <div class="graph-filter-title sub">Prioridad</div><div class="graph-mini-filters" data-graph-lead-priorities></div>
         <div class="graph-filter-title sub">Tipo</div><div class="graph-mini-filters" data-graph-lead-kinds></div>
       </div>
       <div class="graph-filter-title">Tipos visibles</div><div class="graph-type-filters" data-graph-types></div>
-      <div class="graph-filter-title">Cobertura</div><div class="graph-legend"><div><i class="legend-dot state-untested"></i> Pendiente</div><div><i class="legend-dot state-tested"></i> Revisado / negativo</div></div>
-      <div class="graph-filter-title">Señal</div><div class="graph-legend"><div><i class="legend-dot state-interesting"></i> Interesante</div><div><i class="legend-dot state-finding"></i> Hallazgo</div></div>
+      <div class="graph-filter-title">Gramática visual</div><div class="graph-legend graph-semantic-legend"><div><i class="legend-dot legend-identity"></i> Identity · quién</div><div><i class="legend-dot legend-request"></i> Request · qué llamada</div><div><i class="legend-dot legend-flow"></i> Flow · historia</div><div><i class="legend-dot legend-object"></i> Object · qué cosa</div><div><i class="legend-dot legend-state"></i> State · estado observado</div><div><i class="legend-dot state-interesting"></i> Anomaly · diferencia</div></div>
     </aside>
     <div class="graph-stage">
-      <section class="graph-route-panel">
+      <section class="graph-route-panel" hidden>
         <div class="graph-route-head"><div><span class="eyebrow">SIGUIENTES PASOS</span><h2>Ideas para continuar</h2></div><div class="graph-route-head-actions"><small>Basadas en evidencia; no son exploits confirmados.</small><button type="button" class="btn-secondary graph-route-toggle" data-graph-route-toggle>Ocultar ideas</button></div></div>
         <div class="graph-route-list" data-graph-routes><p class="empty">Cargando rutas…</p></div>
       </section>
-      <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div><div class="graph-hint"><b>Clic</b> detalle · <b>arrastra</b> organiza · doble clic enfoca/expande</div></div>
+      <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Mapa visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay nodos para esta vista.</div><div class="graph-hint"><b>Clic</b> detalle · <b>doble clic</b> foco · <b>arrastra</b> organiza · usa <b>Camino</b> para explicar relaciones</div></div>
     </div>
-    <aside class="graph-detail" data-graph-detail><div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Selecciona un nodo</h3><p>Abre un endpoint, revisa su contexto o aísla su vecindario para entender el camino.</p></div></aside>
+    <aside class="graph-detail" data-graph-detail><div class="graph-detail-empty"><div class="graph-detail-icon">⌁</div><h3>Selecciona un nodo</h3><p>El mapa debe responder una pregunta. Empieza por una Identity, Flow u Object y expande sólo lo necesario.</p></div></aside>
   </div>
 </section>
-<script src="/static/graph.js"></script>
+<script src="/static/graph.js?v={{ version }}"></script>
 {% endblock %}

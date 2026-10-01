@@ -17,6 +17,16 @@
   const routeToggleBtn = root.querySelector('[data-graph-route-toggle]');
   const statusEl = root.querySelector('[data-graph-layout-status]');
   const scopeStatusEl = root.querySelector('[data-graph-scope-status]');
+  const scopeCopyEl = root.querySelector('[data-graph-scope-copy]');
+  const contextPanel = root.querySelector('[data-graph-context-panel]');
+  const identityControls = root.querySelector('[data-graph-identity-controls]');
+  const flowControls = root.querySelector('[data-graph-flow-controls]');
+  const objectControls = root.querySelector('[data-graph-object-controls]');
+  const identitySelect = root.querySelector('[data-graph-identity-select]');
+  const identityCompare = root.querySelector('[data-graph-identity-compare]');
+  const flowSelect = root.querySelector('[data-graph-flow-select]');
+  const objectSelect = root.querySelector('[data-graph-object-select]');
+  const pathClearBtn = root.querySelector('[data-graph-path-clear]');
   const api = root.dataset.api;
   const base = root.dataset.base;
   const targetKey = root.dataset.target || 'target';
@@ -25,17 +35,17 @@
   const aiRunUrl = root.dataset.aiRun || '';
   const NS = 'http://www.w3.org/2000/svg';
 
-  const typeOrder = ['source','target','host','javascript','resource','operation','cluster','request','observation','lead','finding','external'];
+  const typeOrder = ['target','identity','flow','object','request','state','anomaly','host','resource','operation','javascript','source','observation','lead','finding','cluster','external'];
   const typeLabel = {
     source:'Fuentes', target:'Proyecto', host:'Hosts', javascript:'JavaScript', resource:'Recursos',
-    operation:'Métodos', cluster:'Grupos', request:'Solicitudes', observation:'Observaciones',
-    lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
+    operation:'Métodos', cluster:'Grupos', request:'Requests', observation:'Observaciones', identity:'Identidades',
+    flow:'Flows', object:'Objetos', state:'Estados', anomaly:'Anomalías', lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
   };
   const stateLabel = {normal:'Normal',untested:'Pendiente',testing:'En prueba',interesting:'Interesante',finding:'Hallazgo',tested:'Revisado'};
   const coverageLabel = {untested:'Pendiente',testing:'En prueba',tested:'Revisado'};
   const signalLabel = {normal:'Normal',interesting:'Interesante',finding:'Hallazgo'};
-  const metaKeyLabel = {id:'ID',type:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type solicitud',response_content_type:'Content-Type respuesta',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad'};
-  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a'};
+  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo de objeto',identifier:'Identificador',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
+  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flow',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención'};
   const valueLabel = v => ({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada',pending:'Pendiente',in_progress:'En revisión',reviewed:'Revisado',unknown:'Sin clasificar',lead:'Interesante',finding:'Hallazgo',high:'Alta',medium:'Media',low:'Baja',none:'Sin prioridad'}[String(v)] || v);
   const leadKindLabel = {
     access_object_reference:'IDOR / autorización horizontal', mass_assignment:'Asignación masiva',
@@ -50,6 +60,9 @@
   let sceneNodes = [], sceneEdges = [], visibleNodes = [], visibleEdges = [];
   let selected = null;
   let activeRoute = null;
+  let pathStart = null;
+  let activePathIds = [];
+  let activePathEdgeIds = new Set();
   let preset = 'surface';
   let activeTypes = new Set();
   let activeLeadStatuses = new Set(['candidate','testing','interesting','confirmed']);
@@ -64,8 +77,8 @@
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
-  const nodeRadius = t => t === 'target' ? 13 : t === 'host' ? 12 : t === 'resource' ? 11 : t === 'finding' ? 11 : t === 'cluster' ? 10 : 7;
-  const labelLimit = t => ['resource','operation'].includes(t) ? 48 : 34;
+  const nodeRadius = t => t === 'target' ? 13 : t === 'identity' ? 12 : t === 'flow' ? 12 : t === 'object' ? 12 : t === 'host' ? 11 : t === 'resource' ? 10 : t === 'finding' ? 11 : t === 'anomaly' ? 10 : t === 'cluster' ? 10 : 7;
+  const labelLimit = t => ['resource','operation','request','object'].includes(t) ? 52 : 36;
   const edgeId = (a,b,r) => `virtual:${a}:${r}:${b}`;
   const byId = () => new Map(graph.nodes.map(n => [n.id,n]));
   const sceneById = () => new Map(sceneNodes.map(n => [n.id,n]));
@@ -119,7 +132,30 @@
   }
 
   function updateLeadFilterVisibility(){
-    if(hypothesisFilterWrap) hypothesisFilterWrap.hidden=!['interesting','attack','all'].includes(preset);
+    if(hypothesisFilterWrap) hypothesisFilterWrap.hidden=!['interesting','intelligence','attack','all'].includes(preset);
+  }
+
+  function fillSelect(select, rows, valueFn, labelFn, selectedValue, emptyLabel){
+    if(!select)return;
+    const current=String(selectedValue||'');
+    select.innerHTML=`<option value="">${esc(emptyLabel)}</option>`+(rows||[]).map(row=>`<option value="${esc(valueFn(row))}" ${String(valueFn(row))===current?'selected':''}>${esc(labelFn(row))}</option>`).join('');
+  }
+
+  function populateContextControls(){
+    const opts=graph.meta?.filter_options||{};
+    const semantic=['identity','flow','objects'].includes(preset);
+    if(contextPanel)contextPanel.hidden=!semantic;
+    if(identityControls)identityControls.hidden=preset!=='identity';
+    if(flowControls)flowControls.hidden=preset!=='flow';
+    if(objectControls)objectControls.hidden=preset!=='objects';
+    if(preset==='identity'){
+      fillSelect(identitySelect,opts.identities||[],x=>x.id,x=>`${x.name}${Number(x.request_count||0)?` · ${x.request_count} Requests`:''}`,graph.meta?.identity_id,'Todas las identidades');
+      fillSelect(identityCompare,opts.identities||[],x=>x.id,x=>x.name,graph.meta?.compare_identity_id,'— ninguna —');
+    } else if(preset==='flow'){
+      fillSelect(flowSelect,opts.flows||[],x=>x.id,x=>`${x.name}${Number(x.step_count||0)?` · ${x.step_count} pasos`:''}`,graph.meta?.flow_id,'Todos los Flows');
+    } else if(preset==='objects'){
+      fillSelect(objectSelect,opts.objects||[],x=>x.id,x=>`${x.object_type} ${x.identifier}`,graph.meta?.object_id,'Objetos recientes');
+    }
   }
 
   function scopeKey(){ const m=graph.meta||{}; return `${m.scope||'overview'}:${m.host_id||0}:${m.resource_id||0}`; }
@@ -150,9 +186,10 @@
     return fetch(endpoint, {headers:{'Accept':'application/json'}})
       .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
-        graph = data; selected=null; activeRoute=null; expandedClusters.clear();
+        graph = data; selected=null; activeRoute=null; pathStart=null; activePathIds=[];activePathEdgeIds=new Set();expandedClusters.clear();if(pathClearBtn)pathClearBtn.hidden=true;
         initLeadFilters();
         if(scopeStatusEl){ const m=graph.meta||{}; scopeStatusEl.textContent=m.scope_label || 'Vista general'; }
+        populateContextControls();
         buildScene(); buildTypeFilters(); buildLeadFilters(); updateLeadFilterVisibility(); applyFilters({fitAfter:true});
         renderRoutes();
         detail.innerHTML=emptyDetail();
@@ -225,7 +262,10 @@
       }
     };
 
-    if (preset === 'surface' || preset === 'resources') {
+    if (['identity','flow','objects','intelligence','context'].includes(preset)) {
+      graph.nodes.forEach(addNode);
+      graph.edges.filter(e => include.has(e.source) && include.has(e.target)).forEach(addEdge);
+    } else if (preset === 'surface' || preset === 'resources') {
       graph.nodes.filter(n => ['target','host','resource','operation','cluster'].includes(n.type)).forEach(addNode);
       graph.edges.filter(e => include.has(e.source) && include.has(e.target) && ['contains','supports'].includes(e.relation)).forEach(addEdge);
 
@@ -312,6 +352,11 @@
   }
 
   function laneFor(n){
+    if (preset === 'context') return {target:0,identity:1,flow:1,request:2,object:3,state:4,anomaly:4,host:4,resource:4}[n.type] ?? 4;
+    if (preset === 'identity') return {target:0,identity:1,flow:2,request:3,object:4,state:5,anomaly:5,host:5,resource:5}[n.type] ?? 5;
+    if (preset === 'flow') return {target:0,flow:1,identity:2,request:3,object:4,state:5,anomaly:5,host:5}[n.type] ?? 5;
+    if (preset === 'objects') return {target:0,identity:1,flow:1,object:2,request:3,state:3,anomaly:4,host:4}[n.type] ?? 4;
+    if (preset === 'intelligence') return {target:0,host:1,resource:2,object:2,request:3,lead:3,anomaly:3,finding:4,identity:1,flow:1,state:3}[n.type] ?? 4;
     if (preset === 'surface' || preset === 'resources') {
       return {target:0,host:1,javascript:2,resource:2,operation:3,cluster:4}[n.type] ?? 4;
     }
@@ -394,12 +439,13 @@
   }
 
   function relationIsHighlight(e){
-    if(preset!=='attack' && preset!=='interesting')return false;
+    if(!['attack','interesting','intelligence'].includes(preset))return false;
     const m=sceneById(),a=m.get(e.source),b=m.get(e.target);
     return [a,b].some(n=>n && (n.state==='interesting'||n.state==='finding'||n.type==='lead'||n.type==='finding'||n.type==='observation'));
   }
 
   function relationIsRoute(e){
+    if(activePathEdgeIds.has(e.id))return true;
     if(!activeRoute || !Array.isArray(activeRoute.node_ids)) return false;
     const ids=activeRoute.node_ids;
     for(let i=0;i<ids.length-1;i++){
@@ -420,7 +466,7 @@
 
   function labelVisible(n){
     if(selected===n.id)return true;
-    if(['target','host','resource','operation','finding','lead','cluster'].includes(n.type))return true;
+    if(['target','host','resource','operation','finding','lead','cluster','identity','flow','object','anomaly','state'].includes(n.type))return true;
     return view.k>=1.15;
   }
 
@@ -440,7 +486,7 @@
 
     visibleNodes.forEach(n=>{
       const ng=document.createElementNS(NS,'g');
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}${activeRoute?.node_ids?.includes(n.id)?' route-node':''}`);
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const circle=document.createElementNS(NS,'circle');circle.setAttribute('r',nodeRadius(n.type));ng.appendChild(circle);
       if (n.meta?.coverage && ['host','resource'].includes(n.type)) {
@@ -500,15 +546,20 @@
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
+    const semanticNeutral=['identity','flow','object','request','state','target','host','resource'].includes(n.type) && slugState(n.state)==='normal';
     const statusHtml=(meta.coverage||meta.signal)
       ? `<div class="graph-dual-state">${meta.coverage?`<span class="state-chip coverage-chip coverage-${esc(meta.coverage)}">Cobertura · ${esc(coverageLabel[meta.coverage]||meta.coverage)}</span>`:''}${meta.signal?`<span class="state-chip signal-chip signal-${esc(meta.signal)}">Señal · ${esc(signalLabel[meta.signal]||meta.signal)}</span>`:''}${Number(meta.finding_count||0)>0?`<span class="state-chip signal-chip signal-finding">${esc(meta.finding_count)} hallazgo${Number(meta.finding_count)===1?'':'s'}</span>`:''}</div>`
-      : `<span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span>`;
+      : semanticNeutral ? '' : `<span class="state-chip state-${slugState(n.state)}">${esc(stateLabel[slugState(n.state)]||n.state)}</span>`;
     const exploreAction=['host','resource'].includes(n.type)?`<button type="button" class="button" data-explore-scope>Explorar ${n.type==='host'?'host':'recurso'} en mapa →</button>`:'';
+    const pathAction=!pathStart?`<button type="button" class="btn-secondary" data-path-start>Camino · empezar aquí</button>`:(pathStart===n.id?`<button type="button" class="btn-secondary" data-path-clear-local>Cancelar inicio de camino</button>`:`<button type="button" class="button" data-path-to>Ver camino desde ${esc((sceneNodes.find(x=>x.id===pathStart)||graph.nodes.find(x=>x.id===pathStart))?.label||'inicio')}</button><button type="button" class="btn-secondary" data-path-start>Cambiar inicio</button>`);
     const hypothesisHtml=n.type==='lead'?`<div class="graph-detail-section graph-hypothesis-editor"><h3>Trabajo de hipótesis</h3>${meta.why?`<p><b>Por qué:</b> ${esc(meta.why)}</p>`:''}${meta.next_test?`<p><b>Siguiente prueba:</b> ${esc(meta.next_test)}</p>`:''}<label>Estado<select data-lead-edit-status>${['candidate','testing','interesting','negative','postponed','confirmed','discarded'].map(s=>`<option value="${s}" ${String(meta.status||'candidate')===s?'selected':''}>${esc(valueLabel(s))}</option>`).join('')}</select></label><label>Resultado / qué pasó<textarea data-lead-edit-notes placeholder="Qué probaste, por qué falló o qué evidencia confirmó la hipótesis…">${esc(meta.result_notes||'')}</textarea></label><button type="button" class="button" data-lead-edit-save>Guardar en la misma hipótesis</button><small data-lead-edit-feedback></small></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}<div class="graph-detail-section"><h3>Relaciones · ${rels.length}</h3>${relationRows||'<small>Sin relaciones visibles.</small>'}</div>`;
     detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));
+    detail.querySelector('[data-path-start]')?.addEventListener('click',()=>{pathStart=n.id;activePathIds=[];activePathEdgeIds=new Set();if(pathClearBtn)pathClearBtn.hidden=false;showNode(n);render();});
+    detail.querySelector('[data-path-clear-local]')?.addEventListener('click',()=>clearPath());
+    detail.querySelector('[data-path-to]')?.addEventListener('click',()=>showPath(pathStart,n.id));
     detail.querySelector('[data-expand-cluster]')?.addEventListener('click',()=>toggleCluster(n));
     detail.querySelector('[data-ai-selected]')?.addEventListener('click',()=>openAiPanel(n.type==='cluster'?(n.parentId||''):n.id,n.type==='cluster'?(n.meta?.parent||n.label):n.label));
     detail.querySelector('[data-lead-edit-save]')?.addEventListener('click',async()=>{
@@ -544,6 +595,28 @@
     if(!n || n.type!=='cluster' || !Array.isArray(n.childIds))return;
     expandedClusters.has(n.id)?expandedClusters.delete(n.id):expandedClusters.add(n.id);
     const keepSelected=n.id;buildScene();buildTypeFilters();applyFilters();selected=keepSelected;const x=sceneNodes.find(a=>a.id===keepSelected);if(x)showNode(x);fit();
+  }
+
+  function clearPath(){
+    pathStart=null;activePathIds=[];activePathEdgeIds=new Set();if(pathClearBtn)pathClearBtn.hidden=true;applyFilters({fitAfter:true});
+    if(selected){const n=sceneNodes.find(x=>x.id===selected)||graph.nodes.find(x=>x.id===selected);if(n)showNode(n);}
+  }
+
+  function showPath(startId,endId){
+    if(!startId||!endId||startId===endId)return;
+    const adjacency=new Map();
+    sceneEdges.forEach(e=>{
+      const a=adjacency.get(e.source)||[];a.push({id:e.target,edge:e});adjacency.set(e.source,a);
+      const b=adjacency.get(e.target)||[];b.push({id:e.source,edge:e});adjacency.set(e.target,b);
+    });
+    const queue=[startId],prev=new Map([[startId,null]]),prevEdge=new Map();
+    while(queue.length){const cur=queue.shift();if(cur===endId)break;for(const step of adjacency.get(cur)||[]){if(prev.has(step.id))continue;prev.set(step.id,cur);prevEdge.set(step.id,step.edge);queue.push(step.id);}}
+    if(!prev.has(endId)){alert('No hay un camino observado entre estos nodos en la vista actual. Prueba ampliar el contexto o 2 saltos.');return;}
+    const ids=[];const edgeIds=new Set();let cur=endId;
+    while(cur){ids.push(cur);const pe=prevEdge.get(cur);if(pe)edgeIds.add(pe.id);cur=prev.get(cur);}
+    ids.reverse();activePathIds=ids;activePathEdgeIds=edgeIds;
+    const keep=new Set(ids);visibleNodes=sceneNodes.filter(n=>keep.has(n.id));visibleEdges=sceneEdges.filter(e=>edgeIds.has(e.id));
+    if(pathClearBtn)pathClearBtn.hidden=false;render();fit();
   }
 
   function focusNeighborhood(id,hops=1){
@@ -613,55 +686,63 @@
   }
 
   function setPreset(next,button){
-    preset=next;selected=null;expandedClusters=new Set();
+    preset=next;selected=null;expandedClusters=new Set();pathStart=null;activePathIds=[];activePathEdgeIds=new Set();if(pathClearBtn)pathClearBtn.hidden=true;
     root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===button));
     if(routePanel) routePanel.hidden = !['interesting','attack'].includes(next);
-    const perspectiveCopy={surface:'Superficie · ¿qué existe?',untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · ¿qué observé realmente?',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista completa'};
-    if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';
+    const perspectiveCopy={
+      surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿quién tocó qué?',flow:'Flows · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿qué cosas están relacionadas?',intelligence:'Inteligencia · ¿qué merece atención?',
+      untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · Requests observadas',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista técnica ampliada'
+    };
+    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona cualquier Identity Context que tú hayas creado. Negro no presupone roles.',flow:'Una historia de negocio une Requests, actor, objetos y estados observados.',objects:'Sigue una misma cosa del negocio aunque aparezca en varios hosts y Requests.',intelligence:'Anomalías, hipótesis y hallazgos: diferencias que justifican mirar más de cerca.'};
+    if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Mapa de investigación';
+    if(scopeCopyEl) scopeCopyEl.textContent=helpCopy[next]||'Cambia de lente sin perder la evidencia original.';
     updateLeadFilterVisibility();
+    if(contextPanel)contextPanel.hidden=!['identity','flow','objects'].includes(next);
 
-    // Overview is intentionally shallow for large targets.  Route cards can
-    // therefore exist while their resource/operation/lead nodes are not yet
-    // materialized.  When the investigator asks "Qué probar ahora", load a
-    // compact routes projection automatically instead of showing an empty
-    // canvas and forcing a card click first.
-    if(next==='attack' && String(graph.meta?.scope||'overview')!=='routes') {
-      detail.innerHTML=emptyDetail();
-      search.value='';
-      load(`${api}?scope=routes`).then(()=>{
-        preset='attack';
-        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy.attack;
-        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
+    const semanticScope={identity:'identities',flow:'flows',objects:'objects',intelligence:'intelligence'}[next];
+    if(semanticScope){
+      detail.innerHTML=emptyDetail();search.value='';
+      load(`${api}?scope=${semanticScope}`).then(()=>{
+        preset=next;if(scopeStatusEl)scopeStatusEl.textContent=perspectiveCopy[next];if(scopeCopyEl)scopeCopyEl.textContent=helpCopy[next]||'';
+        populateContextControls();buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
       });
+      return;
+    }
+
+    if(next==='attack' && String(graph.meta?.scope||'overview')!=='routes') {
+      detail.innerHTML=emptyDetail();search.value='';
+      load(`${api}?scope=routes`).then(()=>{preset='attack';if(scopeStatusEl)scopeStatusEl.textContent=perspectiveCopy.attack;buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();});
       return;
     }
     if(next==='burp' && String(graph.meta?.scope||'overview')!=='burp') {
-      detail.innerHTML=emptyDetail();
-      search.value='';
-      load(`${api}?scope=burp&exchanges=160`).then(()=>{
-        preset='burp';
-        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy.burp;
-        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
-      });
+      detail.innerHTML=emptyDetail();search.value='';
+      load(`${api}?scope=burp&exchanges=160`).then(()=>{preset='burp';if(scopeStatusEl)scopeStatusEl.textContent=perspectiveCopy.burp;buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();});
       return;
     }
-    if(['surface','untested','interesting','all'].includes(next) && ['routes','burp'].includes(String(graph.meta?.scope||''))) {
-      detail.innerHTML=emptyDetail();
-      search.value='';
-      load(`${api}?scope=overview`).then(()=>{
-        preset=next;
-        if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';
-        buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();
-      });
+    const current=String(graph.meta?.scope||'overview');
+    if(['surface','untested','interesting','all'].includes(next) && !['overview','host','resource'].includes(current)) {
+      detail.innerHTML=emptyDetail();search.value='';
+      load(`${api}?scope=overview`).then(()=>{preset=next;if(scopeStatusEl)scopeStatusEl.textContent=perspectiveCopy[next]||'Vista general';buildScene();buildTypeFilters();buildLeadFilters();applyFilters({fitAfter:true});renderRoutes();});
       return;
     }
-
-    detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';applyFilters({fitAfter:true});renderRoutes();
+    detail.innerHTML=emptyDetail();buildScene();buildTypeFilters();buildLeadFilters();search.value='';populateContextControls();applyFilters({fitAfter:true});renderRoutes();
   }
 
   search.addEventListener('input',()=>applyFilters());
   root.querySelectorAll('[data-graph-preset]').forEach(b=>b.addEventListener('click',()=>setPreset(b.dataset.graphPreset,b)));
-  root.querySelector('[data-graph-overview]')?.addEventListener('click',()=>load(`${api}?scope=overview`));
+  root.querySelector('[data-graph-overview]')?.addEventListener('click',()=>{const b=root.querySelector('[data-graph-preset="surface"]');setPreset('surface',b);});
+  identitySelect?.addEventListener('change',()=>{
+    const iid=Number(identitySelect.value||0),cid=Number(identityCompare?.value||0);
+    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();});
+  });
+  identityCompare?.addEventListener('change',()=>{
+    const iid=Number(identitySelect?.value||0),cid=Number(identityCompare.value||0);
+    if(!iid&&cid){identitySelect.value=String(cid);identityCompare.value='';return identitySelect.dispatchEvent(new Event('change'));}
+    load(iid?`${api}?scope=identity&identity_id=${iid}${cid&&cid!==iid?`&compare_identity_id=${cid}`:''}`:`${api}?scope=identities`).then(()=>{preset='identity';populateContextControls();});
+  });
+  flowSelect?.addEventListener('change',()=>{const id=Number(flowSelect.value||0);load(id?`${api}?scope=flow&flow_id=${id}`:`${api}?scope=flows`).then(()=>{preset='flow';populateContextControls();});});
+  objectSelect?.addEventListener('change',()=>{const id=Number(objectSelect.value||0);load(id?`${api}?scope=object&object_id=${id}`:`${api}?scope=objects`).then(()=>{preset='objects';populateContextControls();});});
+  pathClearBtn?.addEventListener('click',clearPath);
   root.querySelector('[data-graph-fit]')?.addEventListener('click',fit);
   root.querySelector('[data-graph-reset-layout]')?.addEventListener('click',()=>{clearSavedLayout();autoLayout();applyFilters({fitAfter:true});});
   root.querySelector('[data-graph-neighborhood]')?.addEventListener('click',()=>selected&&focusNeighborhood(selected,1));
@@ -679,7 +760,7 @@
   // Perspective order is personal UX state, independent of target evidence.
   const presetWrap=root.querySelector('[data-graph-presets]');
   const presetOrderKey=`negro.graph.presetOrder:${targetKey}`;
-  const defaultPresetOrder=['surface','untested','interesting','burp','attack','all'];
+  const defaultPresetOrder=['surface','identity','flow','objects','intelligence'];
   function restorePresetOrder(){
     if(!presetWrap)return;
     let order=defaultPresetOrder;
@@ -744,14 +825,14 @@
     return `<article class="graph-ai-card priority-view-${esc(priority)}" data-idea="${Number(h.lead_id||0)}"><div class="graph-ai-card-top"><div class="badges"><span class="badge hypothesis-priority priority-${esc(priority)}">${priorityLabel}</span><span class="graph-ai-kind">${esc(h.type||'hypothesis')}</span>${reasons}</div><span class="state-chip">${esc(statusUi)}</span></div><h3>${esc(h.title||'Hipótesis')}</h3>${steps?`<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba esto ahora</h3></div><ol class="ai-steps">${steps}</ol></div>`:''}${h.plain_language?`<div class="hypothesis-plain"><b>En simple:</b> ${esc(h.plain_language)}</div>`:''}<p><b>Por qué merece tiempo:</b> ${esc(h.why_interesting||'')}</p><p><b>Objetivo ofensivo:</b> ${esc(h.suggested_investigation||'')}</p>${refs?`<div class="hypothesis-evidence"><h3>Evidencia real</h3><div class="evidence-ref-list">${refs}</div></div>`:''}<p><b>Se vuelve interesante si:</b> ${esc(h.confirm_if||'')}</p><p><b>Descartar si:</b> ${esc(h.discard_if||'')}</p><div class="graph-ai-card-actions">${resourceId?`<a class="btn-secondary" href="${base}/resource/${resourceId}#http">Abrir evidencia HTTP</a>`:''}${resourceId&&method?`<button type="button" class="btn-secondary" data-send-repeater data-resource="${resourceId}" data-method="${esc(method)}">Enviar a Repeater →</button>`:''}<button type="button" class="btn-secondary" data-view-idea>Ver en mapa</button><button type="button" class="btn-secondary" data-idea-status="testing">Empezar prueba</button><button type="button" class="btn-secondary" data-idea-status="negative">Negativa</button><button type="button" class="btn-secondary" data-idea-status="interesting">Interesante</button><button type="button" class="btn-secondary" data-idea-status="postponed">Para después</button><button type="button" class="btn-secondary" data-idea-status="confirmed">Confirmada</button><a class="btn-secondary" href="${base}/hypotheses">Abrir hipótesis</a></div></article>`;
   }
   async function refreshGraphData(){
-    const m=graph.meta||{};let u=`${api}?scope=${encodeURIComponent(m.scope||'overview')}`;if(m.host_id)u+=`&host_id=${encodeURIComponent(m.host_id)}`;if(m.resource_id)u+=`&resource_id=${encodeURIComponent(m.resource_id)}`;
+    const m=graph.meta||{};let u=`${api}?scope=${encodeURIComponent(m.scope||'overview')}`;if(m.host_id)u+=`&host_id=${encodeURIComponent(m.host_id)}`;if(m.resource_id)u+=`&resource_id=${encodeURIComponent(m.resource_id)}`;if(m.identity_id)u+=`&identity_id=${encodeURIComponent(m.identity_id)}`;if(m.compare_identity_id)u+=`&compare_identity_id=${encodeURIComponent(m.compare_identity_id)}`;if(m.flow_id)u+=`&flow_id=${encodeURIComponent(m.flow_id)}`;if(m.object_id)u+=`&object_id=${encodeURIComponent(m.object_id)}`;if(m.request_id)u+=`&request_id=${encodeURIComponent(m.request_id)}`;if(m.finding_id)u+=`&finding_id=${encodeURIComponent(m.finding_id)}`;
     const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`HTTP ${r.status}`);graph=await r.json();initLeadFilters();buildScene();buildTypeFilters();buildLeadFilters();updateLeadFilterVisibility();applyFilters({fitAfter:false});renderRoutes();
   }
   function bindIdeaCards(){
     aiResults?.querySelectorAll('[data-idea]').forEach(card=>{
       const leadId=Number(card.dataset.idea||0);
       card.querySelector('[data-view-idea]')?.addEventListener('click',async()=>{
-        const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);
+        const btn=root.querySelector('[data-graph-preset="intelligence"]');if(btn)setPreset('intelligence',btn);
         const id=`lead:${leadId}`;const n=sceneNodes.find(x=>x.id===id)||graph.nodes.find(x=>x.id===id);if(n){selected=id;showNode(n);focusNeighborhood(id,1);}
       });
       card.querySelector('[data-send-repeater]')?.addEventListener('click',async(ev)=>{
@@ -825,10 +906,18 @@
 
   const initialFocus=new URLSearchParams(window.location.search).get('focus');
   if(routePanel) routePanel.hidden=true;
+  if(initialFocus){
+    const typ=String(initialFocus).split(':',1)[0];
+    const inferred=typ==='identity'?'identity':typ==='flow'?'flow':['object','business_object'].includes(typ)?'objects':['lead','finding','anomaly'].includes(typ)?'intelligence':['request','exchange'].includes(typ)?'context':'surface';
+    preset=inferred;
+    root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x.dataset.graphPreset===inferred));
+  }
   load(initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:null).then(()=>{
+    populateContextControls();
     if(initialFocus){
-      const n=sceneNodes.find(x=>x.id===initialFocus)||graph.nodes?.find(x=>x.id===initialFocus);
-      if(n){const btn=root.querySelector('[data-graph-preset="interesting"]');if(btn)setPreset('interesting',btn);selected=n.id;showNode(n);focusNeighborhood(n.id,1);}
+      const canonical=graph.meta?.focus_node||initialFocus;
+      const n=sceneNodes.find(x=>x.id===canonical)||graph.nodes?.find(x=>x.id===canonical);
+      if(n){selected=n.id;showNode(n);focusNeighborhood(n.id,1);}
     }
   });
 })();

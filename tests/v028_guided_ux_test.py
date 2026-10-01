@@ -58,7 +58,7 @@ def main() -> None:
             guide = client.get(f"/t/{target}/guide")
             assert guide.status_code == 200
             for phrase in (
-                "No memorices módulos", "Access Control Lab", "Resource / Operation / Exchange",
+                "No memorices módulos", "Access Control Lab", "Resource / Operation / Request",
                 "Inspección básica", "Authorization Matrix", "Business Objects", "Settings",
             ):
                 assert phrase in guide.text, phrase

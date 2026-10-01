@@ -23,7 +23,7 @@
     <p class="eyebrow">CAPTURE WINDOW</p><h2>Empezar sin conocer la request exacta</h2>
     <form class="stack-form" action="{{ target_base }}/flows/capture/start" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label><span>Nombre</span><input name="name" required placeholder="Checkout · Buyer A"></label>
+      <label><span>Nombre</span><input name="name" required placeholder="Checkout · Cuenta principal"></label>
       <label><span>Descripción</span><textarea name="description" placeholder="Qué acción vas a recorrer"></textarea></label>
       <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
       <p class="muted small">Start abre una ventana. Stop guarda todo lo observado como candidato, incluyendo ruido y OPTIONS. Nada se elimina automáticamente.</p>
@@ -33,10 +33,10 @@
     <p class="eyebrow">FLOW MANUAL</p><h3>Ya conoces el rango</h3>
     <form class="stack-form" action="{{ target_base }}/flows/create" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label><span>Nombre</span><input name="name" required placeholder="Compra normal · Buyer A"></label>
+      <label><span>Nombre</span><input name="name" required placeholder="Compra normal · Cuenta principal"></label>
       <label><span>Descripción</span><textarea name="description"></textarea></label>
       <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-      <div class="range-grid"><label><span>Desde exchange #</span><input name="start_exchange" type="number" min="1"></label><label><span>Hasta exchange #</span><input name="end_exchange" type="number" min="1"></label></div>
+      <div class="range-grid"><label><span>Desde Request #</span><input name="start_exchange" type="number" min="1"></label><label><span>Hasta Request #</span><input name="end_exchange" type="number" min="1"></label></div>
       <button class="button ghost" type="submit">Crear flow manual</button>
     </form>
   </aside>

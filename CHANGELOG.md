@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.29.0
+
+- Rediseña el mapa como **Investigation Map 2.0** con cinco lentes principales: Superficie, Identidades, Flows, Objetos e Inteligencia.
+- Añade proyecciones visuales semánticas que reutilizan Identity Contexts, Flow Steps, Business Objects, Business States y Pattern Anomalies existentes; no crea una segunda fuente de verdad.
+- La vista de Identidades usa nombres y cantidad de cuentas completamente dinámicos. Permite seleccionar cualquier Identity Context y compararlo con cualquier otro sin asumir buyer/seller/admin.
+- Añade filtros contextuales para Identity, Flow y Business Object.
+- Añade **Focus Mode** desde Request, Identity, Flow, Object y Finding mediante `Ver en mapa`.
+- Añade expansión visual de 1/2 saltos y **Path Finder** entre dos nodos usando únicamente relaciones presentes en la escena cargada.
+- Añade gramática visual estable: `Identity = quién`, `Request = llamada`, `Flow = historia`, `Object = cosa`, `State = estado`, `Anomaly = diferencia`.
+- Cambia la terminología visible **Exchange → Request** en la experiencia de usuario, conservando `exchange_id` internamente para compatibilidad.
+- Amplía el Centro de Aprendizaje con las lentes del Investigation Map y su uso en el Access Control Lab.
+- Añade regresión `v029_map2_ux_test.py`; toda la suite existente continúa en verde.
+- Negro Burp Bridge permanece compatible; esta iteración no requiere cambiar el JAR.
+
 ## v0.28.0
 
 - Corrige el `422 int_parsing` de **Business Objects** cuando el filtro `type_id` llega vacío desde el `<select>`; valores inválidos escritos a mano se ignoran de forma segura.

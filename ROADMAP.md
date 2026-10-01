@@ -157,6 +157,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 5. Flow Capture + Flow Compare + Burp-native Identity/Flows + object-bound business-state observations. ✅ v0.26.0
 6. Pattern anomalies + cross-host correlation + business objects. ✅ v0.27.0
 6.5. Guided UX + Learning Center + contextual help + Business Object clarity. ✅ v0.28.0
+6.6. Investigation Experience / Map 2.0 + Focus Mode + Path Finder + lenguaje Request-first. ✅ v0.29.0
 7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
@@ -213,4 +214,4 @@ No medir Negro por cantidad de módulos. Medirlo por:
 ## Siguiente fase inmediata
 
 - **Custom Signals** sobre la Knowledge Base existente, sin crear otro motor paralelo.
-- Después: Hypothesis Engine 2.0 y pulido/performance, usando Identity + Exchange + Flow + State + Business Objects como contexto estructurado.
+- Después: Hypothesis Engine 2.0 y pulido/performance, usando Identity + Request + Flow + State + Business Objects como contexto estructurado.

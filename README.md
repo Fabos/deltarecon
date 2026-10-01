@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.28.0
+# Negro Recon 🐕 — v0.29.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,18 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.29.0 — Investigation Experience / Map 2.0
+
+Esta iteración no añade otro scanner. Convierte el mapa en una **lente visual de investigación** sobre los datos que Negro ya conoce. La misma evidencia puede verse como **Superficie**, **Identidades**, **Flows**, **Objetos** o **Inteligencia**.
+
+Las identidades son completamente dinámicas: Negro usa exactamente los Identity Contexts creados por el investigador y nunca presupone `buyer`, `seller`, `admin` ni una cantidad fija de cuentas. Desde la lente Identidades se puede seleccionar una identidad y compararla visualmente con cualquier otra.
+
+`View in Map` / **Ver en mapa** está disponible desde Request, Identity, Flow, Business Object y Finding. El foco carga sólo el contexto relevante y puede expandirse a **1 salto** o **2 saltos**. El nuevo **Path Finder** permite seleccionar dos nodos y mostrar el camino más corto respaldado por relaciones observadas.
+
+La UI adopta **Request** como término humano en lugar de Exchange. Los nombres internos `http_exchanges` / `exchange_id` se conservan para compatibilidad de base de datos y APIs, pero el usuario ya no necesita conocer ese término.
+
+El mapa sigue siendo descriptivo: una arista indica evidencia almacenada o correlación registrada; no demuestra causalidad ni una vulnerabilidad.
 
 ## v0.28.0 — Guided UX + Learning Center
 

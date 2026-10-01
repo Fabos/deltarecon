@@ -72,10 +72,10 @@ UI_LABELS = {
     "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual",
-    "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Solicitud HTTP", "identity": "Identidad",
+    "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
     "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
-    "request": "Solicitud", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
+    "request": "Request", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
     "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Feature flags", "other": "Otro",
     "bola_surface": "Superficie BOLA/IDOR", "cloud_storage": "Almacenamiento cloud", "directory_listing": "Listado de directorio",
@@ -391,6 +391,9 @@ def _graph_inventory_counts(paths: dict[str, Path]) -> dict[str, int]:
             "resource": int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0),
             "operation": int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"] or 0),
             "request": int(conn.execute("SELECT COUNT(*) c FROM http_exchanges").fetchone()["c"] or 0),
+            "identity": int(conn.execute("SELECT COUNT(*) c FROM identities").fetchone()["c"] or 0),
+            "flow": int(conn.execute("SELECT COUNT(*) c FROM flows").fetchone()["c"] or 0),
+            "object": int(conn.execute("SELECT COUNT(*) c FROM business_objects").fetchone()["c"] or 0),
             "observation": int(conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] or 0),
             "lead": int(conn.execute("SELECT COUNT(*) c FROM leads_v2 WHERE COALESCE(rule_active,1)=1").fetchone()["c"] or 0),
             "finding": int(conn.execute("SELECT COUNT(*) c FROM findings").fetchone()["c"] or 0),
@@ -1086,7 +1089,7 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
                     href = f"host/{link['entity_id']}"
             elif link["entity_type"] == "exchange":
                 ex = conn.execute("SELECT id,status_code,source FROM http_exchanges WHERE id=?", (link["entity_id"],)).fetchone()
-                if ex: label = f"HTTP exchange #{ex['id']} · {ex['source']} · {ex['status_code'] or '—'}"
+                if ex: label = f"Request #{ex['id']} · {ex['source']} · {ex['status_code'] or '—'}"
             links.append({"row": link, "label": label, "href": href})
         retests = []
         for rr in conn.execute("SELECT * FROM finding_retests WHERE finding_id=? ORDER BY tested_at DESC,id DESC", (finding_id,)).fetchall():
@@ -1102,7 +1105,7 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
                 if link["entity_type"] == "exchange":
                     ex = conn.execute("SELECT e.id,e.status_code,e.source,o.method,r.path,r.id AS resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?", (link["entity_id"],)).fetchone()
                     if ex:
-                        label = f"Exchange #{ex['id']} · {ex['method']} {ex['path']} · HTTP {ex['status_code'] or '—'}"
+                        label = f"Request #{ex['id']} · {ex['method']} {ex['path']} · HTTP {ex['status_code'] or '—'}"
                         href = f"resource/{ex['resource_id']}#http"
                 rlinks.append({"row": link, "label": label, "href": href})
             rd["entities"] = rlinks
@@ -1383,6 +1386,312 @@ def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: lis
     routes.sort(key=lambda x: (-int(x["score"]), x["title"]))
     return routes[:limit]
 
+
+
+def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
+                         identity_id: int | None = None, compare_identity_id: int | None = None,
+                         flow_id: int | None = None, object_id: int | None = None,
+                         request_id: int | None = None, finding_id: int | None = None, limit: int = 160) -> dict[str, Any]:
+    """Human-oriented graph projection for identities, flows and business objects.
+
+    This is deliberately a projection, not a second source of truth.  Every node
+    points back to an existing Negro entity and every edge is backed by an
+    observed request, flow step or stored correlation.
+    """
+    import negro_identity as identity_tools
+    import negro_flows as flow_tools
+    import negro_objects as object_tools
+
+    scope = str(scope or "identities").lower()
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    seen_nodes: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid: str, typ: str, label: str, *, state: str = "normal", meta: dict[str, Any] | None = None, href: str | None = None) -> str:
+        if nid in seen_nodes:
+            return nid
+        seen_nodes.add(nid)
+        nodes.append({"id": nid, "type": typ, "label": str(label), "state": state, "meta": meta or {}, "href": href})
+        return nid
+
+    def add_edge(a: str, b: str, relation: str, *, source: str = "observed", evidence: Any = None) -> None:
+        key = (a, b, relation)
+        if a == b or a not in seen_nodes or b not in seen_nodes or key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"id": f"e{len(edges)+1}", "source": a, "target": b, "relation": relation, "meta": {"source": source, "evidence": evidence}})
+
+    project_name = core.workspace_project_name(paths, domain)
+    target = add_node("target:root", "target", project_name, meta={"domain": domain, "project_name": project_name})
+
+    with _db(paths) as conn:
+        identity_tools.init_schema(conn); flow_tools.init_schema(conn); object_tools.init_schema(conn)
+
+        identity_options = [dict(r) for r in conn.execute(
+            """SELECT i.id,i.name,i.kind,
+                      (SELECT COUNT(*) FROM exchange_identities ei WHERE ei.identity_id=i.id) request_count
+               FROM identities i ORDER BY lower(i.name) LIMIT 200"""
+        ).fetchall()]
+        flow_options = [dict(r) for r in conn.execute(
+            """SELECT f.id,f.name,f.capture_status,
+                      (SELECT COUNT(*) FROM flow_steps fs WHERE fs.flow_id=f.id AND fs.included=1) step_count
+               FROM flows f ORDER BY f.updated_at DESC,f.id DESC LIMIT 160"""
+        ).fetchall()]
+        object_options = [dict(r) for r in conn.execute(
+            """SELECT bo.id,bt.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview,'') identifier,
+                      bo.last_seen_at
+               FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id
+               ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 240"""
+        ).fetchall()]
+        object_type_options = [dict(r) for r in conn.execute("SELECT id,name FROM business_object_types ORDER BY lower(name)").fetchall()]
+
+        def add_identity(iid: int) -> str | None:
+            row = conn.execute(
+                """SELECT i.*,
+                          (SELECT COUNT(*) FROM exchange_identities ei WHERE ei.identity_id=i.id) request_count,
+                          (SELECT COUNT(DISTINCT boo.business_object_id) FROM business_object_observations boo JOIN exchange_identities ei ON ei.exchange_id=boo.exchange_id WHERE ei.identity_id=i.id) object_count,
+                          (SELECT COUNT(DISTINCT fs.flow_id) FROM flow_steps fs JOIN exchange_identities ei ON ei.exchange_id=fs.exchange_id WHERE ei.identity_id=i.id AND fs.included=1) flow_count
+                   FROM identities i WHERE i.id=?""", (int(iid),)
+            ).fetchone()
+            if not row: return None
+            return add_node(f"identity:{iid}", "identity", row["name"], meta={"id":iid,"kind":row["kind"],"requests":int(row["request_count"] or 0),"objects":int(row["object_count"] or 0),"flows":int(row["flow_count"] or 0)}, href=f"identities/view/{iid}")
+
+        def add_host(hid: int) -> str | None:
+            row = conn.execute("SELECT id,hostname FROM hosts WHERE id=?", (int(hid),)).fetchone()
+            if not row: return None
+            return add_node(f"host:{hid}", "host", row["hostname"], meta={"id":hid}, href=f"host/{hid}")
+
+        def add_resource(rid: int) -> str | None:
+            row = conn.execute("SELECT r.id,r.path,r.url,r.host_id,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?", (int(rid),)).fetchone()
+            if not row: return None
+            hn=add_host(int(row["host_id"]))
+            rn=add_node(f"resource:{rid}", "resource", row["path"] or row["url"], meta={"id":rid,"url":row["url"],"host":row["hostname"]}, href=f"resource/{rid}")
+            if hn: add_edge(hn,rn,"contains",source="inventory")
+            return rn
+
+        def add_request(exid: int) -> str | None:
+            row = conn.execute(
+                """SELECT e.id,e.operation_id,e.status_code,e.source,e.tool,e.seen_count,e.last_seen_at,
+                          o.method,o.resource_id,r.path,r.host_id,h.hostname
+                   FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""", (int(exid),)
+            ).fetchone()
+            if not row: return None
+            rn=add_node(f"exchange:{exid}", "request", f"#{exid} {row['method']} {row['path']} · {row['status_code'] or '—'}",
+                        meta={"id":exid,"method":row["method"],"path":row["path"],"status":row["status_code"],"source":row["source"],"tool":row["tool"],"host":row["hostname"],"seen_count":row["seen_count"],"last_seen_at":row["last_seen_at"]},
+                        href=f"resource/{int(row['resource_id'])}?exchange={exid}#exchange-{exid}")
+            hn=add_host(int(row["host_id"]))
+            if hn: add_edge(rn,hn,"observed_on",source="http")
+            return rn
+
+        def add_flow(fid: int) -> str | None:
+            row = conn.execute(
+                """SELECT f.*,i.name identity_name,
+                          (SELECT COUNT(*) FROM flow_steps fs WHERE fs.flow_id=f.id AND fs.included=1) step_count
+                   FROM flows f LEFT JOIN identities i ON i.id=f.identity_id WHERE f.id=?""", (int(fid),)
+            ).fetchone()
+            if not row: return None
+            fn=add_node(f"flow:{fid}", "flow", row["name"], meta={"id":fid,"description":row["description"] or "","steps":int(row["step_count"] or 0),"capture_status":row["capture_status"],"identity":row["identity_name"] or ""}, href=f"flows/{fid}")
+            if row["identity_id"]:
+                ident=add_identity(int(row["identity_id"]))
+                if ident: add_edge(ident,fn,"flow_actor",source="flow")
+            return fn
+
+        def add_object(oid: int) -> str | None:
+            row = conn.execute(
+                """SELECT bo.*,bt.name object_type,
+                          (SELECT COUNT(*) FROM business_object_observations x WHERE x.business_object_id=bo.id) request_count,
+                          (SELECT COUNT(DISTINCT x.host_id) FROM business_object_observations x WHERE x.business_object_id=bo.id) host_count
+                   FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id WHERE bo.id=?""", (int(oid),)
+            ).fetchone()
+            if not row: return None
+            value=str(row["identifier_raw"] or row["identifier_preview"] or "?")
+            return add_node(f"object:{oid}", "object", f"{row['object_type']} {value}", meta={"id":oid,"object_type":row["object_type"],"identifier":value,"requests":int(row["request_count"] or 0),"hosts":int(row["host_count"] or 0),"last_seen_at":row["last_seen_at"]}, href=f"objects/{oid}")
+
+        def connect_request_context(exid: int, request_node: str, *, flow_node: str | None = None) -> None:
+            actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()
+            if actor and actor["identity_id"]:
+                ident=add_identity(int(actor["identity_id"]))
+                if ident: add_edge(ident,request_node,"performed",source="identity",evidence={"request_id":exid})
+            for orow in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE exchange_id=? ORDER BY business_object_id", (int(exid),)).fetchall():
+                obj=add_object(int(orow["business_object_id"]))
+                if obj:
+                    add_edge(request_node,obj,"touches",source="business_object",evidence={"request_id":exid})
+                    if flow_node: add_edge(flow_node,obj,"touches_object",source="flow")
+
+        def add_object_states(oid: int) -> None:
+            od=object_tools.object_detail(conn,int(oid))
+            if not od: return
+            objnode=add_object(int(oid))
+            for idx, st in enumerate(od.get("states") or []):
+                exid=int(st.get("exchange_id") or 0)
+                sid=f"state:{oid}:{idx}:{exid}"
+                sn=add_node(sid,"state",str(st.get("state") or "state"),meta={"field":st.get("state_field") or "state","request_id":exid,"identity":st.get("identity_name") or "","host":st.get("hostname") or "","observed_at":st.get("observed_at") or ""},href=f"resource/{int(st.get('resource_id') or 0)}?exchange={exid}#exchange-{exid}" if exid and st.get('resource_id') else None)
+                if objnode: add_edge(objnode,sn,"state_observed",source="business_state",evidence={"request_id":exid})
+            for idx, anomaly in enumerate(od.get("anomalies") or []):
+                aid=f"anomaly:{oid}:{idx}"
+                an=add_node(aid,"anomaly",str(anomaly.get("title") or "Diferencia observada"),state="interesting",meta={"kind":anomaly.get("kind") or "pattern","message":anomaly.get("message") or "","baseline":anomaly.get("baseline") or anomaly.get("previous") or "","current":anomaly.get("current") or ""},href=f"objects/{oid}")
+                if objnode: add_edge(objnode,an,"pattern_difference",source="pattern_anomaly")
+
+        if scope in {"identities","identity"}:
+            selected_ids=[x for x in (identity_id,compare_identity_id) if x]
+            if not selected_ids:
+                for row in identity_options:
+                    inode=add_identity(int(row["id"]))
+                    if inode: add_edge(target,inode,"contains",source="identity_index")
+            else:
+                for iid in selected_ids:
+                    inode=add_identity(int(iid))
+                    if inode: add_edge(target,inode,"contains",source="identity_focus")
+                    rows=conn.execute(
+                        """SELECT e.id FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
+                           WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT ?""", (int(iid),max(20,min(limit,180)))
+                    ).fetchall()
+                    request_ids=[int(r["id"]) for r in rows]
+                    for exid in request_ids:
+                        rn=add_request(exid)
+                        if rn and inode: add_edge(inode,rn,"performed",source="identity",evidence={"request_id":exid})
+                        if rn: connect_request_context(exid,rn)
+                    if request_ids:
+                        marks=','.join('?'*len(request_ids))
+                        for fr in conn.execute(f"SELECT DISTINCT f.id FROM flows f JOIN flow_steps fs ON fs.flow_id=f.id WHERE fs.exchange_id IN ({marks}) AND fs.included=1 ORDER BY f.updated_at DESC LIMIT 40", request_ids).fetchall():
+                            fn=add_flow(int(fr["id"]))
+                            if fn and inode: add_edge(inode,fn,"participates_in",source="flow")
+
+        elif scope in {"flows","flow"}:
+            if not flow_id:
+                for row in flow_options:
+                    fn=add_flow(int(row["id"]))
+                    if fn: add_edge(target,fn,"contains",source="flow_index")
+                    for orow in conn.execute(
+                        """SELECT DISTINCT boo.business_object_id FROM flow_steps fs JOIN business_object_observations boo ON boo.exchange_id=fs.exchange_id
+                           WHERE fs.flow_id=? AND fs.included=1 ORDER BY boo.business_object_id LIMIT 12""", (int(row["id"]),)
+                    ).fetchall():
+                        obj=add_object(int(orow["business_object_id"]))
+                        if fn and obj: add_edge(fn,obj,"touches_object",source="flow")
+            else:
+                fn=add_flow(int(flow_id))
+                if fn: add_edge(target,fn,"contains",source="flow_focus")
+                steps=conn.execute("SELECT exchange_id,position FROM flow_steps WHERE flow_id=? AND included=1 ORDER BY position,id LIMIT 240", (int(flow_id),)).fetchall()
+                previous=None
+                for st in steps:
+                    exid=int(st["exchange_id"]); rn=add_request(exid)
+                    if rn and fn: add_edge(fn,rn,"flow_step",source="flow",evidence={"position":int(st["position"])})
+                    if previous and rn: add_edge(previous,rn,"next_step",source="flow",evidence={"position":int(st["position"])})
+                    if rn: connect_request_context(exid,rn,flow_node=fn)
+                    previous=rn or previous
+                fd=flow_tools.get_flow(conn,int(flow_id))
+                for obj in (fd or {}).get("business_objects") or []:
+                    if obj.get("id"):
+                        on=add_object(int(obj["id"]));
+                        if fn and on: add_edge(fn,on,"touches_object",source="flow")
+                for tl in (fd or {}).get("state_timelines") or []:
+                    raw=str(tl.get("identifier_value") or "")
+                    typ=str(tl.get("object_type") or "")
+                    orow=conn.execute("""SELECT bo.id FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id WHERE lower(bt.name)=lower(?) AND COALESCE(bo.identifier_raw,bo.identifier_preview,'')=? ORDER BY bo.id LIMIT 1""", (typ,raw)).fetchone()
+                    objnode=add_object(int(orow["id"])) if orow else None
+                    for idx,obs in enumerate(tl.get("observations") or []):
+                        sid=f"state:flow:{flow_id}:{tl.get('track_id')}:{idx}:{obs.get('exchange_id')}"
+                        sn=add_node(sid,"state",str(obs.get("state") or "state"),meta={"object_type":typ,"identifier":raw,"field":tl.get("state_field") or "state","identity":obs.get("identity_name") or "","request_id":obs.get("exchange_id")},href=f"resource/{int(obs.get('resource_id') or 0)}?exchange={int(obs.get('exchange_id') or 0)}#exchange-{int(obs.get('exchange_id') or 0)}" if obs.get('resource_id') and obs.get('exchange_id') else None)
+                        add_edge(objnode or fn,sn,"state_observed",source="business_state")
+
+        elif scope in {"objects","object"}:
+            if not object_id:
+                for row in object_options[:120]:
+                    oid=int(row["id"]); on=add_object(oid)
+                    if on: add_edge(target,on,"contains",source="object_index")
+                    for ir in conn.execute("""SELECT DISTINCT ei.identity_id FROM business_object_observations boo JOIN exchange_identities ei ON ei.exchange_id=boo.exchange_id WHERE boo.business_object_id=? AND ei.identity_id IS NOT NULL LIMIT 6""", (oid,)).fetchall():
+                        inode=add_identity(int(ir["identity_id"]))
+                        if inode and on: add_edge(inode,on,"observed_object",source="object_identity")
+                loaded={int(str(n["id"]).split(':',1)[1]) for n in nodes if n["type"]=="object"}
+                for rel in conn.execute("SELECT object_a_id,object_b_id,COUNT(*) occurrences FROM business_object_relation_observations GROUP BY object_a_id,object_b_id ORDER BY occurrences DESC LIMIT 180").fetchall():
+                    a,b=int(rel["object_a_id"]),int(rel["object_b_id"])
+                    if a in loaded and b in loaded:
+                        add_edge(f"object:{a}",f"object:{b}","co_observed",source="business_object",evidence={"occurrences":int(rel["occurrences"] or 0)})
+            else:
+                on=add_object(int(object_id))
+                if on: add_edge(target,on,"contains",source="object_focus")
+                od=object_tools.object_detail(conn,int(object_id))
+                if od:
+                    for row in (od.get("timeline") or [])[:max(20,min(limit,200))]:
+                        exid=int(row["exchange_id"]); rn=add_request(exid)
+                        if rn and on: add_edge(rn,on,"touches",source="business_object",evidence={"request_id":exid})
+                        if rn: connect_request_context(exid,rn)
+                    for rel in od.get("related") or []:
+                        other=add_object(int(rel["id"]))
+                        if on and other: add_edge(on,other,"co_observed",source="business_object",evidence={"occurrences":int(rel.get("occurrences") or 0)})
+                    for fr in od.get("flows") or []:
+                        fn=add_flow(int(fr["id"]))
+                        if fn and on: add_edge(fn,on,"touches_object",source="flow")
+                    add_object_states(int(object_id))
+
+        elif scope in {"request","requests"} and request_id:
+            rn=add_request(int(request_id))
+            if rn: add_edge(target,rn,"contains",source="request_focus")
+            if rn: connect_request_context(int(request_id),rn)
+            for fr in conn.execute("SELECT DISTINCT flow_id FROM flow_steps WHERE exchange_id=? AND included=1 ORDER BY flow_id", (int(request_id),)).fetchall():
+                fn=add_flow(int(fr["flow_id"]))
+                if fn and rn: add_edge(fn,rn,"flow_step",source="flow")
+
+        elif scope == "finding" and finding_id:
+            f=conn.execute("SELECT * FROM findings WHERE id=?", (int(finding_id),)).fetchone()
+            if f:
+                fn=add_node(f"finding:{int(finding_id)}","finding",f["title"],state="finding",meta={"id":int(finding_id),"severity":f["severity"],"status":f["status"]},href=f"finding/{int(finding_id)}")
+                add_edge(target,fn,"attention",source="finding")
+                for fe in conn.execute("SELECT entity_type,entity_id,relation FROM finding_entities WHERE finding_id=? ORDER BY id LIMIT 80", (int(finding_id),)).fetchall():
+                    parent=None
+                    if fe["entity_type"]=="resource": parent=add_resource(int(fe["entity_id"]))
+                    elif fe["entity_type"]=="host": parent=add_host(int(fe["entity_id"]))
+                    elif fe["entity_type"]=="exchange":
+                        parent=add_request(int(fe["entity_id"]))
+                        if parent: connect_request_context(int(fe["entity_id"]), parent)
+                    if parent: add_edge(parent,fn,fe["relation"] or "evidence_for",source="finding")
+
+        elif scope == "intelligence":
+            overview=object_tools.overview(conn,limit=80)
+            for card in overview.get("anomaly_cards") or []:
+                oid=int(card["object"]["id"]); on=add_object(oid)
+                if on: add_edge(target,on,"attention",source="pattern_anomaly")
+                for idx, anomaly in enumerate(card.get("items") or []):
+                    aid=f"anomaly:{oid}:{idx}"
+                    an=add_node(aid,"anomaly",str(anomaly.get("title") or "Diferencia observada"),state="interesting",meta={"kind":anomaly.get("kind") or "pattern","message":anomaly.get("message") or "","baseline":anomaly.get("baseline") or "","current":anomaly.get("current") or ""},href=f"objects/{oid}")
+                    if on: add_edge(on,an,"pattern_difference",source="pattern_anomaly")
+            for l in conn.execute("SELECT * FROM leads_v2 WHERE COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded') ORDER BY updated_at DESC LIMIT 50").fetchall():
+                st="finding" if l["status"]=="confirmed" else "interesting"
+                ln=add_node(f"lead:{l['id']}","lead",l["title"],state=st,meta={"id":l["id"],"type":l["lead_type"],"status":l["status"],"confidence":l["confidence"],"priority":l["review_priority"],"why":l["why_interesting"],"next_test":l["next_test"]},href=f"hypotheses#hypothesis-{l['id']}")
+                if l["resource_id"]:
+                    rr=add_resource(int(l["resource_id"]));
+                    if rr: add_edge(rr,ln,"produced_lead",source=str(l["source"] or "engine").lower())
+                elif l["host_id"]:
+                    hh=add_host(int(l["host_id"]));
+                    if hh: add_edge(hh,ln,"produced_lead",source=str(l["source"] or "engine").lower())
+            for f in conn.execute("SELECT * FROM findings ORDER BY updated_at DESC LIMIT 40").fetchall():
+                fn=add_node(f"finding:{f['id']}","finding",f["title"],state="finding",meta={"id":f["id"],"severity":f["severity"],"status":f["status"]},href=f"finding/{f['id']}")
+                for fe in conn.execute("SELECT entity_type,entity_id,relation FROM finding_entities WHERE finding_id=? ORDER BY id LIMIT 12", (int(f["id"]),)).fetchall():
+                    parent=None
+                    if fe["entity_type"]=="resource": parent=add_resource(int(fe["entity_id"]))
+                    elif fe["entity_type"]=="host": parent=add_host(int(fe["entity_id"]))
+                    elif fe["entity_type"]=="exchange": parent=add_request(int(fe["entity_id"]))
+                    if parent: add_edge(parent,fn,fe["relation"] or "evidence_for",source="finding")
+
+        counts: dict[str,int] = {}
+        for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
+        focus_node = None
+        if finding_id: focus_node=f"finding:{int(finding_id)}"
+        elif request_id: focus_node=f"exchange:{int(request_id)}"
+        elif object_id: focus_node=f"object:{int(object_id)}"
+        elif flow_id: focus_node=f"flow:{int(flow_id)}"
+        elif identity_id: focus_node=f"identity:{int(identity_id)}"
+        labels={"identities":"Identidades · quién hizo qué","identity":"Identidad · contexto visual","flows":"Flows · qué ocurrió y en qué orden","flow":"Flow · contexto visual","objects":"Objetos · qué está relacionado","object":"Objeto · contexto visual","request":"Request · contexto visual","finding":"Finding · evidencia relacionada","intelligence":"Inteligencia · qué merece atención"}
+        return {
+            "target": project_name, "nodes": nodes, "edges": edges, "routes": [], "counts": counts, "generated_at": _now(),
+            "meta": {
+                "scope": scope, "scope_label": labels.get(scope,"Mapa de investigación"), "focus_node": focus_node,
+                "identity_id": identity_id, "compare_identity_id": compare_identity_id, "flow_id": flow_id, "object_id": object_id, "request_id": request_id, "finding_id": finding_id,
+                "filter_options": {"identities":identity_options,"flows":flow_options,"objects":object_options,"object_types":object_type_options},
+            },
+        }
 
 def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview", host_id: int | None = None,
                 resource_id: int | None = None, exchange_limit: int = 100, observation_limit: int = 100) -> dict[str, Any]:
@@ -1815,22 +2124,22 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/notifications", {"anchor":"signals","title":"Notificaciones","question":"¿Qué observación nueva merece mi atención?","when":"Revisa señales recientes que Negro detectó mientras navegabas o analizabas tráfico.","example":"Diego recibe 200 en un endpoint relacionado con un Order donde otros casos daban 403; Negro lo puede elevar como señal para revisar.","caution":"Una notificación es una pista priorizada, no una vulnerabilidad confirmada."}),
             (r"^/intelligence", {"anchor":"intelligence","title":"Inteligencia","question":"¿Qué señales determinísticas encontró Negro?","when":"Úsala para revisar patrones detectados en HTTP, JS, recon y configuraciones.","example":"En el lab, una request sensible con X-Original-URL o un ownerId puede alimentar una hipótesis de Access Control para prueba manual.","caution":"Señal ≠ hipótesis ≠ finding."}),
             (r"^/hypotheses", {"anchor":"hunt","title":"Hunt / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
-            (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas los exchanges, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
+            (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas las Requests, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
             (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
             (r"^/host/", {"anchor":"enumeration","title":"Herramientas del host","question":"¿Qué nueva superficie puedo descubrir de forma controlada?","when":"Ejecuta sólo la herramienta que responde a una pregunta: DNS/TLS, robots/well-known, enlaces, JS, SAN, DNS pasivo, CORS o VHost.","example":"En el lab, Recon web descubre /.well-known/openid-configuration; eso amplía la superficie sin convertirlo en hallazgo.","caution":"No ejecutes módulos a ciegas: cada acción debe tener un objetivo y respetar el scope."}),
-            (r"^/resource/", {"anchor":"resources","title":"Recurso / endpoint","question":"¿Qué sé de esta ruta y qué pruebas ya hice?","when":"Úsalo como ficha persistente del endpoint: métodos, exchanges, señales, cobertura y notas.","example":"/api/orders/123 puede tener GET, POST o variantes de método. Negro conserva cada operación y la evidencia asociada.","caution":"Un recurso 'revisado' puede volver a ser candidato cuando aprendes una técnica nueva."}),
-            (r"^/search", {"anchor":"search","title":"Buscar","question":"¿Dónde aparece esta pista?","when":"Cuando ya tienes un valor, nombre de campo, header, host o fragmento de respuesta y quieres encontrar todas sus apariciones.","example":"Busca ownerId, 101, /api/orders o X-Original-URL para saltar desde una pista a todos los exchanges relacionados.","caution":"Search encuentra apariciones; no afirma que dos cosas tengan la misma semántica."}),
+            (r"^/resource/", {"anchor":"resources","title":"Recurso / endpoint","question":"¿Qué sé de esta ruta y qué pruebas ya hice?","when":"Úsalo como ficha persistente del endpoint: métodos, Requests, señales, cobertura y notas.","example":"/api/orders/123 puede tener GET, POST o variantes de método. Negro conserva cada operación y la evidencia asociada.","caution":"Un recurso 'revisado' puede volver a ser candidato cuando aprendes una técnica nueva."}),
+            (r"^/search", {"anchor":"search","title":"Buscar","question":"¿Dónde aparece esta pista?","when":"Cuando ya tienes un valor, nombre de campo, header, host o fragmento de respuesta y quieres encontrar todas sus apariciones.","example":"Busca ownerId, 101, /api/orders o X-Original-URL para saltar desde una pista a todas las Requests relacionadas.","caution":"Search encuentra apariciones; no afirma que dos cosas tengan la misma semántica."}),
             (r"^/parameters/follow/", {"anchor":"follow-value","title":"Follow Value","question":"¿Dónde reaparece exactamente este valor?","when":"Sigue un ID, email, UUID o token concreto aunque cambie de campo o de request/response.","example":"El valor 101 visto como /me.id puede reaparecer como ownerId=101 en un Order; eso conecta evidencia, pero ownerId no se vuelve identidad automáticamente.","caution":"Mismo valor no siempre significa mismo concepto."}),
-            (r"^/parameters/related/", {"anchor":"find-related","title":"Find Related","question":"¿Qué otros exchanges comparten evidencia útil con éste?","when":"Úsalo cuando una request parece importante y quieres encontrar vecinos por IDs, emails, referencias y otros valores específicos.","example":"Un GET /api/orders/123 puede relacionarse con /invoice y /cancel por orderId=123 y ownerId=101.","caution":"Relación significa coincidencia de evidencia, no causalidad ni vulnerabilidad."}),
-            (r"^/parameters/diff", {"anchor":"smart-compare","title":"Smart Compare","question":"¿Qué cambió realmente entre A y B?","when":"Compara dos exchanges eliminando ruido para ver identidad, parámetros, status y valores de negocio.","example":"Compara la misma operación con Ana y Diego: auth cambia, orderId se mantiene y el status pasa 200→403 o 403→200.","caution":"Una diferencia es materia de investigación; por sí sola no demuestra control de acceso roto."}),
-            (r"^/parameters/", {"anchor":"parameters","title":"Detalle de parámetro","question":"¿Cómo se comporta este campo en el target?","when":"Revisa valores, ubicaciones, hosts y exchanges de un nombre concreto antes de decidir si representa identidad, objeto o ruido.","example":"ownerId puede describir propiedad de un Order; id en /me puede identificar al actor. El mismo sufijo 'id' no significa lo mismo.","caution":"No conviertas IDs genéricos en identidades u objetos sin contexto."}),
+            (r"^/parameters/related/", {"anchor":"find-related","title":"Find Related","question":"¿Qué otras Requests comparten evidencia útil con ésta?","when":"Úsalo cuando una request parece importante y quieres encontrar vecinos por IDs, emails, referencias y otros valores específicos.","example":"Un GET /api/orders/123 puede relacionarse con /invoice y /cancel por orderId=123 y ownerId=101.","caution":"Relación significa coincidencia de evidencia, no causalidad ni vulnerabilidad."}),
+            (r"^/parameters/diff", {"anchor":"smart-compare","title":"Smart Compare","question":"¿Qué cambió realmente entre A y B?","when":"Compara dos Requests eliminando ruido para ver identidad, parámetros, status y valores de negocio.","example":"Compara la misma operación con Ana y Diego: auth cambia, orderId se mantiene y el status pasa 200→403 o 403→200.","caution":"Una diferencia es materia de investigación; por sí sola no demuestra control de acceso roto."}),
+            (r"^/parameters/", {"anchor":"parameters","title":"Detalle de parámetro","question":"¿Cómo se comporta este campo en el target?","when":"Revisa valores, ubicaciones, hosts y Requests de un nombre concreto antes de decidir si representa identidad, objeto o ruido.","example":"ownerId puede describir propiedad de un Order; id en /me puede identificar al actor. El mismo sufijo 'id' no significa lo mismo.","caution":"No conviertas IDs genéricos en identidades u objetos sin contexto."}),
             (r"^/parameters$", {"anchor":"parameters","title":"Parameter Explorer","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
             (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Authorization Matrix","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
             (r"^/identities", {"anchor":"identities","title":"Identity Contexts","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Flow Compare","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flows","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
-            (r"^/objects", {"anchor":"objects","title":"Business Objects","question":"¿Cuál es la misma 'cosa' de negocio a través de muchos requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
-            (r"^/graph", {"anchor":"map","title":"Mapa","question":"¿Cómo se relaciona visualmente la superficie que ya conozco?","when":"Úsalo para navegar hosts, recursos, operaciones y evidencia sin convertir el grafo en un inventario infinito.","example":"Puedes partir de api.accesslab.local y saltar a los recursos con tráfico Burp y señales asociadas.","caution":"El mapa es una vista de navegación, no una prueba de dependencia o vulnerabilidad."}),
+            (r"^/objects", {"anchor":"objects","title":"Business Objects","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
+            (r"^/graph", {"anchor":"map","title":"Investigation Map","question":"¿Qué quiero entender visualmente de esta investigación?","when":"Cambia de lente: Superficie para qué existe, Identidades para quién tocó qué, Flows para secuencias, Objetos para relaciones e Inteligencia para diferencias que merecen atención.","example":"En el lab selecciona Ana, compárala con Diego y enfoca Order 123; luego usa 1/2 saltos o Camino para explicar cómo se conecta una Request con el objeto y el Flow.","caution":"Las líneas representan evidencia observada o correlaciones guardadas. No demuestran causalidad, ownership ni vulnerabilidad por sí solas."}),
             (r"^/$", default),
         ]
         for pattern, meta in rules:
@@ -2586,7 +2895,7 @@ def create_app(default_domain: str, default_workspace: Path):
                    JOIN hosts h ON h.id=r.host_id WHERE e.id=?""", (int(exchange_id),)
             ).fetchone()
             if not ex:
-                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                raise HTTPException(status_code=404, detail="Request no encontrada")
         return render(request, "flow_add.html", target_key, domain, workspace, flows=flows, exchange=dict(ex))
 
     @app.post("/t/{target_key}/flows/add")
@@ -2755,7 +3064,7 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             ctx = identity_tools.assignment_context(conn, exchange_id)
             if not ctx:
-                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                raise HTTPException(status_code=404, detail="Request no encontrada")
             identity_rows = identity_tools.list_identities(conn)
             all_contexts = identity_tools.contexts(conn)
         return render(request, "identity_assign.html", target_key, domain, workspace, assignment=ctx, identities=identity_rows, identity_contexts=all_contexts)
@@ -2911,7 +3220,7 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             data = parameter_tools.related_exchanges(conn, exchange_id)
             if not data:
-                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                raise HTTPException(status_code=404, detail="Request no encontrada")
         return render(request, "related.html", target_key, domain, workspace, related=data)
 
     @app.get("/t/{target_key}/parameters/diff", response_class=HTMLResponse)
@@ -2924,7 +3233,7 @@ def create_app(default_domain: str, default_workspace: Path):
             with _db(paths) as conn:
                 result = parameter_tools.smart_diff(conn, int(a), int(b))
             if result is None:
-                error = "No pude encontrar uno de los exchanges."
+                error = "No pude encontrar una de las Requests."
         return render(request, "smart_diff.html", target_key, domain, workspace, a=a or "", b=b or "", diff=result, diff_error=error)
 
     @app.get("/t/{target_key}/parameters/{normalized_name}", response_class=HTMLResponse)
@@ -2945,7 +3254,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "graph.html", target_key, domain, workspace, graph_counts=counts, graph_generated=_now(), settings=intel.load_settings(), secret_status=intel.secret_status())
 
     @app.get("/api/t/{target_key}/graph", response_class=JSONResponse)
-    def graph_api(target_key: str, scope: str = "overview", host_id: int = 0, resource_id: int = 0, focus: str = "", exchanges: int = 100, observations: int = 100):
+    def graph_api(target_key: str, scope: str = "overview", host_id: int = 0, resource_id: int = 0, focus: str = "", exchanges: int = 100, observations: int = 100, identity_id: int = 0, compare_identity_id: int = 0, flow_id: int = 0, object_id: int = 0, request_id: int = 0, finding_id: int = 0):
         domain, _, paths = _target_context(target_key)
         if focus:
             try:
@@ -2956,6 +3265,10 @@ def create_app(default_domain: str, default_workspace: Path):
                 with _db(paths) as conn:
                     if typ == 'host': host_id = entity_id; scope = 'host'
                     elif typ == 'resource': resource_id = entity_id; scope = 'resource'
+                    elif typ in {'request','exchange'}: request_id = entity_id; scope = 'request'
+                    elif typ == 'identity': identity_id = entity_id; scope = 'identity'
+                    elif typ == 'flow': flow_id = entity_id; scope = 'flow'
+                    elif typ in {'object','business_object'}: object_id = entity_id; scope = 'object'
                     elif typ == 'operation':
                         rr=conn.execute("SELECT resource_id FROM resource_operations WHERE id=?",(entity_id,)).fetchone()
                         if rr: resource_id=int(rr['resource_id']); scope='resource'
@@ -2966,10 +3279,9 @@ def create_app(default_domain: str, default_workspace: Path):
                         rr=conn.execute("SELECT host_id,resource_id FROM leads_v2 WHERE id=?",(entity_id,)).fetchone()
                         if rr and rr['resource_id']: resource_id=int(rr['resource_id']); scope='resource'
                         elif rr and rr['host_id']: host_id=int(rr['host_id']); scope='host'
-                    elif typ == 'finding':
-                        rr=conn.execute("SELECT entity_type,entity_id FROM finding_entities WHERE finding_id=? ORDER BY CASE entity_type WHEN 'resource' THEN 0 WHEN 'host' THEN 1 ELSE 2 END LIMIT 1",(entity_id,)).fetchone()
-                        if rr and rr['entity_type']=='resource': resource_id=int(rr['entity_id']); scope='resource'
-                        elif rr and rr['entity_type']=='host': host_id=int(rr['entity_id']); scope='host'
+                    elif typ == 'finding': finding_id = entity_id; scope = 'finding'
+        if scope in {'identities','identity','flows','flow','objects','object','request','requests','finding','intelligence'}:
+            return _graph_semantic_data(paths, domain, scope=scope, identity_id=identity_id or None, compare_identity_id=compare_identity_id or None, flow_id=flow_id or None, object_id=object_id or None, request_id=request_id or None, finding_id=finding_id or None, limit=exchanges)
         return _graph_data(paths, domain, scope=scope, host_id=host_id or None, resource_id=resource_id or None, exchange_limit=exchanges, observation_limit=observations)
 
     @app.get("/api/t/{target_key}/graph/ideas-estimate", response_class=JSONResponse)
@@ -3204,7 +3516,7 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             row = conn.execute("""SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""", (exchange_id,)).fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                raise HTTPException(status_code=404, detail="Request no encontrada")
             core.set_human_state(conn, "exchange", exchange_id, state, category=category, note=note, source="web")
             resource_id = int(row["resource_id"])
             # Resource state is a human workspace summary, not a detector output.
@@ -3371,7 +3683,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 raw = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\n\r\n".encode("iso-8859-1", errors="replace")
                 request_b64 = base64.b64encode(raw).decode("ascii")
                 request_size = len(raw)
-            caption = f"Negro · {method} {row['path']}" + (f" · ex#{selected_exchange_id}" if selected_exchange_id else "")
+            caption = f"Negro · {method} {row['path']}" + (f" · Request #{selected_exchange_id}" if selected_exchange_id else "")
             cur = conn.execute(
                 "INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
                 (resource_id, method, row["url"], request_b64, caption, _now()),
@@ -3742,7 +4054,7 @@ def create_app(default_domain: str, default_workspace: Path):
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
             if not conn.execute("SELECT id FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone():
-                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                raise HTTPException(status_code=404, detail="Request no encontrada")
             mats = identity_tools.extract_auth_materials(conn, int(exchange_id))
         return {"target_key": target_key, "exchange_id": int(exchange_id), "materials": [
             {"fingerprint": m["fingerprint"], "material_type": m["material_type"], "name": m["name"], "preview": m["preview"]} for m in mats
@@ -3778,7 +4090,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if exchange_id:
                 ex = conn.execute("SELECT id FROM http_exchanges WHERE id=? AND operation_id=?", (exchange_id, operation_id)).fetchone()
                 if not ex:
-                    raise HTTPException(status_code=404, detail="Exchange no encontrado")
+                    raise HTTPException(status_code=404, detail="Request no encontrada")
             web_path = f"/t/{target_key}/resource/{resource_id}"
             if action == "open":
                 return {"ok": True, "action": action, "web_path": web_path}
@@ -3854,7 +4166,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     raise HTTPException(status_code=400, detail="Selecciona al menos un exchange")
                 valid = {int(r["id"]) for r in conn.execute(f"SELECT id FROM http_exchanges WHERE id IN ({','.join('?' for _ in exchange_ids)})", exchange_ids).fetchall()}
                 if len(valid) != len(exchange_ids):
-                    raise HTTPException(status_code=400, detail="Uno o más exchanges no pertenecen a este target")
+                    raise HTTPException(status_code=400, detail="Una o más Requests no pertenecen a este target")
                 flow_id = flow_tools.create_flow(conn, name, description=str(payload.get("description") or "")[:2000])
                 for exid in exchange_ids:
                     flow_tools.add_step(conn, flow_id, exid, candidate=True)

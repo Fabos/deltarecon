@@ -4,12 +4,12 @@
 {% set i=identity_detail.identity %}
 <section class="hero identity-detail-hero">
   <div><p class="eyebrow">IDENTIDAD #{{ i.id }}</p><h1>{{ i.name }}</h1><p class="muted">{{ i.notes or 'Sin notas.' }}</p></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/identities/matrix?a={{ i.id }}">Ver en Authorization Matrix</a><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=identity:{{ i.id }}">Ver en mapa</a><a class="button ghost" href="{{ target_base }}/identities/matrix?a={{ i.id }}">Ver en Authorization Matrix</a><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
 </section>
 
 
 {% if assigned_exchange %}
-<div class="callout success"><b>Asignación guardada:</b> exchange #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers estables. Revisa el exchange exacto abajo en “Tráfico asociado”.</div>
+<div class="callout success"><b>Asignación guardada:</b> Request #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers estables. Revisa la Request exacta abajo en “Tráfico asociado”.</div>
 {% endif %}
 {% if resolver_observation %}
 <div class="callout success"><b>Resolver guardado:</b> la observación #{{ resolver_observation }} ahora puede ayudar a reconocer <b>{{ i.name }}</b> en tráfico futuro.</div>
@@ -27,8 +27,8 @@
     <p class="eyebrow">NUEVO CONTEXTO</p><h2>Añadir contexto</h2>
     <form class="stack-form" action="{{ target_base }}/identities/view/{{ i.id }}/context" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label><span>Etiqueta</span><input name="label" placeholder="Buyer · Colombia" required></label>
-      <label><span>Role</span><input name="role" placeholder="buyer"></label>
+      <label><span>Etiqueta</span><input name="label" placeholder="Cuenta A · Colombia" required></label>
+      <label><span>Role</span><input name="role" placeholder="member"></label>
       <label><span>Tenant</span><input name="tenant" placeholder="store-123"></label>
       <label><span>Notas</span><textarea name="notes"></textarea></label>
       <button class="button" type="submit">Guardar contexto</button>
@@ -46,7 +46,7 @@
 <section class="panel" id="resolvers">
   <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplos válidos: <code>jwt:sub=101</code>, <code>/me.id=101</code> o <code>/me.email=ana@…</code>. Un <code>ownerId</code> describe propiedad del objeto y no identifica necesariamente al actor.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
   <div class="identity-resolver-list">
-    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna un exchange de identidad propia (por ejemplo <code>/me</code>) o usa Buscar sobre un identificador estable confirmado.</p>{% endfor %}
+    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna una Request de identidad propia (por ejemplo <code>/me</code>) o usa Buscar sobre un identificador estable confirmado.</p>{% endfor %}
   </div>
 </section>
 
@@ -56,9 +56,9 @@
     {% for e in identity_detail.exchanges %}
     <div class="unknown-exchange-row">
       <div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · fuente {{ e.source }}{% if e.context_label %} · {{ e.context_label }}{% endif %}{% if e.notes %} · {{ e.notes }}{% endif %}</small></div>
-      <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Find Related</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Find Related</a></div>
     </div>
-    {% else %}<p class="muted">Sin exchanges asociados.</p>{% endfor %}
+    {% else %}<p class="muted">Sin Requests asociadas.</p>{% endfor %}
   </div>
 </section>
 {% endblock %}

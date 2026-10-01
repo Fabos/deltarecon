@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.28.0</p>
+    <p class="eyebrow">SEARCH · v0.29.0</p>
     <h1>Buscar en todo el proyecto</h1>
     <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
@@ -26,7 +26,7 @@
   </form>
   <div class="search-index-meta">
     <span><b>{{ search_stats.documents }}</b> documentos</span>
-    <span><b>{{ search_stats.http_exchanges }}</b> exchanges HTTP</span>
+    <span><b>{{ search_stats.http_exchanges }}</b> Requests HTTP</span>
     <span>{% if search_stats.rebuilt_at %}Datos actualizados {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
   </div>
   {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar datos” una vez para reconstruir búsqueda y valores estructurados del historial.</div>{% endif %}
@@ -75,13 +75,13 @@
           <div class="parameter-hit-main">
             <div class="badges"><span class="badge">{{ p.location }}</span><span class="badge">{{ p.method }}</span><span class="badge">HTTP {{ p.status_code }}</span></div>
             <h3><code>{{ p.name }}</code> <span>=</span> <code>{{ p.value_raw or p.value_preview or '—' }}</code></h3>
-            <p><b>{{ p.hostname }}</b><code>{{ p.path }}</code> · exchange #{{ p.exchange_id }} · {{ p.value_occurrences }} apariciones del mismo valor</p>
+            <p><b>{{ p.hostname }}</b><code>{{ p.path }}</code> · Request #{{ p.exchange_id }} · {{ p.value_occurrences }} apariciones del mismo valor</p>
           </div>
           <div class="row-actions parameter-hit-actions">
             <a class="button ghost small-button" href="{{ p.http_href }}">HTTP</a>
             <a class="button secondary small-button" href="{{ p.follow_href }}">Follow Value</a>
             <a class="button ghost small-button" href="{{ p.parameter_href }}">Explorar parámetro</a>
-            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related Exchange</a>
+            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related Request</a>
             <a class="button ghost small-button" href="{{ p.diff_href }}">Smart Compare</a>
             {% if p.identity_resolver_allowed %}<a class="button ghost small-button" href="{{ p.identity_resolver_href }}">Usar para identidad</a>{% elif p.identity_resolver_kind == 'object_or_context' %}<span class="badge" title="{{ p.identity_resolver_reason }}">Objeto/contexto · no actor</span>{% endif %}
           </div>
@@ -110,11 +110,11 @@
           {% endfor %}
         </div>
         {% endif %}
-        <div class="search-result-meta"><span>{{ r.doc_key }}</span>{% if r.exchange_id %}<span>exchange #{{ r.exchange_id }}</span>{% endif %}</div>
+        <div class="search-result-meta"><span>{{ r.doc_key }}</span>{% if r.exchange_id %}<span>Request #{{ r.exchange_id }}</span>{% endif %}</div>
         {% if r.exchange_id %}
         <div class="row-actions search-result-actions">
           <a class="button ghost small-button" href="{{ r.href }}">Abrir HTTP</a>
-          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related Exchange</a>
+          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related Request</a>
           <a class="button ghost small-button" href="{{ r.diff_href }}">Smart Compare</a>
           <a class="button ghost small-button" href="{{ r.identity_href }}">Asignar identidad</a>
         </div>
