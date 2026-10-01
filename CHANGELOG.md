@@ -1,3 +1,17 @@
+# v0.36.0 — Investigation Memory / Correlation Engine
+
+- Added incremental `identifier_observation_index` over existing parameter observations.
+- Distinguishes observed input vs output without claiming producer ownership/causality.
+- Hypotheses can persist pending identifier pieces and match them against new or historical evidence.
+- Added persistent, deduplicated `correlation` level in the existing Signals system.
+- Added conservative produced→consumed cross-context correlation for exact key/value pairs.
+- Search now surfaces identifier memory and includes hypothesis pending pieces in knowledge indexing.
+- Object detail shows observed input/output and related Signals/Hypotheses.
+- Map highlights Signals, Correlations and Hypotheses prominently in Surface/Flow and can isolate “Sólo con inteligencia”.
+- Correlation graph annotations follow every explicitly evidenced Request/resource node.
+- Added bounded/indexed processing; no all-request-pairs correlation pass.
+- Prepared (but did not build) retrospective technique coverage expansion.
+
 # v0.35.0 — Intelligence-aware Map + Hypothesis Engine 2.0
 
 - Endpoints y Requests con Signals/Hypotheses ahora se resaltan visualmente en el mapa.

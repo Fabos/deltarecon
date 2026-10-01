@@ -65,7 +65,7 @@ def main():
                 statuses={x['name']:set(x['statuses']) for x in shared['identities']}
                 assert statuses['Diego']=={200} and statuses['Ana']=={403},statuses
                 assert any(x['id']==f'signal:{sid}' for x in ctx['signals'])
-                assert hunter.GRAPH_AI_PROMPT_VERSION.endswith('v0.35.0')
+                assert hunter.GRAPH_AI_PROMPT_VERSION.startswith('0.16.0') and 'context-fusion-v2' in hunter.GRAPH_AI_PROMPT_VERSION
                 schema=hunter._graph_ideas_json_schema()['properties']['hypotheses']['items']
                 assert 'context_sources' in schema['required']
             key=core.register_target(domain,workspace,make_current=True,name='Context Lab',scopes=[domain,'api.context.local'])

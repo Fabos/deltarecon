@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.35.0</p>
+    <p class="eyebrow">SEARCH · v0.36.0</p>
     <h1>Buscar en todo el proyecto</h1>
     <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
@@ -58,13 +58,29 @@
   <div class="search-results-area">
     {% if q %}
     <section class="section-heading search-results-head">
-      <div><p class="eyebrow">RESULTADOS</p><h2>{{ search_result.count }} documentos · {{ parameter_hits|length }} coincidencias estructuradas</h2><p class="muted">Consulta: <code>{{ q }}</code></p></div>
+      <div><p class="eyebrow">RESULTADOS</p><h2>{{ search_result.count }} documentos · {{ parameter_hits|length }} coincidencias estructuradas{% if identifier_memory %} · {{ identifier_memory|length }} recuerdos de identificadores{% endif %}</h2><p class="muted">Consulta: <code>{{ q }}</code></p></div>
       <form class="saved-search-inline" action="{{ target_base }}/search/save" method="post">
         <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="query" value="{{ q }}">
         <input name="name" placeholder="Nombre de esta búsqueda" required>
         <button class="btn-secondary" type="submit">Guardar búsqueda</button>
       </form>
     </section>
+
+    {% if identifier_memory %}
+    <section class="panel identifier-memory-search">
+      <div class="panel-head"><div><p class="eyebrow">MEMORIA DE IDENTIFICADORES</p><h2>Negro recuerda dónde apareció</h2><p class="muted">Agrupa la misma key/valor entre Requests, hosts, Flows e identidades. Esto es contexto, no una vulnerabilidad.</p></div><span>{{ identifier_memory|length }}</span></div>
+      <div class="identifier-memory-grid">
+        {% for m in identifier_memory %}
+        <article class="identifier-memory-card">
+          <div><code>{{ m.normalized_name }}</code><b>{{ m.value or 'valor observado' }}</b></div>
+          <div class="badges"><span class="badge">{{ m.requests }} Requests</span><span class="badge">{{ m.hosts }} hosts</span><span class="badge">{{ m.flows }} Flows</span><span class="badge">{{ m.identities }} identities</span>{% if m.signals %}<span class="badge correlation-badge">⚡ {{ m.signals }} Signals</span>{% endif %}</div>
+          <div class="memory-direction"><span>Salida · {{ m.output_observations }}</span><span>Entrada · {{ m.input_observations }}</span></div>
+          <div class="row-actions"><a class="btn-secondary" href="{{ target_base }}/parameters/{{ m.normalized_name|urlencode }}">Ver key</a>{% if m.value %}<a class="btn-secondary" href="{{ target_base }}/search?q={{ m.value|urlencode }}">Buscar valor</a>{% endif %}</div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
 
     {% if parameter_hits %}
     <section class="panel unified-parameter-results">

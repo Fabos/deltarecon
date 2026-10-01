@@ -298,7 +298,19 @@ def index_knowledge(conn: sqlite3.Connection) -> int:
     count = 0
     # AI hypotheses
     for row in conn.execute("SELECT * FROM leads_v2 WHERE upper(COALESCE(source,''))='AI' ORDER BY id").fetchall():
-        text = "\n".join(str(row[k] or "") for k in ("title", "lead_type", "why_interesting", "next_test", "confirm_if", "discard_if", "result_notes"))
+        try:
+            requirements = [dict(x) for x in conn.execute(
+                """SELECT hr.key_pattern,hr.description,hr.status,hr.identity_mode,i.name identity_name
+                   FROM hypothesis_requirements hr LEFT JOIN identities i ON i.id=hr.identity_id
+                   WHERE hr.lead_id=? ORDER BY hr.id""", (int(row["id"]),)
+            ).fetchall()]
+        except Exception:
+            requirements = []
+        requirement_text = "\n".join(
+            " ".join(str(x.get(k) or "") for k in ("key_pattern","description","status","identity_mode","identity_name"))
+            for x in requirements
+        )
+        text = "\n".join([str(row[k] or "") for k in ("title", "lead_type", "why_interesting", "next_test", "confirm_if", "discard_if", "result_notes")] + [requirement_text])
         _replace_doc(conn, {
             "doc_key": f"hypothesis:{row['id']}", "entity_type": "hypothesis", "entity_id": int(row["id"]), "resource_id": row["resource_id"], "host_id": row["host_id"],
             "host": "", "path": "", "method": "", "status": str(row["status"] or ""), "human_state": str(row["status"] or ""), "signal_kind": str(row["lead_type"] or ""),

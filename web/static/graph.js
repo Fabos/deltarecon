@@ -34,6 +34,7 @@
   const layerControls = root.querySelector('[data-graph-layer-controls]');
   const layerInputs = [...root.querySelectorAll('[data-graph-layer]')];
   const flowViewSwitch = root.querySelector('[data-flow-view-switch]');
+  const intelligenceOnlyInput = root.querySelector('[data-graph-intelligence-only]');
   const flowViewButtons = [...root.querySelectorAll('[data-flow-view]')];
   const api = root.dataset.api;
   const base = root.dataset.base;
@@ -84,6 +85,7 @@
   let suppressClick = false;
   let flowViewMode = (()=>{try{return localStorage.getItem(`negro.flow.map.view:${targetKey}`)||'graph';}catch(_){return 'graph';}})();
   let identityEndpointMode = 'all';
+  let intelligenceOnly = false;
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
@@ -183,8 +185,43 @@
 
   function nodeIntelligence(n){
     const signalCount=Number(n?.meta?.signal_count||0);
+    const correlationCount=Math.min(signalCount,Number(n?.meta?.correlation_count||0));
+    const localSignalCount=Math.max(0,signalCount-correlationCount);
     const hypothesisCount=Number(n?.meta?.hypothesis_count||0);
-    return {signalCount,hypothesisCount,hasSignal:signalCount>0,hasHypothesis:hypothesisCount>0,hasAny:signalCount>0||hypothesisCount>0};
+    return {
+      signalCount,correlationCount,localSignalCount,hypothesisCount,
+      hasSignal:localSignalCount>0,hasCorrelation:correlationCount>0,hasHypothesis:hypothesisCount>0,
+      hasAny:signalCount>0||hypothesisCount>0
+    };
+  }
+
+  function intelligenceBadgesHtml(n,{links=false}={}){
+    const intel=nodeIntelligence(n);
+    if(!intel.hasAny)return '';
+    const wrap=(kind,text,href='')=>links&&href?`<a class="intel-chip ${kind}" href="${base}/${esc(href)}">${text}</a>`:`<span class="intel-chip ${kind}">${text}</span>`;
+    const items=[];
+    if(intel.localSignalCount)items.push(wrap('signal',`⚡ S${intel.localSignalCount}`));
+    if(intel.correlationCount)items.push(wrap('correlation',`↔ C${intel.correlationCount}`));
+    if(intel.hypothesisCount)items.push(wrap('hypothesis',`◆ H${intel.hypothesisCount}`));
+    return `<span class="intel-chip-row">${items.join('')}</span>`;
+  }
+
+  function intelligenceRelevantIds(){
+    const keep=new Set();
+    const nodes=new Map(sceneNodes.map(n=>[n.id,n]));
+    const structural=new Set(['target','host','resource','operation','request','identity','flow','object']);
+    sceneNodes.forEach(n=>{if(nodeIntelligence(n).hasAny)keep.add(n.id);});
+    // Two linear edge passes keep just enough surrounding context.  Avoid node
+    // lookups inside nested scans so the filter stays practical on large targets.
+    for(let pass=0;pass<2;pass++){
+      sceneEdges.forEach(e=>{
+        if(!keep.has(e.source)&&!keep.has(e.target))return;
+        const a=nodes.get(e.source), b=nodes.get(e.target);
+        if(a&&structural.has(a.type))keep.add(a.id);
+        if(b&&structural.has(b.type))keep.add(b.id);
+      });
+    }
+    return keep;
   }
 
   function semanticCardMode(n){
@@ -218,13 +255,14 @@
       const w=cardWidthFor(n), results=endpointIdentityResults(n.id), hasResults=results.length>0;
       const h=hasResults?46:30, top=-h/2;
       const intel=nodeIntelligence(n);
-      const intelClass=`${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`;
+      const intelClass=`${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasCorrelation?' endpoint-intel-correlation':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`;
       addRect(-w/2,top,w,h,9,`node-shape endpoint-card${intelClass}`);
       addPath(`M ${-w/2+12} ${hasResults?-9:-4} L ${-w/2+18} ${hasResults?-5:0} L ${-w/2+12} ${hasResults?-1:4} M ${-w/2+18} ${hasResults?-5:0} H ${-w/2+24}`,'node-icon endpoint-icon');
       const limit=44;const text=String(n.label||'');addText(-w/2+31,hasResults?-2:4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label endpoint-inline');
       let intelX=w/2-10;
-      if(intel.hasHypothesis){const t=`H${intel.hypothesisCount}`;intelX-=Math.max(23,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge hypothesis');}
-      if(intel.hasSignal){const t=`S${intel.signalCount}`;intelX-=Math.max(23,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge signal');}
+      if(intel.hasHypothesis){const t=`◆H${intel.hypothesisCount}`;intelX-=Math.max(31,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge hypothesis');}
+      if(intel.hasCorrelation){const t=`↔C${intel.correlationCount}`;intelX-=Math.max(31,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge correlation');}
+      if(intel.hasSignal){const t=`⚡S${intel.localSignalCount}`;intelX-=Math.max(31,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge signal');}
       if(hasResults){
         let x=-w/2+12;
         results.forEach((r,idx)=>{
@@ -247,10 +285,24 @@
       inlineLabel=true;labelAnchor=w/2+8;
     }else if(n.type==='resource'){
       const intel=nodeIntelligence(n);
-      addRect(-10,-7,20,14,5,`node-shape endpoint-mini${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`);
+      addRect(-10,-7,20,14,5,`node-shape endpoint-mini${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasCorrelation?' endpoint-intel-correlation':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`);
       addPath('M -5 -3 L 0 0 L -5 3 M 0 0 H 6','node-icon endpoint-icon');
-      if(intel.hasSignal)addCircle(8,-7,2.5,'node-intel-dot signal');
-      if(intel.hasHypothesis)addCircle(intel.hasSignal?3.5:8,-7,2.5,'node-intel-dot hypothesis');
+      if(intel.hasAny){
+        const flag=document.createElementNS(NS,'g');
+        flag.setAttribute('class','node-intel-flag');
+        flag.setAttribute('transform',`scale(${1/Math.max(.18,view.k)})`);
+        let x=14;
+        const badges=[];
+        if(intel.localSignalCount)badges.push(['signal',`⚡S${intel.localSignalCount}`]);
+        if(intel.correlationCount)badges.push(['correlation',`↔C${intel.correlationCount}`]);
+        if(intel.hypothesisCount)badges.push(['hypothesis',`◆H${intel.hypothesisCount}`]);
+        badges.forEach(([kind,text])=>{
+          const w=Math.max(27,text.length*6+10);
+          const r=document.createElementNS(NS,'rect');r.setAttribute('x',String(x));r.setAttribute('y','-19');r.setAttribute('width',String(w));r.setAttribute('height','14');r.setAttribute('rx','7');r.setAttribute('class',`node-intel-flag-bg ${kind}`);flag.appendChild(r);
+          const t=document.createElementNS(NS,'text');t.setAttribute('x',String(x+w/2));t.setAttribute('y','-9');t.setAttribute('text-anchor','middle');t.setAttribute('class',`node-intel-flag-text ${kind}`);t.textContent=text;flag.appendChild(t);x+=w+4;
+        });
+        vg.appendChild(flag);
+      }
       labelAnchor=16;
     }else if(n.type==='host'){
       addRect(-9,-8,18,16,3,'node-shape host-server');addPath('M -5 -3 H 5 M -5 1 H 5 M -5 5 H 2','node-icon host-lines');labelAnchor=15;
@@ -260,9 +312,13 @@
       const pts='0,-8 7,-4 7,4 0,8 -7,4 -7,-4';const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points',pts);poly.setAttribute('class','node-shape object-hex');vg.appendChild(poly);labelAnchor=15;
     }else if(n.type==='request'){
       const intel=nodeIntelligence(n);
-      addRect(-6,-8,12,16,2,`node-shape request-doc${intel.hasSignal?' request-intel-signal':''}${intel.hasHypothesis?' request-intel-hypothesis':''}`);addPath('M 1 -8 V -3 H 6 M -3 1 H 3 M -3 5 H 3','node-icon request-lines');
-      if(intel.hasSignal)addCircle(5,-8,2.3,'node-intel-dot signal');
-      if(intel.hasHypothesis)addCircle(intel.hasSignal?1:-5,-8,2.3,'node-intel-dot hypothesis');
+      addRect(-6,-8,12,16,2,`node-shape request-doc${intel.hasSignal?' request-intel-signal':''}${intel.hasCorrelation?' request-intel-correlation':''}${intel.hasHypothesis?' request-intel-hypothesis':''}`);addPath('M 1 -8 V -3 H 6 M -3 1 H 3 M -3 5 H 3','node-icon request-lines');
+      if(intel.hasAny){
+        const flag=document.createElementNS(NS,'g');flag.setAttribute('class','node-intel-flag');flag.setAttribute('transform',`scale(${1/Math.max(.18,view.k)})`);
+        const text=`${intel.localSignalCount?`⚡S${intel.localSignalCount} `:''}${intel.correlationCount?`↔C${intel.correlationCount} `:''}${intel.hypothesisCount?`◆H${intel.hypothesisCount}`:''}`.trim();
+        const w=Math.max(38,text.length*6+12);const rr=document.createElementNS(NS,'rect');rr.setAttribute('x','13');rr.setAttribute('y','-18');rr.setAttribute('width',String(w));rr.setAttribute('height','14');rr.setAttribute('rx','7');rr.setAttribute('class','node-intel-flag-bg mixed');flag.appendChild(rr);
+        const tt=document.createElementNS(NS,'text');tt.setAttribute('x',String(13+w/2));tt.setAttribute('y','-8');tt.setAttribute('text-anchor','middle');tt.setAttribute('class','node-intel-flag-text mixed');tt.textContent=text;flag.appendChild(tt);vg.appendChild(flag);
+      }
       labelAnchor=14;
     }else if(n.type==='state'){
       const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points','0,-8 8,0 0,8 -8,0');poly.setAttribute('class','node-shape state-diamond');vg.appendChild(poly);labelAnchor=15;
@@ -462,7 +518,8 @@
       const identity=ctx.identities[0]?.label||actor||'';
       const states=ctx.states.map(st=>`<span class="story-chip state">${esc(st.meta?.field||'state')}: ${esc(st.label)}</span>`).join('');
       const objectChips=objs.slice(0,4).map(o=>`<button type="button" class="story-chip object" data-object-node="${esc(o.id)}">${esc(o.label)}</button>`).join('');
-      return `<article class="flow-story-step"><div class="flow-story-rail"><span>${idx+1}</span>${idx<steps.length-1?'<i></i>':''}</div><div class="flow-story-card"><div class="flow-story-request"><div><b>${esc(m.method||'REQUEST')}</b><code>${esc(m.path||n.label)}</code></div><span class="http-status ${statusClass(m.status)}">${esc(m.status??'—')}</span></div><div class="flow-story-meta">${m.host?`<span>${esc(m.host)}</span>`:''}${identity?`<span>👤 ${esc(identity)}</span>`:''}<span>Request #${Number(m.id||0)}</span></div>${objectChips||states?`<div class="flow-story-context">${objectChips}${states}</div>`:''}<div class="flow-story-actions"><button type="button" class="btn-secondary" data-request-node="${esc(n.id)}">Ver Request</button>${objs.length?`<button type="button" class="btn-secondary" data-open-graph-focus="${esc(objs[0].id)}">Ver relaciones de ${esc(objs[0].label)}</button>`:''}</div></div></article>`;
+      const intel=nodeIntelligence(n);
+      return `<article class="flow-story-step${intel.hasAny?' has-intelligence':''}"><div class="flow-story-rail"><span>${idx+1}</span>${idx<steps.length-1?'<i></i>':''}</div><div class="flow-story-card"><div class="flow-story-request"><div><b>${esc(m.method||'REQUEST')}</b><code>${esc(m.path||n.label)}</code>${intelligenceBadgesHtml(n)}</div><span class="http-status ${statusClass(m.status)}">${esc(m.status??'—')}</span></div><div class="flow-story-meta">${m.host?`<span>${esc(m.host)}</span>`:''}${identity?`<span>👤 ${esc(identity)}</span>`:''}<span>Request #${Number(m.id||0)}</span></div>${objectChips||states?`<div class="flow-story-context">${objectChips}${states}</div>`:''}<div class="flow-story-actions"><button type="button" class="btn-secondary" data-request-node="${esc(n.id)}">Ver Request</button>${objs.length?`<button type="button" class="btn-secondary" data-open-graph-focus="${esc(objs[0].id)}">Ver relaciones de ${esc(objs[0].label)}</button>`:''}</div></div></article>`;
     }).join('');
     narrative.innerHTML=`<div class="narrative-head"><div><span class="eyebrow">FLOW · HISTORIA</span><h2>${esc(flow?.label||`Flow ${fid}`)}</h2><p>${actor?`Actor observado: <b>${esc(actor)}</b> · `:''}${steps.length} Requests incluidas. Lee de arriba hacia abajo.</p></div><div class="narrative-actions"><a class="btn-secondary" href="${base}/flows/${fid}">Editar Flow</a><a class="btn-secondary" href="${base}/flows/compare?a=${fid}">Comparar</a></div></div>${stepHtml?`<div class="flow-story">${stepHtml}</div>`:`<div class="empty-state friendly"><b>Este Flow no tiene Requests incluidas.</b><span>Abre el Flow y marca qué pasos forman realmente la historia.</span></div>`}`;
     bindNarrativeActions();
@@ -928,11 +985,13 @@
 
   function applyFilters({fitAfter=false}={}){
     const q=(search.value||'').trim().toLowerCase();
+    const intelIds=intelligenceOnly?intelligenceRelevantIds():null;
     const baseNodes=sceneNodes.filter(n =>
       (n.type==='cluster'||activeTypes.has(n.type)) &&
       nodeLayerPasses(n) &&
       identityEndpointPass(n) &&
       leadPassesFilters(n) &&
+      (!intelIds || intelIds.has(n.id)) &&
       (!q || n.label.toLowerCase().includes(q) || JSON.stringify(n.meta||{}).toLowerCase().includes(q))
     );
     const ids=new Set(baseNodes.map(n=>n.id));
@@ -1014,7 +1073,7 @@
       const primaryIdentity=n.id===`identity:${Number(graph.meta?.identity_id||0)}`;
       const compareIdentity=n.id===`identity:${Number(graph.meta?.compare_identity_id||0)}`;
       const intel=nodeIntelligence(n);
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${intel.hasSignal?' has-signal':''}${intel.hasHypothesis?' has-hypothesis':''}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${compareBucket?` compare-${compareBucket}`:''}${primaryIdentity?' compare-identity-primary':''}${compareIdentity?' compare-identity-secondary':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${intel.hasSignal?' has-signal':''}${intel.hasCorrelation?' has-correlation':''}${intel.hasHypothesis?' has-hypothesis':''}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${compareBucket?` compare-${compareBucket}`:''}${primaryIdentity?' compare-identity-primary':''}${compareIdentity?' compare-identity-secondary':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const visual=appendNodeVisual(ng,n);
       if (n.meta?.coverage && ['host','resource'].includes(n.type) && !semanticCardMode(n)) {
@@ -1116,7 +1175,7 @@
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const intelligenceRows=Array.isArray(meta.intelligence)?meta.intelligence:[];
-    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Signal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'H':'S'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:`Signal · ${esc(item.source||'engine')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
+    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Signal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'◆':item.signal_level==='correlation'?'↔':'⚡'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:item.signal_level==='correlation'?`Correlación · ${esc(item.source||'memory')}`:`Signal · ${esc(item.source||'engine')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
     const semanticNeutral=['identity','flow','object','request','state','target','host','resource'].includes(n.type) && slugState(n.state)==='normal';
     const statusHtml=(meta.coverage||meta.signal)
@@ -1317,6 +1376,7 @@
   flowSelect?.addEventListener('change',()=>{const id=Number(flowSelect.value||0);load(id?`${api}?scope=flow&flow_id=${id}`:`${api}?scope=flows`).then(()=>{preset='flow';populateContextControls();renderExperience();});});
   objectSelect?.addEventListener('change',()=>{const id=Number(objectSelect.value||0);load(id?`${api}?scope=object&object_id=${id}`:`${api}?scope=objects`).then(()=>{preset='objects';populateContextControls();renderExperience();});});
   layerInputs.forEach(input=>input.addEventListener('change',()=>{setLayer(input.dataset.graphLayer,input.checked);buildScene();buildTypeFilters();applyFilters({fitAfter:true});configureLayerControls();}));
+  intelligenceOnlyInput?.addEventListener('change',()=>{intelligenceOnly=Boolean(intelligenceOnlyInput.checked);applyFilters({fitAfter:true});});
   flowViewButtons.forEach(btn=>btn.addEventListener('click',()=>{
     flowViewMode=btn.dataset.flowView||'graph';
     try{localStorage.setItem(`negro.flow.map.view:${targetKey}`,flowViewMode);}catch(_){ }

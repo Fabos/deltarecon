@@ -5,7 +5,7 @@
   <span class="sr-only">INVESTIGATION MAP · Identidades · Flows · Objetos · Inteligencia · Negro no asume buyer, seller, admin ni ningún rol.</span>
   <header class="graph-toolbar simplified-toolbar">
     <div>
-      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.35.0</div>
+      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.36.0</div>
       <h1>Entiende una pregunta a la vez</h1>
       <p>Negro ya tiene mucha evidencia. Aquí no intentamos mostrarla toda: eliges <b>qué quieres entender</b> y la vista cambia para responderlo.</p>
     </div>
@@ -72,6 +72,11 @@
         <label data-layer-wrap="object"><input type="checkbox" data-graph-layer="object"> <span>Objetos</span></label>
         <label data-layer-wrap="request"><input type="checkbox" data-graph-layer="request"> <span>Requests individuales</span></label>
         <label data-layer-wrap="operation"><input type="checkbox" data-graph-layer="operation"> <span>Métodos HTTP</span></label>
+        <div class="graph-intelligence-filter">
+          <div class="graph-filter-title">Inteligencia</div>
+          <label class="intel-only-toggle"><input type="checkbox" data-graph-intelligence-only> <span>Sólo con inteligencia</span></label>
+          <div class="intel-legend"><span class="signal">⚡ Signal</span><span class="correlation">↔ Correlación</span><span class="hypothesis">◆ Hipótesis</span></div>
+        </div>
       </div>
 
       <details class="graph-advanced-controls">

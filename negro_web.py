@@ -429,7 +429,7 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
 
     try:
         signals = conn.execute(
-            """SELECT id,exchange_id,resource_id,title,severity,source,kind,reviewed_at,last_seen_at
+            """SELECT id,exchange_id,resource_id,title,severity,source,kind,signal_level,evidence_json,reviewed_at,last_seen_at
                FROM signal_occurrences WHERE dismissed_at IS NULL
                ORDER BY last_seen_at DESC,id DESC LIMIT 1200"""
         ).fetchall()
@@ -444,10 +444,28 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
         item = {
             "kind": "signal", "id": sid, "title": str(row["title"] or "Signal"),
             "severity": str(row["severity"] or "info"), "source": str(row["source"] or "engine"),
+            "signal_level": str(row["signal_level"] or "local"),
             "reviewed": bool(row["reviewed_at"]), "href": f"hypotheses#signal-{sid}",
         }
         if rid: push("resource_signals", rid, item)
         if exid: push("request_signals", exid, item)
+        # Correlation Signals can be supported by evidence on both sides of the
+        # relationship.  Annotate every explicit Request/resource node in the
+        # persisted evidence so the Map highlights the whole correlation, not
+        # only the row used as the signal's primary anchor.
+        try:
+            sev = json.loads(row["evidence_json"] or "{}")
+        except Exception:
+            sev = {}
+        for node_id in (sev.get("node_ids") or []) if isinstance(sev, dict) else []:
+            text = str(node_id or "")
+            try:
+                if text.startswith("exchange:") or text.startswith("request:"):
+                    push("request_signals", int(text.split(":",1)[1]), item)
+                elif text.startswith("resource:"):
+                    push("resource_signals", int(text.split(":",1)[1]), item)
+            except Exception:
+                continue
 
     try:
         hypotheses = conn.execute(
@@ -528,8 +546,10 @@ def _graph_intelligence_meta(index: dict[str, dict[int, list[dict[str, Any]]]], 
             seen.add(marker); out.append(row)
         return out
     signals = unique(signals); hypotheses = unique(hypotheses)
+    correlation_count = sum(1 for s in signals if str(s.get("signal_level") or "local") == "correlation")
     return {
         "signal_count": len(signals), "hypothesis_count": len(hypotheses),
+        "correlation_count": correlation_count,
         "intelligence": (signals + hypotheses)[:12],
     }
 
@@ -705,6 +725,9 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             steps_count=len(item.get('test_plan') or [])
             item['test_cost_label']='COSTO BAJO' if steps_count<=4 else 'COSTO MEDIO'
             item['secret_evidence']=secret_evidence
+            item['requirements']=hunter.list_hypothesis_requirements(conn,int(item['id']))
+            item['requirements_pending']=sum(1 for x in item['requirements'] if x.get('status')=='pending')
+            item['requirements_matched']=sum(1 for x in item['requirements'] if x.get('status')=='matched')
             if item.get('resource_id') and not item.get('resource_url'):
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
             out.append(item)
@@ -2939,6 +2962,7 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/t/{target_key}/hypotheses", response_class=HTMLResponse)
     def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = "", validity: str = "current"):
+        import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         validity = validity if validity in {"current","inactive","all"} else "current"
         rows = _hypothesis_rows(paths, q=q, status=status, source="AI", kind=kind, validity=validity)
@@ -2954,9 +2978,11 @@ def create_app(default_domain: str, default_workspace: Path):
                    GROUP BY COALESCE(NULLIF(TRIM(category),''),'Sin categoría')
                    ORDER BY c DESC, category LIMIT 12"""
             ).fetchall()]
+            identities = identity_tools.list_identities(conn)
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
         return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals, investigations=investigations,
                       state_counts=state_counts, learning_backlog=learning_backlog,
+                      identities=identities,
                       q=q, hypothesis_status=status, hypothesis_source="AI", hypothesis_kind=kind,
                       hypothesis_kinds=kinds, hypothesis_validity=validity)
 
@@ -2984,6 +3010,39 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{inv['id']}", status_code=303)
+
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/requirements/add")
+    def hypothesis_requirement_add(request: Request, target_key: str, lead_id: int,
+                                   key_pattern: str = Form(...), description: str = Form(""),
+                                   identity_mode: str = Form("any"), identity_id: str = Form(""),
+                                   csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        iid = int(identity_id) if str(identity_id).strip().isdigit() else None
+        try:
+            with _db(paths) as conn:
+                hunter.add_hypothesis_requirement(conn, int(lead_id), key_pattern=key_pattern,
+                                                  description=description, identity_mode=identity_mode,
+                                                  identity_id=iid)
+                _refresh_search(conn, knowledge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
+
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/requirements/{requirement_id}/update")
+    def hypothesis_requirement_update(request: Request, target_key: str, lead_id: int, requirement_id: int,
+                                      status: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                hunter.update_hypothesis_requirement(conn, int(lead_id), int(requirement_id), status=status)
+                _refresh_search(conn, knowledge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
 
     @app.post("/t/{target_key}/investigation/{investigation_id}/update")
     def investigation_update(request: Request, target_key: str, investigation_id: int, status: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
@@ -3073,6 +3132,7 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_search as search_index
         import negro_parameters as parameter_tools
         import negro_identity as identity_tools
+        import negro_objects as object_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             search_index.init_schema(conn)
@@ -3088,6 +3148,8 @@ def create_app(default_domain: str, default_workspace: Path):
             terms = list(getattr(parsed, "text_terms", []) or [])
             filters = dict(getattr(parsed, "filters", {}) or {})
             parameter_hits = parameter_tools.search_hits(conn, terms, host_filters=filters.get("host"), limit=80) if q.strip() and not result.get("error") else []
+            memory_query = next((str(v).strip() for _k,v in terms if str(v).strip()), "")
+            identifier_memory = object_tools.search_identifier_memory(conn, memory_query, limit=24) if memory_query and not result.get("error") else []
             for hit in parameter_hits:
                 hit["http_href"] = f"/t/{target_key}/resource/{int(hit['resource_id'])}?exchange={int(hit['exchange_id'])}#exchange-{int(hit['exchange_id'])}"
                 hit["follow_href"] = f"/t/{target_key}/parameters/follow/{int(hit['id'])}"
@@ -3122,7 +3184,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 elif typ=="finding": item["href"]=f"/t/{target_key}/finding/{int(item['entity_id'])}"
                 elif typ=="identity": item["href"]=f"/t/{target_key}/identities/view/{int(item['entity_id'])}"
                 else: item["href"]=f"/t/{target_key}/hosts"
-        return render(request,"search.html",target_key,domain,workspace,q=q,search_result=result,search_rows=rows,parameter_hits=parameter_hits,search_stats=stats,saved_searches=saved)
+        return render(request,"search.html",target_key,domain,workspace,q=q,search_result=result,search_rows=rows,parameter_hits=parameter_hits,identifier_memory=identifier_memory,search_stats=stats,saved_searches=saved)
 
     @app.post("/t/{target_key}/search/reindex", response_class=JSONResponse)
     def search_reindex(request: Request, target_key: str, csrf: str = Form(...)):
@@ -4308,6 +4370,13 @@ def create_app(default_domain: str, default_workspace: Path):
                     custom_signals.evaluate_exchange(conn, int(result["exchange_id"]))
                 except Exception as custom_exc:
                     print(f"[custom-signal] exchange={result.get('exchange_id')} error={type(custom_exc).__name__}: {str(custom_exc)[:160]}")
+                try:
+                    # Investigation Memory runs after identity/object resolution so
+                    # a newly observed identifier can be correlated with open
+                    # hypotheses and prior endpoints without rescanning history.
+                    hunter.evaluate_correlation_memory(conn, int(result["exchange_id"]))
+                except Exception as correlation_exc:
+                    print(f"[correlation-memory] exchange={result.get('exchange_id')} error={type(correlation_exc).__name__}: {str(correlation_exc)[:160]}")
                 # Keep Search Everything current after deterministic Signals are
                 # persisted. Search indexing is local-only and sends no network traffic.
                 try:

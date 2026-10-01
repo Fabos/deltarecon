@@ -47,6 +47,23 @@
   </div>
 </section>
 
+{% if object_data.produced or object_data.consumed %}
+<section class="object-io-grid">
+  <article class="panel"><p class="eyebrow">OBSERVADO COMO SALIDA</p><h2>Produced / returned by</h2><p class="muted">La aplicación devolvió este identificador en estas Requests. Negro no asume que el endpoint sea su creador real.</p>{% for x in object_data.produced %}<div class="object-fact-row"><a href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}"><b>{{ x.method }}</b> <code>{{ x.path }}</code></a><span>{% if x.identity_name %}{{ x.identity_name }} · {% endif %}HTTP {{ x.status_code or '—' }}</span></div>{% else %}<p class="empty">No observado como salida.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">OBSERVADO COMO ENTRADA</p><h2>Consumed / sent to</h2><p class="muted">Este identificador fue enviado en path, query o body hacia estas operaciones.</p>{% for x in object_data.consumed %}<div class="object-fact-row"><a href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}"><b>{{ x.method }}</b> <code>{{ x.path }}</code></a><span>{% if x.identity_name %}{{ x.identity_name }} · {% endif %}HTTP {{ x.status_code or '—' }}</span></div>{% else %}<p class="empty">No observado como entrada.</p>{% endfor %}</article>
+</section>
+{% endif %}
+
+{% if object_data.signals or object_data.hypotheses %}
+<section class="panel object-intelligence-summary">
+  <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA RELACIONADA</p><h2>Lo que Negro ya tiene mapeado alrededor de esta cosa</h2></div><div class="badges"><span class="badge">⚡ {{ object_data.signals|length }} Signals</span><span class="badge">◆ {{ object_data.hypotheses|length }} Hypotheses</span></div></div>
+  <div class="related-intelligence-list">
+    {% for s in object_data.signals %}<a href="{{ target_base }}/hypotheses#signal-{{ s.id }}"><span>{% if s.signal_level=='correlation' %}⚡{% else %}🩵{% endif %}</span><div><b>{{ s.title }}</b><small>{{ s.signal_level or 'local' }} · {{ s.source }}</small></div></a>{% endfor %}
+    {% for h in object_data.hypotheses %}<a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><span>◆</span><div><b>{{ h.title }}</b><small>{{ h.status }} · {{ h.review_priority }}</small></div></a>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="object-summary-grid">
   <article class="panel"><p class="eyebrow">IDENTIDADES</p><h2>{{ object_data.identities|length }}</h2>{% for i in object_data.identities %}<div class="object-fact-row"><a href="{{ target_base }}/identities/view/{{ i.id }}">{{ i.name }}</a><span>{{ i.exchanges }} Request(s)</span></div>{% else %}<p class="empty">No asociadas todavía.</p>{% endfor %}</article>
   <article class="panel"><p class="eyebrow">FLOWS</p><h2>{{ object_data.flows|length }}</h2>{% for f in object_data.flows %}<div class="object-fact-row"><a href="{{ target_base }}/flows/{{ f.id }}">{{ f.name }}</a><span>{{ f.steps }} paso(s)</span></div>{% else %}<p class="empty">No aparece en un Flow incluido.</p>{% endfor %}</article>

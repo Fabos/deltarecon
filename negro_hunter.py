@@ -8,6 +8,7 @@ form submission, resource claiming, and mass brute force defaults.
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import ipaddress
 import json
@@ -27,7 +28,7 @@ from typing import Any, Iterable
 import negro_intel as intel
 import negro_rules as rulebook
 
-GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1-context-fusion-v2-v0.35.0"
+GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1-context-fusion-v2-memory-v0.36.0"
 
 try:
     import requests
@@ -523,6 +524,24 @@ def init_schema(conn) -> None:
             UNIQUE(investigation_id, entity_type, entity_id, relation),
             FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS hypothesis_requirements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            requirement_type TEXT NOT NULL DEFAULT 'identifier',
+            key_pattern TEXT NOT NULL,
+            description TEXT,
+            identity_mode TEXT NOT NULL DEFAULT 'any',
+            identity_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            matched_observation_id INTEGER,
+            matched_signal_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(lead_id) REFERENCES leads_v2(id) ON DELETE CASCADE,
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE SET NULL,
+            FOREIGN KEY(matched_observation_id) REFERENCES parameter_observations(id) ON DELETE SET NULL,
+            FOREIGN KEY(matched_signal_id) REFERENCES signal_occurrences(id) ON DELETE SET NULL
+        );
         CREATE TABLE IF NOT EXISTS operation_test_coverage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             operation_id INTEGER NOT NULL,
@@ -579,6 +598,8 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
         CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_investigation_links_entity ON investigation_links(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_open ON hypothesis_requirements(status,key_pattern,lead_id);
+        CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_lead ON hypothesis_requirements(lead_id,status,id);
         """
     )
     # v0.12.2: leads_v2 also acts as the persistent hypothesis store.
@@ -605,6 +626,10 @@ def init_schema(conn) -> None:
     if "value_raw" not in parameter_cols:
         conn.execute("ALTER TABLE parameter_observations ADD COLUMN value_raw TEXT")
 
+    signal_cols = {row["name"] for row in conn.execute("PRAGMA table_info(signal_occurrences)")}
+    if "signal_level" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN signal_level TEXT NOT NULL DEFAULT 'local'")
+
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
         conn.execute("INSERT INTO meta(key,value) VALUES('policy_profile',?)", (DEFAULT_POLICY,))
@@ -615,6 +640,277 @@ def relationship(conn, src_type: str, src_id: int | None, relation: str, dst_typ
         "INSERT OR IGNORE INTO relationships(src_type,src_id,relation,dst_type,dst_value,source,evidence_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
         (src_type, src_id, relation, dst_type, dst_value, source, json.dumps(evidence, ensure_ascii=False) if evidence is not None else None, now_iso()),
     )
+
+
+def list_hypothesis_requirements(conn, lead_id: int) -> list[dict[str, Any]]:
+    """Return the explicit pieces still needed by one human-visible hypothesis."""
+    init_schema(conn)
+    rows = conn.execute(
+        """SELECT hr.*,i.name identity_name,p.name matched_name,p.value_preview matched_value_preview,
+                  p.value_raw matched_value_raw,p.exchange_id matched_exchange_id,p.location matched_location
+           FROM hypothesis_requirements hr
+           LEFT JOIN identities i ON i.id=hr.identity_id
+           LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
+           WHERE hr.lead_id=? ORDER BY CASE hr.status WHEN 'pending' THEN 0 WHEN 'matched' THEN 1 ELSE 2 END,hr.id""",
+        (int(lead_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_hypothesis_requirement(conn, lead_id: int, *, key_pattern: str, description: str = "",
+                               identity_mode: str = "any", identity_id: int | None = None,
+                               requirement_type: str = "identifier") -> int:
+    """Persist one missing piece for a hypothesis.
+
+    Requirements are intentionally small and explainable.  They are not a DSL;
+    the first useful primitive is an identifier key (exact or glob pattern) plus
+    optional identity context.
+    """
+    init_schema(conn)
+    lead = conn.execute("SELECT id FROM leads_v2 WHERE id=?", (int(lead_id),)).fetchone()
+    if not lead:
+        raise ValueError("Hipótesis no encontrada")
+    key = str(key_pattern or "").strip().lower().replace("-", "_")[:160]
+    key = re.sub(r"[^a-z0-9_*?\[\]-]", "", key)
+    if not key:
+        raise ValueError("Indica la key/identificador que falta, por ejemplo order_id o cardId")
+    mode = str(identity_mode or "any").strip().lower()
+    if mode not in {"any", "specific", "different"}:
+        mode = "any"
+    iid = int(identity_id) if identity_id else None
+    if mode in {"specific", "different"} and not iid:
+        raise ValueError("Selecciona una identidad para ese requisito")
+    now = now_iso()
+    # Avoid duplicate pending requirements when AI/manual input describes the same need.
+    existing = conn.execute(
+        """SELECT id FROM hypothesis_requirements
+           WHERE lead_id=? AND lower(key_pattern)=lower(?) AND identity_mode=? AND COALESCE(identity_id,0)=COALESCE(?,0)
+             AND status IN ('pending','matched') ORDER BY id LIMIT 1""",
+        (int(lead_id), key, mode, iid),
+    ).fetchone()
+    if existing:
+        return int(existing["id"])
+    cur = conn.execute(
+        """INSERT INTO hypothesis_requirements(lead_id,requirement_type,key_pattern,description,identity_mode,identity_id,status,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,'pending',?,?)""",
+        (int(lead_id), str(requirement_type or "identifier")[:40], key,
+         str(description or "").strip()[:500], mode, iid, now, now),
+    )
+    requirement_id = int(cur.lastrowid)
+    # The missing piece may already exist in stored evidence.  Check the local
+    # identifier index immediately so a newly articulated hypothesis can benefit
+    # from memory accumulated hours/days earlier without touching the target.
+    try:
+        match_requirement_history(conn, requirement_id)
+    except Exception:
+        pass
+    return requirement_id
+
+
+def update_hypothesis_requirement(conn, lead_id: int, requirement_id: int, *, status: str) -> dict[str, Any]:
+    init_schema(conn)
+    state = str(status or "pending").lower()
+    if state not in {"pending", "matched", "dismissed"}:
+        raise ValueError("Estado de pieza pendiente inválido")
+    row = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=? AND lead_id=?", (int(requirement_id), int(lead_id))).fetchone()
+    if not row:
+        raise ValueError("Pieza pendiente no encontrada")
+    conn.execute(
+        """UPDATE hypothesis_requirements SET status=?,
+             matched_observation_id=CASE WHEN ?='pending' THEN NULL ELSE matched_observation_id END,
+             matched_signal_id=CASE WHEN ?='pending' THEN NULL ELSE matched_signal_id END,
+             updated_at=? WHERE id=?""",
+        (state, state, state, now_iso(), int(requirement_id)),
+    )
+    out = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
+    return dict(out)
+
+
+def _persist_correlation_signal(conn, *, dedupe_key: str, exchange_id: int | None, operation_id: int | None,
+                                resource_id: int | None, title: str, why: dict[str, Any], evidence: dict[str, Any],
+                                severity: str = "info") -> int:
+    """Upsert one persisted Correlation Signal without creating another signal system."""
+    init_schema(conn)
+    now = now_iso()
+    row = conn.execute("SELECT id,occurrences FROM signal_occurrences WHERE dedupe_key=?", (str(dedupe_key),)).fetchone()
+    if row:
+        conn.execute(
+            """UPDATE signal_occurrences SET exchange_id=COALESCE(?,exchange_id),operation_id=COALESCE(?,operation_id),
+                 resource_id=COALESCE(?,resource_id),title=?,category='correlation',severity=?,why_json=?,evidence_json=?,
+                 source='correlation',signal_level='correlation',occurrences=occurrences+1,last_seen_at=? WHERE id=?""",
+            (exchange_id, operation_id, resource_id, title[:240], severity,
+             json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), now, int(row["id"])),
+        )
+        return int(row["id"])
+    cur = conn.execute(
+        """INSERT INTO signal_occurrences(dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at,signal_level)
+           VALUES(?,?,?,?,?,'correlation',?,?,?,?,?,1,?,?, 'correlation')""",
+        (str(dedupe_key), exchange_id, operation_id, resource_id, "correlation",
+         severity, title[:240], json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), "correlation", now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _identifier_pattern_matches(pattern: str, normalized_name: str) -> bool:
+    p = str(pattern or "").lower().replace("-", "_")
+    name = str(normalized_name or "").lower().replace("-", "_")
+    if any(ch in p for ch in "*?["):
+        return fnmatch.fnmatch(name, p)
+    return p == name or p.replace("_", "") == name.replace("_", "")
+
+
+def evaluate_correlation_memory(conn, exchange_id: int) -> dict[str, Any]:
+    """Incrementally correlate identifier memory for one newly observed Request.
+
+    This function performs indexed lookups only for identifier-like values in the
+    current Request.  It never scans every Request pair and never asserts a
+    vulnerability.  Interesting matches are persisted in the existing Signals
+    table with `signal_level='correlation'`.
+    """
+    import negro_objects as object_tools
+
+    init_schema(conn)
+    object_tools.init_schema(conn)
+    object_tools.index_exchange_identifiers(conn, int(exchange_id))
+    current = [dict(r) for r in conn.execute(
+        """SELECT im.*,o.method,r.path,h.hostname,e.status_code,i.name identity_name
+           FROM identifier_observation_index im JOIN resource_operations o ON o.id=im.operation_id
+           JOIN resources r ON r.id=im.resource_id JOIN hosts h ON h.id=im.host_id
+           JOIN http_exchanges e ON e.id=im.exchange_id LEFT JOIN identities i ON i.id=im.identity_id
+           WHERE im.exchange_id=? ORDER BY im.id""", (int(exchange_id),)
+    ).fetchall()]
+    if not current:
+        return {"exchange_id": int(exchange_id), "identifier_observations": 0, "signals": 0, "requirements_matched": 0}
+
+    pending = [dict(r) for r in conn.execute(
+        """SELECT hr.*,l.title hypothesis_title FROM hypothesis_requirements hr
+           JOIN leads_v2 l ON l.id=hr.lead_id
+           WHERE hr.status='pending' AND COALESCE(l.rule_active,1)=1 AND l.status NOT IN ('negative','discarded')
+           ORDER BY hr.id LIMIT 800"""
+    ).fetchall()]
+    emitted: set[int] = set(); matched_requirements = 0
+
+    # 1) A value appears that can fill a piece explicitly missing from an open hypothesis.
+    for obs in current:
+        iid = int(obs["identity_id"]) if obs.get("identity_id") else None
+        for req in pending:
+            if not _identifier_pattern_matches(str(req["key_pattern"]), str(obs["normalized_name"])):
+                continue
+            mode = str(req.get("identity_mode") or "any")
+            expected_iid = int(req["identity_id"]) if req.get("identity_id") else None
+            if mode == "specific" and iid != expected_iid:
+                continue
+            if mode == "different" and (iid is None or iid == expected_iid):
+                continue
+            value = str(obs.get("value_raw") or obs.get("value_preview") or "")
+            identity_text = str(obs.get("identity_name") or (f"Identity #{iid}" if iid else "sin Identity"))
+            title = f"Pieza pendiente encontrada: {obs['normalized_name']}"
+            why = {
+                "message": f"{obs['normalized_name']} apareció en una nueva Request y puede completar una pieza pendiente de ‘{req['hypothesis_title']}’. Esto es una correlación, no una vulnerabilidad.",
+                "hypothesis_id": int(req["lead_id"]), "requirement_id": int(req["id"]),
+            }
+            evidence = {
+                "source": "correlation_memory", "correlation_type": "hypothesis_requirement_match",
+                "hypothesis_id": int(req["lead_id"]), "requirement_id": int(req["id"]),
+                "identifier": str(obs["normalized_name"]), "value": value[:240], "value_hash": str(obs["value_hash"]),
+                "direction": str(obs["direction"]), "location": str(obs["source_location"]),
+                "identity_id": iid, "identity_name": identity_text,
+                "host": str(obs["hostname"]), "method": str(obs["method"]), "path": str(obs["path"]),
+                "node_ids": [f"exchange:{int(exchange_id)}", f"resource:{int(obs['resource_id'])}"] + ([f"identity:{iid}"] if iid else []) + [f"lead:{int(req['lead_id'])}"],
+            }
+            signal_id = _persist_correlation_signal(
+                conn, dedupe_key=f"correlation:req:{int(req['id'])}:value:{obs['value_hash']}:identity:{iid or 0}",
+                exchange_id=int(exchange_id), operation_id=int(obs["operation_id"]), resource_id=int(obs["resource_id"]),
+                title=title, why=why, evidence=evidence, severity="low",
+            )
+            conn.execute(
+                """UPDATE hypothesis_requirements SET status='matched',matched_observation_id=?,matched_signal_id=?,updated_at=?
+                   WHERE id=? AND status='pending'""",
+                (int(obs["parameter_observation_id"]), int(signal_id), now_iso(), int(req["id"])),
+            )
+            matched_requirements += 1; emitted.add(signal_id)
+
+    # 2) Same exact identifier value observed as output elsewhere and as input to
+    # a state-changing/sensitive operation.  Group by producer/consumer endpoints
+    # instead of emitting one signal for every UUID/ID.
+    sensitive_terms = ("cancel", "delete", "remove", "update", "edit", "transfer", "refund", "pay", "payment", "card", "role", "admin", "approve", "redeem")
+    for obs in current:
+        peers = [dict(r) for r in conn.execute(
+            """SELECT im.*,o.method,r.path,h.hostname,e.status_code,i.name identity_name
+               FROM identifier_observation_index im JOIN resource_operations o ON o.id=im.operation_id
+               JOIN resources r ON r.id=im.resource_id JOIN hosts h ON h.id=im.host_id
+               JOIN http_exchanges e ON e.id=im.exchange_id LEFT JOIN identities i ON i.id=im.identity_id
+               WHERE im.normalized_name=? AND im.value_hash=? AND im.exchange_id<>?
+               ORDER BY im.observed_at DESC LIMIT 60""",
+            (str(obs["normalized_name"]), str(obs["value_hash"]), int(exchange_id)),
+        ).fetchall()]
+        for peer in peers:
+            if str(peer.get("direction")) == str(obs.get("direction")):
+                continue
+            producer = obs if obs.get("direction") == "output" else peer
+            consumer = obs if obs.get("direction") == "input" else peer
+            method = str(consumer.get("method") or "").upper()
+            path = str(consumer.get("path") or "").lower()
+            if method not in {"POST", "PUT", "PATCH", "DELETE"} and not any(x in path for x in sensitive_terms):
+                continue
+            cross_context = int(producer.get("host_id") or 0) != int(consumer.get("host_id") or 0) or (
+                producer.get("identity_id") and consumer.get("identity_id") and int(producer["identity_id"]) != int(consumer["identity_id"])
+            )
+            if not cross_context:
+                continue
+            value = str(obs.get("value_raw") or obs.get("value_preview") or "")
+            title = f"{obs['normalized_name']} conecta dos partes del target"
+            why = {
+                "message": f"El mismo {obs['normalized_name']} fue observado como salida en un endpoint y como entrada en una operación sensible distinta. Puede ser una oportunidad de prueba; no demuestra autorización débil.",
+                "identifier": str(obs["normalized_name"]),
+            }
+            evidence = {
+                "source": "correlation_memory", "correlation_type": "produced_then_consumed",
+                "identifier": str(obs["normalized_name"]), "value": value[:240], "value_hash": str(obs["value_hash"]),
+                "producer": {"exchange_id": int(producer["exchange_id"]), "resource_id": int(producer["resource_id"]), "host": producer["hostname"], "method": producer["method"], "path": producer["path"], "identity_id": producer.get("identity_id"), "identity_name": producer.get("identity_name")},
+                "consumer": {"exchange_id": int(consumer["exchange_id"]), "resource_id": int(consumer["resource_id"]), "host": consumer["hostname"], "method": consumer["method"], "path": consumer["path"], "identity_id": consumer.get("identity_id"), "identity_name": consumer.get("identity_name")},
+                "node_ids": [f"exchange:{int(producer['exchange_id'])}", f"resource:{int(producer['resource_id'])}", f"exchange:{int(consumer['exchange_id'])}", f"resource:{int(consumer['resource_id'])}"],
+            }
+            signal_id = _persist_correlation_signal(
+                conn, dedupe_key=f"correlation:io:{obs['normalized_name']}:{int(producer['resource_id'])}:{int(consumer['resource_id'])}",
+                exchange_id=int(consumer["exchange_id"]), operation_id=int(consumer["operation_id"]), resource_id=int(consumer["resource_id"]),
+                title=title, why=why, evidence=evidence, severity="info",
+            )
+            emitted.add(signal_id)
+
+    return {"exchange_id": int(exchange_id), "identifier_observations": len(current), "signals": len(emitted), "requirements_matched": matched_requirements}
+
+
+def match_requirement_history(conn, requirement_id: int, *, max_requests: int = 120) -> dict[str, Any]:
+    """Try to satisfy one new requirement using evidence Negro already remembers."""
+    import negro_objects as object_tools
+
+    init_schema(conn); object_tools.init_schema(conn)
+    req = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
+    if not req or str(req["status"]) != "pending":
+        return {"requirement_id": int(requirement_id), "checked": 0, "matched": False}
+    pattern = str(req["key_pattern"] or "")
+    rows = conn.execute(
+        """SELECT DISTINCT normalized_name FROM identifier_observation_index
+           ORDER BY normalized_name LIMIT 3000"""
+    ).fetchall()
+    names = [str(r["normalized_name"]) for r in rows if _identifier_pattern_matches(pattern, str(r["normalized_name"]))]
+    if not names:
+        return {"requirement_id": int(requirement_id), "checked": 0, "matched": False}
+    marks = ",".join("?" for _ in names)
+    exrows = conn.execute(
+        f"""SELECT DISTINCT exchange_id FROM identifier_observation_index
+            WHERE normalized_name IN ({marks}) ORDER BY observed_at DESC LIMIT ?""",
+        (*names, max(1, min(int(max_requests), 500))),
+    ).fetchall()
+    checked = 0
+    for row in exrows:
+        checked += 1
+        evaluate_correlation_memory(conn, int(row["exchange_id"]))
+        state = conn.execute("SELECT status FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
+        if state and str(state["status"]) == "matched":
+            return {"requirement_id": int(requirement_id), "checked": checked, "matched": True}
+    return {"requirement_id": int(requirement_id), "checked": checked, "matched": False}
 
 
 def _resolve_records(hostname: str, rtype: str, timeout: float = 4.0) -> list[str]:
@@ -2580,6 +2876,28 @@ def recalculate_intelligence(conn, domain: str) -> dict[str, Any]:
         "UPDATE leads_v2 SET rule_active=0,last_rule_eval_at=? WHERE source IN (?,?)",
         (started,*managed_sources),
     )
+    # Rebuild Investigation Memory from stored local evidence. Correlation
+    # Signals are derived projections, so they can be safely reinterpreted when
+    # the user explicitly asks for a local recalculation.
+    correlation_summary = {"identifier_observations": 0, "signals": 0, "requirements_matched": 0}
+    try:
+        import negro_objects as object_tools
+        object_tools.rebuild_identifier_index(conn)
+        corr_ids = [int(r["id"]) for r in conn.execute("SELECT id FROM signal_occurrences WHERE source='correlation'").fetchall()]
+        if corr_ids:
+            marks = ",".join("?" for _ in corr_ids)
+            conn.execute(
+                f"""UPDATE hypothesis_requirements SET status='pending',matched_observation_id=NULL,matched_signal_id=NULL,updated_at=?
+                    WHERE matched_signal_id IN ({marks})""", (started, *corr_ids)
+            )
+        conn.execute("DELETE FROM signal_occurrences WHERE source='correlation'")
+        for ex in conn.execute("SELECT id FROM http_exchanges ORDER BY id").fetchall():
+            r = evaluate_correlation_memory(conn, int(ex["id"]))
+            correlation_summary["identifier_observations"] += int(r.get("identifier_observations") or 0)
+            correlation_summary["signals"] += int(r.get("signals") or 0)
+            correlation_summary["requirements_matched"] += int(r.get("requirements_matched") or 0)
+    except Exception as exc:
+        correlation_summary["error"] = str(exc)[:240]
     generated=generate_leads(conn, domain, reprocess_all=True)
     after_rows=conn.execute(
         "SELECT id,lead_key,rule_active,status FROM leads_v2 WHERE source IN (?,?)", managed_sources
@@ -2611,6 +2929,7 @@ def recalculate_intelligence(conn, domain: str) -> dict[str, Any]:
         "recalculated_at": started,
         "network_requests": 0,
         "ai_calls": 0,
+        "correlation_memory": correlation_summary,
     }
     _upsert_notification(
         conn, dedupe_key=f"intelligence_recalc:{started}", kind="intelligence_recalc", severity="low",
@@ -3235,6 +3554,17 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
         },
         "required": ["step", "action", "what_to_watch"],
     }
+    needed_piece_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "key_pattern": {"type": "string"},
+            "description": {"type": "string"},
+            "identity_mode": {"type": "string", "enum": ["any", "specific", "different"]},
+            "identity_id": {"type": ["integer", "null"]},
+        },
+        "required": ["key_pattern", "description", "identity_mode", "identity_id"],
+    }
     hypothesis_schema = {
         "type": "object",
         "additionalProperties": False,
@@ -3255,8 +3585,9 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "discard_if": {"type": "string"},
             "node_ids": {"type": "array", "items": {"type": "string"}},
             "context_sources": {"type": "array", "items": {"type": "string", "enum": ["http", "identity", "flow", "business_object", "state", "signal", "pattern_anomaly", "authorization_outcome"]}},
+            "needed_pieces": {"type": "array", "items": needed_piece_schema},
         },
-        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "facts", "inference", "unknowns", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids", "context_sources"],
+        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "facts", "inference", "unknowns", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids", "context_sources", "needed_pieces"],
     }
     unexplored_schema = {
         "type": "object",
@@ -3409,6 +3740,10 @@ HYPOTHESIS ENGINE 2.0 — CONTEXTO CORRELACIONADO:
 - Correlaciona varias fuentes cuando aporte valor. Prefiere una hipótesis respaldada por Identity + endpoint + Object/Flow/Signal frente a una idea genérica basada sólo en el nombre de una ruta.
 - node_ids puede citar IDs REALES de cualquiera de estos bloques: resource:, operation:, exchange:, identity:, flow:, object:, signal:, anomaly:.
 - context_sources debe decir qué tipos de contexto sostienen realmente la hipótesis. No marques una fuente que no hayas usado.
+- needed_pieces representa piezas concretas que faltan para poder continuar la investigación, especialmente identificadores/objetos. Úsalo sólo cuando la hipótesis esté realmente bloqueada por algo observable que Negro pueda encontrar después.
+- En needed_pieces.key_pattern usa una key real observada o una variante simple/glob, por ejemplo order_id, cardId o *_id. No inventes nombres.
+- identity_mode: any si sirve cualquier contexto; specific si necesitas el valor bajo una identidad concreta; different si necesitas observarlo bajo una identidad distinta de la indicada. identity_id debe ser un ID REAL de correlated_context.identities o null.
+- Si no falta ninguna pieza que Negro pueda reconocer posteriormente, devuelve needed_pieces=[].
 
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
 El bloque test_coverage contiene ÚNICAMENTE memoria de pruebas que el investigador o un motor realmente tocó. No es una checklist obligatoria ni una fuente de ideas por sí sola. Respeta sus estados: negative/not_applicable no se repiten sin evidencia nueva; testing no se propone como si estuviera pendiente; interesting/confirmed sirven como contexto. Los checks recomendados que nunca fueron tocados se excluyen deliberadamente.
@@ -3437,6 +3772,7 @@ Para cada hipótesis:
 - confirm_if y discard_if observables y concretos.
 - node_ids: sólo IDs REALES del contexto, incluyendo identity:/flow:/object:/signal:/anomaly: cuando sean parte de la correlación.
 - context_sources: enumera únicamente las capas realmente usadas para razonar esa hipótesis.
+- needed_pieces: 0-4 piezas concretas y verificables que impedirían ejecutar la siguiente prueba hoy. No conviertas cada unknown en una pieza pendiente.
 - Sé conciso: cada hipótesis debe caber cómodamente en una tarjeta; evita repetir la misma explicación en varias secciones.
 
 Devuelve únicamente JSON válido que cumpla el schema suministrado.
@@ -3683,7 +4019,23 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         conn.execute("UPDATE leads_v2 SET test_plan_json=? WHERE lead_key=?", (json.dumps(item.get("steps") or [], ensure_ascii=False), f"ai_graph:{fingerprint}"))
         row = conn.execute("SELECT id,status FROM leads_v2 WHERE lead_key=?", (f"ai_graph:{fingerprint}",)).fetchone()
         if row:
-            persisted.append({**item, **refs, "lead_id": int(row["id"]), "status": row["status"], "node_ids": node_ids})
+            lead_id = int(row["id"])
+            for needed in (item.get("needed_pieces") or [])[:4]:
+                if not isinstance(needed, dict):
+                    continue
+                try:
+                    add_hypothesis_requirement(
+                        conn, lead_id,
+                        key_pattern=str(needed.get("key_pattern") or ""),
+                        description=str(needed.get("description") or ""),
+                        identity_mode=str(needed.get("identity_mode") or "any"),
+                        identity_id=int(needed["identity_id"]) if needed.get("identity_id") is not None else None,
+                    )
+                except Exception:
+                    # A hypothesis remains useful even if one model-proposed
+                    # requirement is malformed or references a stale identity.
+                    pass
+            persisted.append({**item, **refs, "lead_id": lead_id, "status": row["status"], "node_ids": node_ids})
     return persisted
 
 def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]:

@@ -255,3 +255,14 @@ Las fases funcionales principales ya están completas. A partir de aquí el foco
 - [x] Sin promoción automática a vulnerabilidad/Finding.
 
 Con esta entrega quedan completas las fases funcionales principales planteadas. El siguiente ciclo es **uso real, reducción de ruido, rendimiento, ergonomía y ajustes derivados de Bug Bounty**, no añadir features por añadir.
+
+## v0.36.0 — Investigation Memory / Correlation Engine ✅
+
+- Identifier memory index over stored parameter observations.
+- Input/output observations across hosts, identities and flows.
+- Hypothesis pending pieces (`needed pieces`) with retrospective matching.
+- Correlation Signals reusing the existing Signal/Hunt pipeline.
+- Produced→consumed cross-context correlations with aggressive deduplication.
+- Search/Object/Hunt/Map integration.
+- Prominent intelligence markers + “Sólo con inteligencia” in the map.
+- Retrospective technique coverage architecture prepared; full checklist system intentionally deferred.

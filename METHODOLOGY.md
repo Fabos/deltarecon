@@ -1,4 +1,11 @@
-# Negro Recon — Metodología v0.35.0
+# Negro Recon — Metodología v0.36.0
+
+## v0.36 — Memoria de investigación y correlación
+
+Negro diferencia tres cosas: **memoria** (hechos indexados que no generan alertas por sí solos), **Signal** (algo que merece revisión) e **Hypothesis** (una pregunta de investigación). Los identificadores observados se recuerdan por key + valor + Request + host + Identity + Flow y se marcan como `input` u `output` según su ubicación real.
+
+Una Hypothesis puede declarar una pieza pendiente. Si esa pieza aparece más adelante o ya existía en evidencia histórica, Negro emite un **Correlation Signal** y enlaza la evidencia; no afirma que exista una vulnerabilidad. La correlación se procesa incrementalmente y con índices, evitando comparaciones globales O(n²).
+
 
 ## Modelo mental
 

@@ -45,6 +45,9 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_custom_signal_rules_enabled ON custom_signal_rules(enabled, updated_at);
         """
     )
+    signal_cols = {row["name"] for row in conn.execute("PRAGMA table_info(signal_occurrences)")}
+    if signal_cols and "signal_level" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN signal_level TEXT NOT NULL DEFAULT 'local'")
 
 
 def _loads_list(value: Any) -> list[str]:
@@ -295,13 +298,13 @@ def _persist_match(conn, rule: dict[str, Any], ctx: dict[str, Any], matched: dic
     row = conn.execute("SELECT id FROM signal_occurrences WHERE dedupe_key=?", (dedupe,)).fetchone()
     if row:
         conn.execute(
-            """UPDATE signal_occurrences SET last_seen_at=?,title=?,category=?,severity=?,why_json=?,evidence_json=?,source='custom_signal' WHERE id=?""",
+            """UPDATE signal_occurrences SET last_seen_at=?,title=?,category=?,severity=?,why_json=?,evidence_json=?,source='custom_signal',signal_level='local' WHERE id=?""",
             (now, rule["name"], rule.get("category") or "other", rule.get("severity") or "info", json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), int(row["id"])),
         )
         return int(row["id"])
     cur = conn.execute(
-        """INSERT INTO signal_occurrences(dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+        """INSERT INTO signal_occurrences(dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at,signal_level)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,'local')""",
         (dedupe, exid, int(ctx["operation_id"]), int(ctx["resource_id"]), f"custom_signal:{rid}", rule.get("category") or "other", rule.get("severity") or "info", rule["name"], json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), "custom_signal", now, now),
     )
     return int(cur.lastrowid)

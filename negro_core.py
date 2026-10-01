@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.35.0
+Negro Recon v0.36.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.35.0"
+VERSION = "0.36.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -650,6 +650,12 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         try:
             import negro_objects as object_tools
             object_tools.init_schema(conn)
+            memory_stamp = conn.execute("SELECT value FROM meta WHERE key='identifier_memory_v1_built_at'").fetchone()
+            param_count = int(conn.execute("SELECT COUNT(*) c FROM parameter_observations").fetchone()["c"] or 0)
+            indexed_count = int(conn.execute("SELECT COUNT(*) c FROM identifier_observation_index").fetchone()["c"] or 0)
+            if param_count and (not memory_stamp or indexed_count == 0):
+                object_tools.rebuild_identifier_index(conn)
+                conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('identifier_memory_v1_built_at',?)", (now_iso(),))
         except Exception as exc:
             conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('object_init_error',?)", (str(exc)[:500],))
 

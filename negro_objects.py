@@ -99,6 +99,30 @@ def init_schema(conn) -> None:
             FOREIGN KEY(object_b_id) REFERENCES business_objects(id) ON DELETE CASCADE,
             FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS identifier_observation_index (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parameter_observation_id INTEGER NOT NULL UNIQUE,
+            normalized_name TEXT NOT NULL,
+            value_hash TEXT NOT NULL,
+            value_preview TEXT,
+            value_raw TEXT,
+            direction TEXT NOT NULL,
+            source_location TEXT NOT NULL,
+            exchange_id INTEGER NOT NULL,
+            operation_id INTEGER NOT NULL,
+            resource_id INTEGER NOT NULL,
+            host_id INTEGER NOT NULL,
+            identity_id INTEGER,
+            observed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(parameter_observation_id) REFERENCES parameter_observations(id) ON DELETE CASCADE,
+            FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+            FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE,
+            FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+            FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE SET NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_bo_identifiers_name ON business_object_identifiers(normalized_name, object_type_id);
         CREATE INDEX IF NOT EXISTS idx_bo_objects_type ON business_objects(object_type_id, last_seen_at);
         CREATE INDEX IF NOT EXISTS idx_bo_obs_object ON business_object_observations(business_object_id, observed_at, exchange_id);
@@ -106,6 +130,10 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_bo_obs_host ON business_object_observations(host_id, business_object_id);
         CREATE INDEX IF NOT EXISTS idx_bo_rel_a ON business_object_relation_observations(object_a_id, object_b_id);
         CREATE INDEX IF NOT EXISTS idx_bo_rel_b ON business_object_relation_observations(object_b_id, object_a_id);
+        CREATE INDEX IF NOT EXISTS idx_identifier_memory_key_value ON identifier_observation_index(normalized_name,value_hash,observed_at);
+        CREATE INDEX IF NOT EXISTS idx_identifier_memory_exchange ON identifier_observation_index(exchange_id,normalized_name);
+        CREATE INDEX IF NOT EXISTS idx_identifier_memory_identity ON identifier_observation_index(identity_id,normalized_name,value_hash);
+        CREATE INDEX IF NOT EXISTS idx_identifier_memory_direction ON identifier_observation_index(direction,normalized_name,resource_id);
         """
     )
 
@@ -129,6 +157,204 @@ def _identifierish(name: str, location: str = "") -> bool:
     if n == "id" or n.endswith("id") or n.endswith("_id") or n.endswith("uuid") or n.endswith("_uuid"):
         return True
     return any(x in hay for x in IDENTIFIER_HINTS)
+
+
+def is_identifier_name(name: str, location: str = "") -> bool:
+    """Public, conservative identifier classifier used by Investigation Memory.
+
+    This is intentionally the same heuristic Business Objects already use so
+    Negro does not grow a second, conflicting definition of an identifier.
+    """
+    return _identifierish(name, location)
+
+
+def identifier_direction(location: str) -> str:
+    """Describe whether an observed value entered or left the application.
+
+    `parameter_observations` already stores precise source locations.  We only
+    collapse that existing evidence into input/output for correlation UX; this
+    does not infer causality or ownership.
+    """
+    loc = str(location or "").lower()
+    return "output" if loc.startswith("response_") else "input"
+
+
+def index_exchange_identifiers(conn, exchange_id: int) -> dict[str, int]:
+    """Incrementally index identifier-like observations for one stored Request.
+
+    The index is a lightweight projection over `parameter_observations` and is
+    designed for O(k) work per new Request, where k is the number of observed
+    scalar parameters in that Request.  It is not a second source of truth.
+    """
+    init_schema(conn)
+    ex = conn.execute(
+        """SELECT e.id,e.first_seen_at,o.id operation_id,o.resource_id,r.host_id,
+                  ei.identity_id
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id
+           LEFT JOIN exchange_identities ei ON ei.exchange_id=e.id
+           WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not ex:
+        return {"indexed": 0, "removed": 0}
+    params = [dict(r) for r in conn.execute(
+        "SELECT * FROM parameter_observations WHERE exchange_id=? ORDER BY id",
+        (int(exchange_id),),
+    ).fetchall()]
+    keep_ids: set[int] = set()
+    now = now_iso()
+    indexed = 0
+    for obs in params:
+        name = str(obs.get("normalized_name") or obs.get("name") or "")
+        location = str(obs.get("location") or "")
+        if not _identifierish(name, location):
+            continue
+        if not _valid_identifier_value(obs.get("value_raw") or obs.get("value_preview")):
+            continue
+        oid = int(obs["id"]); keep_ids.add(oid)
+        conn.execute(
+            """INSERT INTO identifier_observation_index(
+                   parameter_observation_id,normalized_name,value_hash,value_preview,value_raw,direction,source_location,
+                   exchange_id,operation_id,resource_id,host_id,identity_id,observed_at,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(parameter_observation_id) DO UPDATE SET
+                 normalized_name=excluded.normalized_name,value_hash=excluded.value_hash,
+                 value_preview=excluded.value_preview,value_raw=excluded.value_raw,
+                 direction=excluded.direction,source_location=excluded.source_location,
+                 exchange_id=excluded.exchange_id,operation_id=excluded.operation_id,
+                 resource_id=excluded.resource_id,host_id=excluded.host_id,
+                 identity_id=excluded.identity_id,observed_at=excluded.observed_at,updated_at=excluded.updated_at""",
+            (
+                oid, _normalize_name(name), str(obs.get("value_hash") or ""),
+                _safe_value(obs.get("value_preview") or obs.get("value_raw")), str(obs.get("value_raw") or ""),
+                identifier_direction(location), location[:300], int(exchange_id), int(ex["operation_id"]),
+                int(ex["resource_id"]), int(ex["host_id"]), int(ex["identity_id"]) if ex["identity_id"] else None,
+                str(obs.get("first_seen_at") or ex["first_seen_at"] or now), now, now,
+            ),
+        )
+        indexed += 1
+    old = [int(r["parameter_observation_id"]) for r in conn.execute(
+        "SELECT parameter_observation_id FROM identifier_observation_index WHERE exchange_id=?",
+        (int(exchange_id),),
+    ).fetchall()]
+    stale = [x for x in old if x not in keep_ids]
+    if stale:
+        marks = ",".join("?" for _ in stale)
+        conn.execute(f"DELETE FROM identifier_observation_index WHERE parameter_observation_id IN ({marks})", tuple(stale))
+    return {"indexed": indexed, "removed": len(stale)}
+
+
+def rebuild_identifier_index(conn) -> dict[str, int]:
+    """Rebuild Investigation Memory from already-stored local HTTP evidence."""
+    init_schema(conn)
+    conn.execute("DELETE FROM identifier_observation_index")
+    ids = [int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges ORDER BY id").fetchall()]
+    total = 0
+    for exchange_id in ids:
+        total += int(index_exchange_identifiers(conn, exchange_id).get("indexed") or 0)
+    return {"requests": len(ids), "identifier_observations": total}
+
+
+def identifier_key_summary(conn, normalized_name: str, *, sample_limit: int = 30) -> dict[str, Any] | None:
+    """Aggregate one identifier key across hosts, flows, identities and endpoints."""
+    init_schema(conn)
+    name = _normalize_name(normalized_name)
+    if not name:
+        return None
+    summary = conn.execute(
+        """SELECT normalized_name,COUNT(*) observations,COUNT(DISTINCT value_hash) values_count,
+                  COUNT(DISTINCT exchange_id) requests,COUNT(DISTINCT host_id) hosts,
+                  COUNT(DISTINCT identity_id) identities,
+                  SUM(CASE WHEN direction='output' THEN 1 ELSE 0 END) output_observations,
+                  SUM(CASE WHEN direction='input' THEN 1 ELSE 0 END) input_observations,
+                  MAX(observed_at) last_seen_at
+           FROM identifier_observation_index WHERE normalized_name=? GROUP BY normalized_name""",
+        (name,),
+    ).fetchone()
+    if not summary:
+        return None
+    flows = conn.execute(
+        """SELECT COUNT(DISTINCT fs.flow_id) c FROM identifier_observation_index im
+           JOIN flow_steps fs ON fs.exchange_id=im.exchange_id AND fs.included=1
+           WHERE im.normalized_name=?""", (name,)
+    ).fetchone()
+    rows = [dict(r) for r in conn.execute(
+        """SELECT im.*,h.hostname,r.path,o.method,e.status_code,i.name identity_name
+           FROM identifier_observation_index im JOIN hosts h ON h.id=im.host_id
+           JOIN resources r ON r.id=im.resource_id JOIN resource_operations o ON o.id=im.operation_id
+           JOIN http_exchanges e ON e.id=im.exchange_id LEFT JOIN identities i ON i.id=im.identity_id
+           WHERE im.normalized_name=? ORDER BY im.observed_at DESC,im.id DESC LIMIT ?""",
+        (name, max(1, min(int(sample_limit), 100))),
+    ).fetchall()]
+    out = dict(summary)
+    out["flows"] = int(flows["c"] or 0) if flows else 0
+    out["samples"] = rows
+    return out
+
+
+def identifier_value_summary(conn, normalized_name: str, value_hash: str, *, limit: int = 80) -> dict[str, Any]:
+    """Context for one exact identifier value without guessing its semantic type."""
+    init_schema(conn)
+    name = _normalize_name(normalized_name)
+    rows = [dict(r) for r in conn.execute(
+        """SELECT im.*,h.hostname,r.path,o.method,e.status_code,i.name identity_name
+           FROM identifier_observation_index im JOIN hosts h ON h.id=im.host_id
+           JOIN resources r ON r.id=im.resource_id JOIN resource_operations o ON o.id=im.operation_id
+           JOIN http_exchanges e ON e.id=im.exchange_id LEFT JOIN identities i ON i.id=im.identity_id
+           WHERE im.normalized_name=? AND im.value_hash=?
+           ORDER BY im.observed_at DESC,im.id DESC LIMIT ?""",
+        (name, str(value_hash), max(1, min(int(limit), 250))),
+    ).fetchall()]
+    return {
+        "normalized_name": name,
+        "value_hash": str(value_hash),
+        "value": next((str(r.get("value_raw") or r.get("value_preview") or "") for r in rows if r.get("value_raw") or r.get("value_preview")), ""),
+        "rows": rows,
+        "hosts": len({int(r["host_id"]) for r in rows}),
+        "requests": len({int(r["exchange_id"]) for r in rows}),
+        "identities": len({int(r["identity_id"]) for r in rows if r.get("identity_id")}),
+        "input_requests": len({int(r["exchange_id"]) for r in rows if r.get("direction") == "input"}),
+        "output_requests": len({int(r["exchange_id"]) for r in rows if r.get("direction") == "output"}),
+    }
+
+
+def search_identifier_memory(conn, query: str, *, limit: int = 24) -> list[dict[str, Any]]:
+    """Small Search companion: find remembered identifier keys/values globally."""
+    init_schema(conn)
+    q = str(query or "").strip().lower()
+    if not q or len(q) < 2:
+        return []
+    needle = f"%{q}%"
+    rows = [dict(r) for r in conn.execute(
+        """SELECT normalized_name,value_hash,
+                  MAX(COALESCE(NULLIF(value_raw,''),value_preview,'')) value,
+                  COUNT(*) observations,COUNT(DISTINCT exchange_id) requests,
+                  COUNT(DISTINCT host_id) hosts,COUNT(DISTINCT identity_id) identities,
+                  SUM(CASE WHEN direction='output' THEN 1 ELSE 0 END) output_observations,
+                  SUM(CASE WHEN direction='input' THEN 1 ELSE 0 END) input_observations,
+                  MAX(observed_at) last_seen_at
+           FROM identifier_observation_index
+           WHERE lower(normalized_name) LIKE ? OR lower(COALESCE(value_raw,value_preview,'')) LIKE ?
+           GROUP BY normalized_name,value_hash
+           ORDER BY requests DESC,last_seen_at DESC LIMIT ?""",
+        (needle, needle, max(1, min(int(limit), 100))),
+    ).fetchall()]
+    for row in rows:
+        flow = conn.execute(
+            """SELECT COUNT(DISTINCT fs.flow_id) c FROM identifier_observation_index im
+               JOIN flow_steps fs ON fs.exchange_id=im.exchange_id AND fs.included=1
+               WHERE im.normalized_name=? AND im.value_hash=?""",
+            (row["normalized_name"], row["value_hash"]),
+        ).fetchone()
+        row["flows"] = int(flow["c"] or 0) if flow else 0
+        sig = conn.execute(
+            """SELECT COUNT(*) c FROM signal_occurrences
+               WHERE dismissed_at IS NULL AND lower(COALESCE(evidence_json,'')) LIKE ?""",
+            (f"%{str(row['normalized_name']).lower()}%",),
+        ).fetchone()
+        row["signals"] = int(sig["c"] or 0) if sig else 0
+    return rows
 
 
 def _infer_type(identifier_name: str) -> str:
@@ -700,6 +926,7 @@ def object_detail(conn, object_id: int) -> dict[str, Any] | None:
         if eid in seen_exchange:
             continue
         seen_exchange.add(eid)
+        row["direction"] = identifier_direction(str(row.get("source_location") or ""))
         timeline.append(row)
     hosts = [dict(r) for r in conn.execute(
         """SELECT h.id,h.hostname,COUNT(DISTINCT boo.exchange_id) exchanges,MIN(boo.observed_at) first_seen_at,MAX(boo.observed_at) last_seen_at
@@ -726,6 +953,37 @@ def object_detail(conn, object_id: int) -> dict[str, Any] | None:
     states = _state_rows(conn, str(base["object_type"]), str(base["identifier_hash"]))
     related = _related_objects(conn, int(object_id))
     anomalies = pattern_anomalies(conn, int(object_id))
+    produced = []
+    consumed = []
+    seen_io: set[tuple[str, int]] = set()
+    for row in observations:
+        direction = identifier_direction(str(row.get("source_location") or ""))
+        key = (direction, int(row["resource_id"]))
+        if key in seen_io:
+            continue
+        seen_io.add(key)
+        item = {
+            "resource_id": int(row["resource_id"]), "exchange_id": int(row["exchange_id"]),
+            "method": str(row.get("method") or ""), "path": str(row.get("path") or ""),
+            "hostname": str(row.get("hostname") or ""), "identity_name": row.get("identity_name"),
+            "status_code": row.get("status_code"), "identifier_name": row.get("identifier_name"),
+        }
+        (produced if direction == "output" else consumed).append(item)
+    exids = sorted({int(x["exchange_id"]) for x in observations})
+    signals: list[dict[str, Any]] = []
+    if exids:
+        marks = ",".join("?" for _ in exids)
+        signals = [dict(r) for r in conn.execute(
+            f"""SELECT id,title,kind,category,severity,source,signal_level,exchange_id,last_seen_at
+                FROM signal_occurrences WHERE dismissed_at IS NULL AND exchange_id IN ({marks})
+                ORDER BY last_seen_at DESC,id DESC LIMIT 40""", tuple(exids)
+        ).fetchall()]
+    hypotheses = [dict(r) for r in conn.execute(
+        """SELECT id,title,status,review_priority,updated_at FROM leads_v2
+           WHERE upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1
+             AND lower(COALESCE(evidence_json,'')) LIKE ?
+           ORDER BY updated_at DESC LIMIT 30""", (f"%object:{int(object_id)}%",)
+    ).fetchall()]
     base["display_value"] = str(base.get("identifier_raw") or base.get("identifier_preview") or "")
     base["identifier_field"] = str(aliases[0].get("normalized_name") or "") if aliases else ""
     quality, reason = _ui_object_quality(base.get("object_type") or "")
@@ -739,6 +997,7 @@ def object_detail(conn, object_id: int) -> dict[str, Any] | None:
     return {
         "object": base, "observations": observations, "timeline": timeline, "hosts": hosts, "identities": identities,
         "aliases": aliases, "flows": flows, "states": states, "related": related, "anomalies": anomalies,
+        "produced": produced, "consumed": consumed, "signals": signals, "hypotheses": hypotheses,
     }
 
 

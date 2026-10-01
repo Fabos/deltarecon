@@ -1,5 +1,23 @@
-# Negro Recon 🐕 — v0.35.0
+# Negro Recon 🐕 — v0.36.0
 
+## v0.36.0 — Investigation Memory / Correlation Engine
+
+Negro ya no sólo guarda lo que viste: mantiene un índice incremental de identificadores observados, distingue si un valor entró a la aplicación o salió de ella, recuerda piezas que faltan en una hipótesis y genera **Correlation Signals** cuando evidencia posterior puede completar esa investigación o conectar APIs/hosts distintos.
+
+Principios de esta versión:
+
+- reutiliza Objects, Signals, Hypotheses, Search, Hunt y Map; no crea un segundo sistema paralelo;
+- `order_id`, `cardId`, `shipment_id`, etc. se indexan como memoria, no como Signals por cada aparición;
+- una hipótesis puede declarar piezas pendientes como `order_id bajo otra Identity`;
+- si esa pieza aparece después —o ya existía en el historial— Negro crea una correlación explicable y persistente;
+- output/input se basa en dónde se observó el dato, no en inferir causalidad;
+- las correlaciones heurísticas nunca se llaman vulnerabilidades;
+- el procesamiento nuevo es incremental e indexado; no compara todos los Requests contra todos los Requests;
+- Search, Object y Hunt muestran la memoria relacionada sin crear pantallas nuevas;
+- Map resalta de forma persistente Signal / Correlation / Hypothesis y puede aislar **Sólo con inteligencia**.
+
+
+---
 
 ## v0.35.0 — mapa con inteligencia + Hypothesis Engine 2.0
 
