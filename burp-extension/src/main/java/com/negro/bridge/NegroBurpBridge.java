@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.20.3
+ * Negro Burp Bridge v0.26.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -75,7 +75,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.20.3 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.26.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -250,7 +250,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.20.3")
+                    .header("X-Negro-Bridge-Version", "0.26.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -704,6 +704,18 @@ public class NegroBurpBridge implements BurpExtension {
         @Override public String toString() { return "#" + id + " · " + title + " · " + severity + " · " + status; }
     }
 
+    private record IdentityChoice(long identityId, long contextId, String label) {
+        @Override public String toString() { return label; }
+    }
+
+    private record FlowChoice(long id, String name, String captureStatus) {
+        @Override public String toString() { return "#" + id + " · " + name + ("capturing".equals(captureStatus) ? " · ● capturando" : ""); }
+    }
+
+    private record AuthMaterialChoice(String fingerprint, String type, String name, String preview) {
+        @Override public String toString() { return type + " · " + name + " · " + preview; }
+    }
+
     private final class NegroContextMenu implements ContextMenuItemsProvider {
         @Override
         public List<Component> provideMenuItems(ContextMenuEvent event) {
@@ -719,17 +731,40 @@ public class NegroBurpBridge implements BurpExtension {
             addStateItem(stateMenu, event, "🔴 Finding", "finding");
             addStateItem(stateMenu, event, "🟢 Descartado", "discarded");
             addStateItem(stateMenu, event, "⚪ Normal", "normal");
+
+            JMenu flowMenu = new JMenu("Flow");
+            JMenuItem flowStart = new JMenuItem("Start Flow from here…");
+            JMenuItem flowAdd = new JMenuItem("Add to current Flow…");
+            JMenuItem flowEnd = new JMenuItem("End Flow here…");
+            JMenuItem flowSelected = new JMenuItem("Create Flow from selected exchanges…");
+            flowMenu.add(flowStart); flowMenu.add(flowAdd); flowMenu.add(flowEnd); flowMenu.addSeparator(); flowMenu.add(flowSelected);
+
+            JMenu identityMenu = new JMenu("Identity");
+            JMenuItem assignIdentity = new JMenuItem("Assign to Identity…");
+            JMenuItem createIdentity = new JMenuItem("Create Identity from this request…");
+            JMenuItem updateAuth = new JMenuItem("Update auth material for Identity…");
+            JMenuItem sendAs = new JMenuItem("Send / Re-send as Identity…");
+            identityMenu.add(assignIdentity); identityMenu.add(createIdentity); identityMenu.add(updateAuth); identityMenu.addSeparator(); identityMenu.add(sendAs);
+
             JMenuItem note = new JMenuItem("Add note…");
             JMenuItem createFinding = new JMenuItem("Create Finding…");
             JMenuItem attachFinding = new JMenuItem("Attach to existing Finding…");
             JMenuItem retest = new JMenuItem("Attach as Retest evidence…");
             String tool = event.toolType() == null ? "OTHER" : event.toolType().name();
             open.addActionListener(e -> runContextAction("open", () -> openInNegro(selected.get(0), tool)));
+            flowStart.addActionListener(e -> runContextAction("flow-start", () -> startFlowFromBurp(selected.get(0), tool)));
+            flowAdd.addActionListener(e -> runContextAction("flow-add", () -> addToFlowFromBurp(selected.get(0), tool)));
+            flowEnd.addActionListener(e -> runContextAction("flow-end", () -> endFlowFromBurp(selected.get(0), tool)));
+            flowSelected.addActionListener(e -> runContextAction("flow-selected", () -> createFlowFromSelection(selected, tool)));
+            assignIdentity.addActionListener(e -> runContextAction("identity-assign", () -> assignIdentityFromBurp(selected.get(0), tool)));
+            createIdentity.addActionListener(e -> runContextAction("identity-create", () -> createIdentityFromBurp(selected.get(0), tool)));
+            updateAuth.addActionListener(e -> runContextAction("identity-update", () -> updateIdentityAuthFromBurp(selected.get(0), tool)));
+            sendAs.addActionListener(e -> runContextAction("identity-send", () -> sendAsIdentityFromBurp(selected.get(0), tool)));
             note.addActionListener(e -> runContextAction("note", () -> addNoteFromBurp(selected, tool)));
             createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(selected.get(0), tool)));
             attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(selected.get(0), tool)));
             retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
-            menu.add(open); menu.add(stateMenu); menu.add(note); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
+            menu.add(open); menu.add(flowMenu); menu.add(identityMenu); menu.addSeparator(); menu.add(stateMenu); menu.add(note); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
             return List.of(menu);
         }
     }
@@ -765,6 +800,9 @@ public class NegroBurpBridge implements BurpExtension {
     private BridgeContext ingestContext(HttpRequestResponse rr, String tool) {
         try {
             String payload = toJson(rr.request(), rr.hasResponse() ? rr.response() : null, tool == null ? "OTHER" : tool);
+            // A context-menu action re-syncs an already observed Burp item so Negro
+            // can resolve its exchange_id. It must not count as a new Flow occurrence.
+            if (payload.endsWith("}")) payload = payload.substring(0, payload.length() - 1) + ",\"context_sync\":true}";
             java.net.http.HttpResponse<String> resp = postJson("/api/ingest/http", payload);
             String body = resp.body();
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) throw new IllegalStateException("Negro ingest HTTP " + resp.statusCode());
@@ -867,6 +905,178 @@ public class NegroBurpBridge implements BurpExtension {
             } catch (Exception ex) { throw new IllegalStateException(ex); }
         }
         showMessage("Negro", changed + " item(s) → " + stateLabel(state), JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private List<IdentityChoice> identityChoices(String targetKey) {
+        try {
+            String json = getText("/api/bridge/identities/" + targetKey);
+            List<IdentityChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\\"identity_id\\\":(\\d+),\\\"context_id\\\":(null|\\d+),\\\"label\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"\\}");
+            Matcher m = p.matcher(json);
+            while (m.find()) out.add(new IdentityChoice(Long.parseLong(m.group(1)), "null".equals(m.group(2)) ? 0 : Long.parseLong(m.group(2)), unescapeJson(m.group(3))));
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private IdentityChoice chooseIdentity(String targetKey, String title, boolean includeAnonymous) {
+        List<IdentityChoice> list = identityChoices(targetKey);
+        if (includeAnonymous) list.add(0, new IdentityChoice(0, 0, "Anonymous (remove known auth)"));
+        if (list.isEmpty()) { showMessage("Negro", "Todavía no hay Identity Contexts. Usa Create Identity from this request.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JComboBox<IdentityChoice> combo = new JComboBox<>(list.toArray(new IdentityChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Identity Context")); panel.add(combo);
+        return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (IdentityChoice) combo.getSelectedItem() : null;
+    }
+
+    private List<FlowChoice> flowChoices(String targetKey, boolean onlyCapturing) {
+        try {
+            String json = getText("/api/bridge/flows/" + targetKey);
+            List<FlowChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\\"id\\\":(\\d+),\\\"name\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\".*?\\\"capture_status\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"", Pattern.DOTALL);
+            Matcher m = p.matcher(json);
+            while (m.find()) {
+                FlowChoice f = new FlowChoice(Long.parseLong(m.group(1)), unescapeJson(m.group(2)), unescapeJson(m.group(3)));
+                if (!onlyCapturing || "capturing".equals(f.captureStatus())) out.add(f);
+            }
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private FlowChoice chooseFlow(String targetKey, String title, boolean onlyCapturing) {
+        List<FlowChoice> list = flowChoices(targetKey, onlyCapturing);
+        if (list.isEmpty()) { showMessage("Negro", onlyCapturing ? "No hay ningún Flow capturando en este target." : "Este target todavía no tiene Flows.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JComboBox<FlowChoice> combo = new JComboBox<>(list.toArray(new FlowChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Flow")); panel.add(combo);
+        return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (FlowChoice) combo.getSelectedItem() : null;
+    }
+
+    private List<AuthMaterialChoice> authMaterialChoices(String targetKey, long exchangeId) {
+        try {
+            String json = getText("/api/bridge/auth-materials/" + targetKey + "/" + exchangeId);
+            List<AuthMaterialChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\\"fingerprint\\\":\\\"([^\\\"]+)\\\",\\\"material_type\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\",\\\"preview\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"\\}");
+            Matcher m = p.matcher(json);
+            while (m.find()) out.add(new AuthMaterialChoice(m.group(1), m.group(2), unescapeJson(m.group(3)), unescapeJson(m.group(4))));
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private List<String> chooseAuthFingerprints(String targetKey, long exchangeId, String title) {
+        List<AuthMaterialChoice> materials = authMaterialChoices(targetKey, exchangeId);
+        if (materials.isEmpty()) { showMessage("Negro", "No detecté Authorization, cookies ni headers de auth conocidos en esta request.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JPanel panel = formPanel(); panel.add(new JLabel("Selecciona el material que pertenece a esta identidad:"));
+        List<JCheckBox> boxes = new ArrayList<>();
+        for (AuthMaterialChoice material : materials) {
+            JCheckBox box = new JCheckBox(material.toString(), true);
+            boxes.add(box); panel.add(box);
+        }
+        if (confirmDialog(title, panel) != JOptionPane.OK_OPTION) return null;
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < boxes.size(); i++) if (boxes.get(i).isSelected()) out.add(materials.get(i).fingerprint());
+        return out;
+    }
+
+    private void assignIdentityFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        IdentityChoice choice = chooseIdentity(ctx.targetKey(), "Assign to Identity", false); if (choice == null) return;
+        try {
+            postBridgeAction(ctx, "identity_assign", "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null") + ",\"learn_auth\":false");
+            appendNegroNote(rr.annotations(), "NEGRO · IDENTITY · " + choice.label());
+            showMessage("Negro", "Exchange #" + ctx.exchangeId() + " → " + choice.label(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createIdentityFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        List<String> fingerprints = chooseAuthFingerprints(ctx.targetKey(), ctx.exchangeId(), "Create Identity · auth material");
+        if (fingerprints == null) return;
+        JTextField name = new JTextField(32);
+        JPanel panel = formPanel(); panel.add(new JLabel("Nombre de la identidad")); panel.add(name);
+        if (confirmDialog("Create Identity from this request", panel) != JOptionPane.OK_OPTION) return;
+        String identityName = name.getText().trim(); if (identityName.isEmpty()) return;
+        try {
+            String extra = kv("name", identityName) + "," + kv("material_fingerprints", String.join(",", fingerprints));
+            String body = postBridgeAction(ctx, "identity_create", extra);
+            long id = jsonLong(body, "identity_id");
+            appendNegroNote(rr.annotations(), "NEGRO · IDENTITY · " + identityName);
+            showMessage("Negro", "Identity #" + id + " creada y asociada al exchange #" + ctx.exchangeId(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void updateIdentityAuthFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        IdentityChoice choice = chooseIdentity(ctx.targetKey(), "Update auth material", false); if (choice == null) return;
+        List<String> fingerprints = chooseAuthFingerprints(ctx.targetKey(), ctx.exchangeId(), "Auth actual de " + choice.label());
+        if (fingerprints == null || fingerprints.isEmpty()) return;
+        try {
+            String extra = "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null") + "," + kv("material_fingerprints", String.join(",", fingerprints));
+            postBridgeAction(ctx, "identity_update_auth", extra);
+            appendNegroNote(rr.annotations(), "NEGRO · AUTH UPDATED · " + choice.label());
+            showMessage("Negro", "Auth actualizada para " + choice.label(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void sendAsIdentityFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        IdentityChoice choice = chooseIdentity(ctx.targetKey(), "Send / Re-send as Identity", true); if (choice == null) return;
+        try {
+            String extra = "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null");
+            postBridgeAction(ctx, "identity_send_as", extra);
+            showMessage("Negro", "Enviado a Repeater como " + choice.label() + ". Método/path/body se conservan; sólo cambia auth conocida.", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void startFlowFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        JTextField name = new JTextField("Flow from " + rr.request().method(), 32);
+        JTextArea description = new JTextArea(3, 32); description.setLineWrap(true); description.setWrapStyleWord(true);
+        JPanel panel = formPanel(); panel.add(new JLabel("Nombre")); panel.add(name); panel.add(new JLabel("Descripción opcional")); panel.add(new JScrollPane(description));
+        if (confirmDialog("Start Flow from here", panel) != JOptionPane.OK_OPTION) return;
+        if (name.getText().trim().isEmpty()) return;
+        try {
+            String body = postBridgeAction(ctx, "flow_start", kv("name", name.getText().trim()) + "," + kv("description", description.getText().trim()));
+            long flowId = jsonLong(body, "flow_id");
+            appendNegroNote(rr.annotations(), "NEGRO · FLOW START · #" + flowId);
+            showMessage("Negro", "Flow #" + flowId + " capturando desde exchange #" + ctx.exchangeId(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void endFlowFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        FlowChoice flow = chooseFlow(ctx.targetKey(), "End Flow here", true); if (flow == null) return;
+        try {
+            postBridgeAction(ctx, "flow_end", "\"flow_id\":" + flow.id());
+            appendNegroNote(rr.annotations(), "NEGRO · FLOW END · #" + flow.id());
+            showMessage("Negro", "Flow #" + flow.id() + " detenido en exchange #" + ctx.exchangeId() + ". Revisa candidatos/ruido en Negro.", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void addToFlowFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        FlowChoice flow = chooseFlow(ctx.targetKey(), "Add to Flow", false); if (flow == null) return;
+        try {
+            postBridgeAction(ctx, "flow_add", "\"flow_id\":" + flow.id());
+            appendNegroNote(rr.annotations(), "NEGRO · FLOW #" + flow.id());
+            showMessage("Negro", "Exchange #" + ctx.exchangeId() + " agregado a Flow #" + flow.id(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createFlowFromSelection(List<HttpRequestResponse> selected, String tool) {
+        if (selected == null || selected.isEmpty()) return;
+        List<BridgeContext> contexts = new ArrayList<>();
+        for (HttpRequestResponse rr : selected) contexts.add(ingestContext(rr, tool));
+        String targetKey = contexts.get(0).targetKey();
+        if (contexts.stream().anyMatch(c -> !targetKey.equals(c.targetKey()))) throw new IllegalStateException("La selección contiene exchanges de targets distintos");
+        JTextField name = new JTextField("Flow from Burp selection", 34);
+        JPanel panel = formPanel(); panel.add(new JLabel("Nombre para " + contexts.size() + " exchange(s) seleccionados")); panel.add(name);
+        if (confirmDialog("Create Flow from selected exchanges", panel) != JOptionPane.OK_OPTION) return;
+        if (name.getText().trim().isEmpty()) return;
+        String ids = contexts.stream().map(c -> Long.toString(c.exchangeId())).collect(Collectors.joining(","));
+        try {
+            String body = postBridgeAction(contexts.get(0), "flow_create_selected", kv("name", name.getText().trim()) + "," + kv("exchange_ids", ids));
+            long flowId = jsonLong(body, "flow_id");
+            for (HttpRequestResponse rr : selected) appendNegroNote(rr.annotations(), "NEGRO · FLOW #" + flowId);
+            showMessage("Negro", "Flow #" + flowId + " creado con " + contexts.size() + " exchange(s) exactos.", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
     }
 
     private void addNoteFromBurp(List<HttpRequestResponse> selected, String tool) {

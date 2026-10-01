@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.25.0
+# Negro Recon — Metodología v0.26.0
 
 ## Modelo mental
 

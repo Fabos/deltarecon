@@ -2501,7 +2501,31 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             flow_id = flow_tools.create_flow(conn, name, description=description, identity_id=iid)
             if str(start_exchange).strip().isdigit() and str(end_exchange).strip().isdigit():
+                # Manual ranges preserve the historical convenience of ignoring OPTIONS.
+                # Capture windows, on the other hand, keep every exchange as a candidate.
                 flow_tools.add_range(conn, flow_id, int(start_exchange), int(end_exchange), exclude_options=True)
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/capture/start")
+    def flow_capture_start(request: Request, target_key: str, name: str = Form(...), description: str = Form(""), identity_id: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        iid = int(identity_id) if str(identity_id).strip().isdigit() else None
+        with _db(paths) as conn:
+            flow_id = flow_tools.start_capture(conn, name, description=description, identity_id=iid, source="web")
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/capture/stop")
+    def flow_capture_stop(request: Request, target_key: str, flow_id: int, csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.stop_capture(conn, int(flow_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
 
     @app.get("/t/{target_key}/flows/add", response_class=HTMLResponse)
@@ -2596,6 +2620,39 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             flow_tools.remove_step(conn, int(flow_id), int(step_id))
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/include")
+    def flow_step_include(request: Request, target_key: str, flow_id: int, step_id: int, included: str = Form("1"), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_tools.set_step_included(conn, int(flow_id), int(step_id), str(included) != "0")
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/boundary")
+    def flow_step_boundary(request: Request, target_key: str, flow_id: int, step_id: int, boundary: str = Form(...), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.set_boundary(conn, int(flow_id), int(step_id), str(boundary))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/state/track")
+    def flow_state_track(request: Request, target_key: str, flow_id: int, state_observation_id: int = Form(...), object_observation_id: int = Form(...), object_type: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                track_id = flow_tools.create_state_track(conn, int(state_observation_id), int(object_observation_id), object_type=object_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}?tracked_state={track_id}#business-state-timelines", status_code=303)
 
     @app.get("/t/{target_key}/identities", response_class=HTMLResponse)
     def identities_page(request: Request, target_key: str):
@@ -3524,6 +3581,17 @@ def create_app(default_domain: str, default_workspace: Path):
                     search_index.index_host(conn, int(result["host_id"]))
                 except Exception as search_exc:
                     print(f"[search-index] exchange={result.get('exchange_id')} error={type(search_exc).__name__}: {str(search_exc)[:160]}")
+                # Capture windows store observed occurrences, not ID ranges. The same
+                # deduplicated exchange can occur multiple times in one business flow.
+                # Context-menu syncs are bookkeeping calls from the Burp extension and
+                # must not masquerade as a second browser observation.
+                if not bool(payload.get("context_sync")):
+                    try:
+                        import negro_flows as flow_tools
+                        flow_tools.capture_observed_exchange(conn, int(result["exchange_id"]))
+                    except Exception as flow_exc:
+                        print(f"[flow-capture] exchange={result.get('exchange_id')} error={type(flow_exc).__name__}: {str(flow_exc)[:160]}")
+
                 # Burp must reflect the persisted truth, not only the in-memory list
                 # returned by one detector path. This also keeps an exchange cyan
                 # when an existing Signal is still pending review.
@@ -3541,6 +3609,44 @@ def create_app(default_domain: str, default_workspace: Path):
             rows = conn.execute("SELECT id,title,severity,status,updated_at FROM findings ORDER BY updated_at DESC,id DESC LIMIT 200").fetchall()
         return {"target_key": target_key, "findings": [dict(r) for r in rows]}
 
+    @app.get("/api/bridge/identities/{target_key}", response_class=JSONResponse)
+    def bridge_identities(target_key: str):
+        import negro_identity as identity_tools
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            identities = identity_tools.list_identities(conn)
+            ctx_rows = identity_tools.contexts(conn)
+        by_identity: dict[int, list[dict[str, Any]]] = {}
+        for c in ctx_rows:
+            by_identity.setdefault(int(c["identity_id"]), []).append(c)
+        choices = []
+        for i in identities:
+            iid = int(i["id"])
+            choices.append({"identity_id": iid, "context_id": None, "label": str(i["name"])})
+            for c in by_identity.get(iid, []):
+                choices.append({"identity_id": iid, "context_id": int(c["id"]), "label": f"{i['name']} · {c['label']}"})
+        return {"target_key": target_key, "identities": identities, "choices": choices}
+
+    @app.get("/api/bridge/flows/{target_key}", response_class=JSONResponse)
+    def bridge_flows(target_key: str):
+        import negro_flows as flow_tools
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            rows = flow_tools.list_flows(conn)
+        return {"target_key": target_key, "flows": rows}
+
+    @app.get("/api/bridge/auth-materials/{target_key}/{exchange_id}", response_class=JSONResponse)
+    def bridge_auth_materials(target_key: str, exchange_id: int):
+        import negro_identity as identity_tools
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            if not conn.execute("SELECT id FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone():
+                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+            mats = identity_tools.extract_auth_materials(conn, int(exchange_id))
+        return {"target_key": target_key, "exchange_id": int(exchange_id), "materials": [
+            {"fingerprint": m["fingerprint"], "material_type": m["material_type"], "name": m["name"], "preview": m["preview"]} for m in mats
+        ]}
+
     @app.post("/api/bridge/action", response_class=JSONResponse)
     async def bridge_action(request: Request):
         try:
@@ -3551,7 +3657,9 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=400, detail="Payload inválido")
         target_key = str(payload.get("target_key") or "").strip()
         action = str(payload.get("action") or "").strip()
-        if action not in {"open","interesting","set_state","add_note","create_finding","attach_finding","retest"}:
+        if action not in {"open","interesting","set_state","add_note","create_finding","attach_finding","retest",
+                           "identity_assign","identity_create","identity_update_auth","identity_send_as",
+                           "flow_start","flow_end","flow_add","flow_create_selected"}:
             raise HTTPException(status_code=400, detail="Acción Burp inválida")
         _, _, paths = _target_context(target_key)
         resource_id = int(payload.get("resource_id") or 0)
@@ -3573,6 +3681,84 @@ def create_app(default_domain: str, default_workspace: Path):
             web_path = f"/t/{target_key}/resource/{resource_id}"
             if action == "open":
                 return {"ok": True, "action": action, "web_path": web_path}
+            if action.startswith("identity_"):
+                import negro_identity as identity_tools
+                identity_id = int(payload.get("identity_id") or 0)
+                context_raw = payload.get("context_id")
+                context_id = int(context_raw) if str(context_raw or "").isdigit() and int(context_raw) > 0 else None
+                fingerprints_raw = payload.get("material_fingerprints") or []
+                if isinstance(fingerprints_raw, str):
+                    fingerprints = [x for x in fingerprints_raw.split(",") if x]
+                elif isinstance(fingerprints_raw, list):
+                    fingerprints = [str(x) for x in fingerprints_raw if str(x)]
+                else:
+                    fingerprints = []
+                if action == "identity_create":
+                    name = str(payload.get("name") or "").strip()[:120]
+                    if not name:
+                        raise HTTPException(status_code=400, detail="Nombre de identidad requerido")
+                    identity_id = identity_tools.create_identity(conn, name)
+                    identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=None, learn_auth=False, source="burp")
+                    learned = identity_tools.learn_auth_materials(conn, exchange_id, identity_id, fingerprints=fingerprints, source="burp_create")
+                    return {"ok": True, "action": action, "identity_id": identity_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/identities/view/{identity_id}"}
+                if action == "identity_assign":
+                    if identity_id <= 0:
+                        raise HTTPException(status_code=400, detail="Identidad requerida")
+                    learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=bool(payload.get("learn_auth")), source="burp")
+                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
+                if action == "identity_update_auth":
+                    if identity_id <= 0:
+                        raise HTTPException(status_code=400, detail="Identidad requerida")
+                    learned = identity_tools.update_identity_auth_from_exchange(conn, exchange_id, identity_id, context_id=context_id, fingerprints=fingerprints, source="burp_update")
+                    identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=False, source="burp_update")
+                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
+                # Send / Re-send as Identity. identity_id=0 is the virtual Anonymous context.
+                rewritten = identity_tools.rewrite_exchange_as_identity(conn, exchange_id, identity_id if identity_id > 0 else None, context_id=context_id)
+                caption_identity = "Anonymous" if identity_id <= 0 else (conn.execute("SELECT name FROM identities WHERE id=?", (identity_id,)).fetchone() or {"name": f"Identity {identity_id}"})["name"]
+                caption = f"Negro · as {caption_identity} · {rewritten['method']} {rewritten['path']}"
+                cur = conn.execute(
+                    "INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
+                    (resource_id, rewritten["method"], rewritten["url"], rewritten["request_b64"], caption, _now()),
+                )
+                return {"ok": True, "action": action, "identity_id": identity_id or None, "context_id": context_id, "exchange_id": exchange_id, "queue_id": int(cur.lastrowid), "materials": rewritten["materials"]}
+            if action.startswith("flow_"):
+                import negro_flows as flow_tools
+                if action == "flow_start":
+                    name = str(payload.get("name") or "").strip()[:160] or f"Flow from exchange #{exchange_id}"
+                    flow_id = flow_tools.start_capture(conn, name, description=str(payload.get("description") or "")[:2000], start_exchange_id=exchange_id, source="burp")
+                    return {"ok": True, "action": action, "flow_id": flow_id, "exchange_id": exchange_id, "web_path": f"/t/{target_key}/flows/{flow_id}"}
+                if action == "flow_end":
+                    flow_id = int(payload.get("flow_id") or 0)
+                    if flow_id <= 0:
+                        raise HTTPException(status_code=400, detail="Flow requerido")
+                    result = flow_tools.stop_capture(conn, flow_id, end_exchange_id=exchange_id)
+                    return {"ok": True, "action": action, "flow_id": flow_id, "exchange_id": exchange_id, "capture": result, "web_path": f"/t/{target_key}/flows/{flow_id}"}
+                if action == "flow_add":
+                    flow_id = int(payload.get("flow_id") or 0)
+                    if flow_id <= 0:
+                        raise HTTPException(status_code=400, detail="Flow requerido")
+                    step_id = flow_tools.add_step(conn, flow_id, exchange_id, candidate=True)
+                    flow_tools.refresh_noise_suggestions(conn, flow_id)
+                    return {"ok": True, "action": action, "flow_id": flow_id, "step_id": step_id, "exchange_id": exchange_id, "web_path": f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}"}
+                name = str(payload.get("name") or "").strip()[:160] or "Flow from Burp selection"
+                raw_ids = payload.get("exchange_ids") or ""
+                if isinstance(raw_ids, list):
+                    exchange_ids = [int(x) for x in raw_ids if str(x).isdigit()]
+                else:
+                    exchange_ids = [int(x) for x in str(raw_ids).split(",") if str(x).strip().isdigit()]
+                if exchange_id and exchange_id not in exchange_ids:
+                    exchange_ids.insert(0, exchange_id)
+                exchange_ids = list(dict.fromkeys(exchange_ids))
+                if not exchange_ids:
+                    raise HTTPException(status_code=400, detail="Selecciona al menos un exchange")
+                valid = {int(r["id"]) for r in conn.execute(f"SELECT id FROM http_exchanges WHERE id IN ({','.join('?' for _ in exchange_ids)})", exchange_ids).fetchall()}
+                if len(valid) != len(exchange_ids):
+                    raise HTTPException(status_code=400, detail="Uno o más exchanges no pertenecen a este target")
+                flow_id = flow_tools.create_flow(conn, name, description=str(payload.get("description") or "")[:2000])
+                for exid in exchange_ids:
+                    flow_tools.add_step(conn, flow_id, exid, candidate=True)
+                flow_tools.refresh_noise_suggestions(conn, flow_id)
+                return {"ok": True, "action": action, "flow_id": flow_id, "exchange_ids": exchange_ids, "web_path": f"/t/{target_key}/flows/{flow_id}"}
             if action == "set_state":
                 state = str(payload.get("state") or "normal").strip()
                 category = str(payload.get("category") or "").strip()[:120]

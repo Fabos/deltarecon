@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.26.0
+
+- Burp pasa a ser entrada de primera clase para **Flows**: `Start Flow from here`, `Add to current Flow`, `End Flow here` y `Create Flow from selected exchanges`.
+- Añade **Capture Window** desde la web: Start/Stop conserva todo el tráfico de la ventana como candidato; Negro sugiere posible background pero nunca lo elimina automáticamente.
+- Flow Editor añade `Include`, `Ignore`, `Set as Start` y `Set as End`; Ignore conserva la evidencia y sólo la excluye de Flow Compare.
+- Burp integra **Identity Contexts**: asignar una request, crear Identity desde la request, actualizar auth actual y `Send / Re-send as Identity`.
+- `Send as Identity` conserva método/path/query/body y reemplaza sólo material de autenticación conocido; `Anonymous` elimina auth conocida.
+- Extiende auth material a `Authorization`, cookies y headers comunes (`x-api-key`, `x-auth-token`, `x-access-token`, `x-session-token`).
+- Mantiene historial de auth rotatorio y permite declarar explícitamente cuál material es el actual.
+- Rehace **Business State Observations** como definiciones ligadas a objetos: por ejemplo `Order = orderId + status`; cada observación conserva objeto, estado, Identity y exchange exacto.
+- Flow Compare muestra diferencias de secuencia de estado (`CREATED → PAID → SHIPPED` vs `CREATED → SHIPPED`) sin declararlas vulnerabilidades.
+- Añade señal conservadora de secuencia distinta sólo cuando otra secuencia fue observada repetidamente.
+- Añade regresión `v026_flow_identity_state_test.py`; suite completa en verde.
+- Negro Burp Bridge pasa a **v0.26.0**.
+
 ## v0.25.0
 
 - Renombra la experiencia de comparación a **Smart Compare**: ahora muestra coincidencias exactas y diferencias.

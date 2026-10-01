@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.25.0
+# Negro Recon 🐕 — v0.26.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -12,76 +12,53 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
 
-## v0.25.0 — Smart Compare + Flow Workbench
+## v0.26.0 — Burp-native Flows + Identity + Business States
 
-Esta versión junta dos bloques que necesitaban trabajar juntos antes de seguir con anomalías.
+Esta iteración cierra Flow Capture/Compare y lleva las acciones principales al sitio donde ocurre la investigación: Burp.
 
-### 1. Smart Compare entiende coincidencias, no sólo diferencias
+### Flow Capture desde Burp o Negro
 
-El antiguo `Smart Diff` ahora se presenta como **Smart Compare**. Sigue mostrando diferencias entre dos exchanges, pero primero muestra **valores exactos compartidos**, incluso cuando aparecen con nombres o rutas JSON distintas.
+Desde Burp, clic derecho → **Negro → Flow**:
 
-Ejemplo:
+- `Start Flow from here…`
+- `Add to current Flow…`
+- `End Flow here…`
+- `Create Flow from selected exchanges…`
 
-```text
-Exchange A                  Exchange B
-$.user.id = 102            $.memberId = 102
-$.user.email = diego@...   $.email = diego@...
-```
+Desde la web, **Start Flow** abre una Capture Window y **Stop Flow** guarda todo lo observado como candidatos. Negro puede marcar tráfico repetido como `possible background`, pero nunca lo borra ni lo excluye solo. En el editor decides `Include`, `Ignore`, `Set as Start` y `Set as End`.
 
-Negro muestra `102` como un **posible alias por valor** entre `id` y `memberId`. Eso significa únicamente que el mismo valor observado conecta ambos campos; no afirma que tengan la misma semántica. Valores triviales como `ok=true`, booleanos o atributos muy reutilizados se penalizan o se ocultan de las correlaciones útiles.
+### Identity Contexts directamente en Burp
 
-**Find Related Exchange** también conserva el path completo de cada coincidencia y deja de decir “mismo objeto” sin evidencia. Toma el exchange completo, busca valores exactos compartidos y separa correlaciones fuertes, medias y débiles. `Follow Value` continúa siguiendo un único valor seleccionado.
+Clic derecho → **Negro → Identity** permite:
 
-### 2. Guía de módulos integrada
+- asignar el exchange a una Identity existente;
+- crear una Identity desde la request seleccionando su auth material;
+- declarar el auth actual cuando rota una sesión/token;
+- `Send / Re-send as Identity` hacia el Repeater existente;
+- enviar como `Anonymous`, removiendo sólo auth conocida por Negro.
 
-La navegación incluye **Guía**. Cada módulo explica qué pregunta responde, cuándo usarlo y qué NO concluye:
+El resend conserva método, path/query, body y headers ajenos a autenticación. Negro maneja Cookie, Authorization/Bearer y headers de auth comunes.
 
-- Buscar → ¿dónde aparece esto?
-- Follow Value → ¿dónde reaparece exactamente este valor?
-- Find Related Exchange → ¿qué otros exchanges comparten evidencia con éste?
-- Smart Compare → ¿qué coincide y qué cambia entre A y B?
-- Identidades → ¿quién hizo este tráfico?
-- Flows → ¿qué historia de negocio forman varios exchanges?
+### Business State Observations
 
-### 3. Flow Workbench
-
-**Flows** agrupa exchanges observados en una secuencia de negocio real:
+Los estados ya no son sólo campos adyacentes. El investigador enseña una definición real, por ejemplo:
 
 ```text
-login → cart → checkout → payment → order
+Order = orderId + status
 ```
 
-Puedes crear un flow vacío, agregar exchanges uno por uno o capturar un rango de IDs. Al capturar rangos, Negro ignora `OPTIONS` por defecto.
-
-Cada paso conserva:
-
-- exchange exacto;
-- método, host, path y status HTTP;
-- Identity observada cuando exista;
-- valores de negocio relevantes (`orderId`, `total`, `status`, etc.);
-- etiqueta, estado manual y nota opcionales.
-
-Negro también muestra **business-state observations** cuando ve campos como `status`, `state`, `paymentStatus`, `orderStatus`, etc. Las transiciones representan únicamente tráfico observado.
-
-### 4. Flow Compare
-
-Dos flows se alinean por `método + ruta normalizada` y se comparan paso a paso. La vista muestra:
-
-- pasos presentes sólo en A o sólo en B;
-- pasos equivalentes por estructura;
-- coincidencias de valores entre exchanges alineados;
-- cambios de negocio relevantes;
-- acceso directo a Smart Compare completo.
-
-Esto permite comparar, por ejemplo:
+A partir de ahí Negro observa instancias concretas:
 
 ```text
-Compra normal Buyer A
-vs
-Compra Buyer B
+Order orderId=98127
+CREATED → PAID → SHIPPED
 ```
 
-u observar que un recorrido tiene `POST /payment` y otro no.
+Cada nodo conserva el exchange y la Identity observada. Flow Compare puede mostrar una variante `CREATED → SHIPPED`, pero lo presenta como **secuencia diferente observada**, nunca como bypass o vulnerabilidad confirmada.
+
+### Smart Compare sigue siendo el diff de detalle
+
+Flow Compare trabaja un nivel arriba. Cuando dos pasos alineados cambian, el detalle continúa abriéndose en **Smart Compare**; no existe un segundo motor de diff paralelo.
 
 ## Identity Contexts
 
@@ -120,15 +97,15 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión para v0.25.0.** Sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+Para usar las acciones de Flow/Identity de esta versión, carga **Negro Burp Bridge v0.26.0**.
 
-Si necesitas recompilarla:
+Para compilarla:
 
 ```bash
 cd burp-extension
 ./build-extension.sh
 ```
 
-Carga `build/libs/negro-burp-bridge-0.20.3.jar` desde Burp → Extensions.
+Carga `build/libs/negro-burp-bridge-0.26.0.jar` desde Burp → Extensions.
 
 Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.

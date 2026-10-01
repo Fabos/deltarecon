@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.20.3
+# Negro Burp Bridge v0.26.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.20.3.jar
+build/libs/negro-burp-bridge-0.26.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,20 +42,20 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.20.3.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.26.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
 
-## Menú contextual v0.20
+## Menú contextual v0.26
 
 Haz click derecho sobre una o varias request/response en Burp y abre **Negro**:
 
-- `Open in Negro`
+- `Flow → Start Flow from here / Add to current Flow / End Flow here / Create Flow from selected exchanges`
+- `Identity → Assign / Create from this request / Update auth material / Send as Identity`
 - `State → Pending Learning / Review Later / Interesting / Correlate / Finding / Discarded / Normal`
-- `Add note…`
-- `Create Finding…`
-- `Attach to existing Finding…`
-- `Attach as Retest evidence…`
+- `Open in Negro`, notas, Findings y Retest.
+
+`Send as Identity` usa el Repeater existente: conserva método/path/query/body y cambia únicamente material de autenticación conocido por Negro. `Anonymous` remueve esa auth conocida.
 
 Los **Signals automáticos** no son estados humanos. Una response con signals nuevos puede quedar resaltada en cyan; al elegir un estado humano el highlight cambia al color correspondiente y Negro añade una nota legible. La acción sincroniza primero la evidencia con Negro para obtener su `Resource → Operation → Exchange`.

@@ -189,6 +189,20 @@ def extract_auth_materials(conn, exchange_id: int) -> list[dict[str, Any]]:
         seen.add(key)
         claims = _jwt_payload(credential) if typ == "bearer" else {}
         out.append({"material_type": typ, "name": scheme or "Authorization", "value": credential, "fingerprint": key[2], "preview": _material_preview(credential), "claims": claims})
+
+    # Common custom authentication headers.  These are kept explicit rather than
+    # treating every X-* header as a credential.  The researcher still decides
+    # whether a detected material belongs to an Identity Context.
+    for header_name in ("x-api-key", "api-key", "x-auth-token", "x-access-token", "x-session-token"):
+        for value in headers.get(header_name, []):
+            raw = value.strip()
+            if not raw:
+                continue
+            key = ("header", header_name, _sha(raw))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"material_type": "header", "name": header_name, "value": raw, "fingerprint": key[2], "preview": _material_preview(raw), "claims": {}})
     return out
 
 
@@ -369,6 +383,184 @@ def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int
         parameter_resolvers += 1
     return {"exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id, "materials": len(materials), "jwt_resolvers": resolvers, "parameter_resolvers": parameter_resolvers}
 
+
+
+def learn_auth_materials(conn, exchange_id: int, identity_id: int, *, context_id: int | None = None,
+                         fingerprints: list[str] | None = None, source: str = "manual") -> dict[str, Any]:
+    """Learn only the auth materials the researcher selected from one exchange."""
+    init_schema(conn)
+    if not conn.execute("SELECT id FROM identities WHERE id=?", (int(identity_id),)).fetchone():
+        raise ValueError("Identidad no encontrada")
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    selected = {str(x) for x in (fingerprints or []) if str(x)}
+    materials = extract_auth_materials(conn, int(exchange_id))
+    if fingerprints is not None:
+        materials = [m for m in materials if str(m.get("fingerprint")) in selected]
+    learned = 0
+    jwt_resolvers = 0
+    for material in materials:
+        _learn_material(conn, int(identity_id), context_id, material, source=source)
+        learned += 1
+        if material.get("material_type") == "bearer":
+            jwt_resolvers += _learn_stable_jwt_claims(conn, int(identity_id), context_id, material, source=source)
+    return {"materials": learned, "jwt_resolvers": jwt_resolvers, "fingerprints": [m["fingerprint"] for m in materials]}
+
+
+def update_identity_auth_from_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int | None = None,
+                                       fingerprints: list[str] | None = None, source: str = "manual_update") -> dict[str, Any]:
+    """Explicitly declare the selected auth material as the current material for an identity.
+
+    Older fingerprints are preserved as history but marked inactive for the same
+    material type/name, so Send as Identity deterministically uses the latest value.
+    """
+    init_schema(conn)
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    selected = {str(x) for x in (fingerprints or []) if str(x)}
+    materials = extract_auth_materials(conn, int(exchange_id))
+    if fingerprints is not None:
+        materials = [m for m in materials if str(m.get("fingerprint")) in selected]
+    for material in materials:
+        conn.execute(
+            """UPDATE auth_materials SET active=0
+               WHERE identity_id=? AND context_id IS ? AND material_type=? AND lower(material_name)=lower(?)""",
+            (int(identity_id), context_id, str(material["material_type"]), str(material["name"])),
+        )
+        _learn_material(conn, int(identity_id), context_id, material, source=source)
+        if material.get("material_type") == "bearer":
+            _learn_stable_jwt_claims(conn, int(identity_id), context_id, material, source=source)
+    return {"materials": len(materials), "fingerprints": [m["fingerprint"] for m in materials]}
+
+
+def current_auth_materials(conn, identity_id: int, *, context_id: int | None = None) -> list[dict[str, Any]]:
+    """Return the freshest active value for each auth slot of an identity."""
+    init_schema(conn)
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    _backfill_raw_identity_values(conn, int(identity_id))
+    if context_id is not None:
+        rows = conn.execute(
+            """SELECT * FROM auth_materials WHERE identity_id=? AND active=1 AND (context_id=? OR context_id IS NULL)
+               ORDER BY CASE WHEN context_id=? THEN 0 ELSE 1 END,last_seen_at DESC,id DESC""",
+            (int(identity_id), context_id, context_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM auth_materials WHERE identity_id=? AND active=1 ORDER BY last_seen_at DESC,id DESC",
+            (int(identity_id),),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        item = dict(row)
+        slot = (str(item.get("material_type") or ""), str(item.get("material_name") or "").lower())
+        if slot in seen or not str(item.get("raw_value") or ""):
+            continue
+        seen.add(slot)
+        out.append(item)
+    return out
+
+
+def _known_auth_cookie_names(conn) -> set[str]:
+    return {str(r["material_name"] or "").lower() for r in conn.execute(
+        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='cookie'"
+    ).fetchall() if str(r["material_name"] or "")}
+
+
+def _known_custom_auth_headers(conn) -> set[str]:
+    return {str(r["material_name"] or "").lower() for r in conn.execute(
+        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='header'"
+    ).fetchall() if str(r["material_name"] or "")}
+
+
+def rewrite_exchange_as_identity(conn, exchange_id: int, identity_id: int | None, *, context_id: int | None = None) -> dict[str, Any]:
+    """Return an observed raw request with only known authentication material swapped.
+
+    identity_id=None produces an Anonymous variant: Authorization and auth material
+    known to Negro are removed while unrelated headers/cookies are preserved.
+    """
+    init_schema(conn)
+    row = conn.execute(
+        """SELECT e.request_b64,o.method,r.url,r.path FROM http_exchanges e
+           JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+           WHERE e.id=?""", (int(exchange_id),)
+    ).fetchone()
+    if not row or not row["request_b64"]:
+        raise ValueError("Exchange sin request raw disponible")
+    try:
+        raw = base64.b64decode(str(row["request_b64"]), validate=False).decode("iso-8859-1")
+    except Exception as exc:
+        raise ValueError("No pude decodificar la request raw") from exc
+    head, body = _split_http(raw)
+    lines = head.replace("\r\n", "\n").split("\n")
+    if not lines:
+        raise ValueError("Request inválida")
+    request_line = lines[0]
+    parsed_headers: list[tuple[str, str]] = []
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        parsed_headers.append((name.strip(), value.strip()))
+
+    target_materials = current_auth_materials(conn, int(identity_id), context_id=context_id) if identity_id else []
+    target_cookies = {str(m["material_name"]): str(m["raw_value"]) for m in target_materials if m["material_type"] == "cookie"}
+    target_headers = {str(m["material_name"]).lower(): (str(m["material_name"]), str(m["raw_value"])) for m in target_materials if m["material_type"] == "header"}
+    target_authorization: str | None = None
+    for m in target_materials:
+        typ = str(m["material_type"])
+        if typ == "bearer":
+            target_authorization = "Bearer " + str(m["raw_value"])
+            break
+        if typ == "authorization":
+            # material_name stores the scheme when present.
+            scheme = str(m["material_name"] or "Authorization")
+            value = str(m["raw_value"])
+            target_authorization = value if scheme.lower() == "authorization" else f"{scheme} {value}"
+            break
+
+    known_cookie_names = _known_auth_cookie_names(conn)
+    known_custom_headers = _known_custom_auth_headers(conn)
+    rebuilt: list[tuple[str, str]] = []
+    cookie_pairs: list[tuple[str, str]] = []
+    cookie_header_name = "Cookie"
+    for name, value in parsed_headers:
+        low = name.lower()
+        if low == "authorization":
+            continue
+        if low in known_custom_headers:
+            continue
+        if low == "cookie":
+            cookie_header_name = name
+            for piece in value.split(";"):
+                if "=" not in piece:
+                    continue
+                cn, cv = piece.split("=", 1)
+                cn, cv = cn.strip(), cv.strip()
+                if not cn or cn.lower() in known_cookie_names:
+                    continue
+                cookie_pairs.append((cn, cv))
+            continue
+        rebuilt.append((name, value))
+
+    if identity_id:
+        for cn, cv in target_cookies.items():
+            cookie_pairs = [(n, v) for n, v in cookie_pairs if n.lower() != cn.lower()]
+            cookie_pairs.append((cn, cv))
+        if target_authorization:
+            rebuilt.append(("Authorization", target_authorization))
+        for _low, (name, value) in target_headers.items():
+            rebuilt.append((name, value))
+    if cookie_pairs:
+        rebuilt.append((cookie_header_name, "; ".join(f"{n}={v}" for n, v in cookie_pairs)))
+
+    newline = "\r\n"
+    new_head = newline.join([request_line] + [f"{n}: {v}" for n, v in rebuilt])
+    new_raw = new_head + newline + newline + body
+    return {
+        "request_b64": base64.b64encode(new_raw.encode("iso-8859-1", errors="replace")).decode("ascii"),
+        "method": str(row["method"]), "url": str(row["url"]), "path": str(row["path"]),
+        "identity_id": int(identity_id) if identity_id else None, "context_id": context_id,
+        "materials": [{"type": m["material_type"], "name": m["material_name"], "preview": m["masked_preview"]} for m in target_materials],
+    }
 
 def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, context_id: int | None = None, source: str = "manual") -> int:
     init_schema(conn)
