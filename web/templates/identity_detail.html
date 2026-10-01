@@ -51,7 +51,7 @@
 </section>
 
 <section class="panel" id="traffic">
-  <div class="panel-head"><div><p class="eyebrow">TRÁFICO ASOCIADO</p><h2>Qué requests están atribuidas a {{ i.name }}</h2><p class="muted">Aquí puedes verificar exactamente qué asignaste y por qué fuente llegó la asociación.</p></div><span>{{ identity_detail.exchanges|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">TRÁFICO ASOCIADO</p><h2>Qué requests están atribuidas a {{ i.name }}</h2><p class="muted">Más reciente primero. Aquí puedes verificar exactamente qué asignaste y por qué fuente llegó la asociación.</p></div><span>{{ identity_detail.exchanges|length }}</span></div>
   <div class="unknown-exchange-list">
     {% for e in identity_detail.exchanges %}
     <div class="unknown-exchange-row">

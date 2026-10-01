@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.33.0
+# Negro Recon 🐕 — v0.34.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,30 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.34.0 — Identity outcomes + Custom Signals
+
+Esta versión cierra la **Fase 7 — Custom Signals** y sigue puliendo la lectura del grafo.
+
+- En Identity Compare, cada endpoint puede mostrar dentro de su tarjeta el resultado observado por Identity, por ejemplo `Diego · 200` y `Ana · 403`. Esto permite detectar visualmente endpoints que rompen el patrón de autorización sin declarar automáticamente un IDOR.
+- Superficie adopta también la gramática visual semántica: proyecto, host, endpoint y método dejan de depender de bolitas indistinguibles.
+- El tráfico de Identity queda ordenado explícitamente de **más reciente a más antiguo**.
+- Flow Detail prioriza objetos de negocio con significado y pliega `111 101`, `Object 7`, `owner 101` y equivalentes como **identificadores sin clasificar**.
+- **Custom Signals** permite crear reglas locales por método, status, ruta, nombre de parámetro, contenido de request/response, headers, Business Object e Identity presente/ausente. Todas las condiciones configuradas se combinan con AND; dentro de una condición varios valores se combinan con OR.
+- Las Custom Rules escriben en el mismo `signal_occurrences` usado por Hunt. No generan findings ni un motor paralelo; producen Signals con Request exacta, explicación del match y una sugerencia opcional de siguiente prueba.
+- Cada regla se aplica automáticamente al tráfico nuevo y puede **reinterpretar historial** de forma local sin tocar el target.
+
+Ejemplo:
+
+```text
+Rule: Object ID bajo otra identidad
+Identity: presente
+Parameter: ownerId, *accountId
+
+→ Signal
+→ Request exacta
+→ sugerencia: comparar identidades + Follow Value
+```
 
 ## v0.33.0 — Semantic graph polish: iconos, relaciones legibles y comparación A/B
 

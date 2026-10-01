@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Custom Signals · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">CUSTOM SIGNALS · FASE 7</p><h1>Enséñale a Negro qué merece atención</h1><p class="muted">Estas reglas trabajan sólo sobre evidencia ya capturada. Una coincidencia crea un <b>Signal</b>, nunca un Finding ni una vulnerabilidad automática.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/hypotheses">← Hunt</a><a class="button ghost" href="{{ target_base }}/guide#custom-signals">¿Cómo se usa?</a></div>
+</section>
+
+<section class="hunt-model panel custom-signal-model">
+  <div class="hunt-model-item rule-model"><b>1 · Tu regla</b><span>Describe un patrón del target que tú quieres recordar.</span><small>Ej. parámetro <code>ownerId</code> + Identity presente.</small></div>
+  <div class="hunt-model-arrow">→</div>
+  <div class="hunt-model-item signal-model"><b>2 · Signal</b><span>Negro conserva la Request exacta que coincidió.</span><small>Explica qué condición hizo match.</small></div>
+  <div class="hunt-model-arrow">→</div>
+  <div class="hunt-model-item investigation-model"><b>3 · Tú decides</b><span>Follow Value, comparar identidades, Smart Compare o descartar.</span><small>La regla nunca decide impacto.</small></div>
+</section>
+
+{% if saved %}<div class="callout success"><b>Custom Signal guardado.</b> Se aplicará automáticamente al tráfico nuevo. Usa “Evaluar historial” si también quieres reinterpretar Requests ya almacenadas.</div>{% endif %}
+
+<section class="custom-signal-layout">
+  <div class="panel custom-signal-list-panel">
+    <div class="panel-head"><div><p class="eyebrow">TUS REGLAS</p><h2>{{ rules|length }} Custom Signals</h2></div><a class="button ghost small-button" href="{{ target_base }}/signals/custom">+ Nueva regla</a></div>
+    <div class="custom-signal-rule-list">
+      {% for r in rules %}
+      <article class="custom-signal-rule {% if not r.enabled %}disabled{% endif %}">
+        <div class="custom-signal-rule-head"><div><b>{{ r.name }}</b><small>{{ r.description or 'Sin descripción.' }}</small></div><div class="badges"><span class="badge">{{ ui_label(r.category) }}</span><span class="badge">{{ ui_label(r.severity) }}</span>{% if not r.enabled %}<span class="badge">Pausada</span>{% endif %}</div></div>
+        <div class="custom-signal-condition-summary">
+          {% if r.methods %}<span>Método: <code>{{ r.methods|join(' / ') }}</code></span>{% endif %}
+          {% if r.statuses %}<span>HTTP: <code>{{ r.statuses|join(' / ') }}</code></span>{% endif %}
+          {% if r.path_terms %}<span>Ruta contiene: <code>{{ r.path_terms|join(', ') }}</code></span>{% endif %}
+          {% if r.parameter_names %}<span>Parámetro: <code>{{ r.parameter_names|join(', ') }}</code></span>{% endif %}
+          {% if r.request_terms %}<span>Request contiene: <code>{{ r.request_terms|join(', ') }}</code></span>{% endif %}
+          {% if r.response_terms %}<span>Response contiene: <code>{{ r.response_terms|join(', ') }}</code></span>{% endif %}
+          {% if r.header_names %}<span>Header: <code>{{ r.header_names|join(', ') }}</code></span>{% endif %}
+          {% if r.object_types %}<span>Objeto: <code>{{ r.object_types|join(', ') }}</code></span>{% endif %}
+          {% if r.identity_mode != 'any' %}<span>Identity: <code>{{ 'presente' if r.identity_mode=='present' else 'ausente' }}</code></span>{% endif %}
+        </div>
+        {% if r.suggested_action %}<p class="custom-signal-suggestion"><b>Cuando coincida:</b> {{ r.suggested_action }}</p>{% endif %}
+        <div class="custom-signal-stats"><span>{{ r.signal_count }} Signals</span><span>{{ r.pending_count }} pendientes</span></div>
+        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/signals/custom?edit={{ r.id }}">Editar</a>
+          <form action="{{ target_base }}/signals/custom/{{ r.id }}/recalculate" method="post" data-job-form data-job-label="Evaluando historial"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">↻ Evaluar historial</button></form>
+          <form action="{{ target_base }}/signals/custom/{{ r.id }}/toggle" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button" type="submit">{{ 'Pausar' if r.enabled else 'Activar' }}</button></form>
+        </div>
+      </article>
+      {% else %}<div class="empty-state compact"><strong>Todavía no enseñaste patrones propios.</strong><span>Empieza con una regla muy concreta que te recuerde una prueba que sueles olvidar.</span></div>{% endfor %}
+    </div>
+  </div>
+
+  <aside class="panel custom-signal-editor">
+    {% set r=edit_rule %}
+    <p class="eyebrow">{{ 'EDITAR REGLA' if r else 'NUEVA REGLA' }}</p><h2>{{ r.name if r else 'Crear Custom Signal' }}</h2>
+    <p class="muted small">Todas las secciones que rellenes deben cumplirse. Dentro de una misma sección basta con que coincida uno de los valores.</p>
+    <form class="stack-form" action="{{ target_base }}/signals/custom/save" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="rule_id" value="{{ r.id if r else 0 }}">
+      <label><span>Nombre</span><input name="name" value="{{ r.name if r else '' }}" placeholder="Object ID bajo otra identidad" required></label>
+      <label><span>Qué quieres recordar</span><textarea name="description" placeholder="Por qué este patrón merece volver a mirarse">{{ r.description if r else '' }}</textarea></label>
+      <div class="grid two compact-fields">
+        <label><span>Categoría</span><select name="category">{% for v,label in [('access_control','Autorización'),('business_logic','Lógica de negocio'),('authentication','Autenticación'),('api','API'),('other','Otro')] %}<option value="{{ v }}" {% if r and r.category==v %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label><span>Prioridad visual</span><select name="severity">{% for v,label in [('info','Informativa'),('low','Baja'),('medium','Media'),('high','Alta')] %}<option value="{{ v }}" {% if r and r.severity==v %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      </div>
+      <label class="check-row"><input type="checkbox" name="enabled" {% if not r or r.enabled %}checked{% endif %}><span>Activa para tráfico nuevo</span></label>
+
+      <details open class="custom-signal-condition-builder"><summary>Condiciones principales</summary>
+        <div class="stack-form nested-form">
+          <label><span>Métodos HTTP · opcional</span><input name="methods" value="{{ r.methods|join(', ') if r else '' }}" placeholder="GET, POST"></label>
+          <label><span>Status HTTP · opcional</span><input name="statuses" value="{{ r.statuses|join(', ') if r else '' }}" placeholder="200, 403"></label>
+          <label><span>Ruta contiene · uno por línea o coma</span><textarea name="path_terms" placeholder="/orders/\n/invoice">{{ r.path_terms|join('\n') if r else '' }}</textarea></label>
+          <label><span>Nombre de parámetro · acepta * wildcard</span><textarea name="parameter_names" placeholder="ownerId\n*accountId\ntenant*">{{ r.parameter_names|join('\n') if r else '' }}</textarea></label>
+          <label><span>Identity</span><select name="identity_mode"><option value="any" {% if not r or r.identity_mode=='any' %}selected{% endif %}>No importa</option><option value="present" {% if r and r.identity_mode=='present' %}selected{% endif %}>Debe existir una Identity</option><option value="absent" {% if r and r.identity_mode=='absent' %}selected{% endif %}>Debe estar sin Identity</option></select></label>
+        </div>
+      </details>
+      <details class="custom-signal-condition-builder"><summary>Contexto avanzado · opcional</summary>
+        <div class="stack-form nested-form">
+          <label><span>Request contiene</span><textarea name="request_terms" placeholder="userId\nX-Tenant-Id">{{ r.request_terms|join('\n') if r else '' }}</textarea></label>
+          <label><span>Response contiene</span><textarea name="response_terms" placeholder="role\npermissions">{{ r.response_terms|join('\n') if r else '' }}</textarea></label>
+          <label><span>Nombre de header</span><textarea name="header_names" placeholder="X-Account-Id\nX-Tenant-Id">{{ r.header_names|join('\n') if r else '' }}</textarea></label>
+          <label><span>Business Object type</span><textarea name="object_types" placeholder="Order\nInvoice">{{ r.object_types|join('\n') if r else '' }}</textarea></label>
+        </div>
+      </details>
+      <label><span>Sugerencia cuando coincida</span><textarea name="suggested_action" placeholder="Comparar esta Request con otra Identity; luego Follow Value sobre ownerId.">{{ r.suggested_action if r else '' }}</textarea></label>
+      <div class="page-actions"><button class="button" type="submit">Guardar regla</button>{% if r %}<a class="button ghost" href="{{ target_base }}/signals/custom">Nueva</a>{% endif %}</div>
+    </form>
+    {% if r %}<form class="danger-zone" action="{{ target_base }}/signals/custom/{{ r.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar esta regla y sus Signals generados?')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger ghost" type="submit">Eliminar regla</button></form>{% endif %}
+  </aside>
+</section>
+{% endblock %}

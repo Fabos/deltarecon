@@ -71,7 +71,7 @@ UI_LABELS = {
     "not_applicable": "No aplica", "quick": "Chequeo rápido",
     "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
-    "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual",
+    "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Custom Signal",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
     "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
@@ -201,6 +201,26 @@ def _resolve_identity_history(paths: dict[str, Path]) -> dict[str, int]:
     import negro_identity as identity_tools
     with _db(paths) as conn:
         return identity_tools.resolve_all(conn)
+
+def _recalculate_custom_signal_history(paths: dict[str, Path], rule_id: int) -> dict[str, int]:
+    import negro_custom_signals as custom_signals
+    with _db(paths) as conn:
+        result = custom_signals.apply_rule_to_history(conn, int(rule_id))
+        try:
+            import negro_search as search_index
+            search_index.rebuild_search_index(conn)
+        except Exception as exc:
+            print(f"[custom-signal] search refresh error={type(exc).__name__}: {str(exc)[:160]}")
+        return result
+
+
+def _split_custom_rule_input(value: Any) -> list[str]:
+    out=[]; seen=set()
+    for raw in re.split(r"[\n,]+", str(value or "").replace("\r", "")):
+        item=raw.strip()
+        if not item or item.lower() in seen: continue
+        seen.add(item.lower()); out.append(item)
+    return out
 
 
 def _rebuild_business_objects(paths: dict[str, Path]) -> dict[str, int]:
@@ -2224,6 +2244,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/settings", {"anchor":"settings","title":"Configuración","question":"¿Qué controla Negro y qué puedo recalcular sin tocar el target?","when":"Configura políticas, IA, detectores, proveedores y reconstrucciones locales.","example":"Después de mejorar una regla de Access Control, usa recalcular inteligencia para reinterpretar requests ya capturadas sin repetir recon.","caution":"Recalcular localmente no equivale a volver a enviar peticiones al objetivo."}),
             (r"^/notifications", {"anchor":"signals","title":"Notificaciones","question":"¿Qué observación nueva merece mi atención?","when":"Revisa señales recientes que Negro detectó mientras navegabas o analizabas tráfico.","example":"Diego recibe 200 en un endpoint relacionado con un Order donde otros casos daban 403; Negro lo puede elevar como señal para revisar.","caution":"Una notificación es una pista priorizada, no una vulnerabilidad confirmada."}),
             (r"^/intelligence", {"anchor":"intelligence","title":"Inteligencia","question":"¿Qué señales determinísticas encontró Negro?","when":"Úsala para revisar patrones detectados en HTTP, JS, recon y configuraciones.","example":"En el lab, una request sensible con X-Original-URL o un ownerId puede alimentar una hipótesis de Access Control para prueba manual.","caution":"Señal ≠ hipótesis ≠ finding."}),
+            (r"^/signals/custom", {"anchor":"custom-signals","title":"Custom Signals","question":"¿Qué patrón propio quiero que Negro recuerde mientras navego?","when":"Crea una regla cuando ya sabes qué combinación de endpoint, parámetro, Identity, objeto o texto merece una segunda mirada en este negocio.","example":"Marca Requests autenticadas que contengan ownerId/accountId y sugiere comparar identidades o Follow Value; Negro guarda la coincidencia exacta sin llamarla IDOR.","caution":"Una Custom Rule produce Signals determinísticos; no crea findings ni reemplaza la validación manual."}),
             (r"^/hypotheses", {"anchor":"hunt","title":"Hunt / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
             (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas las Requests, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
             (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
@@ -2850,6 +2871,62 @@ def create_app(default_domain: str, default_workspace: Path):
             if sr:
                 _refresh_search(conn, resource_id=sr["resource_id"], exchange_id=sr["exchange_id"])
         return RedirectResponse(url=f"/t/{target_key}/hypotheses", status_code=303)
+
+    @app.get("/t/{target_key}/signals/custom", response_class=HTMLResponse)
+    def custom_signals_page(request: Request, target_key: str, edit: int = 0, saved: int = 0):
+        import negro_custom_signals as custom_signals
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            custom_signals.init_schema(conn)
+            rules = custom_signals.list_rules(conn)
+            edit_rule = custom_signals.get_rule(conn, int(edit)) if edit else None
+        return render(request, "custom_signals.html", target_key, domain, workspace, rules=rules, edit_rule=edit_rule, saved=saved)
+
+    @app.post("/t/{target_key}/signals/custom/save")
+    def custom_signal_save(request: Request, target_key: str, rule_id: int = Form(0), name: str = Form(...), description: str = Form(""), category: str = Form("other"), severity: str = Form("info"), enabled: str = Form(""), methods: str = Form(""), statuses: str = Form(""), path_terms: str = Form(""), parameter_names: str = Form(""), request_terms: str = Form(""), response_terms: str = Form(""), header_names: str = Form(""), object_types: str = Form(""), identity_mode: str = Form("any"), suggested_action: str = Form(""), csrf: str = Form(...)):
+        import negro_custom_signals as custom_signals
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                rid = custom_signals.save_rule(
+                    conn, rule_id=int(rule_id) if int(rule_id or 0) else None, name=name, description=description, category=category, severity=severity,
+                    enabled=(enabled == "on"), methods=_split_custom_rule_input(methods), statuses=_split_custom_rule_input(statuses),
+                    path_terms=_split_custom_rule_input(path_terms), parameter_names=_split_custom_rule_input(parameter_names),
+                    request_terms=_split_custom_rule_input(request_terms), response_terms=_split_custom_rule_input(response_terms),
+                    header_names=_split_custom_rule_input(header_names), object_types=_split_custom_rule_input(object_types),
+                    identity_mode=identity_mode, suggested_action=suggested_action,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={rid}&saved=1", status_code=303)
+
+    @app.post("/t/{target_key}/signals/custom/{rule_id}/recalculate", response_class=JSONResponse)
+    def custom_signal_recalculate(request: Request, target_key: str, rule_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        job_id = _start_job(f"Custom Signal #{rule_id} · historial", target_key, _recalculate_custom_signal_history, paths, int(rule_id))
+        return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": f"/t/{target_key}/signals/custom?edit={int(rule_id)}"})
+
+    @app.post("/t/{target_key}/signals/custom/{rule_id}/toggle")
+    def custom_signal_toggle(request: Request, target_key: str, rule_id: int, csrf: str = Form(...)):
+        import negro_custom_signals as custom_signals
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            rule = custom_signals.get_rule(conn, int(rule_id))
+            if not rule: raise HTTPException(status_code=404, detail="Custom Signal no encontrado")
+            conn.execute("UPDATE custom_signal_rules SET enabled=?,updated_at=? WHERE id=?", (0 if rule.get("enabled") else 1, _now(), int(rule_id)))
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={int(rule_id)}", status_code=303)
+
+    @app.post("/t/{target_key}/signals/custom/{rule_id}/delete")
+    def custom_signal_delete(request: Request, target_key: str, rule_id: int, csrf: str = Form(...)):
+        import negro_custom_signals as custom_signals
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            custom_signals.delete_rule(conn, int(rule_id))
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom", status_code=303)
 
     @app.get("/t/{target_key}/search", response_class=HTMLResponse)
     def search_page(request: Request, target_key: str, q: str = ""):
@@ -4086,6 +4163,11 @@ def create_app(default_domain: str, default_workspace: Path):
                     object_tools.refresh_exchange(conn, int(result["exchange_id"]))
                 except Exception as object_exc:
                     print(f"[business-object] exchange={result.get('exchange_id')} error={type(object_exc).__name__}: {str(object_exc)[:160]}")
+                try:
+                    import negro_custom_signals as custom_signals
+                    custom_signals.evaluate_exchange(conn, int(result["exchange_id"]))
+                except Exception as custom_exc:
+                    print(f"[custom-signal] exchange={result.get('exchange_id')} error={type(custom_exc).__name__}: {str(custom_exc)[:160]}")
                 # Keep Search Everything current after deterministic Signals are
                 # persisted. Search indexing is local-only and sends no network traffic.
                 try:

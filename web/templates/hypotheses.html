@@ -9,6 +9,7 @@
   </div>
   <div class="page-actions">
     <a class="button" href="{{ target_base }}/graph">🧠 Generar hipótesis con IA</a>
+    <a class="button ghost" href="{{ target_base }}/signals/custom">Custom Signals</a>
     <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando Signals">
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="hypotheses">
       <button class="button secondary" type="submit" title="Reinterpreta evidencia almacenada con las Rules actuales; no llama IA.">↻ Recalcular Rules</button>
@@ -48,10 +49,11 @@
   <div class="hunt-signal-list">
     {% for s in signals %}
     <article class="hunt-signal severity-{{ s.severity }}">
-      <div class="hunt-signal-head"><div><span class="signal-dot">🩵</span><b>{{ s.title }}</b></div><div class="badges"><span class="badge">{{ ui_label(s.category or s.kind) }}</span><span class="badge">{{ ui_label(s.severity) }}</span></div></div>
+      <div class="hunt-signal-head"><div><span class="signal-dot">🩵</span><b>{{ s.title }}</b></div><div class="badges">{% if s.source=='custom_signal' %}<span class="badge">Tu regla</span>{% endif %}<span class="badge">{{ ui_label(s.category or s.kind) }}</span><span class="badge">{{ ui_label(s.severity) }}</span></div></div>
       {% if s.why_text %}<p>{{ s.why_text }}</p>{% endif %}
       <div class="hunt-signal-meta"><code>{% if s.method %}{{ s.method }} {% endif %}{{ s.path or s.resource_url or 'request' }}</code>{% if s.exchange_id %}<span>Request #{{ s.exchange_id }}</span>{% endif %}</div>
       {% if s.evidence and s.evidence.rule_match %}<div class="rule-match-grid compact-rule-match">{% for k,v in s.evidence.rule_match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}</div>{% endif %}
+      {% if s.evidence and s.evidence.suggested_action %}<p class="custom-signal-suggestion"><b>Sugerencia:</b> {{ s.evidence.suggested_action }}</p>{% endif %}
       <div class="hunt-signal-actions">
         {% if s.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ s.resource_id }}{% if s.exchange_id %}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}
         <form action="{{ target_base }}/signal/{{ s.id }}/review" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="btn-secondary" type="submit">✓ Marcar revisado</button></form>

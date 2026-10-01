@@ -751,7 +751,9 @@ def get_flow(conn, flow_id: int) -> dict[str, Any] | None:
         business_objects = object_tools.objects_for_flow(conn, int(flow_id))
     except Exception:
         business_objects = []
-    return {"flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions, "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn), "business_objects": business_objects}
+    meaningful_objects = [x for x in business_objects if x.get("ui_quality") != "ambiguous"]
+    ambiguous_objects = [x for x in business_objects if x.get("ui_quality") == "ambiguous"]
+    return {"flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions, "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn), "business_objects": business_objects, "meaningful_business_objects": meaningful_objects, "ambiguous_business_objects": ambiguous_objects}
 
 
 def _align_steps(a_steps: list[dict[str, Any]], b_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:

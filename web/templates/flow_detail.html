@@ -32,10 +32,11 @@
   {% else %}<p class="empty">Todavía no hay tracks de estado aplicables a este flow. En un paso que muestre <code>status/state/stage/phase</code>, abre “Track as business state”.</p>{% endif %}
 </section>
 
-{% if flow_data.business_objects %}
+{% if flow_data.meaningful_business_objects or flow_data.ambiguous_business_objects %}
 <section class="panel" id="flow-business-objects">
-  <div class="panel-head"><div><p class="eyebrow">BUSINESS OBJECTS</p><h2>Objetos observados en este Flow</h2></div><small>Misma instancia correlacionada por tipo + valor exacto.</small></div>
-  <div class="related-object-grid">{% for o in flow_data.business_objects %}<a class="related-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · {{ o.host_count }} host(s)</small></a>{% endfor %}</div>
+  <div class="panel-head"><div><p class="eyebrow">OBJETOS DEL FLOW</p><h2>Cosas de negocio con significado</h2><p class="muted">Negro prioriza objetos como <code>Order 4101</code> o <code>User 101</code>. IDs sin clasificar se conservan como evidencia, pero no compiten con la historia del Flow.</p></div><small>{{ flow_data.meaningful_business_objects|length }} claros</small></div>
+  {% if flow_data.meaningful_business_objects %}<div class="related-object-grid">{% for o in flow_data.meaningful_business_objects %}<a class="related-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · {{ o.host_count }} host(s){% if o.identifier_field %} · key {{ o.identifier_field }}{% endif %}</small></a>{% endfor %}</div>{% else %}<p class="empty">Este Flow todavía no tiene objetos de negocio claramente clasificados.</p>{% endif %}
+  {% if flow_data.ambiguous_business_objects %}<details class="advanced-context"><summary>Identificadores sin clasificar · {{ flow_data.ambiguous_business_objects|length }}</summary><div class="related-object-grid">{% for o in flow_data.ambiguous_business_objects %}<a class="related-object-card ambiguous-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><code>{{ o.identifier_field or 'identifier' }}={{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · tipo interno {{ o.object_type }}</small></a>{% endfor %}</div></details>{% endif %}
 </section>
 {% endif %}
 

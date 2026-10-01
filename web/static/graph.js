@@ -168,13 +168,29 @@
     }));
   }
 
+  function endpointIdentityResults(nodeId){
+    if(preset!=='identity')return [];
+    const opts=graph.meta?.filter_options?.identities||[];
+    const selected=[Number(graph.meta?.identity_id||0),Number(graph.meta?.compare_identity_id||0)].filter(Boolean);
+    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identity ${id}`;
+    return selected.map((iid,index)=>{
+      const edge=graph.edges.find(e=>e.source===`identity:${iid}`&&e.target===nodeId&&e.relation==='called_endpoint');
+      if(!edge)return null;
+      const statuses=[...(edge.meta?.evidence?.statuses||[])].map(String);
+      return {id:iid,index,label:label(iid),statuses:statuses.length?statuses:['—']};
+    }).filter(Boolean);
+  }
+
   function semanticCardMode(n){
     return ['identity','flow','objects'].includes(preset)&&['identity','flow','resource'].includes(n.type);
   }
 
   function cardWidthFor(n){
     const text=String(n.label||'');
-    if(n.type==='resource')return Math.max(116,Math.min(270,text.length*7.2+34));
+    if(n.type==='resource'){
+      const statusText=endpointIdentityResults(n.id).map(x=>`${x.label} · ${x.statuses.join('/')}`).join('   ');
+      return Math.max(126,Math.min(330,Math.max(text.length*7.2+34,statusText.length*6.2+30)));
+    }
     if(n.type==='identity')return Math.max(104,Math.min(190,text.length*7.4+44));
     if(n.type==='flow')return Math.max(110,Math.min(210,text.length*7.2+44));
     return 40;
@@ -191,9 +207,20 @@
     const addPath=(d,cls='node-icon')=>{const el=document.createElementNS(NS,'path');el.setAttribute('d',d);el.setAttribute('class',cls);vg.appendChild(el);return el;};
     const addText=(x,y,text,cls='node-inline-label',anchor='start')=>{const el=document.createElementNS(NS,'text');el.setAttribute('x',String(x));el.setAttribute('y',String(y));el.setAttribute('text-anchor',anchor);el.setAttribute('class',cls);el.textContent=text;vg.appendChild(el);return el;};
     if(fixed&&n.type==='resource'){
-      const w=cardWidthFor(n);addRect(-w/2,-15,w,30,9,'node-shape endpoint-card');
-      addPath(`M ${-w/2+12} -4 L ${-w/2+18} 0 L ${-w/2+12} 4 M ${-w/2+18} 0 H ${-w/2+24}`,'node-icon endpoint-icon');
-      const limit=42;const text=String(n.label||'');addText(-w/2+31,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label endpoint-inline');
+      const w=cardWidthFor(n), results=endpointIdentityResults(n.id), hasResults=results.length>0;
+      const h=hasResults?46:30, top=-h/2;
+      addRect(-w/2,top,w,h,9,'node-shape endpoint-card');
+      addPath(`M ${-w/2+12} ${hasResults?-9:-4} L ${-w/2+18} ${hasResults?-5:0} L ${-w/2+12} ${hasResults?-1:4} M ${-w/2+18} ${hasResults?-5:0} H ${-w/2+24}`,'node-icon endpoint-icon');
+      const limit=44;const text=String(n.label||'');addText(-w/2+31,hasResults?-2:4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label endpoint-inline');
+      if(hasResults){
+        let x=-w/2+12;
+        results.forEach((r,idx)=>{
+          const name=String(r.label||'Identity');const short=name.length>16?name.slice(0,15)+'…':name;
+          const val=`${short} · ${r.statuses.join('/')}`;
+          addText(x,15,val,`node-endpoint-status ${idx===0?'primary':'secondary'}`);
+          x+=Math.min(145,Math.max(78,val.length*6.1+18));
+        });
+      }
       inlineLabel=true;labelAnchor=w/2+8;
     }else if(fixed&&n.type==='identity'){
       const w=cardWidthFor(n);addRect(-w/2,-17,w,34,11,'node-shape identity-card');
@@ -205,6 +232,13 @@
       addPath(`M ${-w/2+12} -6 H ${-w/2+20} V 0 H ${-w/2+27} M ${-w/2+20} 0 V 6 H ${-w/2+27}`,'node-icon flow-icon');
       const limit=24;const text=String(n.label||'');addText(-w/2+35,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label flow-inline');
       inlineLabel=true;labelAnchor=w/2+8;
+    }else if(n.type==='resource'){
+      addRect(-10,-7,20,14,5,'node-shape endpoint-mini');
+      addPath('M -5 -3 L 0 0 L -5 3 M 0 0 H 6','node-icon endpoint-icon');labelAnchor=16;
+    }else if(n.type==='host'){
+      addRect(-9,-8,18,16,3,'node-shape host-server');addPath('M -5 -3 H 5 M -5 1 H 5 M -5 5 H 2','node-icon host-lines');labelAnchor=15;
+    }else if(n.type==='target'){
+      const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points','0,-10 9,-4 7,7 0,11 -7,7 -9,-4');poly.setAttribute('class','node-shape target-project');vg.appendChild(poly);labelAnchor=17;
     }else if(n.type==='object'){
       const pts='0,-8 7,-4 7,4 0,8 -7,4 -7,-4';const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points',pts);poly.setAttribute('class','node-shape object-hex');vg.appendChild(poly);labelAnchor=15;
     }else if(n.type==='request'){

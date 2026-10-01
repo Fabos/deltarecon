@@ -744,7 +744,7 @@ def object_detail(conn, object_id: int) -> dict[str, Any] | None:
 
 def objects_for_flow(conn, flow_id: int) -> list[dict[str, Any]]:
     init_schema(conn)
-    return [dict(r) for r in conn.execute(
+    rows = [dict(r) for r in conn.execute(
         """SELECT bo.id,bo.identifier_raw,bo.identifier_preview,bt.name object_type,
                   COUNT(DISTINCT fs.id) step_count,COUNT(DISTINCT boo.host_id) host_count,MIN(fs.position) first_position,
                   (SELECT bi.normalized_name FROM business_object_observations x
@@ -757,6 +757,14 @@ def objects_for_flow(conn, flow_id: int) -> list[dict[str, Any]]:
            GROUP BY bo.id ORDER BY first_position,lower(bt.name),bo.id""",
         (int(flow_id),),
     ).fetchall()]
+    for row in rows:
+        quality, reason = _ui_object_quality(row.get("object_type") or "")
+        row["ui_quality"] = quality
+        row["ui_quality_reason"] = reason
+        value = str(row.get("identifier_raw") or row.get("identifier_preview") or "?")
+        field = str(row.get("identifier_field") or "identifier")
+        row["display_label"] = f"{row.get('object_type')} {value}" if quality != "ambiguous" else f"{field}={value}"
+    return rows
 
 
 def overview(conn, *, q: str = "", type_id: int | None = None, limit: int = 250) -> dict[str, Any]:

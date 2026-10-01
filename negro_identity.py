@@ -725,11 +725,11 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
         "SELECT * FROM identity_resolvers WHERE identity_id=? ORDER BY enabled DESC,updated_at DESC LIMIT 100", (int(identity_id),)
     ).fetchall()]
     exchanges = [dict(r) for r in conn.execute(
-        """SELECT ei.*,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at,c.label context_label
+        """SELECT ei.*,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at,e.last_seen_at,c.label context_label
            FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
            LEFT JOIN identity_contexts c ON c.id=ei.context_id
-           WHERE ei.identity_id=? ORDER BY ei.exchange_id DESC LIMIT 100""", (int(identity_id),)
+           WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 100""", (int(identity_id),)
     ).fetchall()]
     return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "exchanges": exchanges}
 

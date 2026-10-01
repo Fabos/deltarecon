@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.33.0
+# Negro Recon — Metodología v0.34.0
 
 ## Modelo mental
 
@@ -38,9 +38,44 @@ Atención   → ¿qué merece volver a mirar?     → bandeja corta
 
 Los Identity Contexts son dinámicos: el mapa usa los nombres reales definidos en el proyecto. No existe lógica fija para Buyer A/B, seller o admin.
 
-Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Identity/Object abren primero una lectura narrativa y permiten pasar explícitamente a **relaciones gráficas · avanzado**. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
+Desde una Request, Identity, Flow, Object o Finding se puede entrar con **Ver en mapa**. Identity/Object son graph-first cuando la relación visual aporta valor. Focus Mode reduce la escena al contexto relevante y permite expandir 1 o 2 saltos. **Camino** calcula el trayecto más corto entre dos nodos usando sólo las relaciones observadas en la escena actual.
 
 La visualización es una herramienta de comprensión. No todo conocimiento debe dibujarse: Negro conserva evidencia técnica, pero sólo muestra por defecto lo que ayuda a responder la pregunta actual. Una línea significa relación observada, no causalidad, ownership ni vulnerabilidad.
+
+### Lectura rápida de autorización en Identity Compare
+
+Un endpoint compartido puede mostrar el resultado observado por cada Identity directamente en su tarjeta:
+
+```text
+/orders/4101
+Diego · 200    Ana · 403
+
+/orders/4101/invoice
+Diego · 200    Ana · 200
+```
+
+La segunda fila merece una segunda mirada si rompe el patrón del resto. Negro muestra el hecho; no concluye IDOR ni bypass.
+
+## Custom Signals
+
+Custom Signals son reglas determinísticas enseñadas por el investigador y conectadas al pipeline existente:
+
+`Custom Rule → Signal → Hunt → Hipótesis/Investigación humana`
+
+Pueden combinar método, status, fragmentos de ruta, nombres de parámetros, contenido de Request/Response, headers, Business Objects e Identity presente/ausente. Todas las secciones configuradas deben coincidir; dentro de una sección basta un valor.
+
+Ejemplo:
+
+```text
+Identity presente
+parameter name: ownerId, *accountId
+path contains: /orders/
+
+Sugerencia:
+Comparar identidades y usar Follow Value sobre el identificador.
+```
+
+La regla se ejecuta sólo sobre evidencia que Negro ya capturó. Puede aplicarse a historial local y al tráfico nuevo. Una coincidencia conserva procedencia exacta en `signal_occurrences`; nunca crea un Finding automáticamente.
 
 ## Buscar
 

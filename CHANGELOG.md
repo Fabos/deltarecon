@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.34.0
+
+- Añade resultados HTTP por Identity dentro de los nodos Endpoint en Identity Compare (`Diego · 200`, `Ana · 403`).
+- Extiende la iconografía semántica a Superficie para proyecto, host y endpoint sin alterar su lectura/zoom conocido.
+- Ordena el tráfico de Identity de más reciente a más antiguo y lo explicita en UI.
+- Flow Detail prioriza Business Objects significativos y relega tipos ambiguos a “Identificadores sin clasificar”.
+- Implementa **Custom Signals** con condiciones sobre método, status, ruta, parámetros, request/response, headers, Business Objects e Identity.
+- Custom Signals reutiliza `signal_occurrences`, Hunt y provenance existente; no genera findings ni hipótesis automáticamente.
+- Permite aplicar una Custom Rule al historial local mediante job, sin tocar el target.
+- Añade guía contextual, editor de reglas y sugerencia opcional de siguiente prueba para cada match.
+- Añade regresión `v034_custom_signals_graph_readability_test.py`; toda la suite histórica permanece verde.
+
 ## v0.33.0
 
 - Sustituye bolitas genéricas por una gramática SVG por tipo: Identity, Endpoint, Flow, Object, Request, State y Anomaly.

@@ -161,7 +161,8 @@ No medir Negro por cantidad de módulos. Medirlo por:
 6.7. Investigation Views / Map 3.0 + simplificación global + timeline de Flow + evidencia ambigua fuera del foco. ✅ v0.30.0
 6.8. Evidence-first UX: Identity/Object Request-first, objetos ambiguos como key=value, Flow Compare sin ruido y navegación corregida. ✅ v0.32.0
 6.9. Semantic graph polish: iconos por tipo, relaciones deduplicadas, compare Shared/Only y navegación directa. ✅ v0.33.0
-7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
+6.10. Identity HTTP outcomes + iconografía de Superficie + Flow object cleanup. ✅ v0.34.0
+7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo. ✅ v0.34.0
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
 
@@ -232,7 +233,17 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Navegación superior directa, sin categorías opacas.
 - Nombres contextuales para Flows Burp creados con el nombre por defecto.
 
+## Implementado en v0.34.0 — Custom Signals + Identity outcomes
+
+- Identity Compare muestra resultados HTTP por Identity dentro del endpoint.
+- Superficie reutiliza iconografía semántica para proyecto/host/endpoint/método.
+- Identity history queda newest-first explícito.
+- Flow Detail pliega Business Objects ambiguos como identificadores sin clasificar.
+- Custom Signals configurables por evidencia HTTP/params/Identity/Object.
+- Las Custom Rules reutilizan `signal_occurrences` y Hunt; no crean un segundo modelo de Signal.
+- Reinterpretación local del historial por regla, sin requests nuevas al target.
+
 ## Siguiente fase inmediata
 
-- **Custom Signals** sobre la Knowledge Base existente, sin crear otro motor paralelo.
-- Después: Hypothesis Engine 2.0 y pulido/performance, usando Identity + Request + Flow + State + Business Objects como contexto estructurado.
+- **Hypothesis Engine 2.0**: usar Identity + Request + Flow + State + Business Objects + Pattern Anomalies + Custom Signals como contexto estructurado para generar hipótesis mucho más específicas bajo demanda.
+- Después: pulido/performance, especialmente para workspaces con miles de endpoints/Requests, y refinamiento de UX basado en uso real.
