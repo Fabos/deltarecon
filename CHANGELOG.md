@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.28.0
+
+- Corrige el `422 int_parsing` de **Business Objects** cuando el filtro `type_id` llega vacío desde el `<select>`; valores inválidos escritos a mano se ignoran de forma segura.
+- Rediseña la enseñanza de Business Objects: el tipo ya no aparece prellenado dentro del input, evitando que el texto nuevo se concatene con una sugerencia previa.
+- Las sugerencias ahora se clasifican como **Buen candidato / Revisar contexto / Genérico** y explican por qué; `id`, `reference`, `ownerId` y `roleId` dejan de verse como equivalentes a `orderId`.
+- Añade un **modelo mental visible** en Objetos usando el Access Control Lab: `Identity (Ana) → Business Object (Order 123) → propiedad (ownerId=101)`.
+- Convierte **Guía** en un Centro de Aprendizaje orientado por preguntas, con un walkthrough completo del Access Control Lab y glosario de Host/Resource/Operation/Exchange/Identity/Flow/Object/Signal/Hypothesis/Finding.
+- Añade ayuda contextual compartida en todas las pantallas principales: qué pregunta responde la vista, cuándo usarla, ejemplo del lab y qué no debe inferirse.
+- Documenta individualmente las herramientas de enumeración del host y los bloques de Settings.
+- Añade regresión `v028_guided_ux_test.py`; suite completa en verde.
+
 ## v0.27.0
 
 - Añade **Business Objects** con tipos configurables e identifiers/aliases explícitos.

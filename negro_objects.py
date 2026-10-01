@@ -385,6 +385,21 @@ def list_types(conn) -> list[dict[str, Any]]:
     ).fetchall()]
 
 
+def _candidate_guidance(identifier_name: str) -> tuple[str, str]:
+    """Human-facing guidance only; never auto-activates a Business Object."""
+    n = _normalize_name(identifier_name)
+    compact = n.replace("_", "")
+    if compact in {"id", "uuid", "ref", "reference", "identifier"}:
+        return "generic", "Nombre demasiado genérico: mira el endpoint/response antes de decidir qué entidad representa."
+    if compact in {"ownerid", "roleid", "tenantid", "organizationid", "orgid"}:
+        return "context", "Suele describir ownership, rol o contexto. Puede ser útil, pero no necesariamente es el objeto principal de esta request."
+    if compact.endswith(("id", "uuid")) and len(compact) > 4:
+        return "strong", "Tiene un nombre semántico y varios valores: buen candidato si identifica una entidad estable del negocio."
+    if "reference" in compact or compact.endswith("ref"):
+        return "context", "Puede ser una referencia útil; confirma primero a qué entidad pertenece y si es estable."
+    return "context", "Parece identificador, pero necesita contexto humano antes de enseñarlo."
+
+
 def candidate_identifiers(conn, *, limit: int = 80) -> list[dict[str, Any]]:
     init_schema(conn)
     tracked = {str(r["normalized_name"]) for r in conn.execute("SELECT normalized_name FROM business_object_identifiers").fetchall()}
@@ -396,15 +411,18 @@ def candidate_identifiers(conn, *, limit: int = 80) -> list[dict[str, Any]]:
            GROUP BY p.normalized_name ORDER BY observations DESC LIMIT 500"""
     ).fetchall()]
     out: list[dict[str, Any]] = []
+    rank = {"strong": 0, "context": 1, "generic": 2}
     for row in rows:
         name = str(row["normalized_name"] or "")
         if name in tracked or not _identifierish(name, str(row.get("sample_location") or "")):
             continue
         row["suggested_type"] = _infer_type(name)
+        quality, guidance = _candidate_guidance(name)
+        row["candidate_quality"] = quality
+        row["candidate_guidance"] = guidance
         out.append(row)
-        if len(out) >= max(1, min(int(limit), 200)):
-            break
-    return out
+    out.sort(key=lambda x: (rank.get(str(x.get("candidate_quality")), 9), -int(x.get("observations") or 0), str(x.get("normalized_name") or "")))
+    return out[: max(1, min(int(limit), 200))]
 
 
 def list_objects(conn, *, type_id: int | None = None, q: str = "", limit: int = 300) -> list[dict[str, Any]]:

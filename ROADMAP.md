@@ -156,6 +156,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 4. Correlation clarity: Find Related con paths completos + Smart Compare con coincidencias/alias por valor. ✅ v0.25.0
 5. Flow Capture + Flow Compare + Burp-native Identity/Flows + object-bound business-state observations. ✅ v0.26.0
 6. Pattern anomalies + cross-host correlation + business objects. ✅ v0.27.0
+6.5. Guided UX + Learning Center + contextual help + Business Object clarity. ✅ v0.28.0
 7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento

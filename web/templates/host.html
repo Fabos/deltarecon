@@ -8,7 +8,7 @@
 </section>
 <div class="inspect-status" data-inspect-status aria-live="polite"></div>
 <section class="panel host-toolbox">
-  <div class="panel-head"><div><p class="eyebrow">HERRAMIENTAS</p><h2>Acciones del host</h2></div><span class="muted small">ejecución explícita</span></div>
+  <div class="panel-head"><div><p class="eyebrow">HERRAMIENTAS</p><h2>Acciones del host</h2></div><div class="panel-head-links"><span class="muted small">ejecución explícita</span><a href="{{ target_base }}/guide#enumeration">¿Qué hace cada una?</a></div></div>
   <div class="host-tool-grid">
     <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile primary-tool" type="submit" data-inspect-button data-tip="Confirma DNS, HTTP/HTTPS y TLS del host."><b>Inspección básica</b><small>DNS, HTTP/HTTPS y TLS</small></button></form>
     <form action="{{ target_base }}/host/{{ host.id }}/web-recon" method="post" data-job-form data-job-label="Recon web"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Revisa raíz, robots, sitemap y rutas .well-known."><b>Recon web</b><small>robots, sitemap y well-known</small></button></form>

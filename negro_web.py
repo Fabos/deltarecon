@@ -1799,6 +1799,45 @@ def create_app(default_domain: str, default_workspace: Path):
     app.mount("/static", StaticFiles(directory=str(root / "web" / "static")), name="static")
     csrf_token = secrets.token_urlsafe(32)
 
+    def _guide_context_for_path(path: str) -> dict[str, str]:
+        suffix = re.sub(r"^/t/[^/]+", "", str(path or "")) or "/"
+        default = {
+            "anchor": "start",
+            "title": "Cómo usar Negro sin perderte",
+            "question": "¿Qué debería hacer ahora con toda la evidencia?",
+            "when": "Úsalo como mapa mental: inventario → evidencia → identidad → flujo → objeto → hipótesis → hallazgo.",
+            "example": "En el Access Control Lab, primero mapeas app/api, luego asignas Ana/Diego, comparas /api/orders/123 y sólo después promueves una hipótesis.",
+            "caution": "Negro organiza evidencia y diferencias; una señal, relación o anomalía no confirma una vulnerabilidad.",
+        }
+        rules = [
+            (r"^/settings/detectors/", {"anchor":"detectors","title":"Reglas y detectores","question":"¿Qué patrones automáticos está buscando Negro?","when":"Ajusta una regla cuando quieres cambiar qué se considera señal sin volver a enumerar el target.","example":"Si quieres que Negro reconozca campos como memberId además de userId en Access Control, aquí ajustas el detector y luego recalculas evidencia local.","caution":"Un detector produce señales, no findings."}),
+            (r"^/settings", {"anchor":"settings","title":"Configuración","question":"¿Qué controla Negro y qué puedo recalcular sin tocar el target?","when":"Configura políticas, IA, detectores, proveedores y reconstrucciones locales.","example":"Después de mejorar una regla de Access Control, usa recalcular inteligencia para reinterpretar requests ya capturadas sin repetir recon.","caution":"Recalcular localmente no equivale a volver a enviar peticiones al objetivo."}),
+            (r"^/notifications", {"anchor":"signals","title":"Notificaciones","question":"¿Qué observación nueva merece mi atención?","when":"Revisa señales recientes que Negro detectó mientras navegabas o analizabas tráfico.","example":"Diego recibe 200 en un endpoint relacionado con un Order donde otros casos daban 403; Negro lo puede elevar como señal para revisar.","caution":"Una notificación es una pista priorizada, no una vulnerabilidad confirmada."}),
+            (r"^/intelligence", {"anchor":"intelligence","title":"Inteligencia","question":"¿Qué señales determinísticas encontró Negro?","when":"Úsala para revisar patrones detectados en HTTP, JS, recon y configuraciones.","example":"En el lab, una request sensible con X-Original-URL o un ownerId puede alimentar una hipótesis de Access Control para prueba manual.","caution":"Señal ≠ hipótesis ≠ finding."}),
+            (r"^/hypotheses", {"anchor":"hunt","title":"Hunt / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
+            (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas los exchanges, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
+            (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
+            (r"^/host/", {"anchor":"enumeration","title":"Herramientas del host","question":"¿Qué nueva superficie puedo descubrir de forma controlada?","when":"Ejecuta sólo la herramienta que responde a una pregunta: DNS/TLS, robots/well-known, enlaces, JS, SAN, DNS pasivo, CORS o VHost.","example":"En el lab, Recon web descubre /.well-known/openid-configuration; eso amplía la superficie sin convertirlo en hallazgo.","caution":"No ejecutes módulos a ciegas: cada acción debe tener un objetivo y respetar el scope."}),
+            (r"^/resource/", {"anchor":"resources","title":"Recurso / endpoint","question":"¿Qué sé de esta ruta y qué pruebas ya hice?","when":"Úsalo como ficha persistente del endpoint: métodos, exchanges, señales, cobertura y notas.","example":"/api/orders/123 puede tener GET, POST o variantes de método. Negro conserva cada operación y la evidencia asociada.","caution":"Un recurso 'revisado' puede volver a ser candidato cuando aprendes una técnica nueva."}),
+            (r"^/search", {"anchor":"search","title":"Buscar","question":"¿Dónde aparece esta pista?","when":"Cuando ya tienes un valor, nombre de campo, header, host o fragmento de respuesta y quieres encontrar todas sus apariciones.","example":"Busca ownerId, 101, /api/orders o X-Original-URL para saltar desde una pista a todos los exchanges relacionados.","caution":"Search encuentra apariciones; no afirma que dos cosas tengan la misma semántica."}),
+            (r"^/parameters/follow/", {"anchor":"follow-value","title":"Follow Value","question":"¿Dónde reaparece exactamente este valor?","when":"Sigue un ID, email, UUID o token concreto aunque cambie de campo o de request/response.","example":"El valor 101 visto como /me.id puede reaparecer como ownerId=101 en un Order; eso conecta evidencia, pero ownerId no se vuelve identidad automáticamente.","caution":"Mismo valor no siempre significa mismo concepto."}),
+            (r"^/parameters/related/", {"anchor":"find-related","title":"Find Related","question":"¿Qué otros exchanges comparten evidencia útil con éste?","when":"Úsalo cuando una request parece importante y quieres encontrar vecinos por IDs, emails, referencias y otros valores específicos.","example":"Un GET /api/orders/123 puede relacionarse con /invoice y /cancel por orderId=123 y ownerId=101.","caution":"Relación significa coincidencia de evidencia, no causalidad ni vulnerabilidad."}),
+            (r"^/parameters/diff", {"anchor":"smart-compare","title":"Smart Compare","question":"¿Qué cambió realmente entre A y B?","when":"Compara dos exchanges eliminando ruido para ver identidad, parámetros, status y valores de negocio.","example":"Compara la misma operación con Ana y Diego: auth cambia, orderId se mantiene y el status pasa 200→403 o 403→200.","caution":"Una diferencia es materia de investigación; por sí sola no demuestra control de acceso roto."}),
+            (r"^/parameters/", {"anchor":"parameters","title":"Detalle de parámetro","question":"¿Cómo se comporta este campo en el target?","when":"Revisa valores, ubicaciones, hosts y exchanges de un nombre concreto antes de decidir si representa identidad, objeto o ruido.","example":"ownerId puede describir propiedad de un Order; id en /me puede identificar al actor. El mismo sufijo 'id' no significa lo mismo.","caution":"No conviertas IDs genéricos en identidades u objetos sin contexto."}),
+            (r"^/parameters$", {"anchor":"parameters","title":"Parameter Explorer","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
+            (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Authorization Matrix","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
+            (r"^/identities", {"anchor":"identities","title":"Identity Contexts","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
+            (r"^/flows/compare", {"anchor":"flow-compare","title":"Flow Compare","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
+            (r"^/flows", {"anchor":"flows","title":"Flows","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
+            (r"^/objects", {"anchor":"objects","title":"Business Objects","question":"¿Cuál es la misma 'cosa' de negocio a través de muchos requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
+            (r"^/graph", {"anchor":"map","title":"Mapa","question":"¿Cómo se relaciona visualmente la superficie que ya conozco?","when":"Úsalo para navegar hosts, recursos, operaciones y evidencia sin convertir el grafo en un inventario infinito.","example":"Puedes partir de api.accesslab.local y saltar a los recursos con tráfico Burp y señales asociadas.","caution":"El mapa es una vista de navegación, no una prueba de dependencia o vulnerabilidad."}),
+            (r"^/$", default),
+        ]
+        for pattern, meta in rules:
+            if re.search(pattern, suffix):
+                return meta
+        return default
+
     def render(request: Request, name: str, target_key: str, domain: str, workspace: Path, **ctx):
         base_context = {
             "domain": domain,
@@ -1813,6 +1852,7 @@ def create_app(default_domain: str, default_workspace: Path):
             "priorities": core.PRIORITIES,
             "ui_label": _ui_label,
             "csrf_token": csrf_token,
+            "guide_ctx": _guide_context_for_path(request.url.path),
         }
         return templates.TemplateResponse(request=request, name=name, context={**base_context, **ctx})
 
@@ -2787,12 +2827,21 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "identity_matrix.html", target_key, domain, workspace, matrix=matrix, identities=identity_rows, a=a or "", b=b or "")
 
     @app.get("/t/{target_key}/objects", response_class=HTMLResponse)
-    def objects_page(request: Request, target_key: str, q: str = "", type_id: int | None = None, tracked: int | None = None):
+    def objects_page(request: Request, target_key: str, q: str = "", type_id: str = "", tracked: str = ""):
         import negro_objects as object_tools
         domain, workspace, paths = _target_context(target_key)
+        # Browser forms send the empty <option value=""> as an empty string.
+        # Keep filters forgiving instead of exposing FastAPI's integer parser error.
+        raw_type = str(type_id or "").strip()
+        parsed_type_id = int(raw_type) if raw_type.isdigit() else None
+        raw_tracked = str(tracked or "").strip()
+        parsed_tracked = int(raw_tracked) if raw_tracked.isdigit() else None
         with _db(paths) as conn:
-            data = object_tools.overview(conn, q=q, type_id=type_id)
-        return render(request, "objects.html", target_key, domain, workspace, objects_data=data, q=q, type_id=type_id or "", tracked=tracked)
+            data = object_tools.overview(conn, q=q, type_id=parsed_type_id)
+        return render(
+            request, "objects.html", target_key, domain, workspace,
+            objects_data=data, q=q, type_id=raw_type if parsed_type_id else "", tracked=parsed_tracked,
+        )
 
     @app.get("/t/{target_key}/objects/{object_id}", response_class=HTMLResponse)
     def object_detail_page(request: Request, target_key: str, object_id: int):

@@ -1,10 +1,27 @@
-# Negro Recon — Metodología v0.27.0
+# Negro Recon — Metodología v0.28.0
 
 ## Modelo mental
 
 `Rule → Signal → Hipótesis IA → Investigación humana → Finding/cierre`
 
 Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué es vulnerable.
+
+## Cómo no perderse en Negro
+
+Desde v0.28 cada pantalla principal incluye una ayuda contextual. La ruta recomendada es pensar primero en la pregunta, no en el nombre del módulo:
+
+```text
+¿Qué existe?              → Inventario / Host tools
+¿Dónde aparece esta pista?→ Search / Follow Value / Find Related
+¿Quién hizo esto?         → Identity / Authorization Matrix
+¿Qué cambió entre A y B?  → Smart Compare
+¿Qué secuencia ocurrió?   → Flows / Business State
+¿Cuál es la misma cosa?   → Business Objects
+¿Qué merece probarse?     → Signals / Hunt
+¿Qué confirmé?            → Findings
+```
+
+El Access Control Lab se usa como ejemplo común en la guía para separar `Ana` (Identity), `Order 123` (Business Object) y `ownerId=101` (propiedad/ownership).
 
 ## Buscar
 

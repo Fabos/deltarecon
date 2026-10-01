@@ -462,3 +462,15 @@
   };
   bindRepeaterForms();
 })();
+
+// v0.28 guided Business Object teaching: suggestions never overwrite silently.
+document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const card = button.closest('[data-object-candidate]');
+    const input = card?.querySelector('[data-object-type-input]');
+    if (!input) return;
+    input.value = button.dataset.fillObjectType || '';
+    input.focus();
+    input.select();
+  });
+});

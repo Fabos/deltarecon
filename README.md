@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.27.0
+# Negro Recon 🐕 — v0.28.0
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
@@ -11,6 +11,14 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.
 - **Findings / estados humanos**: siguen bajo control del hacker.
+
+## v0.28.0 — Guided UX + Learning Center
+
+Esta iteración no añade otra capa de detección. Reduce complejidad cognitiva. Cada pantalla principal incluye una ayuda contextual con cuatro respuestas: **qué pregunta responde**, **cuándo usarla**, **ejemplo del Access Control Lab** y **qué no debe inferirse**.
+
+La sección **Guía** pasa a ser un Centro de Aprendizaje por intención: inventario/enumeración, búsqueda y correlación, identidades/autorización, flows/estados, Business Objects/anomalías e Intelligence/Hunt/Findings. Incluye un walkthrough con Ana/Diego y el modelo `Identity → Business Object → propiedad` para evitar mezclar actores con objetos.
+
+Business Objects también corrige el filtro vacío `type_id`, elimina el prellenado confuso del campo de tipo y clasifica candidatos como `Buen candidato`, `Revisar contexto` o `Genérico`. Una sugerencia nunca se activa sola.
 
 ## v0.27.0 — Business Objects + cross-host correlation + Pattern Anomalies
 

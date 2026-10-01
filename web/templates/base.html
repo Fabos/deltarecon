@@ -37,6 +37,21 @@
     </a>
   </header>
   <main class="page app-main">
+    {% if guide_ctx and '/guide' not in request.url.path %}
+    <details class="page-help" data-page-help>
+      <summary>
+        <span class="page-help-icon" aria-hidden="true">?</span>
+        <span class="page-help-summary"><b>{{ guide_ctx.title }}</b><small>{{ guide_ctx.question }}</small></span>
+        <span class="page-help-open">Explicar esta pantalla</span>
+      </summary>
+      <div class="page-help-body">
+        <div><span>CUÁNDO USARLA</span><p>{{ guide_ctx.when }}</p></div>
+        <div><span>EJEMPLO · ACCESS CONTROL LAB</span><p>{{ guide_ctx.example }}</p></div>
+        <div><span>NO CONFUNDIR</span><p>{{ guide_ctx.caution }}</p></div>
+        <a class="button ghost small-button" href="{{ target_base }}/guide#{{ guide_ctx.anchor }}">Abrir guía completa →</a>
+      </div>
+    </details>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
   <footer class="footer"><span>{{ project.name if project else domain }}</span><span>Espacio local · {{ workspace }}</span></footer>
