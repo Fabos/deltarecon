@@ -145,8 +145,9 @@
             </div>
             {% endif %}
             <div class="exchange-actions">
-              <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Find Related</a>
-              <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ ex.id }}">Smart Diff</a>
+              <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Find Related Exchange</a>
+              <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ ex.id }}">Smart Compare</a>
+              <a class="button ghost small-button" href="{{ target_base }}/flows/add?exchange_id={{ ex.id }}">Agregar a Flow</a>
               {% if ex.request_size and ex.request_size > 0 %}<form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><button class="button ghost small-button" type="submit">Reprobar ahora en Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
               <form class="exchange-state-form" action="{{ target_base }}/exchange/{{ ex.id }}/human-state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="state" aria-label="Estado humano exchange {{ ex.id }}">{% for st in human_states %}<option value="{{ st }}" {% if ex.human_state.state==st %}selected{% endif %}>{{ ui_label(st) }}</option>{% endfor %}</select><input name="category" value="{{ ex.human_state.category or '' }}" placeholder="Categoría opcional"><button class="button ghost small-button" type="submit">Guardar estado</button></form>
               <details><summary>Usar como evidencia de hallazgo</summary><div class="exchange-finding-actions">

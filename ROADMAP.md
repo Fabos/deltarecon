@@ -153,9 +153,10 @@ No medir Negro por cantidad de módulos. Medirlo por:
 1. Global Search + FTS5 + Saved Searches + guía “Aprende a buscar como hacker”.
 2. Parameter Explorer + Follow Value + Find Related + Smart Diff.
 3. Identity Contexts + auth material rotatorio + actor resolvers + Authorization Matrix. ✅ v0.23.2
-4. Flow Capture + Flow Compare + business-state observations.
-5. Pattern anomalies + cross-host correlation + business objects.
-6. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
+4. Correlation clarity: Find Related con paths completos + Smart Compare con coincidencias/alias por valor. ✅ v0.25.0
+5. Flow Capture + Flow Compare + business-state observations. ✅ v0.25.0
+6. Pattern anomalies + cross-host correlation + business objects.
+7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
 
@@ -199,7 +200,16 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - `Unknown` se conserva si no hay coincidencia única;
 - Authorization Matrix basada **solo en tráfico observado**, con `No observado` explícito y sin inferir acceso.
 
+## Implementado en v0.25.0 — correlación + flows
+
+- Smart Compare separa coincidencias de diferencias y detecta posibles alias por valor aunque cambie el nombre/path del campo;
+- Find Related conserva path/nombre de ambos lados y penaliza valores genéricos;
+- Guía integrada por módulo;
+- Flow Workbench con captura por exchange o rango;
+- Business-state observations;
+- Flow Compare por método + ruta normalizada, con pasos ausentes/cambiados y Smart Compare por paso.
+
 ## Siguiente fase inmediata
 
-- Flow Capture + Flow Compare + business-state observations;
-- después, Pattern Anomalies + cross-host correlation + business objects.
+- Pattern Anomalies + cross-host correlation + business objects;
+- después, Custom Signals sobre la Knowledge Base existente.

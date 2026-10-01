@@ -3,11 +3,11 @@
 {% block content %}
 <section class="hero identity-hero">
   <div>
-    <p class="eyebrow">IDENTITY CONTEXTS · v0.23.2</p>
+    <p class="eyebrow">IDENTITY CONTEXTS</p>
     <h1>Identidades observadas</h1>
     <p class="muted">Separa quién es la identidad de la cookie, token o sesión que use en cada momento. Negro solo asigna identidad cuando existe evidencia aprendida; lo demás queda como desconocido.</p>
   </div>
-  <div class="page-actions"><a class="button" href="{{ target_base }}/identities/matrix">Authorization Matrix</a>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#identities">¿Cómo funciona?</a><a class="button" href="{{ target_base }}/identities/matrix">Authorization Matrix</a>
     <form action="{{ target_base }}/identities/resolve-history" method="post" data-job-form data-job-label="Resolviendo identidades históricas">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button secondary" type="submit">↻ Resolver historial</button>

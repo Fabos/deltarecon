@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.23.2
+Negro Recon v0.25.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.23.2"
+VERSION = "0.25.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -642,6 +642,11 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             identity_tools.init_schema(conn)
         except Exception as exc:
             conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('identity_init_error',?)", (str(exc)[:500],))
+        try:
+            import negro_flows as flow_tools
+            flow_tools.init_schema(conn)
+        except Exception as exc:
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('flow_init_error',?)", (str(exc)[:500],))
 
         # Conservative v0.20 backfill: existing exchange-bound notifications were
         # automatic observations too. Preserve their read/unread status as the best

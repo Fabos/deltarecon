@@ -295,12 +295,132 @@ def follow_observation(conn, observation_id: int, *, limit: int = 500) -> dict[s
     return {"base": dict(base), "occurrences": occurrences}
 
 
-def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, Any] | None:
-    """Find nearby HTTP evidence without pretending that proximity is severity.
 
-    v0.23.2 deliberately ignores same-host-only noise and hides OPTIONS unless the
-    origin itself is OPTIONS. Exact shared values and the same resource are the
-    primary evidence. Common values are discounted by project frequency.
+GENERIC_VALUE_WORDS = {
+    "true", "false", "ok", "success", "successful", "null", "none", "yes", "no",
+    "active", "inactive", "enabled", "disabled", "customer", "user", "admin", "guest",
+    "pending", "completed", "complete", "created", "updated", "deleted", "unknown",
+}
+GENERIC_FIELD_NAMES = {
+    "id", "ok", "status", "state", "type", "role", "roleid", "role_id", "enabled", "active",
+}
+IDENTIFIER_HINTS = (
+    "id", "uuid", "email", "phone", "reference", "ref", "account", "user", "member", "seller",
+    "buyer", "customer", "order", "invoice", "payment", "shipment", "tenant", "organization", "org",
+)
+
+
+def _value_is_noise(value: Any, *, name: str = "") -> bool:
+    text = str(value if value is not None else "").strip()
+    low = text.lower()
+    n = _normalize_name(name)
+    if not text:
+        return True
+    if low in GENERIC_VALUE_WORDS:
+        return True
+    if low in {"0", "1"} and n in GENERIC_FIELD_NAMES:
+        return True
+    if len(text) == 1 and text.isdigit():
+        return True
+    return False
+
+
+def _identifierish(name: str, location: str = "") -> bool:
+    hay = (_normalize_name(name) + " " + str(location or "").lower())
+    return any(h in hay for h in IDENTIFIER_HINTS)
+
+
+def _observation_display(obs: dict[str, Any]) -> str:
+    location = str(obs.get("location") or "")
+    name = str(obs.get("normalized_name") or obs.get("name") or "value")
+    return f"{location} · {name}" if location else name
+
+
+def _exchange_value_correlations(conn, exchange_a: int, exchange_b: int, *, limit: int = 80) -> list[dict[str, Any]]:
+    """Exact-value matches between two exchanges, including differently named fields.
+
+    This deliberately does not infer semantic equivalence. When the same distinctive
+    value appears under different names/JSON paths, Negro calls it an alias candidate
+    so the hunter can decide whether userId/memberId/etc. represent the same concept.
+    """
+    rows_a = [dict(r) for r in conn.execute(
+        """SELECT id,name,normalized_name,location,value_hash,COALESCE(value_raw,value_preview) value_text
+           FROM parameter_observations WHERE exchange_id=?""", (int(exchange_a),)
+    ).fetchall()]
+    rows_b = [dict(r) for r in conn.execute(
+        """SELECT id,name,normalized_name,location,value_hash,COALESCE(value_raw,value_preview) value_text
+           FROM parameter_observations WHERE exchange_id=?""", (int(exchange_b),)
+    ).fetchall()]
+    by_a: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_b: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows_a:
+        by_a[str(row["value_hash"])].append(row)
+    for row in rows_b:
+        by_b[str(row["value_hash"])].append(row)
+    shared = set(by_a) & set(by_b)
+    if not shared:
+        return []
+
+    placeholders = ",".join("?" for _ in shared)
+    freqs = {
+        str(r["value_hash"]): int(r["n"] or 0)
+        for r in conn.execute(
+            f"SELECT value_hash,COUNT(DISTINCT exchange_id) n FROM parameter_observations WHERE value_hash IN ({placeholders}) GROUP BY value_hash",
+            list(shared),
+        ).fetchall()
+    }
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for hv in shared:
+        freq = freqs.get(hv, 999999)
+        for oa in by_a[hv]:
+            for ob in by_b[hv]:
+                value = str(oa.get("value_text") or ob.get("value_text") or "")
+                if _value_is_noise(value, name=str(oa.get("normalized_name") or "")) and _value_is_noise(value, name=str(ob.get("normalized_name") or "")):
+                    continue
+                na = str(oa.get("normalized_name") or "")
+                nb = str(ob.get("normalized_name") or "")
+                key = (hv, na, str(oa.get("location") or ""), nb, str(ob.get("location") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                alias = na != nb or str(oa.get("location") or "") != str(ob.get("location") or "")
+                idish = _identifierish(na, str(oa.get("location") or "")) or _identifierish(nb, str(ob.get("location") or ""))
+                if freq <= 4:
+                    strength = "strong"
+                elif freq <= 12:
+                    strength = "medium"
+                else:
+                    strength = "weak"
+                # A distinctive identifier earns one level; a generic, highly reused value loses one.
+                if idish and freq <= 20:
+                    strength = "strong" if strength == "medium" else strength
+                if (na in GENERIC_FIELD_NAMES and nb in GENERIC_FIELD_NAMES) and freq > 8:
+                    strength = "weak"
+                out.append({
+                    "value": _safe_value(value, name=na or nb, location="correlation", limit=180),
+                    "value_hash": hv,
+                    "frequency": freq,
+                    "a_name": na or str(oa.get("name") or "value"),
+                    "a_location": str(oa.get("location") or ""),
+                    "b_name": nb or str(ob.get("name") or "value"),
+                    "b_location": str(ob.get("location") or ""),
+                    "alias_candidate": alias,
+                    "identifierish": idish,
+                    "strength": strength,
+                    "label": "Mismo valor · nombres/rutas distintos" if alias else "Mismo valor · mismo campo",
+                })
+    order = {"strong": 0, "medium": 1, "weak": 2}
+    out.sort(key=lambda x: (order[x["strength"]], 0 if x["alias_candidate"] else 1, x["frequency"], str(x["value"])))
+    return out[: max(1, min(int(limit), 300))]
+
+def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, Any] | None:
+    """Find exchanges related by exact observed values or the same resource.
+
+    The result is evidence of correlation only. It never claims that two endpoints
+    represent the same object, identity, or vulnerability. v0.25 discounts generic
+    values (ok=true, role=customer, status=active), ignores same-host-only matches,
+    and keeps full field locations so the hunter can understand why a match exists.
     """
     base = conn.execute(
         """SELECT e.id,e.response_hash,o.resource_id,o.id operation_id,r.host_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
@@ -311,37 +431,34 @@ def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, A
     if not base:
         return None
     base_params = [dict(r) for r in conn.execute(
-        """SELECT normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
-           FROM parameter_observations WHERE exchange_id=?""",
-        (int(exchange_id),),
+        """SELECT id,name,normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
+           FROM parameter_observations WHERE exchange_id=?""", (int(exchange_id),)
     ).fetchall()]
-    base_hashes: dict[str, dict[str, Any]] = {}
+    base_by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in base_params:
-        base_hashes.setdefault(str(r["value_hash"]), r)
+        base_by_hash[str(r["value_hash"])].append(r)
     base_names = {str(r["normalized_name"]) for r in base_params}
 
-    # Frequency lets us discount generic values such as role=customer or status=active.
     value_freq: dict[str, int] = {}
-    if base_hashes:
-        placeholders = ",".join("?" for _ in base_hashes)
+    if base_by_hash:
+        placeholders = ",".join("?" for _ in base_by_hash)
         for row in conn.execute(
             f"SELECT value_hash,COUNT(DISTINCT exchange_id) n FROM parameter_observations WHERE value_hash IN ({placeholders}) GROUP BY value_hash",
-            list(base_hashes.keys()),
+            list(base_by_hash.keys()),
         ).fetchall():
             value_freq[str(row["value_hash"])] = int(row["n"] or 0)
 
     candidate_ids: set[int] = set()
-    if base_hashes:
-        placeholders = ",".join("?" for _ in base_hashes)
+    if base_by_hash:
+        placeholders = ",".join("?" for _ in base_by_hash)
         for row in conn.execute(
-            f"SELECT DISTINCT exchange_id FROM parameter_observations WHERE value_hash IN ({placeholders}) AND exchange_id<>? LIMIT 700",
-            [*base_hashes.keys(), int(exchange_id)],
+            f"SELECT DISTINCT exchange_id FROM parameter_observations WHERE value_hash IN ({placeholders}) AND exchange_id<>? LIMIT 900",
+            [*base_by_hash.keys(), int(exchange_id)],
         ).fetchall():
             candidate_ids.add(int(row["exchange_id"]))
-    # Same resource is useful even when response values changed.
     for row in conn.execute(
         """SELECT e.id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
-           WHERE e.id<>? AND o.resource_id=? ORDER BY e.id DESC LIMIT 250""",
+           WHERE e.id<>? AND o.resource_id=? ORDER BY e.id DESC LIMIT 300""",
         (int(exchange_id), int(base["resource_id"])),
     ).fetchall():
         candidate_ids.add(int(row["id"]))
@@ -359,101 +476,110 @@ def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, A
         if str(base["method"]).upper() != "OPTIONS" and str(row["method"]).upper() == "OPTIONS":
             continue
         params = [dict(r) for r in conn.execute(
-            """SELECT normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
-               FROM parameter_observations WHERE exchange_id=?""",
-            (candidate_id,),
+            """SELECT id,name,normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
+               FROM parameter_observations WHERE exchange_id=?""", (candidate_id,)
         ).fetchall()]
-        hashes: dict[str, dict[str, Any]] = {}
+        cand_by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for r in params:
-            hashes.setdefault(str(r["value_hash"]), r)
+            cand_by_hash[str(r["value_hash"])].append(r)
         names = {str(r["normalized_name"]) for r in params}
-        shared_hashes = sorted(set(base_hashes) & set(hashes))
+        shared_hashes = sorted(set(base_by_hash) & set(cand_by_hash))
         shared_names = sorted(base_names & names)
         same_resource = int(row["resource_id"]) == int(base["resource_id"])
         same_operation = int(row["operation_id"]) == int(base["operation_id"])
-
-        # Same host or a generic parameter name alone is not useful enough to surface.
         if not shared_hashes and not same_resource:
             continue
 
-        value_labels: list[str] = []
-        weighted_value_score = 0
+        matches: list[dict[str, Any]] = []
+        weighted = 0
         distinctive = 0
+        meaningful_hashes = 0
         for hv in shared_hashes:
-            item = base_hashes[hv]
             freq = int(value_freq.get(hv, 999999))
+            # Keep the best explanatory pair for this exact value.
+            best = None
+            best_score = -1
+            for aobs in base_by_hash[hv]:
+                for bobs in cand_by_hash[hv]:
+                    value = str(aobs.get("value_text") or bobs.get("value_text") or "")
+                    noise = _value_is_noise(value, name=str(aobs.get("normalized_name") or "")) and _value_is_noise(value, name=str(bobs.get("normalized_name") or ""))
+                    idish = _identifierish(str(aobs.get("normalized_name") or ""), str(aobs.get("location") or "")) or _identifierish(str(bobs.get("normalized_name") or ""), str(bobs.get("location") or ""))
+                    score = (4 if idish else 0) + (3 if str(aobs.get("normalized_name")) != str(bobs.get("normalized_name")) else 0) + (2 if not noise else -5)
+                    if score > best_score:
+                        best_score = score
+                        best = (aobs, bobs, value, noise, idish)
+            if not best:
+                continue
+            aobs, bobs, value, noise, idish = best
+            if noise:
+                # Generic booleans/role/status values may still explain a same-resource
+                # observation, but they should never create a useful relation alone.
+                continue
+            meaningful_hashes += 1
             if freq <= 4:
-                weight = 8
-                distinctive += 1
+                weight = 9; distinctive += 1
             elif freq <= 12:
-                weight = 6
-                distinctive += 1
+                weight = 6; distinctive += 1
             elif freq <= 50:
                 weight = 3
             else:
                 weight = 1
-            weighted_value_score += weight
-            if len(value_labels) < 6:
-                value_labels.append(f"{item['normalized_name']}={item['value_text']}")
+            if idish:
+                weight += 2
+            weighted += weight
+            if len(matches) < 8:
+                matches.append({
+                    "value": _safe_value(value, name=str(aobs.get("normalized_name") or ""), location="related", limit=160),
+                    "frequency": freq,
+                    "a_name": str(aobs.get("normalized_name") or aobs.get("name") or "value"),
+                    "a_location": str(aobs.get("location") or ""),
+                    "b_name": str(bobs.get("normalized_name") or bobs.get("name") or "value"),
+                    "b_location": str(bobs.get("location") or ""),
+                    "alias_candidate": str(aobs.get("normalized_name") or "") != str(bobs.get("normalized_name") or "") or str(aobs.get("location") or "") != str(bobs.get("location") or ""),
+                    "identifierish": idish,
+                })
 
-        score = min(42, weighted_value_score)
-        if same_resource:
-            score += 7
-        if same_operation:
-            score += 3
-
-        if shared_hashes and same_resource:
-            relation_kind = "same_resource_values"
-            primary = f"MISMO RECURSO · {len(shared_hashes)} valor{'es' if len(shared_hashes) != 1 else ''} exacto{'s' if len(shared_hashes) != 1 else ''}"
-        elif shared_hashes:
-            relation_kind = "same_object_values"
-            primary = f"VALORES DEL MISMO OBJETO · {len(shared_hashes)} coincidencia{'s' if len(shared_hashes) != 1 else ''} exacta{'s' if len(shared_hashes) != 1 else ''}"
+        if meaningful_hashes == 0 and not same_resource:
+            continue
+        score = min(50, weighted) + (8 if same_resource else 0) + (3 if same_operation else 0)
+        if meaningful_hashes:
+            primary = f"VALORES EXACTOS COMPARTIDOS · {meaningful_hashes}"
+        elif same_operation:
+            primary = "MISMA OPERACIÓN · otra observación"
         else:
-            relation_kind = "same_resource"
             primary = "MISMO RECURSO · otra observación"
 
-        if len(shared_hashes) >= 2 or (same_resource and len(shared_hashes) >= 1) or distinctive >= 2:
-            strength = "strong"
-            strength_label = "Relación fuerte"
-        elif len(shared_hashes) >= 1:
-            strength = "medium"
-            strength_label = "Relación media"
+        if meaningful_hashes >= 2 or distinctive >= 2 or (same_resource and meaningful_hashes >= 1):
+            strength = "strong"; strength_label = "Relación fuerte"
+        elif meaningful_hashes >= 1 or same_operation:
+            strength = "medium"; strength_label = "Relación media"
         else:
-            strength = "weak"
-            strength_label = "Relación débil"
+            strength = "weak"; strength_label = "Relación débil"
 
         reasons: list[str] = []
-        if value_labels:
-            reasons.append("Valores exactos: " + ", ".join(value_labels))
         if same_operation:
             reasons.append("Misma operación HTTP")
         elif same_resource:
             reasons.append("Mismo recurso")
-        # Names explain shape, but never create a relation by themselves.
-        if shared_names:
-            reasons.append("Campos compartidos: " + ", ".join(shared_names[:8]))
+        if shared_names and not matches:
+            reasons.append("Estructura similar: " + ", ".join(shared_names[:8]))
 
         item = dict(row)
         item.update({
             "score": score,
-            "relation_kind": relation_kind,
             "primary": primary,
             "strength": strength,
             "strength_label": strength_label,
             "reasons": reasons,
-            "shared_values": len(shared_hashes),
+            "matches": matches,
+            "shared_values": meaningful_hashes,
             "shared_names": len(shared_names),
         })
         scored.append(item)
 
     scored.sort(key=lambda x: ({"strong": 0, "medium": 1, "weak": 2}[x["strength"]], -int(x["score"]), abs(int(x["id"]) - int(exchange_id))))
-    max_items = max(1, min(int(limit), 200))
-    selected = scored[:max_items]
-    groups = {
-        "strong": [x for x in selected if x["strength"] == "strong"],
-        "medium": [x for x in selected if x["strength"] == "medium"],
-        "weak": [x for x in selected if x["strength"] == "weak"],
-    }
+    selected = scored[: max(1, min(int(limit), 200))]
+    groups = {k: [x for x in selected if x["strength"] == k] for k in ("strong", "medium", "weak")}
     return {"base": dict(base), "related": selected, "groups": groups, "counts": {k: len(v) for k, v in groups.items()}}
 
 def _flatten_json(value: Any, prefix: str = "$") -> dict[str, Any]:
@@ -548,8 +674,14 @@ def smart_diff(conn, exchange_a: int, exchange_b: int) -> dict[str, Any] | None:
     changes += _diff_mapping("request headers", a["request_headers"], b["request_headers"], headers=True)
     changes += _diff_mapping("response headers", a["response_headers"], b["response_headers"], headers=True)
     changes.sort(key=lambda x: (0 if x["business"] else 1, x["surface"], x["key"].lower()))
+    correlations = _exchange_value_correlations(conn, int(exchange_a), int(exchange_b))
     return {
         "a": a, "b": b, "changes": changes,
+        "correlations": correlations,
+        "strong_correlations": [x for x in correlations if x["strength"] == "strong"],
+        "medium_correlations": [x for x in correlations if x["strength"] == "medium"],
+        "weak_correlations": [x for x in correlations if x["strength"] == "weak"],
+        "alias_candidates": sum(1 for x in correlations if x["alias_candidate"]),
         "business_changes": sum(1 for x in changes if x["business"]),
         "other_changes": sum(1 for x in changes if not x["business"]),
     }

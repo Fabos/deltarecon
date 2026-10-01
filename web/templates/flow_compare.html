@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Comparar Flows · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero"><div><p class="eyebrow">FLOW COMPARE</p><h1>Compara dos recorridos de negocio</h1><p class="muted">Alinea pasos por método + ruta normalizada. Te muestra pasos ausentes, coincidencias de valores y diferencias de negocio.</p></div><div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/flows">← Flows</a></div></section>
+<section class="panel"><form class="flow-compare-form" method="get"><label>Flow A<select name="a" required><option value="">—</option>{% for f in flows %}<option value="{{ f.id }}" {% if a|string == f.id|string %}selected{% endif %}>{{ f.name }}</option>{% endfor %}</select></label><label>Flow B<select name="b" required><option value="">—</option>{% for f in flows %}<option value="{{ f.id }}" {% if b|string == f.id|string %}selected{% endif %}>{{ f.name }}</option>{% endfor %}</select></label><button class="button" type="submit">Comparar flows</button></form>{% if flow_error %}<div class="callout warning">{{ flow_error }}</div>{% endif %}</section>
+
+{% if comparison %}
+<section class="diff-summary-grid"><a class="panel" href="{{ target_base }}/flows/{{ comparison.a.flow.id }}"><p class="eyebrow">A</p><h3>{{ comparison.a.flow.name }}</h3><small>{{ comparison.a.steps|length }} pasos · {{ comparison.a.transitions|length }} transiciones</small></a><a class="panel" href="{{ target_base }}/flows/{{ comparison.b.flow.id }}"><p class="eyebrow">B</p><h3>{{ comparison.b.flow.name }}</h3><small>{{ comparison.b.steps|length }} pasos · {{ comparison.b.transitions|length }} transiciones</small></a></section>
+<section class="panel"><div class="panel-head"><div><p class="eyebrow">ALINEACIÓN</p><h2>{{ comparison.aligned|length }} posiciones</h2></div><small>La alineación ayuda a comparar; no afirma que dos pasos tengan la misma semántica.</small></div><div class="flow-compare-list">
+{% for row in comparison.aligned %}
+  <article class="flow-compare-row kind-{{ row.kind }}">
+    <div class="flow-side">{% if row.a %}<b>A · {{ row.a.method }} <code>{{ row.a.path }}</code></b><small>#{{ row.a.exchange_id }} · HTTP {{ row.a.status_code or '—' }}</small>{% else %}<span class="empty-side">— no observado en A —</span>{% endif %}</div>
+    <div class="flow-align-kind"><span>{{ row.kind }}</span></div>
+    <div class="flow-side">{% if row.b %}<b>B · {{ row.b.method }} <code>{{ row.b.path }}</code></b><small>#{{ row.b.exchange_id }} · HTTP {{ row.b.status_code or '—' }}</small>{% else %}<span class="empty-side">— no observado en B —</span>{% endif %}</div>
+    {% if row.a and row.b %}<div class="flow-row-insight">
+      {% if row.correlations %}<div><strong>Coincidencias</strong>{% for c in row.correlations %}<span class="business-chip">{{ c.a_name }} ↔ {{ c.b_name }} = <code>{{ c.value }}</code></span>{% endfor %}</div>{% endif %}
+      {% if row.business_changes %}<div><strong>Cambios de negocio</strong>{% for c in row.business_changes %}<span class="business-chip state-chip"><code>{{ c.key }}</code>: {{ c.a or '∅' }} → {{ c.b or '∅' }}</span>{% endfor %}</div>{% endif %}
+      <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ row.a.exchange_id }}&b={{ row.b.exchange_id }}">Abrir Smart Compare completo</a>
+    </div>{% endif %}
+  </article>
+{% endfor %}
+</div></section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ flow_data.flow.name }} · Flow · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">FLOW #{{ flow_data.flow.id }}</p><h1>{{ flow_data.flow.name }}</h1><p class="muted">{{ flow_data.flow.description or 'Secuencia observada de exchanges.' }}</p><div class="hero-meta">{% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}<span class="badge">{{ flow_data.steps|length }} pasos</span><span class="badge">{{ flow_data.transitions|length }} transiciones observadas</span></div></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/flows">← Flows</a><a class="button secondary" href="{{ target_base }}/flows/compare?a={{ flow_data.flow.id }}">Comparar</a></div>
+</section>
+
+<section class="flow-tools panel">
+  <div><p class="eyebrow">AGREGAR EVIDENCIA</p><h2>Completar el recorrido</h2></div>
+  <div class="flow-add-forms">
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-exchange" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="exchange_id" type="number" min="1" required placeholder="Exchange #"><button class="button ghost" type="submit">Agregar</button></form>
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-range" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="start_exchange" type="number" min="1" required placeholder="Desde #"><input name="end_exchange" type="number" min="1" required placeholder="Hasta #"><input type="hidden" name="exclude_options" value="1"><button class="button ghost" type="submit">Agregar rango sin OPTIONS</button></form>
+  </div>
+</section>
+
+{% if flow_data.transitions %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">BUSINESS STATES</p><h2>Transiciones observadas</h2></div><small>Sólo cambios vistos en el tráfico; no implican que otras transiciones sean válidas o inválidas.</small></div>
+  <div class="transition-list">{% for t in flow_data.transitions %}<div class="transition-row"><code>{{ t.name }}</code><span>paso {{ t.from_step }} · <b>{{ t.from }}</b></span><span>→</span><span>paso {{ t.to_step }} · <b>{{ t.to }}</b></span></div>{% endfor %}</div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>{{ flow_data.steps|length }} pasos</h2></div></div>
+  <div class="flow-timeline">
+  {% for s in flow_data.steps %}
+    <article class="flow-step" id="flow-step-{{ s.id }}">
+      <div class="flow-step-index">{{ s.position }}</div>
+      <div class="flow-step-main">
+        <div class="flow-step-head"><div><h3>{{ s.method }} <code>{{ s.path }}</code></h3><small>#{{ s.exchange_id }} · {{ s.hostname }} · HTTP {{ s.status_code or '—' }} · {{ s.first_seen_at }}</small></div>{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}</div>
+        {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
+        <div class="row-actions flow-step-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ s.resource_id }}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}">HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Find Related</a>{% if not loop.first %}<a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparar con paso anterior</a>{% endif %}</div>
+        <details class="flow-step-edit"><summary>Etiqueta / estado manual / nota</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Etiqueta</span><input name="label" value="{{ s.label or '' }}" placeholder="Confirmar pago"></label><label><span>Estado manual</span><input name="state_label" value="{{ s.state_label or '' }}" placeholder="PAID / CANCELLED / ..."></label><label><span>Nota</span><textarea name="notes">{{ s.notes or '' }}</textarea></label><button class="button ghost" type="submit">Guardar paso</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger ghost" type="submit">Quitar del flow</button></form></details>
+      </div>
+    </article>
+  {% else %}<p class="empty">Este flow todavía no tiene exchanges.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}

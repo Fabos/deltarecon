@@ -2476,6 +2476,127 @@ def create_app(default_domain: str, default_workspace: Path):
             search_index.delete_saved_search(conn,search_id)
         return RedirectResponse(url=f"/t/{target_key}/search",status_code=303)
 
+
+    @app.get("/t/{target_key}/guide", response_class=HTMLResponse)
+    def guide_page(request: Request, target_key: str):
+        domain, workspace, _paths = _target_context(target_key)
+        return render(request, "guide.html", target_key, domain, workspace)
+
+    @app.get("/t/{target_key}/flows", response_class=HTMLResponse)
+    def flows_page(request: Request, target_key: str):
+        import negro_flows as flow_tools
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_rows = flow_tools.list_flows(conn)
+            identities = identity_tools.list_identities(conn)
+        return render(request, "flows.html", target_key, domain, workspace, flows=flow_rows, identities=identities)
+
+    @app.post("/t/{target_key}/flows/create")
+    def flow_create(request: Request, target_key: str, name: str = Form(...), description: str = Form(""), identity_id: str = Form(""), start_exchange: str = Form(""), end_exchange: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        iid = int(identity_id) if str(identity_id).strip().isdigit() else None
+        with _db(paths) as conn:
+            flow_id = flow_tools.create_flow(conn, name, description=description, identity_id=iid)
+            if str(start_exchange).strip().isdigit() and str(end_exchange).strip().isdigit():
+                flow_tools.add_range(conn, flow_id, int(start_exchange), int(end_exchange), exclude_options=True)
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.get("/t/{target_key}/flows/add", response_class=HTMLResponse)
+    def flow_add_page(request: Request, target_key: str, exchange_id: int):
+        import negro_flows as flow_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flows = flow_tools.list_flows(conn)
+            ex = conn.execute(
+                """SELECT e.id,e.status_code,o.method,o.resource_id,r.path,h.hostname FROM http_exchanges e
+                   JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+                   JOIN hosts h ON h.id=r.host_id WHERE e.id=?""", (int(exchange_id),)
+            ).fetchone()
+            if not ex:
+                raise HTTPException(status_code=404, detail="Exchange no encontrado")
+        return render(request, "flow_add.html", target_key, domain, workspace, flows=flows, exchange=dict(ex))
+
+    @app.post("/t/{target_key}/flows/add")
+    def flow_add_submit(request: Request, target_key: str, exchange_id: int = Form(...), flow_id: str = Form(""), new_flow_name: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            if str(flow_id).strip().isdigit():
+                fid = int(flow_id)
+            elif str(new_flow_name).strip():
+                fid = flow_tools.create_flow(conn, new_flow_name)
+            else:
+                raise HTTPException(status_code=400, detail="Selecciona un flow o crea uno nuevo")
+            flow_tools.add_step(conn, fid, int(exchange_id))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{fid}#step-{exchange_id}", status_code=303)
+
+    @app.get("/t/{target_key}/flows/compare", response_class=HTMLResponse)
+    def flow_compare_page(request: Request, target_key: str, a: int | None = None, b: int | None = None):
+        import negro_flows as flow_tools
+        domain, workspace, paths = _target_context(target_key)
+        comparison = None
+        error = None
+        with _db(paths) as conn:
+            flows = flow_tools.list_flows(conn)
+            if a is not None and b is not None:
+                comparison = flow_tools.compare_flows(conn, int(a), int(b))
+                if comparison is None:
+                    error = "No pude encontrar uno de los flows."
+        return render(request, "flow_compare.html", target_key, domain, workspace, flows=flows, a=a or "", b=b or "", comparison=comparison, flow_error=error)
+
+    @app.get("/t/{target_key}/flows/{flow_id}", response_class=HTMLResponse)
+    def flow_detail_page(request: Request, target_key: str, flow_id: int):
+        import negro_flows as flow_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = flow_tools.get_flow(conn, int(flow_id))
+            if not data:
+                raise HTTPException(status_code=404, detail="Flow no encontrado")
+        return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/add-exchange")
+    def flow_add_exchange(request: Request, target_key: str, flow_id: int, exchange_id: int = Form(...), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.add_step(conn, int(flow_id), int(exchange_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#step-{exchange_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/add-range")
+    def flow_add_range(request: Request, target_key: str, flow_id: int, start_exchange: int = Form(...), end_exchange: int = Form(...), exclude_options: str = Form("1"), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_tools.add_range(conn, int(flow_id), int(start_exchange), int(end_exchange), exclude_options=str(exclude_options) != "0")
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/update")
+    def flow_step_update(request: Request, target_key: str, flow_id: int, step_id: int, label: str = Form(""), state_label: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_tools.update_step(conn, int(flow_id), int(step_id), label=label, state_label=state_label, notes=notes)
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/remove")
+    def flow_step_remove(request: Request, target_key: str, flow_id: int, step_id: int, csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_tools.remove_step(conn, int(flow_id), int(step_id))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
     @app.get("/t/{target_key}/identities", response_class=HTMLResponse)
     def identities_page(request: Request, target_key: str):
         import negro_identity as identity_tools

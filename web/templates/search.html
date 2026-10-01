@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.23.2</p>
+    <p class="eyebrow">SEARCH · v0.25.0</p>
     <h1>Buscar en todo el proyecto</h1>
     <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
   </div>
@@ -81,8 +81,8 @@
             <a class="button ghost small-button" href="{{ p.http_href }}">HTTP</a>
             <a class="button secondary small-button" href="{{ p.follow_href }}">Follow Value</a>
             <a class="button ghost small-button" href="{{ p.parameter_href }}">Explorar parámetro</a>
-            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related</a>
-            <a class="button ghost small-button" href="{{ p.diff_href }}">Smart Diff</a>
+            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related Exchange</a>
+            <a class="button ghost small-button" href="{{ p.diff_href }}">Smart Compare</a>
             {% if p.identity_resolver_allowed %}<a class="button ghost small-button" href="{{ p.identity_resolver_href }}">Usar para identidad</a>{% elif p.identity_resolver_kind == 'object_or_context' %}<span class="badge" title="{{ p.identity_resolver_reason }}">Objeto/contexto · no actor</span>{% endif %}
           </div>
         </article>
@@ -114,8 +114,8 @@
         {% if r.exchange_id %}
         <div class="row-actions search-result-actions">
           <a class="button ghost small-button" href="{{ r.href }}">Abrir HTTP</a>
-          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related</a>
-          <a class="button ghost small-button" href="{{ r.diff_href }}">Smart Diff</a>
+          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related Exchange</a>
+          <a class="button ghost small-button" href="{{ r.diff_href }}">Smart Compare</a>
           <a class="button ghost small-button" href="{{ r.identity_href }}">Asignar identidad</a>
         </div>
         {% endif %}

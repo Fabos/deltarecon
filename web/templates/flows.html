@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Flows · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">FLOW WORKBENCH</p><h1>Historias de negocio</h1><p class="muted">Agrupa exchanges que forman una secuencia real: login, carrito, checkout, pago, orden, cambio de estado, etc.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button secondary" href="{{ target_base }}/flows/compare">Comparar flows</a></div>
+</section>
+
+<section class="flow-layout">
+  <div class="panel">
+    <div class="panel-head"><div><p class="eyebrow">FLOWS GUARDADOS</p><h2>{{ flows|length }}</h2></div></div>
+    <div class="flow-list">
+    {% for f in flows %}
+      <a class="flow-card" href="{{ target_base }}/flows/{{ f.id }}">
+        <div><h3>{{ f.name }}</h3><p>{{ f.description or 'Sin descripción' }}</p><small>{% if f.identity_name %}{{ f.identity_name }}{% if f.context_label %} · {{ f.context_label }}{% endif %}{% else %}Sin identidad fija{% endif %}</small></div>
+        <div class="flow-card-stats"><b>{{ f.step_count }}</b><span>pasos</span>{% if f.first_exchange %}<small>#{{ f.first_exchange }} → #{{ f.last_exchange }}</small>{% endif %}</div>
+      </a>
+    {% else %}<p class="empty">Todavía no tienes flows. Crea uno o agrega un exchange desde una request.</p>{% endfor %}
+    </div>
+  </div>
+
+  <aside class="panel flow-create-panel">
+    <p class="eyebrow">NUEVO FLOW</p><h2>Capturar una secuencia</h2>
+    <form class="stack-form" action="{{ target_base }}/flows/create" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label><span>Nombre</span><input name="name" required placeholder="Compra normal · Buyer A"></label>
+      <label><span>Descripción</span><textarea name="description" placeholder="Qué recorrido representa"></textarea></label>
+      <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
+      <div class="range-grid"><label><span>Desde exchange #</span><input name="start_exchange" type="number" min="1" placeholder="4"></label><label><span>Hasta exchange #</span><input name="end_exchange" type="number" min="1" placeholder="18"></label></div>
+      <p class="muted small">Si completas el rango, Negro agrega los exchanges en orden e ignora OPTIONS. También puedes crear el flow vacío y agregar pasos después.</p>
+      <button class="button" type="submit">Crear flow</button>
+    </form>
+  </aside>
+</section>
+{% endblock %}

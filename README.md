@@ -1,6 +1,6 @@
-# Negro Recon 🐕 — v0.23.2
+# Negro Recon 🐕 — v0.25.0
 
-Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende ser un vulnerability scanner ni hacer el hacking por el usuario.
+Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 
 ## Modelo central
 
@@ -8,15 +8,95 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 
 - **Rules**: conocimiento determinístico configurable.
 - **Signals**: observaciones automáticas con procedencia exacta; no son vulnerabilidades.
-- **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA; separan hechos, inferencia, incógnitas y próxima prueba.
-- **Investigaciones**: las crea el usuario al promover una hipótesis que considera valiosa.
-- **Estados humanos / Findings**: siguen bajo control del hacker.
+- **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
+- **Investigaciones**: las crea el usuario al promover una hipótesis.
+- **Findings / estados humanos**: siguen bajo control del hacker.
 
-## v0.23.2 — resolvers de actor + Find Related limpio
+## v0.25.0 — Smart Compare + Flow Workbench
 
-### Buscar es la entrada principal
+Esta versión junta dos bloques que necesitaban trabajar juntos antes de seguir con anomalías.
 
-Ya no necesitas decidir primero si algo es "búsqueda" o "parámetro". Escribe lo que recuerdas en **Buscar**:
+### 1. Smart Compare entiende coincidencias, no sólo diferencias
+
+El antiguo `Smart Diff` ahora se presenta como **Smart Compare**. Sigue mostrando diferencias entre dos exchanges, pero primero muestra **valores exactos compartidos**, incluso cuando aparecen con nombres o rutas JSON distintas.
+
+Ejemplo:
+
+```text
+Exchange A                  Exchange B
+$.user.id = 102            $.memberId = 102
+$.user.email = diego@...   $.email = diego@...
+```
+
+Negro muestra `102` como un **posible alias por valor** entre `id` y `memberId`. Eso significa únicamente que el mismo valor observado conecta ambos campos; no afirma que tengan la misma semántica. Valores triviales como `ok=true`, booleanos o atributos muy reutilizados se penalizan o se ocultan de las correlaciones útiles.
+
+**Find Related Exchange** también conserva el path completo de cada coincidencia y deja de decir “mismo objeto” sin evidencia. Toma el exchange completo, busca valores exactos compartidos y separa correlaciones fuertes, medias y débiles. `Follow Value` continúa siguiendo un único valor seleccionado.
+
+### 2. Guía de módulos integrada
+
+La navegación incluye **Guía**. Cada módulo explica qué pregunta responde, cuándo usarlo y qué NO concluye:
+
+- Buscar → ¿dónde aparece esto?
+- Follow Value → ¿dónde reaparece exactamente este valor?
+- Find Related Exchange → ¿qué otros exchanges comparten evidencia con éste?
+- Smart Compare → ¿qué coincide y qué cambia entre A y B?
+- Identidades → ¿quién hizo este tráfico?
+- Flows → ¿qué historia de negocio forman varios exchanges?
+
+### 3. Flow Workbench
+
+**Flows** agrupa exchanges observados en una secuencia de negocio real:
+
+```text
+login → cart → checkout → payment → order
+```
+
+Puedes crear un flow vacío, agregar exchanges uno por uno o capturar un rango de IDs. Al capturar rangos, Negro ignora `OPTIONS` por defecto.
+
+Cada paso conserva:
+
+- exchange exacto;
+- método, host, path y status HTTP;
+- Identity observada cuando exista;
+- valores de negocio relevantes (`orderId`, `total`, `status`, etc.);
+- etiqueta, estado manual y nota opcionales.
+
+Negro también muestra **business-state observations** cuando ve campos como `status`, `state`, `paymentStatus`, `orderStatus`, etc. Las transiciones representan únicamente tráfico observado.
+
+### 4. Flow Compare
+
+Dos flows se alinean por `método + ruta normalizada` y se comparan paso a paso. La vista muestra:
+
+- pasos presentes sólo en A o sólo en B;
+- pasos equivalentes por estructura;
+- coincidencias de valores entre exchanges alineados;
+- cambios de negocio relevantes;
+- acceso directo a Smart Compare completo.
+
+Esto permite comparar, por ejemplo:
+
+```text
+Compra normal Buyer A
+vs
+Compra Buyer B
+```
+
+u observar que un recorrido tiene `POST /payment` y otro no.
+
+## Identity Contexts
+
+Negro separa:
+
+- **Identity**: cuenta estable (`Buyer A`, `Seller A`).
+- **Context**: rol/tenant opcional.
+- **Auth Material**: cookie/Bearer/JWT concreto que puede rotar.
+- **Resolver**: valor estable que identifica al actor (`/me.id`, `/me.email`, `jwt:sub`).
+
+`ownerId`, `orderId`, `tenantId` y otros identificadores de objeto/contexto no se usan como resolvers del actor. La Authorization Matrix sigue mostrando sólo tráfico observado y `No observado` no se interpreta como permitido o denegado.
+
+## Buscar
+
+Buscar sigue siendo la entrada universal:
 
 ```text
 4101
@@ -26,34 +106,9 @@ AIza
 host:api.example.com method:GET ownerId
 ```
 
-El texto libre sigue siendo parcial con FTS5 trigram. Cuando la consulta también coincide con una observación estructurada, Search muestra una tarjeta **Valor/Parámetro** con acciones directas: `HTTP`, `Follow Value`, `Explorar parámetro`, `Find Related`, `Smart Diff` y `Usar para identidad`. En workspaces viejos usa una vez **Buscar → Actualizar datos**; ahora ese botón reconstruye tanto búsqueda como parámetros/valores históricos.
+El texto libre usa coincidencia parcial. Cuando hay observaciones estructuradas, Search ofrece acciones de `HTTP`, `Follow Value`, `Find Related Exchange`, `Smart Compare` e Identity.
 
-**Parameter Explorer** sigue existiendo, pero como drill-down técnico: sirve para estudiar un nombre de parámetro después de encontrarlo, no como un segundo buscador. También se corrigió el contador de `valores distintos` que en v0.22 podía renderizar el método interno de un `dict`.
-
-### Identity Contexts
-
-La regla mental es simple:
-
-- **Identity**: la cuenta estable que tú conoces (`Buyer A`, `Buyer B`, `Seller A`).
-- **Context**: rol/tenant opcional de esa cuenta (`buyer`, `seller`, `store-123`).
-- **Auth Material**: la cookie, Bearer o JWT exacto observado para esa cuenta.
-- **Resolver**: un valor estable que ayuda a reconocerla después (`jwt:sub=101`, `userId=101`, `accountId=...`).
-
-No se asigna una **ruta** a una identidad. Se asigna un **exchange concreto**: por ejemplo, el `GET /me` que viste con la sesión de Buyer A. Antes de asignarlo, Negro muestra el request/response exacto, parámetros observados y auth material. Después de guardar, la página de la identidad muestra el exchange exacto asociado y qué credenciales/resolvers aprendió.
-
-Negro es local-first. Desde v0.23.1 conserva también los valores completos observados (`value_raw`, `raw_value`) para facilitar el bounty. Los hashes/fingerprints se mantienen para correlación eficiente. Algunos previews compactos pueden seguir enmascarados, pero el detalle conserva el valor exacto.
-
-Si el Bearer es JWT, Negro puede aprender claims estables como `sub`, `userId` o `accountId`. Si el token rota pero conserva ese claim, una nueva sesión puede resolverse hacia la misma Identity y el nuevo token se aprende como Auth Material adicional.
-
-Un resolver de parámetro se crea solo cuando el valor identifica al **actor**. En v0.23.2, al asignar un endpoint de identidad propia como `/me`, Negro propone identificadores candidatos: `id` y `email` suelen venir preseleccionados; `phone`/`displayName` requieren confirmación; `role`, `roleId`, `ownerId`, `tenantId` y otros campos de objeto/contexto no se usan como resolvers de actor. `ownerId=101` puede decir que un pedido pertenece a ANA aunque quien hizo la request sea otra cuenta.
-
-**Find Related** prioriza valores exactos y el mismo recurso. Ya no muestra relaciones por “mismo host” o por compartir un nombre genérico como `id`, y oculta `OPTIONS` por defecto cuando el origen no es `OPTIONS`. La UI usa `Relación fuerte/media/débil` y explica la evidencia; no muestra un score numérico como si fuera severidad.
-
-Para tráfico histórico usa **Identidades → Resolver historial** después de haber enseñado al menos una identidad/resolver.
-
-### Authorization Matrix
-
-**Identidades → Authorization Matrix** compara únicamente lo que Burp observó bajo cada identidad. Una celda muestra conteos/status reales; `— No observado` significa exactamente eso y nunca se interpreta como permitido o denegado. Las rutas con IDs se agrupan visualmente como `{id}` para facilitar la comparación, manteniendo ejemplos de exchanges concretos.
+En un workspace antiguo usa una vez **Buscar → Actualizar datos** para reconstruir búsqueda y parámetros históricos.
 
 ## Arranque
 
@@ -65,7 +120,7 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión para v0.23.2.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+**No necesitas actualizar la extensión para v0.25.0.** Sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
 
 Si necesitas recompilarla:
 
@@ -76,4 +131,4 @@ cd burp-extension
 
 Carga `build/libs/negro-burp-bridge-0.20.3.jar` desde Burp → Extensions.
 
-Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para las siguientes fases y `CHANGELOG.md` para el historial consolidado.
+Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.

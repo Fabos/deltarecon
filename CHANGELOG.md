@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.25.0
+
+- Renombra la experiencia de comparación a **Smart Compare**: ahora muestra coincidencias exactas y diferencias.
+- Detecta posibles alias de campos por valor exacto aunque cambien nombre o JSON path (`userId=102` ↔ `memberId=102`).
+- Penaliza coincidencias triviales (`ok=true`, booleanos/valores genéricos) y conserva frecuencia/contexto.
+- Find Related Exchange muestra paths/nombres completos de ambos lados y evita afirmar “mismo objeto” sin evidencia.
+- Añade **Guía** integrada para Buscar, Follow Value, Find Related, Smart Compare, Identidades y Flows.
+- Añade **Flow Workbench**: crear flows, agregar exchanges, capturar rangos excluyendo OPTIONS, etiquetas/notas por paso.
+- Añade business-state observations y transiciones observadas.
+- Añade **Flow Compare** con alineación por método + ruta normalizada, pasos ausentes/cambiados, correlaciones y cambios de negocio.
+- Mantiene compatibilidad con Negro Burp Bridge v0.20.3.
+
 ## v0.23.2
 
 - Al asignar un exchange de identidad propia como `/me`, Negro propone **resolvers de actor** usando la evidencia real del response. `id`/`email` pueden venir preseleccionados; valores como `phone` quedan opcionales y `role`/`roleId` se muestran como no identificadores.

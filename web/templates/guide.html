@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Guía · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">GUÍA DE MÓDULOS</p><h1>Qué pregunta responde cada herramienta</h1><p class="muted">Negro no intenta adivinar vulnerabilidades. Cada módulo responde una pregunta concreta sobre evidencia observada en Burp.</p></div>
+</section>
+
+<section class="guide-grid">
+  <article class="panel guide-card" id="search"><p class="eyebrow">BUSCAR</p><h2>¿Dónde aparece esto?</h2><p>Entrada universal. Busca texto, valores parciales, parámetros, headers, cookies, request/response, Signals, notas e investigaciones.</p><code>4101 · AIza · ownerId · response:email</code><p class="muted small">Úsalo cuando ya tienes una pista y quieres encontrar todas sus apariciones.</p></article>
+  <article class="panel guide-card" id="follow-value"><p class="eyebrow">FOLLOW VALUE</p><h2>¿Dónde reaparece exactamente este valor?</h2><p>Sigue un valor concreto por request, response, path o distintos nombres de campo.</p><code>diego@... → login → /me → /profile</code><p class="muted small">No analiza todo el exchange; sigue sólo el valor seleccionado.</p></article>
+  <article class="panel guide-card" id="find-related"><p class="eyebrow">FIND RELATED EXCHANGE</p><h2>¿Qué otros exchanges parecen conectados con este?</h2><p>Toma todos los valores útiles de request + response y busca otros exchanges con coincidencias exactas. Descarta ruido común.</p><code>login ↔ /me por email + user id + phone</code><p class="muted small">Una relación es contexto, no prueba de “mismo objeto” ni vulnerabilidad.</p></article>
+  <article class="panel guide-card" id="smart-compare"><p class="eyebrow">SMART COMPARE</p><h2>¿Qué coincide y qué cambia entre A y B?</h2><p>Primero muestra valores exactos compartidos, incluso bajo nombres/rutas distintas; después muestra diferencias estructuradas.</p><code>userId=102 ↔ memberId=102</code><p class="muted small">“Posible alias” significa misma evidencia de valor, no equivalencia semántica confirmada.</p></article>
+  <article class="panel guide-card" id="identities"><p class="eyebrow">IDENTIDADES</p><h2>¿Quién hizo este tráfico?</h2><p>Separa Identity, Auth Material y Resolver. Una cookie/token puede rotar sin crear otra identidad.</p><code>ANA → /me.id=101 → sesión nueva → misma Identity</code><p class="muted small">Resolvers identifican al actor; ownerId/orderId describen objetos y no deben resolver al actor.</p></article>
+  <article class="panel guide-card" id="flows"><p class="eyebrow">FLOWS</p><h2>¿Qué historia de negocio forman varios exchanges?</h2><p>Agrupa pasos observados, conserva su orden, identidad y estados de negocio. Puedes comparar dos recorridos.</p><code>login → cart → checkout → payment → order</code><p class="muted small">Úsalo para lógica de negocio, secuencias, estados y diferencias entre cuentas o caminos.</p></article>
+</section>
+
+<section class="panel">
+  <p class="eyebrow">MAPA MENTAL</p><h2>Cómo se combinan</h2>
+  <pre class="module-map">Buscar una pista
+   ↓
+Follow Value ──→ seguir un valor exacto
+   ↓
+Find Related ──→ descubrir exchanges conectados
+   ↓
+Smart Compare ─→ entender coincidencias y diferencias
+   ↓
+Identidades ───→ saber quién produjo el tráfico
+   ↓
+Flows ─────────→ reconstruir y comparar la historia de negocio
+   ↓
+Signals / IA / Investigation → decidir qué merece probarse</pre>
+</section>
+{% endblock %}
