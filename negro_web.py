@@ -403,6 +403,137 @@ def _notification_rows(paths: dict[str, Path], limit: int = 100, unread_only: bo
     return out, unread
 
 
+def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]]:
+    """Compact Signal/Hypothesis index for graph nodes.
+
+    The graph is a projection: this helper never creates new intelligence. It only
+    annotates Requests/endpoints that already have a deterministic Signal or an
+    active AI hypothesis so the investigator can notice and open that context.
+    """
+    out: dict[str, dict[int, list[dict[str, Any]]]] = {
+        "resource_signals": {}, "request_signals": {},
+        "resource_hypotheses": {}, "request_hypotheses": {},
+    }
+
+    def push(bucket: str, key: Any, item: dict[str, Any]) -> None:
+        try:
+            kid = int(key)
+        except Exception:
+            return
+        if kid <= 0:
+            return
+        rows = out[bucket].setdefault(kid, [])
+        marker = (item.get("kind"), item.get("id"))
+        if not any((x.get("kind"), x.get("id")) == marker for x in rows):
+            rows.append(item)
+
+    try:
+        signals = conn.execute(
+            """SELECT id,exchange_id,resource_id,title,severity,source,kind,reviewed_at,last_seen_at
+               FROM signal_occurrences WHERE dismissed_at IS NULL
+               ORDER BY last_seen_at DESC,id DESC LIMIT 1200"""
+        ).fetchall()
+    except Exception:
+        signals = []
+    signal_lookup: dict[int, tuple[int | None, int | None]] = {}
+    for row in signals:
+        sid = int(row["id"])
+        exid = int(row["exchange_id"]) if row["exchange_id"] else None
+        rid = int(row["resource_id"]) if row["resource_id"] else None
+        signal_lookup[sid] = (exid, rid)
+        item = {
+            "kind": "signal", "id": sid, "title": str(row["title"] or "Signal"),
+            "severity": str(row["severity"] or "info"), "source": str(row["source"] or "engine"),
+            "reviewed": bool(row["reviewed_at"]), "href": f"hypotheses#signal-{sid}",
+        }
+        if rid: push("resource_signals", rid, item)
+        if exid: push("request_signals", exid, item)
+
+    try:
+        hypotheses = conn.execute(
+            """SELECT id,resource_id,title,status,review_priority,evidence_json,updated_at
+               FROM leads_v2
+               WHERE upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1
+                 AND status NOT IN ('negative','discarded')
+               ORDER BY updated_at DESC,id DESC LIMIT 600"""
+        ).fetchall()
+    except Exception:
+        hypotheses = []
+    for row in hypotheses:
+        hid = int(row["id"])
+        item = {
+            "kind": "hypothesis", "id": hid, "title": str(row["title"] or "Hipótesis"),
+            "status": str(row["status"] or "candidate"), "priority": str(row["review_priority"] or "low"),
+            "href": f"hypotheses#hypothesis-{hid}",
+        }
+        resource_ids: set[int] = set()
+        request_ids: set[int] = set()
+        if row["resource_id"]:
+            resource_ids.add(int(row["resource_id"]))
+        try:
+            evidence = json.loads(row["evidence_json"] or "[]")
+        except Exception:
+            evidence = []
+        for ev in evidence if isinstance(evidence, list) else []:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("exchange_id"):
+                try: request_ids.add(int(ev["exchange_id"]))
+                except Exception: pass
+            for node_id in ev.get("node_ids") or []:
+                text = str(node_id or "")
+                try:
+                    if text.startswith("exchange:") or text.startswith("request:"):
+                        request_ids.add(int(text.split(":",1)[1]))
+                    elif text.startswith("resource:"):
+                        resource_ids.add(int(text.split(":",1)[1]))
+                    elif text.startswith("signal:"):
+                        sid = int(text.split(":",1)[1])
+                        exid, rid = signal_lookup.get(sid, (None, None))
+                        if exid: request_ids.add(exid)
+                        if rid: resource_ids.add(rid)
+                except Exception:
+                    continue
+        if request_ids:
+            marks = ','.join('?' * len(request_ids))
+            try:
+                for rr in conn.execute(
+                    f"""SELECT DISTINCT o.resource_id FROM http_exchanges e
+                         JOIN resource_operations o ON o.id=e.operation_id WHERE e.id IN ({marks})""",
+                    tuple(sorted(request_ids)),
+                ).fetchall():
+                    resource_ids.add(int(rr["resource_id"]))
+            except Exception:
+                pass
+        for rid in resource_ids: push("resource_hypotheses", rid, item)
+        for exid in request_ids: push("request_hypotheses", exid, item)
+    return out
+
+
+def _graph_intelligence_meta(index: dict[str, dict[int, list[dict[str, Any]]]], *, resource_id: int | None = None, request_id: int | None = None) -> dict[str, Any]:
+    signals: list[dict[str, Any]] = []
+    hypotheses: list[dict[str, Any]] = []
+    if resource_id:
+        signals.extend(index.get("resource_signals", {}).get(int(resource_id), []))
+        hypotheses.extend(index.get("resource_hypotheses", {}).get(int(resource_id), []))
+    if request_id:
+        signals.extend(index.get("request_signals", {}).get(int(request_id), []))
+        hypotheses.extend(index.get("request_hypotheses", {}).get(int(request_id), []))
+
+    def unique(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[tuple[Any, Any]] = set(); out: list[dict[str, Any]] = []
+        for row in rows:
+            marker = (row.get("kind"), row.get("id"))
+            if marker in seen: continue
+            seen.add(marker); out.append(row)
+        return out
+    signals = unique(signals); hypotheses = unique(hypotheses)
+    return {
+        "signal_count": len(signals), "hypothesis_count": len(hypotheses),
+        "intelligence": (signals + hypotheses)[:12],
+    }
+
+
 def _graph_inventory_counts(paths: dict[str, Path]) -> dict[str, int]:
     with _db(paths) as conn:
         return {
@@ -561,6 +692,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['facts']=[str(x) for x in (ai_meta.get('facts') or [])][:8]
             item['inference']=str(ai_meta.get('inference') or '')
             item['unknowns']=[str(x) for x in (ai_meta.get('unknowns') or [])][:8]
+            item['context_sources']=[str(x) for x in (ai_meta.get('context_sources') or [])][:8]
             item['promoted_investigation_id']=item.get('promoted_investigation_id')
             node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
             resolved_node_ids=list(dict.fromkeys(node_ids+evidence_exchange_nodes))
@@ -1165,6 +1297,7 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
     project_name = core.workspace_project_name(paths, domain)
     target_id = add_node("target:root", "target", project_name, state="normal", meta={"domain": domain, "project_name": project_name})
     with _db(paths) as conn:
+        intelligence_index = _graph_intelligence_index(conn)
         hosts = conn.execute("SELECT * FROM hosts ORDER BY hostname").fetchall()
         host_by_name: dict[str, str] = {}
         for h in hosts:
@@ -1182,7 +1315,9 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
             coverage = _coverage_state(r["review_state"])
             signal, finding_count = _entity_signal(conn, "resource", r["id"], r["classification"])
             state = _visual_state(coverage, signal)
-            nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta={"id": r["id"], "url": r["url"], "host": r["hostname"], "coverage": coverage, "signal": signal, "review": r["review_state"], "classification": r["classification"], "finding_count": finding_count, "priority": r["priority"], "updated_at": r["updated_at"]}, href=f"resource/{r['id']}")
+            rmeta={"id": r["id"], "url": r["url"], "host": r["hostname"], "coverage": coverage, "signal": signal, "review": r["review_state"], "classification": r["classification"], "finding_count": finding_count, "priority": r["priority"], "updated_at": r["updated_at"]}
+            rmeta.update(_graph_intelligence_meta(intelligence_index, resource_id=int(r["id"])))
+            nid = add_node(f"resource:{r['id']}", "resource", r["path"] or r["url"], state=state, meta=rmeta, href=f"resource/{r['id']}")
             resource_by_url[str(r["url"])] = nid
             resource_by_host_path[(str(r["hostname"]).lower(), str(r["path"] or "/"))] = nid
             add_edge(f"host:{r['host_id']}", nid, "contains", source="inventory")
@@ -1208,7 +1343,9 @@ def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int
         exchanges = conn.execute("""SELECT e.*,o.method,o.resource_id,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id ORDER BY e.last_seen_at DESC LIMIT ?""", (max(10, min(exchange_limit, 500)),)).fetchall()
         for e in exchanges:
             label = f"#{e['id']} {e['method']} · {e['status_code'] or '—'}"
-            nid = add_node(f"exchange:{e['id']}", "request", label, meta={"id": e["id"], "source": e["source"], "tool": e["tool"], "status": e["status_code"], "seen_count": e["seen_count"], "request_size": e["request_size"], "response_size": e["response_size"], "last_seen_at": e["last_seen_at"], "path": e["path"]})
+            emeta={"id": e["id"], "source": e["source"], "tool": e["tool"], "status": e["status_code"], "seen_count": e["seen_count"], "request_size": e["request_size"], "response_size": e["response_size"], "last_seen_at": e["last_seen_at"], "path": e["path"]}
+            emeta.update(_graph_intelligence_meta(intelligence_index, resource_id=int(e["resource_id"]), request_id=int(e["id"])))
+            nid = add_node(f"exchange:{e['id']}", "request", label, meta=emeta)
             add_edge(f"operation:{e['operation_id']}", nid, "observed_in", source=e["source"], evidence={"seen_count": e["seen_count"], "last_seen_at": e["last_seen_at"]})
 
         js_rows = conn.execute("SELECT * FROM js_assets ORDER BY discovered_at DESC LIMIT 150").fetchall()
@@ -1459,6 +1596,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
 
     with _db(paths) as conn:
         identity_tools.init_schema(conn); flow_tools.init_schema(conn); object_tools.init_schema(conn)
+        intelligence_index = _graph_intelligence_index(conn)
 
         identity_options = [dict(r) for r in conn.execute(
             """SELECT i.id,i.name,i.kind,
@@ -1512,7 +1650,8 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 f"resource:{rid}", "resource", row["path"] or row["url"],
                 meta={
                     "id":rid,"url":row["url"],"host":row["hostname"],
-                    "methods":" · ".join(methods),"method_count":len(methods)
+                    "methods":" · ".join(methods),"method_count":len(methods),
+                    **_graph_intelligence_meta(intelligence_index, resource_id=int(rid)),
                 }, href=f"resource/{rid}"
             )
             if hn: add_edge(hn,rn,"contains",source="inventory")
@@ -1533,7 +1672,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
             ).fetchone()
             if not row: return None
             rn=add_node(f"exchange:{exid}", "request", f"#{exid} {row['method']} {row['path']} · {row['status_code'] or '—'}",
-                        meta={"id":exid,"method":row["method"],"path":row["path"],"status":row["status_code"],"source":row["source"],"tool":row["tool"],"host":row["hostname"],"seen_count":row["seen_count"],"last_seen_at":row["last_seen_at"]},
+                        meta={"id":exid,"method":row["method"],"path":row["path"],"status":row["status_code"],"source":row["source"],"tool":row["tool"],"host":row["hostname"],"seen_count":row["seen_count"],"last_seen_at":row["last_seen_at"],**_graph_intelligence_meta(intelligence_index, resource_id=int(row["resource_id"]), request_id=int(exid))},
                         href=f"resource/{int(row['resource_id'])}?exchange={exid}#exchange-{exid}")
             hn=add_host(int(row["host_id"]))
             if hn: add_edge(rn,hn,"observed_on",source="http")
@@ -1840,6 +1979,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
     project_name = core.workspace_project_name(paths, domain)
     target=add_node("target:root","target",project_name,meta={"domain":domain,"project_name":project_name})
     with _db(paths) as conn:
+        intelligence_index = _graph_intelligence_index(conn)
         total_hosts=int(conn.execute("SELECT COUNT(*) c FROM hosts").fetchone()["c"] or 0)
         total_resources=int(conn.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"] or 0)
         total_ops=int(conn.execute("SELECT COUNT(*) c FROM resource_operations").fetchone()["c"] or 0)
@@ -1888,7 +2028,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                         rcov = _coverage_state(r["review_state"]); rsig, rfind = _entity_signal(conn, "resource", rid, r["classification"])
                         rn = add_node(
                             f"resource:{rid}", "resource", r["path"] or r["url"], state=_visual_state(rcov, rsig),
-                            meta={"id":rid,"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind,"priority":r["priority"]},
+                            meta={"id":rid,"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind,"priority":r["priority"],**_graph_intelligence_meta(intelligence_index, resource_id=rid)},
                             href=f"resource/{rid}",
                         )
                         if hn: add_edge(hn, rn, "contains", source="investigation_routes")
@@ -1919,7 +2059,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 if ex_id:
                     e = conn.execute("SELECT e.*,o.method,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?", (ex_id,)).fetchone()
                     if e:
-                        exn = add_node(f"exchange:{ex_id}", "request", f"#{ex_id} {e['method']} · {e['status_code'] or '—'}", meta={"id":ex_id,"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                        exn = add_node(f"exchange:{ex_id}", "request", f"#{ex_id} {e['method']} · {e['status_code'] or '—'}", meta={"id":ex_id,"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"],**_graph_intelligence_meta(intelligence_index, request_id=ex_id)})
                         add_edge(f"operation:{int(e['operation_id'])}", exn, "observed_in", source=e["source"] or "investigation_routes")
 
                 if lead_id:
@@ -1985,7 +2125,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 src=str(e["source"] or "burp_other")
                 if src not in source_nodes:
                     source_nodes[src]=add_node(f"source:{src}","source",src.replace("_"," "),meta={"source":src})
-                en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":src,"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":src,"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"],**_graph_intelligence_meta(intelligence_index, resource_id=rid, request_id=int(e["id"]))})
                 add_edge(operation_nodes[oid],en,"observed_in",source=src)
                 add_edge(source_nodes[src],en,"observed",source=src)
             counts: dict[str,int]={}
@@ -2041,7 +2181,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                             add_node(hn,"host",hrow["hostname"],state=_visual_state(hcov,hsig),meta={"id":hrow["id"],"coverage":hcov,"signal":hsig,"review":hrow["review_state"],"classification":hrow["classification"],"finding_count":hfind},href=f"host/{hrow['id']}")
                             add_edge(target,hn,"contains",source="inventory")
                     rcov=_coverage_state(r["review_state"]); rsig,rfind=_entity_signal(conn,"resource",r["id"],r["classification"])
-                    rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(rcov,rsig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind},href=f"resource/{r['id']}")
+                    rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(rcov,rsig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":rcov,"signal":rsig,"review":r["review_state"],"classification":r["classification"],"finding_count":rfind,**_graph_intelligence_meta(intelligence_index, resource_id=int(r["id"]))},href=f"resource/{r['id']}")
                     add_edge(hn,rn,"contains",source="inventory")
                 small_rids=[int(r["id"]) for r in small_resources]
                 if small_rids:
@@ -2087,7 +2227,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
         visible_resource_by_host_path: dict[tuple[str, str], str] = {}
         for r in resources:
             cov=_coverage_state(r["review_state"]); sig,fc=_entity_signal(conn,"resource",r["id"],r["classification"])
-            rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(cov,sig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":cov,"signal":sig,"review":r["review_state"],"classification":r["classification"],"finding_count":fc,"priority":r["priority"]},href=f"resource/{r['id']}")
+            rn=add_node(f"resource:{r['id']}","resource",r["path"] or r["url"],state=_visual_state(cov,sig),meta={"id":r["id"],"url":r["url"],"host":r["hostname"],"coverage":cov,"signal":sig,"review":r["review_state"],"classification":r["classification"],"finding_count":fc,"priority":r["priority"],**_graph_intelligence_meta(intelligence_index, resource_id=int(r["id"]))},href=f"resource/{r['id']}")
             visible_resource_by_url[str(r["url"])] = rn
             visible_resource_by_host_path[(str(r["hostname"]).lower(), str(r["path"] or "/"))] = rn
             add_edge(hn,rn,"contains")
@@ -2112,7 +2252,7 @@ def _graph_data(paths: dict[str, Path], domain: str, *, scope: str = "overview",
                 omarks=','.join('?'*len(opids))
                 exchanges=conn.execute(f"SELECT e.*,o.method,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.operation_id IN ({omarks}) ORDER BY e.last_seen_at DESC LIMIT ?",(*opids,max(10,min(exchange_limit,120)))).fetchall()
                 for e in exchanges:
-                    en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"]})
+                    en=add_node(f"exchange:{e['id']}","request",f"#{e['id']} {e['method']} · {e['status_code'] or '—'}",meta={"id":e["id"],"source":e["source"],"tool":e["tool"],"status":e["status_code"],"seen_count":e["seen_count"],"last_seen_at":e["last_seen_at"],"path":e["path"],**_graph_intelligence_meta(intelligence_index, request_id=int(e["id"]))})
                     add_edge(f"operation:{e['operation_id']}",en,"observed_in",source=e["source"])
 
             # Observations only for visible host/resources.

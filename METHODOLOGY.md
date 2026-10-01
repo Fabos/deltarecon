@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.34.0
+# Negro Recon — Metodología v0.35.0
 
 ## Modelo mental
 
@@ -200,3 +200,9 @@ Signals / IA / Investigaciones
 ## Lectura visual v0.33.0
 
 En vistas semánticas, Negro prioriza tres conceptos: **Identity (quién)**, **Endpoint (qué ruta)** y **Flow (qué historia)**. Business Objects aparecen como contexto y Requests/Métodos se revelan bajo demanda. Cuando se comparan dos identidades, el investigador puede aislar endpoints compartidos o exclusivos; esto es una ayuda de navegación y no una afirmación de vulnerabilidad. Relaciones repetidas se agrupan visualmente, conservando la evidencia original debajo.
+
+## Mapa con inteligencia y Hypothesis Engine 2.0
+
+Una ruta resaltada no significa vulnerable. El mapa sólo indica que Negro ya tiene inteligencia asociada a esa evidencia: un **Signal** determinístico, una **Hypothesis** activa, o ambos. Desde el detalle se debe poder volver a la evidencia exacta en Hunt.
+
+El motor 2.0 intenta formular mejores preguntas combinando capas que antes estaban aisladas: quién hizo la Request (Identity), en qué historia ocurrió (Flow), qué cosa del negocio tocó (Object/State), qué regla hizo match (Signal), qué patrón se desvió (Anomaly) y cómo variaron respuestas entre identidades. La conclusión sigue siendo humana: confirmar manualmente, medir impacto y sólo entonces crear un Finding.

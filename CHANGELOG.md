@@ -1,3 +1,12 @@
+# v0.35.0 — Intelligence-aware Map + Hypothesis Engine 2.0
+
+- Endpoints y Requests con Signals/Hypotheses ahora se resaltan visualmente en el mapa.
+- El detalle de un nodo muestra una sección **Inteligencia asociada** y permite saltar al Signal/Hypothesis exacto en Hunt.
+- Endpoints pueden mostrar badges compactos `S#` y `H#`; Signal e Hypothesis simultáneos reciben mayor énfasis.
+- Hypothesis Engine 2.0 fusiona contexto estructurado de Identity, Flow, Business Object, State, Custom Signals, Pattern Anomalies y resultados de autorización observados entre identidades.
+- Las hipótesis persistidas registran qué capas de contexto las sustentaron y pueden referenciar evidencia semántica que Negro resuelve de vuelta a Requests concretas.
+- La IA sigue siendo explícita/on-demand: no genera Findings ni declara vulnerabilidades automáticamente.
+
 # Changelog
 
 ## v0.34.0

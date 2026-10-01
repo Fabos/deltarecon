@@ -5,7 +5,7 @@
   <span class="sr-only">INVESTIGATION MAP · Identidades · Flows · Objetos · Inteligencia · Negro no asume buyer, seller, admin ni ningún rol.</span>
   <header class="graph-toolbar simplified-toolbar">
     <div>
-      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.34.0</div>
+      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.35.0</div>
       <h1>Entiende una pregunta a la vez</h1>
       <p>Negro ya tiene mucha evidencia. Aquí no intentamos mostrarla toda: eliges <b>qué quieres entender</b> y la vista cambia para responderlo.</p>
     </div>
@@ -29,10 +29,10 @@
   </div>
 
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
-    <div class="graph-ai-head"><div><span class="eyebrow">HIPÓTESIS CON IA</span><h2>Ideas basadas en evidencia real</h2><p data-graph-ai-scope>Analizar todo el target.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
+    <div class="graph-ai-head"><div><span class="eyebrow">HYPOTHESIS ENGINE 2.0</span><h2>Hipótesis con contexto correlacionado</h2><p data-graph-ai-scope>Analizar todo el target.</p><p class="muted">Cruza Identity, Flow, Object, State, Signals, anomalías y resultados de autorización observados. Genera preguntas para investigar; no declara vulnerabilidades.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
     {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. El resto de Negro funciona sin IA.</div>{% endif %}
     <div class="graph-ai-controls"><label>Modelo<select data-graph-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button><button type="button" class="button" data-graph-ai-run-btn hidden>Generar hipótesis</button></div>
-    <div class="graph-ai-status" data-graph-ai-status>Negro enviará contexto estructurado y evidencia seleccionada; no dumps HTTP completos.</div>
+    <div class="graph-ai-status" data-graph-ai-status>Negro enviará contexto estructurado correlacionado y evidencia seleccionada; no dumps HTTP completos. La IA sólo corre cuando tú lo pides.</div>
     <div class="graph-ai-results" data-graph-ai-results></div>
   </section>
 

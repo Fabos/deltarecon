@@ -27,7 +27,7 @@ from typing import Any, Iterable
 import negro_intel as intel
 import negro_rules as rulebook
 
-GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1"
+GRAPH_AI_PROMPT_VERSION = "0.16.0-burp-signals-v1-context-fusion-v2-v0.35.0"
 
 try:
     import requests
@@ -2875,6 +2875,242 @@ def _graph_http_evidence(conn, relevant_resource_ids: set[int] | None = None, li
     return out
 
 
+def _meaningful_object_type(name: Any) -> bool:
+    text = str(name or "").strip()
+    low = text.lower()
+    return bool(text) and not text.isdigit() and low not in {
+        "object", "objeto", "id", "uuid", "ref", "reference", "referencia",
+        "item", "entity", "entidad", "unknown", "desconocido", "owner", "role",
+    } and len(text) > 2
+
+
+def build_hypothesis_context_pack(conn, *, selected_node_id: str | None = None) -> dict[str, Any]:
+    """Build the bounded cross-feature context used by Hypothesis Engine 2.0.
+
+    This is intentionally descriptive.  It gives the model the same structured
+    concepts the investigator sees in Negro (Identity, Flow, Object, State,
+    Signal and authorization outcomes) without claiming that any relationship is
+    a vulnerability.
+    """
+    context: dict[str, Any] = {
+        "identities": [], "flows": [], "business_objects": [], "signals": [],
+        "pattern_anomalies": [], "authorization_outcomes": [], "selected_context": [],
+    }
+
+    # Identity contexts + endpoints actually observed under each session/account.
+    try:
+        identities = conn.execute(
+            """SELECT i.id,i.name,i.kind,COUNT(DISTINCT ei.exchange_id) request_count
+               FROM identities i LEFT JOIN exchange_identities ei ON ei.identity_id=i.id
+               GROUP BY i.id ORDER BY request_count DESC,lower(i.name) LIMIT 18"""
+        ).fetchall()
+    except Exception:
+        identities = []
+    for ident in identities:
+        rows = conn.execute(
+            """SELECT e.id exchange_id,e.status_code,o.method,r.id resource_id,r.path,h.hostname,e.last_seen_at
+               FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
+               JOIN resource_operations o ON o.id=e.operation_id
+               JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+               WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 100""",
+            (int(ident["id"]),),
+        ).fetchall()
+        by_resource: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            rid = int(row["resource_id"])
+            item = by_resource.setdefault(rid, {
+                "id": f"resource:{rid}", "resource_id": rid, "path": row["path"], "host": row["hostname"],
+                "methods": set(), "statuses": set(), "request_ids": [],
+            })
+            item["methods"].add(str(row["method"] or "?").upper())
+            if row["status_code"] is not None: item["statuses"].add(int(row["status_code"]))
+            if len(item["request_ids"]) < 8: item["request_ids"].append(f"exchange:{int(row['exchange_id'])}")
+        endpoints = []
+        for item in list(by_resource.values())[:36]:
+            item["methods"] = sorted(item["methods"]); item["statuses"] = sorted(item["statuses"])
+            endpoints.append(item)
+        context["identities"].append({
+            "id": f"identity:{int(ident['id'])}", "identity_id": int(ident["id"]), "name": ident["name"],
+            "kind": ident["kind"], "request_count": int(ident["request_count"] or 0), "endpoints": endpoints,
+        })
+
+    # Shared endpoint outcomes across identities.  These are observations only;
+    # same/different status codes are prompts for investigation, not conclusions.
+    outcome_rows: list[Any] = []
+    try:
+        outcome_rows = conn.execute(
+            """SELECT i.id identity_id,i.name identity_name,r.id resource_id,r.path,h.hostname,o.method,e.status_code,e.id exchange_id
+               FROM exchange_identities ei JOIN identities i ON i.id=ei.identity_id
+               JOIN http_exchanges e ON e.id=ei.exchange_id JOIN resource_operations o ON o.id=e.operation_id
+               JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+               ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 2600"""
+        ).fetchall()
+    except Exception:
+        outcome_rows = []
+    outcome_map: dict[int, dict[str, Any]] = {}
+    for row in outcome_rows:
+        rid = int(row["resource_id"])
+        bucket = outcome_map.setdefault(rid, {"id": f"resource:{rid}", "resource_id": rid, "path": row["path"], "host": row["hostname"], "identities": {}})
+        iid = int(row["identity_id"])
+        actor = bucket["identities"].setdefault(iid, {"id": f"identity:{iid}", "name": row["identity_name"], "methods": set(), "statuses": set(), "request_ids": []})
+        actor["methods"].add(str(row["method"] or "?").upper())
+        if row["status_code"] is not None: actor["statuses"].add(int(row["status_code"]))
+        if len(actor["request_ids"]) < 6: actor["request_ids"].append(f"exchange:{int(row['exchange_id'])}")
+    shared = []
+    for bucket in outcome_map.values():
+        if len(bucket["identities"]) < 2: continue
+        identities_out = []
+        status_shapes = set()
+        for actor in bucket["identities"].values():
+            actor["methods"] = sorted(actor["methods"]); actor["statuses"] = sorted(actor["statuses"])
+            status_shapes.add(tuple(actor["statuses"])); identities_out.append(actor)
+        bucket["identities"] = identities_out
+        bucket["different_status_pattern"] = len(status_shapes) > 1
+        shared.append(bucket)
+    shared.sort(key=lambda x: (0 if x["different_status_pattern"] else 1, -len(x["identities"]), str(x["path"])))
+    context["authorization_outcomes"] = shared[:70]
+
+    # Flow sequence + actor + meaningful business objects.
+    try:
+        flow_rows = conn.execute(
+            """SELECT f.id,f.name,f.description,f.identity_id,i.name identity_name,f.updated_at
+               FROM flows f LEFT JOIN identities i ON i.id=f.identity_id
+               ORDER BY f.updated_at DESC,f.id DESC LIMIT 20"""
+        ).fetchall()
+    except Exception:
+        flow_rows = []
+    for flow in flow_rows:
+        steps = [dict(r) for r in conn.execute(
+            """SELECT fs.position,e.id exchange_id,e.status_code,o.method,r.id resource_id,r.path,h.hostname
+               FROM flow_steps fs JOIN http_exchanges e ON e.id=fs.exchange_id
+               JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+               JOIN hosts h ON h.id=r.host_id WHERE fs.flow_id=? AND fs.included=1
+               ORDER BY fs.position,fs.id LIMIT 36""", (int(flow["id"]),)
+        ).fetchall()]
+        for st in steps:
+            st["id"] = f"exchange:{int(st['exchange_id'])}"; st["resource_ref"] = f"resource:{int(st['resource_id'])}"
+        try:
+            objects = [dict(r) for r in conn.execute(
+                """SELECT DISTINCT bo.id,bt.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview,'') identifier
+                   FROM flow_steps fs JOIN business_object_observations boo ON boo.exchange_id=fs.exchange_id
+                   JOIN business_objects bo ON bo.id=boo.business_object_id JOIN business_object_types bt ON bt.id=bo.object_type_id
+                   WHERE fs.flow_id=? AND fs.included=1 ORDER BY bo.id LIMIT 24""", (int(flow["id"]),)
+            ).fetchall()]
+        except Exception:
+            objects = []
+        objects = [{"id": f"object:{int(o['id'])}", **o} for o in objects if _meaningful_object_type(o.get("object_type"))]
+        context["flows"].append({
+            "id": f"flow:{int(flow['id'])}", "flow_id": int(flow["id"]), "name": flow["name"],
+            "description": str(flow["description"] or "")[:400],
+            "identity": {"id": f"identity:{int(flow['identity_id'])}", "name": flow["identity_name"]} if flow["identity_id"] else None,
+            "steps": steps, "objects": objects,
+        })
+
+    # Meaningful object instances + where/under whom/state they were observed.
+    try:
+        object_rows = conn.execute(
+            """SELECT bo.id,bt.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview,'') identifier,bo.last_seen_at
+               FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id
+               ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 120"""
+        ).fetchall()
+    except Exception:
+        object_rows = []
+    for obj in object_rows:
+        if not _meaningful_object_type(obj["object_type"]): continue
+        oid = int(obj["id"]); value = str(obj["identifier"] or "")
+        observations = [dict(r) for r in conn.execute(
+            """SELECT DISTINCT e.id exchange_id,o.method,r.id resource_id,r.path,h.hostname,i.id identity_id,i.name identity_name
+               FROM business_object_observations boo JOIN http_exchanges e ON e.id=boo.exchange_id
+               JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+               JOIN hosts h ON h.id=r.host_id LEFT JOIN exchange_identities ei ON ei.exchange_id=e.id
+               LEFT JOIN identities i ON i.id=ei.identity_id WHERE boo.business_object_id=?
+               ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 28""", (oid,)
+        ).fetchall()]
+        for ob in observations:
+            ob["request_ref"] = f"exchange:{int(ob['exchange_id'])}"; ob["resource_ref"] = f"resource:{int(ob['resource_id'])}"
+            if ob.get("identity_id"): ob["identity_ref"] = f"identity:{int(ob['identity_id'])}"
+        states = []
+        try:
+            states = [dict(r) for r in conn.execute(
+                """SELECT t.state_field,COALESCE(o.state_value_raw,o.state_value_preview,'') state_value,o.observed_at,o.exchange_id
+                   FROM business_state_observations o JOIN business_state_tracks t ON t.id=o.track_id
+                   WHERE lower(t.object_type)=lower(?) AND COALESCE(o.object_identifier_value_raw,o.object_identifier_value_preview,'')=?
+                   ORDER BY o.observed_at,o.id LIMIT 30""", (obj["object_type"], value)
+            ).fetchall()]
+            for st in states: st["request_ref"] = f"exchange:{int(st['exchange_id'])}"
+        except Exception:
+            states = []
+        context["business_objects"].append({
+            "id": f"object:{oid}", "object_id": oid, "type": obj["object_type"], "identifier": value,
+            "observations": observations, "states": states,
+        })
+        if len(context["business_objects"]) >= 42: break
+
+    # Deterministic Signals, including Custom Signals and their exact reason.
+    try:
+        signal_rows = conn.execute(
+            """SELECT s.id,s.exchange_id,s.resource_id,s.title,s.kind,s.category,s.severity,s.source,s.why_json,s.evidence_json,
+                      o.method,r.path,h.hostname,i.id identity_id,i.name identity_name
+               FROM signal_occurrences s LEFT JOIN http_exchanges e ON e.id=s.exchange_id
+               LEFT JOIN resource_operations o ON o.id=e.operation_id LEFT JOIN resources r ON r.id=COALESCE(s.resource_id,o.resource_id)
+               LEFT JOIN hosts h ON h.id=r.host_id LEFT JOIN exchange_identities ei ON ei.exchange_id=s.exchange_id
+               LEFT JOIN identities i ON i.id=ei.identity_id
+               WHERE s.dismissed_at IS NULL ORDER BY s.last_seen_at DESC,s.id DESC LIMIT 100"""
+        ).fetchall()
+    except Exception:
+        signal_rows = []
+    for row in signal_rows:
+        try: why = json.loads(row["why_json"] or "{}")
+        except Exception: why = {}
+        try: evidence = json.loads(row["evidence_json"] or "{}")
+        except Exception: evidence = {}
+        context["signals"].append({
+            "id": f"signal:{int(row['id'])}", "signal_id": int(row["id"]), "title": row["title"], "kind": row["kind"],
+            "category": row["category"], "severity": row["severity"], "source": row["source"],
+            "request_ref": f"exchange:{int(row['exchange_id'])}" if row["exchange_id"] else None,
+            "resource_ref": f"resource:{int(row['resource_id'])}" if row["resource_id"] else None,
+            "method": row["method"], "path": row["path"], "host": row["hostname"],
+            "identity": {"id": f"identity:{int(row['identity_id'])}", "name": row["identity_name"]} if row["identity_id"] else None,
+            "why": why, "evidence": evidence,
+        })
+
+    # Conservative pattern differences already calculated by Business Objects.
+    try:
+        import negro_objects as object_tools
+        overview = object_tools.overview(conn, limit=80)
+        for card in overview.get("anomaly_cards") or []:
+            obj = card.get("object") or {}; oid = int(obj.get("id") or 0)
+            for idx, anomaly in enumerate(card.get("items") or []):
+                context["pattern_anomalies"].append({
+                    "id": f"anomaly:{oid}:{idx}", "object_ref": f"object:{oid}",
+                    "object": str(obj.get("display_label") or f"{obj.get('object_type','Object')} {obj.get('display_value','')}").strip(),
+                    "kind": anomaly.get("kind"), "title": anomaly.get("title"), "message": anomaly.get("message"),
+                    "baseline": anomaly.get("baseline") or anomaly.get("previous"), "current": anomaly.get("current"),
+                })
+                if len(context["pattern_anomalies"]) >= 40: break
+            if len(context["pattern_anomalies"]) >= 40: break
+    except Exception:
+        pass
+
+    # Bring the exact selected semantic item to the front of the AI context.
+    if selected_node_id:
+        selected = []
+        for key in ("identities", "flows", "business_objects", "signals", "pattern_anomalies", "authorization_outcomes"):
+            for item in context[key]:
+                if str(item.get("id") or "") == str(selected_node_id):
+                    selected.append({"kind": key, "item": item})
+                elif key == "authorization_outcomes" and str(item.get("id") or "") == str(selected_node_id):
+                    selected.append({"kind": key, "item": item})
+        context["selected_context"] = selected[:4]
+
+    context["summary"] = {
+        "identities": len(context["identities"]), "flows": len(context["flows"]),
+        "business_objects": len(context["business_objects"]), "signals": len(context["signals"]),
+        "pattern_anomalies": len(context["pattern_anomalies"]), "shared_identity_endpoints": len(context["authorization_outcomes"]),
+    }
+    return context
+
+
 def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, selected_node_id: str | None = None, max_chars: int = 220_000) -> tuple[str, str]:
     """Build compact structured graph context. Never dumps full HTTP bodies."""
     init_schema(conn)
@@ -2901,11 +3137,13 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         meta = dict(n.get("meta") or {})
         allowed = {k: meta.get(k) for k in (
             "id","url","host","method","status","seen_count","authenticated","source","tool",
-            "review","classification","priority","type","why","next_test","severity","updated_at","last_seen_at","test_summary"
+            "review","classification","priority","type","why","next_test","severity","updated_at","last_seen_at","test_summary",
+            "methods","method_count","identity","requests","objects","flows","object_type","identifier","identifier_field",
+            "field","message","baseline","current","capture_status","signal_count","hypothesis_count"
         ) if meta.get(k) not in (None, "")}
         return {"id": n.get("id"), "type": n.get("type"), "label": n.get("label"), "state": n.get("state"), "meta": allowed}
 
-    important_types = {"target","host","resource","operation","javascript","observation","lead","finding","source"}
+    important_types = {"target","host","resource","operation","javascript","observation","lead","finding","source","identity","flow","object","request","state","anomaly"}
     global_nodes = [n for n in nodes if n.get("type") in important_types]
     global_nodes.sort(key=lambda n: (0 if n.get("state") in ("finding","interesting") else 1, str(n.get("type")), str(n.get("label"))))
     selected_nodes = [node_by_id[i] for i in relevant_ids if i in node_by_id]
@@ -2953,6 +3191,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
                 if rr: relevant_resource_ids.add(int(rr["resource_id"]))
             except Exception: pass
     http_evidence = _graph_http_evidence(conn, relevant_resource_ids, limit=24)
+    correlated_context = build_hypothesis_context_pack(conn, selected_node_id=selected_node_id)
 
     envelope = {
         "target": domain,
@@ -2964,6 +3203,7 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
         "confirmed_findings": findings,
         "test_coverage": testing_coverage,
         "http_evidence": http_evidence,
+        "correlated_context": correlated_context,
         "instructions_context": {
             "prompt_version": GRAPH_AI_PROMPT_VERSION,
             "negative_is_knowledge": True,
@@ -2973,6 +3213,8 @@ def build_graph_ai_payload(conn, domain: str, graph_data: dict[str, Any], *, sel
             "test_coverage_is_manual_memory": True,
             "untouched_recommended_checks_are_excluded": True,
             "negative_tests_should_not_repeat": True,
+            "hypothesis_engine": "2.0",
+            "context_fusion": ["identity", "flow", "business_object", "state", "signal", "pattern_anomaly", "authorization_outcome", "http"],
         },
     }
     payload = "NEGRO_GRAPH_EVIDENCE\n" + json.dumps(envelope, ensure_ascii=False, indent=2)
@@ -3012,8 +3254,9 @@ def _graph_ideas_json_schema() -> dict[str, Any]:
             "confirm_if": {"type": "string"},
             "discard_if": {"type": "string"},
             "node_ids": {"type": "array", "items": {"type": "string"}},
+            "context_sources": {"type": "array", "items": {"type": "string", "enum": ["http", "identity", "flow", "business_object", "state", "signal", "pattern_anomaly", "authorization_outcome"]}},
         },
-        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "facts", "inference", "unknowns", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids"],
+        "required": ["title", "type", "strength", "investigation_priority", "priority_reasons", "plain_language", "facts", "inference", "unknowns", "why_interesting", "suggested_investigation", "steps", "confirm_if", "discard_if", "node_ids", "context_sources"],
     }
     unexplored_schema = {
         "type": "object",
@@ -3155,6 +3398,18 @@ Para CADA hipótesis separa explícitamente:
 Una Rule/Signal aislada no debe convertirse automáticamente en una hipótesis si no aporta una pregunta de investigación de valor.
 
 Usa exclusivamente el grafo, el historial y el resumen HTTP sanitizado suministrados. El bloque http_evidence puede incluir línea de request, query y preview JSON limitada; úsalo para nombrar requests, parámetros, campos y respuestas REALES.
+
+HYPOTHESIS ENGINE 2.0 — CONTEXTO CORRELACIONADO:
+- correlated_context.identities contiene cuentas/sesiones reales y los endpoints/status observados bajo cada una. No asumas nombres de rol.
+- correlated_context.authorization_outcomes muestra endpoints vistos bajo 2+ identidades. 200/200, 200/403 o cualquier diferencia es sólo una observación; razona sobre el patrón antes de proponer una prueba.
+- correlated_context.flows contiene secuencias reales. Úsalo para detectar pasos ausentes, caminos alternativos o la misma operación bajo distinto actor.
+- correlated_context.business_objects contiene objetos con significado y dónde/por quién aparecieron. No eleves IDs genéricos sin contexto.
+- correlated_context.signals son coincidencias determinísticas, incluidas Custom Signals del investigador. Un Signal NO prueba una vulnerabilidad; úsalo como evidencia que puede reforzar una pregunta.
+- correlated_context.pattern_anomalies son diferencias conservadoras ya observadas; no las conviertas directamente en findings.
+- Correlaciona varias fuentes cuando aporte valor. Prefiere una hipótesis respaldada por Identity + endpoint + Object/Flow/Signal frente a una idea genérica basada sólo en el nombre de una ruta.
+- node_ids puede citar IDs REALES de cualquiera de estos bloques: resource:, operation:, exchange:, identity:, flow:, object:, signal:, anomaly:.
+- context_sources debe decir qué tipos de contexto sostienen realmente la hipótesis. No marques una fuente que no hayas usado.
+
 NEGATIVE/discarded son conocimiento: no repitas la misma prueba salvo evidencia nueva. Una señal interesting no equivale a finding.
 El bloque test_coverage contiene ÚNICAMENTE memoria de pruebas que el investigador o un motor realmente tocó. No es una checklist obligatoria ni una fuente de ideas por sí sola. Respeta sus estados: negative/not_applicable no se repiten sin evidencia nueva; testing no se propone como si estuviera pendiente; interesting/confirmed sirven como contexto. Los checks recomendados que nunca fueron tocados se excluyen deliberadamente.
 
@@ -3180,7 +3435,8 @@ Para cada hipótesis:
 - what_to_watch: breve y observable.
 - suggested_investigation: una sola frase con el objetivo ofensivo, no “revisar comportamiento”.
 - confirm_if y discard_if observables y concretos.
-- node_ids: sólo IDs REALES del contexto.
+- node_ids: sólo IDs REALES del contexto, incluyendo identity:/flow:/object:/signal:/anomaly: cuando sean parte de la correlación.
+- context_sources: enumera únicamente las capas realmente usadas para razonar esa hipótesis.
 - Sé conciso: cada hipótesis debe caber cómodamente en una tarjeta; evita repetir la misma explicación en varias secciones.
 
 Devuelve únicamente JSON válido que cumpla el schema suministrado.
@@ -3315,7 +3571,33 @@ No inventes vulnerabilidades ni endpoints. Si una comprobación es débil pero b
     return result, total_usage
 
 def hypothesis_refs_from_nodes(conn, node_ids: list[str]) -> dict[str, Any]:
-    """Resolve internal graph ids into human-actionable HTTP/resource references."""
+    """Resolve graph/context refs into human-actionable HTTP/resource references."""
+    # Hypothesis Engine 2.0 may cite semantic context refs that are not HTTP
+    # nodes themselves. Expand them to a bounded set of Requests so Hunt still
+    # lands on evidence the investigator can open in Burp/Negro.
+    expanded = list(node_ids or [])
+    for nid in list(node_ids or [])[:24]:
+        try:
+            if str(nid).startswith("signal:"):
+                sid = int(str(nid).split(":", 1)[1])
+                row = conn.execute("SELECT exchange_id,resource_id FROM signal_occurrences WHERE id=?", (sid,)).fetchone()
+                if row and row["exchange_id"]:
+                    expanded.append(f"exchange:{int(row['exchange_id'])}")
+                elif row and row["resource_id"]:
+                    expanded.append(f"resource:{int(row['resource_id'])}")
+            elif str(nid).startswith("flow:"):
+                fid = int(str(nid).split(":", 1)[1])
+                steps = conn.execute("SELECT exchange_id FROM flow_steps WHERE flow_id=? AND included=1 ORDER BY position,id LIMIT 3", (fid,)).fetchall()
+                for row in steps:
+                    expanded.append(f"exchange:{int(row['exchange_id'])}")
+            elif str(nid).startswith("object:"):
+                oid = int(str(nid).split(":", 1)[1])
+                rows = conn.execute("SELECT DISTINCT exchange_id FROM business_object_observations WHERE business_object_id=? ORDER BY observed_at DESC,id DESC LIMIT 3", (oid,)).fetchall()
+                for row in rows:
+                    expanded.append(f"exchange:{int(row['exchange_id'])}")
+        except Exception:
+            continue
+    node_ids = list(dict.fromkeys(str(x) for x in expanded if str(x)))[:40]
     refs: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     resource_id = None
@@ -3388,7 +3670,8 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
         priority = "high" if investigation_priority == "high" else "medium" if investigation_priority == "medium" else "low"
         confidence = "high" if strength == "strong" else "medium" if strength == "medium" else "low"
         priority_reasons = [str(x).strip()[:120] for x in (item.get("priority_reasons") or []) if str(x).strip()][:4]
-        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip(),"investigation_priority":investigation_priority,"priority_reasons":priority_reasons,"facts":[str(x).strip()[:300] for x in (item.get("facts") or []) if str(x).strip()][:8],"inference":str(item.get("inference") or "").strip()[:1200],"unknowns":[str(x).strip()[:300] for x in (item.get("unknowns") or []) if str(x).strip()][:8]}]
+        context_sources = [str(x).strip() for x in (item.get("context_sources") or []) if str(x).strip()][:8]
+        evidence = [{"source":"ai_graph","node_ids":node_ids,"evidence_hash":evidence_hash,"selected_node_id":selected_node_id,"plain_language":str(item.get("plain_language") or "").strip(),"investigation_priority":investigation_priority,"priority_reasons":priority_reasons,"facts":[str(x).strip()[:300] for x in (item.get("facts") or []) if str(x).strip()][:8],"inference":str(item.get("inference") or "").strip()[:1200],"unknowns":[str(x).strip()[:300] for x in (item.get("unknowns") or []) if str(x).strip()][:8],"context_sources":context_sources}]
         upsert_lead(
             conn, lead_key=f"ai_graph:{fingerprint}", host_id=host_id, resource_id=resource_id,
             lead_type=typ, title=title, confidence=confidence, review_priority=priority,

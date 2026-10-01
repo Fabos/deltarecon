@@ -48,7 +48,7 @@
   {% if signals %}
   <div class="hunt-signal-list">
     {% for s in signals %}
-    <article class="hunt-signal severity-{{ s.severity }}">
+    <article class="hunt-signal severity-{{ s.severity }}" id="signal-{{ s.id }}">
       <div class="hunt-signal-head"><div><span class="signal-dot">🩵</span><b>{{ s.title }}</b></div><div class="badges">{% if s.source=='custom_signal' %}<span class="badge">Tu regla</span>{% endif %}<span class="badge">{{ ui_label(s.category or s.kind) }}</span><span class="badge">{{ ui_label(s.severity) }}</span></div></div>
       {% if s.why_text %}<p>{{ s.why_text }}</p>{% endif %}
       <div class="hunt-signal-meta"><code>{% if s.method %}{{ s.method }} {% endif %}{{ s.path or s.resource_url or 'request' }}</code>{% if s.exchange_id %}<span>Request #{{ s.exchange_id }}</span>{% endif %}</div>
@@ -81,6 +81,7 @@
   </div>
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
 
+  {% if h.context_sources %}<div class="hypothesis-context-sources"><small>CONTEXTO CORRELACIONADO</small><div class="badges">{% for src in h.context_sources %}<span class="badge context-source">{{ {'http':'HTTP','identity':'Identity','flow':'Flow','business_object':'Object','state':'State','signal':'Signal','pattern_anomaly':'Anomaly','authorization_outcome':'Auth outcome'}.get(src, src) }}</span>{% endfor %}</div></div>{% endif %}
   <div class="ai-reasoning-grid">
     <div class="ai-reasoning-box facts"><b>HECHOS</b>{% if h.facts %}<ul>{% for x in h.facts %}<li>{{ x }}</li>{% endfor %}</ul>{% else %}<p>Hipótesis histórica: esta ejecución no guardó el bloque facts.</p>{% endif %}</div>
     <div class="ai-reasoning-box inference"><b>INFERENCIA</b><p>{{ h.inference or h.why_interesting }}</p></div>

@@ -1,4 +1,9 @@
-# Negro Recon 🐕 — v0.34.0
+# Negro Recon 🐕 — v0.35.0
+
+
+## v0.35.0 — mapa con inteligencia + Hypothesis Engine 2.0
+
+El mapa ya no sólo muestra relaciones: una ruta o Request con **Signal** o **Hypothesis** queda visualmente marcada y su detalle enlaza directamente a la inteligencia asociada en Hunt. Hypothesis Engine 2.0 cruza el contexto ya construido por Negro (Identity, Flow, Object, State, Signals, anomalías y resultados HTTP por identidad) para producir hipótesis específicas y comprobables. La IA se ejecuta únicamente cuando el investigador la solicita y nunca promueve una hipótesis a Finding por sí sola.
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende reemplazar Burp ni decidir vulnerabilidades por el usuario.
 

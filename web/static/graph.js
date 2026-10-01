@@ -181,6 +181,12 @@
     }).filter(Boolean);
   }
 
+  function nodeIntelligence(n){
+    const signalCount=Number(n?.meta?.signal_count||0);
+    const hypothesisCount=Number(n?.meta?.hypothesis_count||0);
+    return {signalCount,hypothesisCount,hasSignal:signalCount>0,hasHypothesis:hypothesisCount>0,hasAny:signalCount>0||hypothesisCount>0};
+  }
+
   function semanticCardMode(n){
     return ['identity','flow','objects'].includes(preset)&&['identity','flow','resource'].includes(n.type);
   }
@@ -189,7 +195,9 @@
     const text=String(n.label||'');
     if(n.type==='resource'){
       const statusText=endpointIdentityResults(n.id).map(x=>`${x.label} · ${x.statuses.join('/')}`).join('   ');
-      return Math.max(126,Math.min(330,Math.max(text.length*7.2+34,statusText.length*6.2+30)));
+      const intel=nodeIntelligence(n);
+      const extra=intel.hasAny?58:0;
+      return Math.max(126,Math.min(390,Math.max(text.length*7.2+34+extra,statusText.length*6.2+30+extra)));
     }
     if(n.type==='identity')return Math.max(104,Math.min(190,text.length*7.4+44));
     if(n.type==='flow')return Math.max(110,Math.min(210,text.length*7.2+44));
@@ -209,9 +217,14 @@
     if(fixed&&n.type==='resource'){
       const w=cardWidthFor(n), results=endpointIdentityResults(n.id), hasResults=results.length>0;
       const h=hasResults?46:30, top=-h/2;
-      addRect(-w/2,top,w,h,9,'node-shape endpoint-card');
+      const intel=nodeIntelligence(n);
+      const intelClass=`${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`;
+      addRect(-w/2,top,w,h,9,`node-shape endpoint-card${intelClass}`);
       addPath(`M ${-w/2+12} ${hasResults?-9:-4} L ${-w/2+18} ${hasResults?-5:0} L ${-w/2+12} ${hasResults?-1:4} M ${-w/2+18} ${hasResults?-5:0} H ${-w/2+24}`,'node-icon endpoint-icon');
       const limit=44;const text=String(n.label||'');addText(-w/2+31,hasResults?-2:4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label endpoint-inline');
+      let intelX=w/2-10;
+      if(intel.hasHypothesis){const t=`H${intel.hypothesisCount}`;intelX-=Math.max(23,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge hypothesis');}
+      if(intel.hasSignal){const t=`S${intel.signalCount}`;intelX-=Math.max(23,t.length*6+9);addText(intelX,hasResults?-2:4,t,'node-intel-badge signal');}
       if(hasResults){
         let x=-w/2+12;
         results.forEach((r,idx)=>{
@@ -233,8 +246,12 @@
       const limit=24;const text=String(n.label||'');addText(-w/2+35,4,text.length>limit?text.slice(0,limit-1)+'…':text,'node-inline-label flow-inline');
       inlineLabel=true;labelAnchor=w/2+8;
     }else if(n.type==='resource'){
-      addRect(-10,-7,20,14,5,'node-shape endpoint-mini');
-      addPath('M -5 -3 L 0 0 L -5 3 M 0 0 H 6','node-icon endpoint-icon');labelAnchor=16;
+      const intel=nodeIntelligence(n);
+      addRect(-10,-7,20,14,5,`node-shape endpoint-mini${intel.hasSignal?' endpoint-intel-signal':''}${intel.hasHypothesis?' endpoint-intel-hypothesis':''}`);
+      addPath('M -5 -3 L 0 0 L -5 3 M 0 0 H 6','node-icon endpoint-icon');
+      if(intel.hasSignal)addCircle(8,-7,2.5,'node-intel-dot signal');
+      if(intel.hasHypothesis)addCircle(intel.hasSignal?3.5:8,-7,2.5,'node-intel-dot hypothesis');
+      labelAnchor=16;
     }else if(n.type==='host'){
       addRect(-9,-8,18,16,3,'node-shape host-server');addPath('M -5 -3 H 5 M -5 1 H 5 M -5 5 H 2','node-icon host-lines');labelAnchor=15;
     }else if(n.type==='target'){
@@ -242,7 +259,11 @@
     }else if(n.type==='object'){
       const pts='0,-8 7,-4 7,4 0,8 -7,4 -7,-4';const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points',pts);poly.setAttribute('class','node-shape object-hex');vg.appendChild(poly);labelAnchor=15;
     }else if(n.type==='request'){
-      addRect(-6,-8,12,16,2,'node-shape request-doc');addPath('M 1 -8 V -3 H 6 M -3 1 H 3 M -3 5 H 3','node-icon request-lines');labelAnchor=14;
+      const intel=nodeIntelligence(n);
+      addRect(-6,-8,12,16,2,`node-shape request-doc${intel.hasSignal?' request-intel-signal':''}${intel.hasHypothesis?' request-intel-hypothesis':''}`);addPath('M 1 -8 V -3 H 6 M -3 1 H 3 M -3 5 H 3','node-icon request-lines');
+      if(intel.hasSignal)addCircle(5,-8,2.3,'node-intel-dot signal');
+      if(intel.hasHypothesis)addCircle(intel.hasSignal?1:-5,-8,2.3,'node-intel-dot hypothesis');
+      labelAnchor=14;
     }else if(n.type==='state'){
       const poly=document.createElementNS(NS,'polygon');poly.setAttribute('points','0,-8 8,0 0,8 -8,0');poly.setAttribute('class','node-shape state-diamond');vg.appendChild(poly);labelAnchor=15;
     }else if(n.type==='anomaly'){
@@ -992,7 +1013,8 @@
       const compareBucket=n.type==='resource'?identityEndpointBucket(n.id):'';
       const primaryIdentity=n.id===`identity:${Number(graph.meta?.identity_id||0)}`;
       const compareIdentity=n.id===`identity:${Number(graph.meta?.compare_identity_id||0)}`;
-      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${compareBucket?` compare-${compareBucket}`:''}${primaryIdentity?' compare-identity-primary':''}${compareIdentity?' compare-identity-secondary':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
+      const intel=nodeIntelligence(n);
+      ng.setAttribute('class',`graph-node type-${n.type} state-${slugState(n.state)}${intel.hasSignal?' has-signal':''}${intel.hasHypothesis?' has-hypothesis':''}${preset==='flow'&&n.type==='request'?' flow-endpoint-node':''}${compareBucket?` compare-${compareBucket}`:''}${primaryIdentity?' compare-identity-primary':''}${compareIdentity?' compare-identity-secondary':''}${selected===n.id?' selected':''}${n.manual?' manual':''}${(activeRoute?.node_ids?.includes(n.id)||activePathIds.includes(n.id))?' route-node':''}`);
       ng.setAttribute('transform',`translate(${n.x} ${n.y})`);ng.dataset.id=n.id;
       const visual=appendNodeVisual(ng,n);
       if (n.meta?.coverage && ['host','resource'].includes(n.type) && !semanticCardMode(n)) {
@@ -1082,7 +1104,7 @@
   function showNode(n){
     const rels=(n.virtual?sceneEdges:graph.edges).filter(e=>e.source===n.id||e.target===n.id);
     const meta=n.meta||{};
-    const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting','why','next_test','result_notes'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(metaKeyLabel[k]||k.replaceAll('_',' '))}</span><b>${esc(valueLabel(v))}</b></div>`).join('');
+    const metaRows=Object.entries(meta).filter(([k,v])=>!['count','interesting','why','next_test','result_notes','signal_count','hypothesis_count','intelligence'].includes(k)&&v!==null&&v!==''&&typeof v!=='object').slice(0,10).map(([k,v])=>`<div><span>${esc(metaKeyLabel[k]||k.replaceAll('_',' '))}</span><b>${esc(valueLabel(v))}</b></div>`).join('');
     const sourceGraph=n.virtual?sceneNodes:graph.nodes;
     const relationGroups=groupNodeRelations(n,rels,sourceGraph);
     const relationHtml=relationSectionsHtml(n,relationGroups);
@@ -1093,6 +1115,8 @@
     const trackedTests=Object.values(testSummary).reduce((a,b)=>a+Number(b||0),0);
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
+    const intelligenceRows=Array.isArray(meta.intelligence)?meta.intelligence:[];
+    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Signal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'H':'S'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:`Signal · ${esc(item.source||'engine')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
     const semanticNeutral=['identity','flow','object','request','state','target','host','resource'].includes(n.type) && slugState(n.state)==='normal';
     const statusHtml=(meta.coverage||meta.signal)
@@ -1101,7 +1125,7 @@
     const exploreAction=['host','resource'].includes(n.type)?`<button type="button" class="button" data-explore-scope>Explorar ${n.type==='host'?'host':'recurso'} en mapa →</button>`:'';
     const pathAction=!pathStart?`<button type="button" class="btn-secondary" data-path-start>Camino · empezar aquí</button>`:(pathStart===n.id?`<button type="button" class="btn-secondary" data-path-clear-local>Cancelar inicio de camino</button>`:`<button type="button" class="button" data-path-to>Ver camino desde ${esc((sceneNodes.find(x=>x.id===pathStart)||graph.nodes.find(x=>x.id===pathStart))?.label||'inicio')}</button><button type="button" class="btn-secondary" data-path-start>Cambiar inicio</button>`);
     const hypothesisHtml=n.type==='lead'?`<div class="graph-detail-section graph-hypothesis-editor"><h3>Trabajo de hipótesis</h3>${meta.why?`<p><b>Por qué:</b> ${esc(meta.why)}</p>`:''}${meta.next_test?`<p><b>Siguiente prueba:</b> ${esc(meta.next_test)}</p>`:''}<label>Estado<select data-lead-edit-status>${['candidate','testing','interesting','negative','postponed','confirmed','discarded'].map(s=>`<option value="${s}" ${String(meta.status||'candidate')===s?'selected':''}>${esc(valueLabel(s))}</option>`).join('')}</select></label><label>Resultado / qué pasó<textarea data-lead-edit-notes placeholder="Qué probaste, por qué falló o qué evidencia confirmó la hipótesis…">${esc(meta.result_notes||'')}</textarea></label><button type="button" class="button" data-lead-edit-save>Guardar en la misma hipótesis</button><small data-lead-edit-feedback></small></div>`:'';
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${hypothesisHtml}${clusterHtml}${relationHtml}`;
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Explorar relaciones</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${intelligenceHtml}${hypothesisHtml}${clusterHtml}${relationHtml}`;
     detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
     detail.querySelector('[data-focus-one]')?.addEventListener('click',()=>focusNeighborhood(n.id,1));
     detail.querySelector('[data-focus-two]')?.addEventListener('click',()=>focusNeighborhood(n.id,2));

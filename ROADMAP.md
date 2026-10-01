@@ -161,8 +161,8 @@ No medir Negro por cantidad de módulos. Medirlo por:
 6.7. Investigation Views / Map 3.0 + simplificación global + timeline de Flow + evidencia ambigua fuera del foco. ✅ v0.30.0
 6.8. Evidence-first UX: Identity/Object Request-first, objetos ambiguos como key=value, Flow Compare sin ruido y navegación corregida. ✅ v0.32.0
 6.9. Semantic graph polish: iconos por tipo, relaciones deduplicadas, compare Shared/Only y navegación directa. ✅ v0.33.0
-6.10. Identity HTTP outcomes + iconografía de Superficie + Flow object cleanup. ✅ v0.34.0
-7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo. ✅ v0.34.0
+6.10. Identity HTTP outcomes + iconografía de Superficie + Flow object cleanup. ✅ v0.35.0
+7. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo. ✅ v0.35.0
 
 ## Implementado en v0.20.3 — separación definitiva del razonamiento
 
@@ -243,7 +243,15 @@ No medir Negro por cantidad de módulos. Medirlo por:
 - Las Custom Rules reutilizan `signal_occurrences` y Hunt; no crean un segundo modelo de Signal.
 - Reinterpretación local del historial por regla, sin requests nuevas al target.
 
-## Siguiente fase inmediata
+## Ciclo siguiente: uso real y endurecimiento
 
-- **Hypothesis Engine 2.0**: usar Identity + Request + Flow + State + Business Objects + Pattern Anomalies + Custom Signals como contexto estructurado para generar hipótesis mucho más específicas bajo demanda.
-- Después: pulido/performance, especialmente para workspaces con miles de endpoints/Requests, y refinamiento de UX basado en uso real.
+Las fases funcionales principales ya están completas. A partir de aquí el foco es usar Negro en targets reales y mejorar **ruido, rendimiento, ergonomía, explicabilidad y flujos repetitivos**, especialmente en workspaces con miles de endpoints/Requests. Nuevas capacidades se añaden sólo cuando resuelvan un problema observado durante investigación real.
+
+## v0.35.0 — última fase funcional del roadmap base ✅
+
+- [x] Mapa intelligence-aware: Signal/Hypothesis visibles sobre Endpoint/Request y navegación directa a Hunt.
+- [x] Hypothesis Engine 2.0 con fusión de Identity + Flow + Object + State + Signal + Anomaly + authorization outcomes.
+- [x] Hipótesis explicables con fuentes de contexto y evidencia navegable.
+- [x] Sin promoción automática a vulnerabilidad/Finding.
+
+Con esta entrega quedan completas las fases funcionales principales planteadas. El siguiente ciclo es **uso real, reducción de ruido, rendimiento, ergonomía y ajustes derivados de Bug Bounty**, no añadir features por añadir.

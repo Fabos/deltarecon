@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero compact-hero guide-hero" id="start">
   <div>
-    <p class="eyebrow">CENTRO DE APRENDIZAJE · v0.34.0</p>
+    <p class="eyebrow">CENTRO DE APRENDIZAJE · v0.35.0</p>
     <h1>No memorices módulos: parte de una pregunta</h1>
     <p class="muted">Negro creció. Esta guía reorganiza el aplicativo alrededor del trabajo real del hacker: descubrir superficie, entender evidencia, comparar actores, reconstruir procesos, correlacionar objetos y documentar lo confirmado.</p>
   </div>
@@ -112,8 +112,9 @@
   <div class="guide-grid three">
     <article class="panel guide-card" id="signals"><h3>Signals / Notificaciones</h3><p>Observaciones automáticas con evidencia concreta. Te dicen “mira esto”.</p><p class="guide-caution">Signal ≠ vulnerabilidad.</p></article>
     <article class="panel guide-card" id="custom-signals"><h3>Custom Signals</h3><p>Patrones del negocio que tú le enseñas a Negro. Todas las condiciones rellenadas deben cumplirse y la coincidencia conserva la Request exacta.</p><code>Identity presente + parámetro ownerId → Signal</code><p class="guide-example"><b>Uso:</b> recuerda pruebas recurrentes como comparar identidades, Follow Value o revisar un header propio del target.</p><p class="guide-caution">Tu regla reconoce hechos; no decide si hay IDOR, bypass o impacto.</p></article>
+    <article class="panel guide-card"><h3>Mapa con inteligencia asociada</h3><p>Endpoints y Requests con Signals o Hypotheses se resaltan. Al abrir su detalle aparece <b>Inteligencia asociada</b> con enlaces directos al Signal o Hypothesis exacto en Hunt.</p><code>GET /orders/4101/invoice · S1 · H1</code><p class="guide-example"><b>Uso:</b> mientras exploras el grafo puedes detectar de inmediato qué rutas ya tienen una pista o una hipótesis pendiente.</p></article>
     <article class="panel guide-card"><h3>Intelligence</h3><p>Concentra reglas determinísticas y pistas de HTTP/JS/recon para que no se pierdan.</p><p class="guide-example"><b>Lab:</b> headers alternos, IDs controlables, method variation o redirects pueden convertirse en pistas.</p></article>
-    <article class="panel guide-card" id="hunt"><h3>Hunt / Hypotheses</h3><p>Pregunta comprobable que reúne evidencia y propone una siguiente prueba manual.</p><code>¿/invoice valida ownership o sólo conocimiento de orderId?</code></article>
+    <article class="panel guide-card" id="hunt"><h3>Hunt / Hypotheses 2.0</h3><p>Pregunta comprobable que reúne evidencia y propone una siguiente prueba manual. El motor puede correlacionar Identity, Flow, Object, State, Signals, anomalías y resultados HTTP entre identidades.</p><code>¿/invoice valida ownership o sólo conocimiento de orderId?</code><p class="guide-caution">La IA sólo genera hipótesis cuando tú la ejecutas; nunca convierte una correlación en Finding automáticamente.</p></article>
     <article class="panel guide-card" id="findings"><h3>Findings</h3><p>Registro de algo ya confirmado: impacto, evidencia, entidades afectadas y retests.</p><p class="guide-caution">Es la última etapa, no la primera.</p></article>
   </div>
 </section>
