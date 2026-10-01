@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.23.2
+
+- Al asignar un exchange de identidad propia como `/me`, Negro propone **resolvers de actor** usando la evidencia real del response. `id`/`email` pueden venir preseleccionados; valores como `phone` quedan opcionales y `role`/`roleId` se muestran como no identificadores.
+- Separa conceptualmente **actor identity** de **object ownership**: `ownerId`, `tenantId`, `orderId`, etc. ya no se ofrecen como resolvers de actor desde Search y el backend rechaza su creación como resolver.
+- Los resolvers de parámetro nuevos conservan el exchange/observation que los enseñó para provenance.
+- La confirmación de asignación contabiliza resolvers JWT + resolvers seleccionados desde `/me`.
+- **Find Related** deja de considerar suficiente `mismo host` o nombres genéricos compartidos; prioriza valores exactos y mismo recurso.
+- `OPTIONS` se oculta por defecto en Find Related cuando el exchange origen no es OPTIONS.
+- Find Related reemplaza el score numérico visible por `Relación fuerte / media / débil`, con razones legibles (`valores exactos`, `misma operación`, `mismo recurso`). Las relaciones débiles quedan plegadas.
+- Añade regresión `v0232_identity_related_test.py`; suite completa en verde.
+- Sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+
 ## v0.23.1
 
 - Corrige `Internal Server Error` al abrir **Explorar parámetro** / detalle de `ownerId`: el template colisionaba con `dict.values`.

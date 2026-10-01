@@ -96,6 +96,12 @@ def init_schema(conn) -> None:
     resolver_cols = {row["name"] for row in conn.execute("PRAGMA table_info(identity_resolvers)")}
     if "value_raw" not in resolver_cols:
         conn.execute("ALTER TABLE identity_resolvers ADD COLUMN value_raw TEXT")
+        resolver_cols.add("value_raw")
+    if "anchor_exchange_id" not in resolver_cols:
+        conn.execute("ALTER TABLE identity_resolvers ADD COLUMN anchor_exchange_id INTEGER")
+        resolver_cols.add("anchor_exchange_id")
+    if "anchor_observation_id" not in resolver_cols:
+        conn.execute("ALTER TABLE identity_resolvers ADD COLUMN anchor_observation_id INTEGER")
 
 
 def _decode_b64(value: str | None) -> str:
@@ -259,7 +265,79 @@ def _learn_stable_jwt_claims(conn, identity_id: int, context_id: int | None, mat
     return count
 
 
-def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int | None = None, learn_auth: bool = True, source: str = "manual", notes: str = "") -> dict[str, Any]:
+
+SELF_IDENTITY_PATHS = {
+    "/me", "/whoami", "/userinfo", "/user/me", "/users/me", "/account/me", "/accounts/me",
+    "/profile/me", "/session/me", "/api/me", "/api/user/me", "/api/users/me",
+}
+ACTOR_IDENTITY_NAMES = {
+    "id", "userid", "user_id", "accountid", "account_id", "email", "username", "login", "sub", "subject",
+}
+OPTIONAL_ACTOR_NAMES = {"phone", "mobile", "displayname", "display_name", "name"}
+NON_ACTOR_NAMES = {
+    "role", "roleid", "role_id", "status", "state", "ownerid", "owner_id", "sellerid", "seller_id",
+    "buyerid", "buyer_id", "customerid", "customer_id", "tenantid", "tenant_id", "orderid", "order_id",
+    "productid", "product_id", "itemid", "item_id", "invoiceid", "invoice_id", "resourceid", "resource_id",
+}
+
+
+def _looks_self_identity_path(path: str) -> bool:
+    raw = "/" + str(path or "").split("?", 1)[0].strip("/").lower()
+    if raw in SELF_IDENTITY_PATHS:
+        return True
+    # Common current-user/profile forms, without treating arbitrary /users/{id} as self.
+    return raw.endswith(("/me", "/whoami", "/userinfo", "/current-user", "/current_user", "/my-profile", "/my_profile"))
+
+
+def resolver_suitability(conn, observation_id: int) -> dict[str, Any]:
+    """Explain whether a parameter observation is suitable to identify the actor.
+
+    Object ownership fields intentionally do not become actor resolvers: ownerId=101
+    may describe the object owner while the request was made by another identity.
+    """
+    init_schema(conn)
+    row = conn.execute(
+        """SELECT p.*,r.path,o.method,h.hostname FROM parameter_observations p
+           JOIN resource_operations o ON o.id=p.operation_id
+           JOIN resources r ON r.id=p.resource_id JOIN hosts h ON h.id=r.host_id
+           WHERE p.id=?""",
+        (int(observation_id),),
+    ).fetchone()
+    if not row:
+        return {"allowed": False, "recommended": False, "kind": "unknown", "reason": "Observación no encontrada"}
+    name = str(row["normalized_name"] or "").lower()
+    location = str(row["location"] or "").lower()
+    path = str(row["path"] or "")
+    self_path = _looks_self_identity_path(path)
+    is_response = location.startswith("response_json:") or location.startswith("response_form")
+    if name in NON_ACTOR_NAMES or any(tok in name for tok in ("owner", "tenant", "order", "invoice", "product", "item")):
+        return {"allowed": False, "recommended": False, "kind": "object_or_context", "reason": "Describe objeto/contexto; no demuestra quién hizo la request", "self_path": self_path, "observation": dict(row)}
+    if self_path and is_response and name in ACTOR_IDENTITY_NAMES:
+        return {"allowed": True, "recommended": True, "kind": "actor", "reason": "Identificador estable observado en un endpoint de identidad propia", "self_path": True, "observation": dict(row)}
+    if self_path and is_response and name in OPTIONAL_ACTOR_NAMES:
+        return {"allowed": True, "recommended": False, "kind": "actor_optional", "reason": "Puede identificar la cuenta, pero conviene confirmarlo manualmente", "self_path": True, "observation": dict(row)}
+    return {"allowed": False, "recommended": False, "kind": "not_actor", "reason": "No es un identificador de actor suficientemente confiable en este contexto", "self_path": self_path, "observation": dict(row)}
+
+
+def candidate_identity_resolvers(conn, exchange_id: int) -> dict[str, list[dict[str, Any]]]:
+    rows = conn.execute(
+        """SELECT id,name,normalized_name,location,value_hash,value_preview,value_raw
+           FROM parameter_observations WHERE exchange_id=? ORDER BY id""",
+        (int(exchange_id),),
+    ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    ignored: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        suitability = resolver_suitability(conn, int(row["id"]))
+        item.update({k: suitability.get(k) for k in ("allowed", "recommended", "kind", "reason")})
+        if item["allowed"]:
+            candidates.append(item)
+        elif str(row["location"] or "").lower().startswith("response_json:"):
+            ignored.append(item)
+    return {"candidates": candidates, "ignored": ignored}
+
+def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int | None = None, learn_auth: bool = True, resolver_observation_ids: list[int] | None = None, source: str = "manual", notes: str = "") -> dict[str, Any]:
     init_schema(conn)
     identity = conn.execute("SELECT * FROM identities WHERE id=?", (int(identity_id),)).fetchone()
     if not identity:
@@ -282,7 +360,14 @@ def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int
         _learn_material(conn, int(identity_id), context_id, material, source=source)
         if material["material_type"] == "bearer":
             resolvers += _learn_stable_jwt_claims(conn, int(identity_id), context_id, material, source=source)
-    return {"exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id, "materials": len(materials), "jwt_resolvers": resolvers}
+    parameter_resolvers = 0
+    for observation_id in (resolver_observation_ids or []):
+        obs = conn.execute("SELECT exchange_id FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
+        if not obs or int(obs["exchange_id"]) != int(exchange_id):
+            continue
+        add_parameter_resolver(conn, int(observation_id), int(identity_id), context_id=context_id, source="manual_assignment")
+        parameter_resolvers += 1
+    return {"exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id, "materials": len(materials), "jwt_resolvers": resolvers, "parameter_resolvers": parameter_resolvers}
 
 
 def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, context_id: int | None = None, source: str = "manual") -> int:
@@ -291,14 +376,19 @@ def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, conte
     obs = conn.execute("SELECT * FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
     if not obs:
         raise ValueError("Observación de parámetro no encontrada")
+    suitability = resolver_suitability(conn, int(observation_id))
+    if not suitability.get("allowed"):
+        raise ValueError("Este valor no debe usarse como resolver de actor: " + str(suitability.get("reason") or "contexto insuficiente"))
     selector = str(obs["normalized_name"])
     now = now_iso()
     conn.execute(
-        """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at)
-           VALUES(?,?,?,?,?,?,?,1,?,?,?)
+        """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at,anchor_exchange_id,anchor_observation_id)
+           VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?)
            ON CONFLICT(identity_id,context_id,resolver_type,selector,value_hash)
-           DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=1,updated_at=excluded.updated_at""",
-        (int(identity_id), context_id, "parameter", selector, str(obs["value_hash"]), str(obs["value_preview"] or "")[:120], str(obs["value_raw"] or obs["value_preview"] or ""), source, now, now),
+           DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=1,updated_at=excluded.updated_at,
+                         anchor_exchange_id=COALESCE(identity_resolvers.anchor_exchange_id,excluded.anchor_exchange_id),
+                         anchor_observation_id=COALESCE(identity_resolvers.anchor_observation_id,excluded.anchor_observation_id)""",
+        (int(identity_id), context_id, "parameter", selector, str(obs["value_hash"]), str(obs["value_preview"] or "")[:120], str(obs["value_raw"] or obs["value_preview"] or ""), source, now, now, int(obs["exchange_id"]), int(observation_id)),
     )
     row = conn.execute(
         "SELECT id FROM identity_resolvers WHERE identity_id=? AND context_id IS ? AND resolver_type='parameter' AND selector=? AND value_hash=?",
@@ -476,7 +566,8 @@ def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:
            WHERE exchange_id=? ORDER BY CASE WHEN location LIKE 'response_json:%' THEN 0 ELSE 1 END,id LIMIT 80""",
         (int(exchange_id),),
     ).fetchall()]
-    return {"exchange": exchange, "current": dict(current) if current else None, "materials": extract_auth_materials(conn, int(exchange_id)), "observations": observations}
+    resolver_candidates = candidate_identity_resolvers(conn, int(exchange_id))
+    return {"exchange": exchange, "current": dict(current) if current else None, "materials": extract_auth_materials(conn, int(exchange_id)), "observations": observations, "resolver_candidates": resolver_candidates["candidates"], "resolver_ignored": resolver_candidates["ignored"]}
 
 
 def stats(conn) -> dict[str, int]:

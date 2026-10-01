@@ -9,7 +9,7 @@
 
 
 {% if assigned_exchange %}
-<div class="callout success"><b>Asignación guardada:</b> exchange #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers JWT estables. Revisa el exchange exacto abajo en “Tráfico asociado”.</div>
+<div class="callout success"><b>Asignación guardada:</b> exchange #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers estables. Revisa el exchange exacto abajo en “Tráfico asociado”.</div>
 {% endif %}
 {% if resolver_observation %}
 <div class="callout success"><b>Resolver guardado:</b> la observación #{{ resolver_observation }} ahora puede ayudar a reconocer <b>{{ i.name }}</b> en tráfico futuro.</div>
@@ -44,9 +44,9 @@
 </section>
 
 <section class="panel" id="resolvers">
-  <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplo: <code>jwt:sub=101</code> o <code>ownerId=101</code>. Debe ser un valor que realmente identifique a esta cuenta.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplos válidos: <code>jwt:sub=101</code>, <code>/me.id=101</code> o <code>/me.email=ana@…</code>. Un <code>ownerId</code> describe propiedad del objeto y no identifica necesariamente al actor.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
   <div class="identity-resolver-list">
-    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Puedes enseñar uno desde Buscar → Usar para identidad.</p>{% endfor %}
+    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna un exchange de identidad propia (por ejemplo <code>/me</code>) o usa Buscar sobre un identificador estable confirmado.</p>{% endfor %}
   </div>
 </section>
 

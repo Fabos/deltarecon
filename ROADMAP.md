@@ -152,7 +152,7 @@ No medir Negro por cantidad de módulos. Medirlo por:
 
 1. Global Search + FTS5 + Saved Searches + guía “Aprende a buscar como hacker”.
 2. Parameter Explorer + Follow Value + Find Related + Smart Diff.
-3. Identity Contexts + auth material rotatorio + identity resolvers + Authorization Matrix. ✅ v0.23.1
+3. Identity Contexts + auth material rotatorio + actor resolvers + Authorization Matrix. ✅ v0.23.2
 4. Flow Capture + Flow Compare + business-state observations.
 5. Pattern anomalies + cross-host correlation + business objects.
 6. Custom Signals sobre la Knowledge Base existente, sin crear un segundo motor paralelo.

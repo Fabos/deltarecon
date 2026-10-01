@@ -1,4 +1,4 @@
-# Negro Recon — Metodología v0.23.1
+# Negro Recon — Metodología v0.23.2
 
 ## Modelo mental: Rule → Signal → Hipótesis IA → Investigación
 
@@ -30,7 +30,7 @@ Parameter Explorer queda como vista de detalle: **Search responde dónde aparece
 `parameter_observations` deriva escalares de query, path, request JSON/form y response JSON. Cada observación conserva nombre normalizado, superficie, exchange, recurso, hash del valor, preview y valor local completo (`value_raw`). El hash sirve para correlación; el valor completo permanece disponible en el workspace local para análisis manual.
 
 - **Follow Value**: mismo valor exacto por hash.
-- **Find Related**: exchanges cercanos por evidencia compartida, con razones visibles.
+- **Find Related**: exchanges relacionados por valores exactos o el mismo recurso. “Mismo host” o un nombre genérico compartido no bastan; OPTIONS queda fuera del resultado normal. Las etiquetas fuerte/media/débil describen evidencia compartida, no severidad.
 - **Smart Diff**: diferencias relevantes entre dos exchanges antes del ruido de headers.
 
 ## Identity Contexts
@@ -39,7 +39,7 @@ Negro separa **Identity**, **Context** y **Auth Material**. La identidad represe
 
 La primera asociación es humana y se hace sobre un **exchange**, no sobre una ruta completa. Ejemplo: el `GET /me` concreto que sabes que pertenece a Buyer A. Antes de guardarlo, Negro muestra el HTTP exacto y los valores observados. A partir de ese ancla recuerda fingerprints y valores locales de cookies/Bearer y, si el token es JWT, resolvers de claims estables como `sub`, `userId` o `accountId`. Si un resolver estable identifica una sesión nueva, Negro aprende el auth material rotado de esa sesión para siguientes requests.
 
-También se puede enseñar un resolver desde una observación de parámetro estable (por ejemplo un `userId` de `/me`). Si no hay una coincidencia única, la identidad permanece **desconocida**; Negro no adivina. `Context` es opcional y pertenece siempre a una sola Identity.
+También se puede enseñar un resolver desde una observación de parámetro estable. La separación clave es **actor vs ownership**: `/me.id=101`, `/me.email=...` o `jwt:sub=101` pueden resolver quién hace la request; `order.ownerId=101` describe el dueño de un objeto y no debe atribuir el tráfico a esa persona. Al asignar manualmente un `/me`, Negro propone candidatos y deja la selección bajo control humano. Si no hay una coincidencia única, la identidad permanece **desconocida**; Negro no adivina. `Context` es opcional y pertenece siempre a una sola Identity.
 
 ### Authorization Matrix
 

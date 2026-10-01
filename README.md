@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.23.1
+# Negro Recon 🐕 — v0.23.2
 
 Negro es una capa local de inteligencia, memoria y organización encima de Burp Suite. No pretende ser un vulnerability scanner ni hacer el hacking por el usuario.
 
@@ -12,7 +12,7 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 - **Investigaciones**: las crea el usuario al promover una hipótesis que considera valiosa.
 - **Estados humanos / Findings**: siguen bajo control del hacker.
 
-## v0.23.1 — Identity UX + valores locales completos
+## v0.23.2 — resolvers de actor + Find Related limpio
 
 ### Buscar es la entrada principal
 
@@ -45,7 +45,9 @@ Negro es local-first. Desde v0.23.1 conserva también los valores completos obse
 
 Si el Bearer es JWT, Negro puede aprender claims estables como `sub`, `userId` o `accountId`. Si el token rota pero conserva ese claim, una nueva sesión puede resolverse hacia la misma Identity y el nuevo token se aprende como Auth Material adicional.
 
-Un resolver de parámetro se crea solo cuando tú sabes que el valor identifica realmente a esa cuenta. `role=buyer` no sirve; `userId=101` confirmado en `/me` sí puede servir.
+Un resolver de parámetro se crea solo cuando el valor identifica al **actor**. En v0.23.2, al asignar un endpoint de identidad propia como `/me`, Negro propone identificadores candidatos: `id` y `email` suelen venir preseleccionados; `phone`/`displayName` requieren confirmación; `role`, `roleId`, `ownerId`, `tenantId` y otros campos de objeto/contexto no se usan como resolvers de actor. `ownerId=101` puede decir que un pedido pertenece a ANA aunque quien hizo la request sea otra cuenta.
+
+**Find Related** prioriza valores exactos y el mismo recurso. Ya no muestra relaciones por “mismo host” o por compartir un nombre genérico como `id`, y oculta `OPTIONS` por defecto cuando el origen no es `OPTIONS`. La UI usa `Relación fuerte/media/débil` y explica la evidencia; no muestra un score numérico como si fuera severidad.
 
 Para tráfico histórico usa **Identidades → Resolver historial** después de haber enseñado al menos una identidad/resolver.
 
@@ -63,7 +65,7 @@ negro web
 
 ## Extensión Burp
 
-**No necesitas actualizar la extensión para v0.23.1.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
+**No necesitas actualizar la extensión para v0.23.2.** La aplicación sigue siendo compatible con **Negro Burp Bridge v0.20.3**.
 
 Si necesitas recompilarla:
 

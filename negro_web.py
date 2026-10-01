@@ -2399,6 +2399,7 @@ def create_app(default_domain: str, default_workspace: Path):
     def search_page(request: Request, target_key: str, q: str = ""):
         import negro_search as search_index
         import negro_parameters as parameter_tools
+        import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             search_index.init_schema(conn)
@@ -2420,7 +2421,12 @@ def create_app(default_domain: str, default_workspace: Path):
                 hit["parameter_href"] = f"/t/{target_key}/parameters/{urllib.parse.quote(str(hit['normalized_name']))}"
                 hit["related_href"] = f"/t/{target_key}/parameters/related/{int(hit['exchange_id'])}"
                 hit["diff_href"] = f"/t/{target_key}/parameters/diff?a={int(hit['exchange_id'])}"
-                hit["identity_resolver_href"] = f"/t/{target_key}/identities/resolver?observation_id={int(hit['id'])}"
+                suitability = identity_tools.resolver_suitability(conn, int(hit["id"]))
+                hit["identity_resolver_allowed"] = bool(suitability.get("allowed"))
+                hit["identity_resolver_recommended"] = bool(suitability.get("recommended"))
+                hit["identity_resolver_reason"] = str(suitability.get("reason") or "")
+                hit["identity_resolver_kind"] = str(suitability.get("kind") or "")
+                hit["identity_resolver_href"] = f"/t/{target_key}/identities/resolver?observation_id={int(hit['id'])}" if hit["identity_resolver_allowed"] else ""
             for item in rows:
                 typ=str(item.get("entity_type") or "")
                 if typ=="exchange" and item.get("resource_id"):
@@ -2531,17 +2537,18 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "identity_assign.html", target_key, domain, workspace, assignment=ctx, identities=identity_rows, identity_contexts=all_contexts)
 
     @app.post("/t/{target_key}/identities/assign")
-    def identity_assign_submit(request: Request, target_key: str, exchange_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), learn_auth: str = Form("no"), notes: str = Form(""), csrf: str = Form(...)):
+    def identity_assign_submit(request: Request, target_key: str, exchange_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), learn_auth: str = Form("no"), resolver_observation_ids: list[int] = Form(default=[]), notes: str = Form(""), csrf: str = Form(...)):
         import negro_identity as identity_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         cid = int(context_id) if str(context_id).strip().isdigit() else None
         try:
             with _db(paths) as conn:
-                learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=cid, learn_auth=(learn_auth == "yes"), source="manual", notes=notes)
+                learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=cid, learn_auth=(learn_auth == "yes"), resolver_observation_ids=resolver_observation_ids, source="manual", notes=notes)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?assigned_exchange={exchange_id}&learned_materials={int(learned.get('materials',0))}&learned_resolvers={int(learned.get('jwt_resolvers',0))}#traffic", status_code=303)
+        learned_resolvers = int(learned.get("jwt_resolvers", 0)) + int(learned.get("parameter_resolvers", 0))
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?assigned_exchange={exchange_id}&learned_materials={int(learned.get('materials',0))}&learned_resolvers={learned_resolvers}#traffic", status_code=303)
 
     @app.get("/t/{target_key}/identities/resolver", response_class=HTMLResponse)
     def identity_resolver_page(request: Request, target_key: str, observation_id: int):
@@ -2558,7 +2565,8 @@ def create_app(default_domain: str, default_workspace: Path):
                 raise HTTPException(status_code=404, detail="Observación no encontrada")
             identity_rows = identity_tools.list_identities(conn)
             all_contexts = identity_tools.contexts(conn)
-        return render(request, "identity_resolver.html", target_key, domain, workspace, observation=dict(obs), identities=identity_rows, identity_contexts=all_contexts)
+            suitability = identity_tools.resolver_suitability(conn, int(observation_id))
+        return render(request, "identity_resolver.html", target_key, domain, workspace, observation=dict(obs), identities=identity_rows, identity_contexts=all_contexts, resolver_suitability=suitability)
 
     @app.post("/t/{target_key}/identities/resolver")
     def identity_resolver_submit(request: Request, target_key: str, observation_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), csrf: str = Form(...)):

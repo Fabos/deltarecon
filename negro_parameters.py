@@ -296,8 +296,14 @@ def follow_observation(conn, observation_id: int, *, limit: int = 500) -> dict[s
 
 
 def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, Any] | None:
+    """Find nearby HTTP evidence without pretending that proximity is severity.
+
+    v0.23.2 deliberately ignores same-host-only noise and hides OPTIONS unless the
+    origin itself is OPTIONS. Exact shared values and the same resource are the
+    primary evidence. Common values are discounted by project frequency.
+    """
     base = conn.execute(
-        """SELECT e.id,o.resource_id,r.host_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+        """SELECT e.id,e.response_hash,o.resource_id,o.id operation_id,r.host_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
            FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
            JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
         (int(exchange_id),),
@@ -305,71 +311,150 @@ def related_exchanges(conn, exchange_id: int, *, limit: int = 60) -> dict[str, A
     if not base:
         return None
     base_params = [dict(r) for r in conn.execute(
-        "SELECT normalized_name,value_hash,value_preview,location FROM parameter_observations WHERE exchange_id=?",
+        """SELECT normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
+           FROM parameter_observations WHERE exchange_id=?""",
         (int(exchange_id),),
     ).fetchall()]
-    base_hashes = {r["value_hash"]: r for r in base_params}
-    base_names = {r["normalized_name"] for r in base_params}
+    base_hashes: dict[str, dict[str, Any]] = {}
+    for r in base_params:
+        base_hashes.setdefault(str(r["value_hash"]), r)
+    base_names = {str(r["normalized_name"]) for r in base_params}
+
+    # Frequency lets us discount generic values such as role=customer or status=active.
+    value_freq: dict[str, int] = {}
+    if base_hashes:
+        placeholders = ",".join("?" for _ in base_hashes)
+        for row in conn.execute(
+            f"SELECT value_hash,COUNT(DISTINCT exchange_id) n FROM parameter_observations WHERE value_hash IN ({placeholders}) GROUP BY value_hash",
+            list(base_hashes.keys()),
+        ).fetchall():
+            value_freq[str(row["value_hash"])] = int(row["n"] or 0)
+
     candidate_ids: set[int] = set()
     if base_hashes:
         placeholders = ",".join("?" for _ in base_hashes)
         for row in conn.execute(
-            f"SELECT DISTINCT exchange_id FROM parameter_observations WHERE value_hash IN ({placeholders}) AND exchange_id<>? LIMIT 500",
+            f"SELECT DISTINCT exchange_id FROM parameter_observations WHERE value_hash IN ({placeholders}) AND exchange_id<>? LIMIT 700",
             [*base_hashes.keys(), int(exchange_id)],
         ).fetchall():
             candidate_ids.add(int(row["exchange_id"]))
+    # Same resource is useful even when response values changed.
     for row in conn.execute(
         """SELECT e.id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
-           JOIN resources r ON r.id=o.resource_id WHERE e.id<>? AND (o.resource_id=? OR r.host_id=?)
-           ORDER BY e.id DESC LIMIT 250""",
-        (int(exchange_id), int(base["resource_id"]), int(base["host_id"])),
+           WHERE e.id<>? AND o.resource_id=? ORDER BY e.id DESC LIMIT 250""",
+        (int(exchange_id), int(base["resource_id"])),
     ).fetchall():
         candidate_ids.add(int(row["id"]))
 
     scored: list[dict[str, Any]] = []
     for candidate_id in candidate_ids:
         row = conn.execute(
-            """SELECT e.id,o.resource_id,r.host_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
+            """SELECT e.id,e.response_hash,o.resource_id,o.id operation_id,r.host_id,h.hostname,r.path,o.method,e.status_code,e.first_seen_at
                FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
                JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
             (candidate_id,),
         ).fetchone()
         if not row:
             continue
+        if str(base["method"]).upper() != "OPTIONS" and str(row["method"]).upper() == "OPTIONS":
+            continue
         params = [dict(r) for r in conn.execute(
-            "SELECT normalized_name,value_hash,value_preview,location FROM parameter_observations WHERE exchange_id=?",
+            """SELECT normalized_name,value_hash,COALESCE(value_raw,value_preview) value_text,location
+               FROM parameter_observations WHERE exchange_id=?""",
             (candidate_id,),
         ).fetchall()]
-        hashes = {r["value_hash"]: r for r in params}
-        names = {r["normalized_name"] for r in params}
-        shared_hashes = list(set(base_hashes) & set(hashes))
+        hashes: dict[str, dict[str, Any]] = {}
+        for r in params:
+            hashes.setdefault(str(r["value_hash"]), r)
+        names = {str(r["normalized_name"]) for r in params}
+        shared_hashes = sorted(set(base_hashes) & set(hashes))
         shared_names = sorted(base_names & names)
-        reasons: list[str] = []
-        score = 0
-        if shared_hashes:
-            labels = []
-            for hv in shared_hashes[:5]:
-                item = base_hashes[hv]
-                labels.append(f"{item['normalized_name']}={item['value_preview']}")
-            score += min(30, len(shared_hashes) * 6)
-            reasons.append("mismo valor: " + ", ".join(labels))
-        if int(row["resource_id"]) == int(base["resource_id"]):
-            score += 8
-            reasons.append("mismo recurso")
-        elif int(row["host_id"]) == int(base["host_id"]):
-            score += 2
-            reasons.append("mismo host")
-        if shared_names:
-            score += min(8, len(shared_names))
-            reasons.append("parámetros compartidos: " + ", ".join(shared_names[:6]))
-        if score <= 0:
-            continue
-        item = dict(row)
-        item.update({"score": score, "reasons": reasons, "shared_values": len(shared_hashes), "shared_names": len(shared_names)})
-        scored.append(item)
-    scored.sort(key=lambda x: (-int(x["score"]), abs(int(x["id"]) - int(exchange_id))))
-    return {"base": dict(base), "related": scored[: max(1, min(int(limit), 200))]}
+        same_resource = int(row["resource_id"]) == int(base["resource_id"])
+        same_operation = int(row["operation_id"]) == int(base["operation_id"])
 
+        # Same host or a generic parameter name alone is not useful enough to surface.
+        if not shared_hashes and not same_resource:
+            continue
+
+        value_labels: list[str] = []
+        weighted_value_score = 0
+        distinctive = 0
+        for hv in shared_hashes:
+            item = base_hashes[hv]
+            freq = int(value_freq.get(hv, 999999))
+            if freq <= 4:
+                weight = 8
+                distinctive += 1
+            elif freq <= 12:
+                weight = 6
+                distinctive += 1
+            elif freq <= 50:
+                weight = 3
+            else:
+                weight = 1
+            weighted_value_score += weight
+            if len(value_labels) < 6:
+                value_labels.append(f"{item['normalized_name']}={item['value_text']}")
+
+        score = min(42, weighted_value_score)
+        if same_resource:
+            score += 7
+        if same_operation:
+            score += 3
+
+        if shared_hashes and same_resource:
+            relation_kind = "same_resource_values"
+            primary = f"MISMO RECURSO · {len(shared_hashes)} valor{'es' if len(shared_hashes) != 1 else ''} exacto{'s' if len(shared_hashes) != 1 else ''}"
+        elif shared_hashes:
+            relation_kind = "same_object_values"
+            primary = f"VALORES DEL MISMO OBJETO · {len(shared_hashes)} coincidencia{'s' if len(shared_hashes) != 1 else ''} exacta{'s' if len(shared_hashes) != 1 else ''}"
+        else:
+            relation_kind = "same_resource"
+            primary = "MISMO RECURSO · otra observación"
+
+        if len(shared_hashes) >= 2 or (same_resource and len(shared_hashes) >= 1) or distinctive >= 2:
+            strength = "strong"
+            strength_label = "Relación fuerte"
+        elif len(shared_hashes) >= 1:
+            strength = "medium"
+            strength_label = "Relación media"
+        else:
+            strength = "weak"
+            strength_label = "Relación débil"
+
+        reasons: list[str] = []
+        if value_labels:
+            reasons.append("Valores exactos: " + ", ".join(value_labels))
+        if same_operation:
+            reasons.append("Misma operación HTTP")
+        elif same_resource:
+            reasons.append("Mismo recurso")
+        # Names explain shape, but never create a relation by themselves.
+        if shared_names:
+            reasons.append("Campos compartidos: " + ", ".join(shared_names[:8]))
+
+        item = dict(row)
+        item.update({
+            "score": score,
+            "relation_kind": relation_kind,
+            "primary": primary,
+            "strength": strength,
+            "strength_label": strength_label,
+            "reasons": reasons,
+            "shared_values": len(shared_hashes),
+            "shared_names": len(shared_names),
+        })
+        scored.append(item)
+
+    scored.sort(key=lambda x: ({"strong": 0, "medium": 1, "weak": 2}[x["strength"]], -int(x["score"]), abs(int(x["id"]) - int(exchange_id))))
+    max_items = max(1, min(int(limit), 200))
+    selected = scored[:max_items]
+    groups = {
+        "strong": [x for x in selected if x["strength"] == "strong"],
+        "medium": [x for x in selected if x["strength"] == "medium"],
+        "weak": [x for x in selected if x["strength"] == "weak"],
+    }
+    return {"base": dict(base), "related": selected, "groups": groups, "counts": {k: len(v) for k, v in groups.items()}}
 
 def _flatten_json(value: Any, prefix: str = "$") -> dict[str, Any]:
     out: dict[str, Any] = {}
