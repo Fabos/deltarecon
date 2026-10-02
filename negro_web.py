@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.20.
+"""Local web workspace for Negro Recon v0.38.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -90,6 +90,32 @@ UI_LABELS = {
     "referer_access_control": "Control de acceso basado en Referer",
     "javascript_surface": "Superficie descubierta en JavaScript",
 }
+
+
+BURP_TOOL_LABELS = {
+    "PROXY": "Proxy",
+    "REPEATER": "Repeater",
+    "INTRUDER": "Intruder",
+    "SCANNER": "Scanner",
+    "EXTENSIONS": "Extensiones",
+    "LOGGER": "Logger",
+    "COMPARER": "Comparer",
+    "DECODER": "Decoder",
+    "SEQUENCER": "Sequencer",
+    "TARGET": "Target",
+    "OTHER": "Burp",
+    "": "Burp",
+}
+
+def _burp_tool_label(tool: Any, source: Any = "") -> str:
+    raw = str(tool or "").strip().upper()
+    if raw in BURP_TOOL_LABELS:
+        return BURP_TOOL_LABELS[raw]
+    src = str(source or "").strip()
+    if src == "burp_proxy": return "Proxy"
+    if src == "burp_repeater": return "Repeater"
+    if src.startswith("burp_"): return src[5:].replace("_", " ").title()
+    return raw.replace("_", " ").title() or "Burp"
 
 def _ui_label(value: Any) -> str:
     raw = str(value or "")
@@ -1077,13 +1103,18 @@ def _tree_data(paths: dict[str, Path], q: str = "", review: str = "", classifica
 
 
 
-def _decode_http_blob(value: str | None, limit: int = 300000) -> str:
+def _decode_http_blob(value: str | None, limit: int | None = None) -> str:
+    """Decode the stored HTTP message. v0.38 shows the complete saved evidence.
+
+    A caller may still pass an explicit limit for a specialized preview, but the
+    Request Workbench never truncates the persisted Request/Response.
+    """
     if not value:
         return ""
     try:
         raw = base64.b64decode(value)
-        if len(raw) > limit:
-            raw = raw[:limit] + b"\n\n[... truncated by Negro UI ...]"
+        if limit is not None and limit > 0 and len(raw) > limit:
+            raw = raw[:limit] + b"\n\n[... vista previa limitada ...]"
         return raw.decode("utf-8", errors="replace")
     except Exception:
         return "[No se pudo decodificar el mensaje HTTP]"
@@ -1122,9 +1153,19 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
         operations = []
         resource_test_summary = {k: 0 for k in hunter.TEST_STATUSES}
         for op in conn.execute("SELECT * FROM resource_operations WHERE resource_id=? ORDER BY method", (resource_id,)).fetchall():
-            sources = conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()
+            sources = [dict(x) for x in conn.execute("SELECT * FROM operation_sources WHERE operation_id=? ORDER BY source", (op["id"],)).fetchall()]
+            exchange_total = int(conn.execute("SELECT COUNT(*) c FROM http_exchanges WHERE operation_id=?", (op["id"],)).fetchone()["c"] or 0)
+            execution_total = int(conn.execute("SELECT COALESCE(SUM(seen_count),0) c FROM http_exchanges WHERE operation_id=?", (op["id"],)).fetchone()["c"] or 0)
+            tool_totals = []
+            for pr in conn.execute(
+                """SELECT source,tool,SUM(seen_count) seen_count,MIN(first_seen_at) first_seen_at,MAX(last_seen_at) last_seen_at
+                   FROM http_exchange_provenance WHERE exchange_id IN (SELECT id FROM http_exchanges WHERE operation_id=?)
+                   GROUP BY source,tool ORDER BY seen_count DESC,tool,source""",
+                (op["id"],),
+            ).fetchall():
+                item=dict(pr); item["label"]=_burp_tool_label(pr["tool"], pr["source"]); tool_totals.append(item)
             exchanges = []
-            exchange_rows=list(conn.execute("SELECT * FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC LIMIT 30", (op["id"],)).fetchall())
+            exchange_rows=list(conn.execute("SELECT * FROM http_exchanges WHERE operation_id=? ORDER BY last_seen_at DESC,id DESC LIMIT 12", (op["id"],)).fetchall())
             if focus_exchange_id and not any(int(x["id"]) == int(focus_exchange_id) for x in exchange_rows):
                 focused=conn.execute("SELECT * FROM http_exchanges WHERE id=? AND operation_id=?", (focus_exchange_id,op["id"])).fetchone()
                 if focused:
@@ -1134,14 +1175,22 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["focused"] = bool(focus_exchange_id and int(ex["id"]) == int(focus_exchange_id))
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
-                exd["request_truncated"] = int(ex["request_size"] or 0) > 300000
-                exd["response_truncated"] = int(ex["response_size"] or 0) > 300000
+                exd["request_truncated"] = False
+                exd["response_truncated"] = False
                 exd["human_state"] = core.get_human_state(conn, "exchange", int(ex["id"]))
                 exd["unreviewed_signal_count"] = core.unreviewed_signal_count(conn, exchange_id=int(ex["id"]))
                 exd["snapshots"] = [dict(x) for x in conn.execute(
                     "SELECT id,human_state,request_hash,response_hash,observed_at,created_at FROM evidence_snapshots WHERE exchange_id=? ORDER BY id DESC",
                     (int(ex["id"]),),
                 ).fetchall()]
+                exd["provenance"] = []
+                for pr in conn.execute(
+                    "SELECT source,tool,first_seen_at,last_seen_at,seen_count FROM http_exchange_provenance WHERE exchange_id=? ORDER BY seen_count DESC,last_seen_at DESC",
+                    (int(ex["id"]),),
+                ).fetchall():
+                    item=dict(pr); item["label"]=_burp_tool_label(pr["tool"], pr["source"]); exd["provenance"].append(item)
+                if not exd["provenance"]:
+                    exd["provenance"]=[{"source":ex["source"],"tool":ex["tool"] or "","seen_count":int(ex["seen_count"] or 1),"first_seen_at":ex["first_seen_at"],"last_seen_at":ex["last_seen_at"],"label":_burp_tool_label(ex["tool"],ex["source"])}]
                 exd["match_evidence"] = []
                 if exd["focused"]:
                     for sig in conn.execute("SELECT id,title,evidence_json FROM signal_occurrences WHERE exchange_id=? ORDER BY id DESC LIMIT 80", (int(ex["id"]),)).fetchall():
@@ -1159,7 +1208,11 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
             test_summary = hunter.operation_test_summary(conn, int(op["id"]))
             for k,v in test_summary.items():
                 resource_test_summary[k] = resource_test_summary.get(k, 0) + int(v)
-            operations.append({"row": op, "sources": sources, "exchanges": exchanges, "tests": tests, "test_summary": test_summary})
+            operations.append({
+                "row": op, "sources": sources, "exchanges": exchanges, "tests": tests, "test_summary": test_summary,
+                "exchange_total": exchange_total, "execution_total": execution_total, "tool_totals": tool_totals,
+                "more_variants": max(0, exchange_total-len(exchange_rows)),
+            })
         observations = []
         for o in conn.execute("SELECT * FROM observations WHERE entity_type='resource' AND entity_id=? ORDER BY id DESC LIMIT 50", (resource_id,)).fetchall():
             d = dict(o)
@@ -3143,17 +3196,80 @@ def create_app(default_domain: str, default_workspace: Path):
                 "Secrets":"Secretos", "Data exposure":"Exposición de datos",
                 "Information disclosure":"Divulgación de información",
             }
+            hidden_row=conn.execute("SELECT value FROM meta WHERE key='hidden_builtin_signal_rules_json'").fetchone()
+            try: hidden_builtin=set(json.loads(hidden_row["value"]) if hidden_row and hidden_row["value"] else [])
+            except Exception: hidden_builtin=set()
             builtin_rules = []
+            hidden_builtin_rules = []
             for detector_id, meta in hunter.DETECTOR_CATALOG.items():
                 cfg = hunter.detector_settings(detector_id, conn)
-                builtin_rules.append({
+                item={
                     "id": detector_id,
                     "label": meta.get("label") or detector_id,
                     "family": family_es.get(meta.get("family"), meta.get("family") or "General"),
                     "lesson": meta.get("lesson") or "",
                     "enabled": bool(cfg.get("enabled", True)),
-                })
-        return render(request, "custom_signals.html", target_key, domain, workspace, rules=rules, builtin_rules=builtin_rules, edit_rule=edit_rule, saved=saved, job_id=job, origin_context=origin_context, prefill=prefill)
+                }
+                (hidden_builtin_rules if detector_id in hidden_builtin else builtin_rules).append(item)
+        return render(request, "custom_signals.html", target_key, domain, workspace, rules=rules, builtin_rules=builtin_rules, hidden_builtin_rules=hidden_builtin_rules, edit_rule=edit_rule, saved=saved, job_id=job, origin_context=origin_context, prefill=prefill)
+
+    @app.post("/t/{target_key}/signals/builtin/{detector_id}/toggle")
+    def builtin_signal_toggle(request: Request, target_key: str, detector_id: str, csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf)
+        if detector_id not in hunter.DETECTOR_CATALOG:
+            raise HTTPException(status_code=404, detail="Regla integrada no encontrada")
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            current = hunter.detector_enabled(detector_id, conn)
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: project_rules={}
+            if not isinstance(project_rules,dict): project_rules={}
+            layer=rulebook.normalize_layer(project_rules.get(detector_id))
+            layer["enabled"] = not current
+            project_rules[detector_id]=layer
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)",(json.dumps(project_rules,ensure_ascii=False,sort_keys=True),))
+        if not current:
+            job_id=_start_job(f"Regla integrada · {detector_id} · revisar historial",target_key,core.recalculate_hunter_intelligence,_target_context(target_key)[0],paths)
+            return RedirectResponse(url=f"/t/{target_key}/signals/custom?job={job_id}",status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom",status_code=303)
+
+    @app.post("/t/{target_key}/signals/builtin/{detector_id}/delete")
+    def builtin_signal_delete(request: Request, target_key: str, detector_id: str, csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf)
+        if detector_id not in hunter.DETECTOR_CATALOG:
+            raise HTTPException(status_code=404, detail="Regla integrada no encontrada")
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='hidden_builtin_signal_rules_json'").fetchone()
+            try: hidden=set(json.loads(row["value"]) if row and row["value"] else [])
+            except Exception: hidden=set()
+            hidden.add(detector_id)
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('hidden_builtin_signal_rules_json',?)",(json.dumps(sorted(hidden),ensure_ascii=False),))
+            row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
+            try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
+            except Exception: project_rules={}
+            if not isinstance(project_rules,dict): project_rules={}
+            layer=rulebook.normalize_layer(project_rules.get(detector_id)); layer["enabled"]=False; project_rules[detector_id]=layer
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)",(json.dumps(project_rules,ensure_ascii=False,sort_keys=True),))
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom",status_code=303)
+
+    @app.post("/t/{target_key}/signals/builtin/{detector_id}/restore")
+    def builtin_signal_restore(request: Request, target_key: str, detector_id: str, csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf)
+        if detector_id not in hunter.DETECTOR_CATALOG:
+            raise HTTPException(status_code=404, detail="Regla integrada no encontrada")
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row=conn.execute("SELECT value FROM meta WHERE key='hidden_builtin_signal_rules_json'").fetchone()
+            try: hidden=set(json.loads(row["value"]) if row and row["value"] else [])
+            except Exception: hidden=set()
+            hidden.discard(detector_id)
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('hidden_builtin_signal_rules_json',?)",(json.dumps(sorted(hidden),ensure_ascii=False),))
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom",status_code=303)
 
     @app.post("/t/{target_key}/signals/custom/save")
     def custom_signal_save(request: Request, target_key: str, rule_id: int = Form(0), name: str = Form(...), description: str = Form(""), category: str = Form("other"), severity: str = Form("info"), enabled: str = Form(""), methods: str = Form(""), statuses: str = Form(""), path_terms: str = Form(""), parameter_names: str = Form(""), request_terms: str = Form(""), response_terms: str = Form(""), header_names: str = Form(""), object_types: str = Form(""), exact_values: str = Form(""), regex_terms: str = Form(""), host_terms: str = Form(""), identity_mode: str = Form("any"), rule_kind: str = Form("watch"), origin_type: str = Form("manual"), origin_id: str = Form(""), origin_note: str = Form(""), suggested_action: str = Form(""), csrf: str = Form(...)):

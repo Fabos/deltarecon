@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.37.0
+Negro Recon v0.38.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.37.0"
+VERSION = "0.38.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -445,6 +445,17 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS http_exchange_provenance (
+                exchange_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                tool TEXT NOT NULL DEFAULT '',
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (exchange_id, source, tool),
+                FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS burp_repeater_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resource_id INTEGER NOT NULL,
@@ -596,6 +607,7 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
             CREATE INDEX IF NOT EXISTS idx_operations_resource ON resource_operations(resource_id, method);
             CREATE INDEX IF NOT EXISTS idx_http_exchanges_operation ON http_exchanges(operation_id, last_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_http_exchange_provenance_exchange ON http_exchange_provenance(exchange_id, last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_burp_queue_status ON burp_repeater_queue(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, severity, updated_at);
             CREATE INDEX IF NOT EXISTS idx_finding_entities ON finding_entities(finding_id, entity_type, entity_id);
@@ -626,6 +638,14 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_path TEXT")
         if "sourcemap_analyzed_at" not in js_cols:
             conn.execute("ALTER TABLE js_assets ADD COLUMN sourcemap_analyzed_at TEXT")
+
+        # v0.38 provenance: exact HTTP bytes remain deduplicated, but every Burp
+        # tool/source gets its own aggregate counter. Historical workspaces only
+        # know the original source/tool, so seed that aggregate conservatively.
+        conn.execute(
+            """INSERT OR IGNORE INTO http_exchange_provenance(exchange_id,source,tool,first_seen_at,last_seen_at,seen_count)
+               SELECT id,source,COALESCE(tool,''),first_seen_at,last_seen_at,seen_count FROM http_exchanges"""
+        )
 
         # Intelligence + local search schemas are additive and conservative.
         import negro_hunter as hunter
@@ -664,6 +684,40 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
             custom_signals.init_schema(conn)
         except Exception as exc:
             conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('custom_signal_init_error',?)", (str(exc)[:500],))
+
+        # v0.38 deliberately reduces the built-in catalogue to one example rule.
+        # Preserve historical evidence, but retire old system-generated noise from
+        # the active inbox instead of deleting the investigator's history.
+        cleanup_stamp = conn.execute("SELECT value FROM meta WHERE key='v038_retired_builtin_signals_cleaned'").fetchone()
+        if not cleanup_stamp:
+            retired_kinds = (
+                "access_object_reference", "mass_assignment", "method_access_control",
+                "redirect_body_access_control", "proxy_path_access_control",
+                "referer_access_control", "cors", "javascript_surface",
+                "open_redirect", "url_fetch", "ssrf_surface", "secret_candidate",
+                "secret_or_client_config", "sensitive_response", "secret_in_url",
+                "sensitive_url", "source_map", "api_docs",
+            )
+            marks = ",".join("?" for _ in retired_kinds)
+            ts = now_iso()
+            conn.execute(
+                f"UPDATE signal_occurrences SET dismissed_at=COALESCE(dismissed_at,?) WHERE kind IN ({marks})",
+                (ts, *retired_kinds),
+            )
+            conn.execute(
+                f"UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE kind IN ({marks})",
+                (ts, *retired_kinds),
+            )
+            # Internal ENGINE leads are kept for backwards compatibility/evidence,
+            # but no longer act as active hypotheses when their rule is retired.
+            conn.execute(
+                f"UPDATE leads_v2 SET rule_active=0 WHERE source='ENGINE' AND lead_type IN ({marks})",
+                retired_kinds,
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('v038_retired_builtin_signals_cleaned',?)",
+                (ts,),
+            )
 
         # Conservative v0.20 backfill: existing exchange-bound notifications were
         # automatic observations too. Preserve their read/unread status as the best
@@ -977,6 +1031,26 @@ def upsert_http_observation(
                  json.dumps(request_headers or [], ensure_ascii=False), json.dumps(response_headers or [], ensure_ascii=False), json.dumps(query if query is not None else parsed.query, ensure_ascii=False), ts, ts),
             )
             exchange_id = int(cur.lastrowid)
+
+        provenance_tool = str(tool or "").strip().upper()[:40]
+        provenance = conn.execute(
+            "SELECT seen_count FROM http_exchange_provenance WHERE exchange_id=? AND source=? AND tool=?",
+            (exchange_id, source, provenance_tool),
+        ).fetchone()
+        if provenance:
+            # New workspaces already have one provenance row for a newly inserted
+            # exchange only when it was seeded by a migration, which cannot happen
+            # mid-ingest. Every repeated observation increments its exact source.
+            if not exchange_created:
+                conn.execute(
+                    "UPDATE http_exchange_provenance SET last_seen_at=?,seen_count=seen_count+1 WHERE exchange_id=? AND source=? AND tool=?",
+                    (ts, exchange_id, source, provenance_tool),
+                )
+        else:
+            conn.execute(
+                "INSERT INTO http_exchange_provenance(exchange_id,source,tool,first_seen_at,last_seen_at,seen_count) VALUES(?,?,?,?,?,1)",
+                (exchange_id, source, provenance_tool, ts, ts),
+            )
 
         ctype = (response_content_type or "").lower()
         is_js = path.lower().endswith((".js", ".mjs")) or "javascript" in ctype or "ecmascript" in ctype

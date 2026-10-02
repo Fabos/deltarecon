@@ -1,3 +1,12 @@
+## v0.38 — Request Workbench + reducción de ruido ✅
+- Una sola Regla integrada de ejemplo; el resto del conocimiento se agrega bajo demanda.
+- Activar/desactivar/eliminar/restaurar Reglas desde una UX directa.
+- Request/Response completos como centro de la vista de endpoint.
+- Búsqueda, copiar, wrap y pantalla completa por mensaje HTTP.
+- Provenance agregado por Proxy / Repeater / Intruder para capturas exactas repetidas.
+- Ventana visual limitada para grandes cantidades de variantes sin perder evidencia persistida.
+- Se retiran guía de pruebas, recordatorios y ejecución CORS de la vista principal del endpoint.
+
 # Roadmap
 
 ## v0.37 — Reglas como memoria de investigación ✅

@@ -1,4 +1,15 @@
-# Negro Recon 🐕 — v0.37.0
+# Negro Recon 🐕 — v0.38.0
+
+
+## v0.38.0 — Reglas mínimas + Request Workbench
+
+Esta versión reduce deliberadamente el ruido. Negro incluye **una sola Regla integrada de ejemplo** (`Errores con detalles internos`) y deja las demás técnicas para Reglas creadas por el investigador a medida que aprende o las necesita. Las Reglas propias se pueden activar, pausar y eliminar; la Regla integrada se puede activar/desactivar y quitar/restaurar por proyecto.
+
+La vista de endpoint se convierte en **Request Workbench**: Request y Response completos son el centro de la investigación diaria, con búsqueda local, copiar, ajuste de líneas, pantalla completa, Repeater, comparación inteligente y Requests relacionadas. Capturas HTTP idénticas ya no se presentan como tarjetas repetidas: Negro conserva la variante exacta una sola vez y agrupa procedencia por herramienta Burp (`Proxy ×N`, `Repeater ×N`, `Intruder ×N`).
+
+Se retiraron de la vista del endpoint la guía opcional de pruebas, recordatorios de pruebas y ejecución CORS. Signals e Hipótesis permanecen porque aportan contexto directo sobre la evidencia.
+
+> Compatibilidad: los motores históricos siguen en el código para leer workspaces antiguos, pero v0.38 los retira del catálogo activo. Las señales automáticas históricas de esas reglas se archivan/deseleccionan de la bandeja activa sin borrar la evidencia original.
 
 ## v0.37.0 — Reglas que recuerdan por ti
 

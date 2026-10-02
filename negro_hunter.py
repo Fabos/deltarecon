@@ -204,6 +204,13 @@ def detector_settings(detector_id: str, conn=None) -> dict[str, Any]:
     global_layer = personal_library.get(detector_id) if isinstance(personal_library.get(detector_id), dict) else {}
     project_layer = project_rules.get(detector_id) if isinstance(project_rules.get(detector_id), dict) else {}
     effective = rulebook.merge_detector_rules(detector_id, global_layer, project_layer)
+    # v0.38 retires the old noisy integrated catalogue. Keep the implementation
+    # readable for backward compatibility, but do not allow legacy overrides to
+    # silently re-enable retired built-ins in upgraded projects.
+    if detector_id in getattr(rulebook, "RETIRED_BUILTIN_RULE_IDS", set()):
+        effective["enabled"] = False
+        effective["retired"] = True
+        return effective
     normalized_global=rulebook.normalize_layer(global_layer)
     normalized_project=rulebook.normalize_layer(project_layer)
     legacy_global=settings.get("detectors") if isinstance(settings.get("detectors"),dict) else {}

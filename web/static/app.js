@@ -484,3 +484,90 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     input.select();
   });
 });
+
+// v0.38 — Request Workbench: local search, copy, wrap and focus mode.
+(() => {
+  const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const rebuildHighlights = (pane, query) => {
+    const content = pane?.querySelector('[data-http-content]');
+    const countEl = pane?.querySelector('[data-http-count]');
+    if (!content) return [];
+    if (content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+    const raw = content.dataset.rawHttp || '';
+    const q = String(query || '').trim();
+    content.replaceChildren();
+    if (!q) {
+      content.textContent = raw;
+      if (countEl) countEl.textContent = '0 coincidencias';
+      pane.dataset.httpMatchIndex = '0';
+      return [];
+    }
+    const re = new RegExp(escapeRegExp(q), 'gi');
+    let last = 0;
+    let match;
+    let guard = 0;
+    while ((match = re.exec(raw)) && guard < 5000) {
+      if (match.index > last) content.appendChild(document.createTextNode(raw.slice(last, match.index)));
+      const mark = document.createElement('mark');
+      mark.className = 'http-match';
+      mark.textContent = match[0];
+      content.appendChild(mark);
+      last = match.index + match[0].length;
+      if (!match[0].length) re.lastIndex += 1;
+      guard += 1;
+    }
+    if (last < raw.length) content.appendChild(document.createTextNode(raw.slice(last)));
+    const marks = [...content.querySelectorAll('.http-match')];
+    if (countEl) countEl.textContent = `${marks.length} coincidencia${marks.length === 1 ? '' : 's'}`;
+    pane.dataset.httpMatchIndex = '0';
+    return marks;
+  };
+
+  document.querySelectorAll('[data-http-pane]').forEach((pane) => {
+    const input = pane.querySelector('[data-http-search]');
+    const next = pane.querySelector('[data-http-next]');
+    const copy = pane.querySelector('[data-http-copy]');
+    const wrap = pane.querySelector('[data-http-wrap]');
+    const expand = pane.querySelector('[data-http-expand]');
+    const content = pane.querySelector('[data-http-content]');
+    if (content && content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+
+    input?.addEventListener('input', () => {
+      const marks = rebuildHighlights(pane, input.value);
+      if (marks[0]) {
+        marks[0].classList.add('current');
+        marks[0].scrollIntoView({block:'center'});
+      }
+    });
+    next?.addEventListener('click', () => {
+      const marks = [...pane.querySelectorAll('.http-match')];
+      if (!marks.length) return;
+      marks.forEach(m => m.classList.remove('current'));
+      let idx = Number(pane.dataset.httpMatchIndex || 0);
+      idx = (idx + 1) % marks.length;
+      pane.dataset.httpMatchIndex = String(idx);
+      marks[idx].classList.add('current');
+      marks[idx].scrollIntoView({block:'center',behavior:'smooth'});
+    });
+    copy?.addEventListener('click', async () => {
+      const raw = content?.dataset.rawHttp ?? content?.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(raw);
+        const old = copy.textContent;
+        copy.textContent = 'Copiado ✓';
+        window.setTimeout(() => { copy.textContent = old; }, 1200);
+      } catch (_) {
+        copy.textContent = 'No se pudo copiar';
+      }
+    });
+    wrap?.addEventListener('click', () => {
+      pane.classList.toggle('wrap');
+      wrap.textContent = pane.classList.contains('wrap') ? 'Líneas exactas' : 'Ajustar líneas';
+    });
+    expand?.addEventListener('click', () => {
+      pane.classList.toggle('fullscreen-pane');
+      expand.textContent = pane.classList.contains('fullscreen-pane') ? 'Cerrar pantalla completa' : 'Pantalla completa';
+    });
+  });
+})();

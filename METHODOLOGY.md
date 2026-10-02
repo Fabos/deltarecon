@@ -1,4 +1,11 @@
-# Negro Recon — Metodología v0.37.0
+# Negro Recon — Metodología v0.38.0
+
+
+## v0.38 — Menos reglas de fábrica, mejor mesa de trabajo HTTP
+
+Negro evita convertir su catálogo en un scanner enciclopédico. Por defecto sólo conserva una Regla integrada como ejemplo pedagógico. El conocimiento de técnicas se incorpora mediante Reglas explícitas cuando el investigador lo necesita, manteniendo la relación simple `Regla → Señal → Hipótesis → validación`.
+
+La página de endpoint es la mesa de trabajo principal: primero la evidencia HTTP completa, luego Signals/Hipótesis y finalmente memoria/hallazgos. Una Request exacta repetida no debe ocupar N tarjetas; se conserva una variante y se agrega su procedencia por herramienta Burp. Intruder puede generar muchas variantes, por lo que la interfaz muestra un resumen y una ventana acotada sin borrar la evidencia persistida.
 
 ## v0.37 — Regla, Señal y memoria temporal
 

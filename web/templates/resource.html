@@ -2,198 +2,144 @@
 {% block title %}{{ resource.path or '/' }} · {{ resource.hostname }} · Negro{% endblock %}
 {% block content %}
 <nav class="breadcrumbs" aria-label="Ruta"><a href="{{ target_base }}/hosts">Inventario</a><span>›</span><a href="{{ target_base }}/host/{{ resource.host_id }}">{{ resource.hostname }}</a><span>›</span><strong>{{ resource.path or '/' }}</strong></nav>
-<section class="page-head resource-hero">
+
+<section class="page-head resource-hero request-workbench-hero">
   <div class="resource-heading">
-    <p class="eyebrow">RECURSO</p>
+    <p class="eyebrow">ENDPOINT</p>
     <h1><code>{{ resource.path or '/' }}</code></h1>
     <p class="resource-url break">{{ resource.url }}</p>
     <div class="badges">
       <span class="badge coverage-badge coverage-{{ coverage_state }}">Cobertura · {{ ui_label(coverage_state) }}</span>
       <span class="badge human-state human-{{ resource_human_state.state }}">Estado · {{ ui_label(resource_human_state.state) }}</span>
-      {% if unreviewed_signal_count %}<span class="badge signal-badge signal-negro">🩵 Señal Negro · {{ unreviewed_signal_count }} sin revisar</span>{% endif %}
-      {% if signal_state!='normal' %}<span class="badge signal-badge signal-{{ signal_state }}">Compat · {{ ui_label(signal_state) }}</span>{% endif %}
+      {% if unreviewed_signal_count %}<span class="badge signal-badge signal-negro">⚡ {{ unreviewed_signal_count }} señal{% if unreviewed_signal_count != 1 %}es{% endif %} pendiente{% if unreviewed_signal_count != 1 %}s{% endif %}</span>{% endif %}
       {% if finding_count %}<span class="badge finding-count">{{ finding_count }} hallazgo{% if finding_count != 1 %}s{% endif %}</span>{% endif %}
-      {% for src in source_details[:4] %}<span class="chip" title="Primera vez: {{ src.first_seen_at }}">vía {{ src.source }}</span>{% endfor %}
+      {% for src in source_details[:4] %}<span class="chip" title="Primera vez: {{ src.first_seen_at }}">vía {{ ui_label(src.source) }}</span>{% endfor %}
     </div>
   </div>
   <div class="page-actions">
-    {% if open_url %}<a class="button secondary" href="{{ open_url }}" target="_blank" rel="noopener noreferrer">Abrir recurso ↗</a>{% endif %}
+    {% if open_url %}<a class="button secondary" href="{{ open_url }}" target="_blank" rel="noopener noreferrer">Abrir endpoint ↗</a>{% endif %}
+    {% if resource.path.endswith('.js') %}<a class="button ghost" href="{{ target_base }}/host/{{ resource.host_id }}#javascript">Analizar JavaScript</a>{% endif %}
     <a class="button ghost" href="{{ target_base }}/graph?focus=resource:{{ resource.id }}">Ver en mapa</a>
   </div>
 </section>
 
-<section class="resource-layout">
-  <div class="resource-main">
-    <section class="panel action-panel">
-      <div class="panel-head"><div><p class="eyebrow">ACCIONES</p><h2>Pruebas contextuales</h2></div><span class="muted small">sobre este endpoint</span></div>
-      <div class="resource-action-grid">
-        <form action="{{ target_base }}/resource/{{ resource.id }}/cors" method="post" data-job-form data-job-label="CORS · {{ resource.path }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Envía un Origin controlado reutilizando, cuando existe, el contexto HTTP observado en Burp."><b>CORS</b><small>Origin, credenciales y reflexión</small></button></form>
-        {% if resource.path.endswith('.js') %}<a class="action-tile" href="{{ target_base }}/host/{{ resource.host_id }}#javascript"><b>Analizar JavaScript</b><small>Rutas, configuración, secretos y source maps</small></a>{% endif %}
-        <a class="action-tile" href="#http"><b>Ver tráfico HTTP</b><small>Solicitudes y respuestas capturadas desde Burp</small></a>
-        <a class="action-tile" href="#hallazgos"><b>Documentar hallazgo</b><small>Crear o asociar un hallazgo confirmado</small></a>
-      </div>
-      {% if cors_result %}
-      <div class="result-banner {% if cors_result.likely_credentialed_cors %}strong{% elif cors_result.interesting %}interesting{% else %}neutral{% endif %}">
-        <div class="result-banner-icon">{% if cors_result.likely_credentialed_cors %}⚠{% elif cors_result.interesting %}◆{% else %}✓{% endif %}</div>
-        <div><div class="result-banner-head"><strong>Último CORS</strong><small>{{ cors_result.observed_at }}</small></div>
-        {% if cors_result.error %}<p>{{ cors_result.error }}</p>{% else %}<p>HTTP {{ cors_result.status }} · ACAO <code>{{ cors_result.allow_origin or '—' }}</code> · credenciales <code>{{ cors_result.allow_credentials or '—' }}</code></p>
-        <p>{% if cors_result.likely_credentialed_cors %}<b>Señal fuerte:</b> el Origin controlado fue reflejado y el servidor permite credenciales.{% elif cors_result.interesting %}<b>Señal interesante:</b> revisa manualmente el impacto.{% else %}No se observó reflexión insegura con el Origin de prueba.{% endif %}{% if cors_result.replayed_context %} Se reutilizó una solicitud real observada{% if cors_result.replay_source %} desde {{ cors_result.replay_source }}{% endif %}.{% endif %}</p>{% endif %}</div>
-      </div>
-      {% endif %}
-    </section>
+<details class="panel resource-state-drawer">
+  <summary><span><b>Estado y memoria del endpoint</b><small>{{ ui_label(resource_human_state.state) }}{% if resource_human_state.note %} · {{ resource_human_state.note }}{% endif %}</small></span><span>Editar</span></summary>
+  <form class="resource-state-inline" action="{{ target_base }}/resource/{{ resource.id }}/human-state" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Estado<select name="state">{% for x in human_states %}<option value="{{ x }}" {% if resource_human_state.state==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label>
+    <label>Categoría<input name="category" value="{{ resource_human_state.category or '' }}" placeholder="Access Control / Business Logic…"></label>
+    <label class="grow">Nota<input name="note" value="{{ resource_human_state.note or '' }}" placeholder="Qué significa este endpoint para tu investigación"></label>
+    <button class="button small-button" type="submit">Guardar</button>
+  </form>
+</details>
 
-    <section class="panel signal-layer-panel" id="signals">
-      <div class="panel-head"><div><p class="eyebrow">SEÑALES AUTOMÁTICAS</p><h2>Lo que Negro observó</h2></div><span>{{ unreviewed_signal_count }} sin revisar</span></div>
-      <p class="muted small">Una Señal no es una vulnerabilidad ni cambia tu decisión humana. Es una observación explicable que Negro conserva junto a la Request exacta.</p>
-      {% if resource_signals %}<div class="signal-occurrence-list">
-      {% for sg in resource_signals %}
-        <article class="signal-occurrence {% if not sg.reviewed_at %}unreviewed{% else %}reviewed{% endif %}">
-          <div><span class="signal-dot">{% if not sg.reviewed_at %}🩵{% else %}·{% endif %}</span><strong>{{ sg.title }}</strong><span class="chip">{{ ui_label(sg.category) }}</span>{% if sg.occurrences>1 %}<span class="chip">{{ sg.occurrences }}×</span>{% endif %}</div>
-          <p>{{ sg.why.message or 'Coincidió con una regla automática de Negro.' }}</p>
-          <small>Request #{{ sg.exchange_id }} · {{ sg.source }} · {{ sg.first_seen_at }}{% if sg.reviewed_at %} · revisado {{ sg.reviewed_at }}{% endif %}</small>
-          <div class="signal-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ resource.id }}?exchange={{ sg.exchange_id }}#exchange-{{ sg.exchange_id }}">Abrir evidencia exacta</a></div>
-        </article>
-      {% endfor %}
-      </div>{% else %}<div class="empty-state compact"><strong>Sin Señales automáticas todavía.</strong><span>Negro seguirá observando el tráfico que ya pasa por Burp.</span></div>{% endif %}
-    </section>
-
-    <section class="panel resource-intel-panel" id="inteligencia-recurso">
-      <div class="panel-head"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Qué vale la pena probar aquí</h2></div><span>{{ resource_hypotheses|length }} investigación{% if resource_hypotheses|length != 1 %}es{% endif %}</span></div>
-      <p class="muted small">Negro no afirma que exista una vulnerabilidad. Correlaciona lo que ya observó en Burp/JS/recon y te recuerda pruebas concretas para este recurso.</p>
-
-      {% if resource_hypotheses %}
-      <div class="resource-intel-table-wrap">
-        <table class="resource-intel-table">
-          <thead><tr><th>Posible / indicio</th><th>Por qué llamó la atención</th><th>Prueba sugerida</th><th>Estado</th></tr></thead>
-          <tbody>
-          {% for h in resource_hypotheses %}
-            <tr class="resource-intel-row priority-{{ h.review_priority }}">
-              <td><a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><b>{{ h.title }}</b></a><small>{{ h.lead_type|replace('_',' ') }} · {{ h.source }}</small></td>
-              <td>{{ h.why_interesting or 'Señal correlacionada con evidencia del recurso.' }}</td>
-              <td><span class="intel-next-test">{{ h.next_test or 'Revisar manualmente la evidencia relacionada.' }}</span></td>
-              <td><span class="badge priority-{{ h.review_priority }}">{{ ui_label(h.review_priority) }}</span><span class="chip">{{ ui_label(h.status) }}</span></td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}<div class="empty-state compact"><strong>Sin señales correlacionadas todavía.</strong><span>Navega el flujo con Burp; Negro irá asociando hipótesis al recurso sin enviar tráfico adicional.</span></div>{% endif %}
-
-      {% if review_aids %}
-      <details class="resource-review-aids">
-        <summary><b>Recordatorios de pruebas</b><span>{{ review_aids|length }} sugerencias contextuales</span></summary>
-        <div class="resource-review-aid-grid">
-        {% for a in review_aids %}
-          <a href="#operation-{{ a.operation_id }}-coverage" class="resource-review-aid status-{{ a.status }}">
-            <span><b>{{ a.method }}</b> · {{ a.label }}</span><small>{{ a.hint }}</small>
-          </a>
-        {% endfor %}
-        </div>
-      </details>
-      {% endif %}
-    </section>
-
-    <section class="panel" id="http">
-      <div class="panel-head"><div><p class="eyebrow">TRÁFICO HTTP</p><h2>Solicitudes y respuestas</h2></div><span>{{ operations|length }} método{% if operations|length != 1 %}s{% endif %}</span></div>
-      {% for op in operations %}{% set o=op.row %}
-      <details class="http-operation" {% if loop.first %}open{% endif %}>
-        <summary>
-          <span class="http-operation-title"><span class="method-pill method-{{ o.method|lower }}">{{ o.method }}</span><b>HTTP {{ o.last_status if o.last_status is not none else '—' }}</b><span>{{ o.seen_count }}× visto</span>{% if o.authenticated_observed %}<span class="chip op-auth">con sesión</span>{% endif %}</span>
-          <span class="http-operation-summary">{% for src in op.sources[:3] %}<span class="chip">{{ src.source }}</span>{% endfor %}</span>
-        </summary>
-        <div class="http-operation-body">
-          <div class="operation-toolbar">
-            <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Enviar a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>
-            <span class="muted small">Última observación {{ o.last_seen_at or '—' }}</span>
-          </div>
-
-          {% set touched = op.test_summary.testing + op.test_summary.negative + op.test_summary.interesting + op.test_summary.confirmed + op.test_summary.not_applicable %}
-          <details class="optional-guide" id="operation-{{ o.id }}-coverage">
-            <summary>
-              <span><b>Guía opcional de pruebas</b><small>No es una checklist obligatoria; úsala sólo cuando te ayude a recordar.</small></span>
-              <span class="badges">{% if touched %}<span class="badge">{{ touched }} registradas</span>{% endif %}{% if op.test_summary.interesting %}<span class="badge signal-interesting">{{ op.test_summary.interesting }} interesantes</span>{% endif %}{% if op.test_summary.confirmed %}<span class="badge signal-finding">{{ op.test_summary.confirmed }} confirmadas</span>{% endif %}<span class="badge subtle-badge">{{ op.test_summary.pending }} sugerencias</span></span>
-            </summary>
-            <div class="optional-guide-body">
-              <p class="muted small">Negro propone pruebas según método, sesión y contenido observado. No necesitas completar todas ni marcar cada paso para usar la herramienta.</p>
-              <div class="test-checklist compact-checklist">
-              {% for test in op.tests %}
-                <form class="test-check-row test-status-{{ test.status }}" action="{{ target_base }}/operation/{{ o.id }}/test" method="post">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="test_key" value="{{ test.test_key }}">
-                  <div class="test-check-main"><div><b>{{ test.label }}</b>{% if test.status!='pending' %}<span class="chip">{{ ui_label(test.status) }}</span>{% endif %}</div><small>{{ test.hint }}</small></div>
-                  <select name="status" aria-label="Estado {{ test.label }}">{% for st in test_statuses %}<option value="{{ st }}" {% if test.status==st %}selected{% endif %}>{{ ui_label(st) }}</option>{% endfor %}</select>
-                  <input name="notes" value="{{ test.notes or '' }}" maxlength="2000" placeholder="Nota opcional: qué probaste / qué pasó" aria-label="Notas {{ test.label }}">
-                  <button class="btn-secondary" type="submit">Guardar</button>
-                </form>
-              {% endfor %}
-              </div>
-            </div>
-          </details>
-
-          {% for ex in op.exchanges %}
-          <details class="exchange-card" id="exchange-{{ ex.id }}" {% if loop.first %}open{% endif %}>
-            <summary><span>#{{ ex.id }} · {{ ex.source }}{% if ex.tool %}/{{ ex.tool }}{% endif %}{% if ex.unreviewed_signal_count %} · 🩵 {{ ex.unreviewed_signal_count }} Señal{% endif %}</span><span>HTTP {{ ex.status_code if ex.status_code is not none else '—' }} · {{ ex.seen_count }}× · {{ ui_label(ex.human_state.state) }}</span></summary>
-            <div class="historical-evidence-banner"><b>Evidencia histórica</b><span>Capturada {{ ex.first_seen_at }} · response SHA-256 <code>{{ (ex.response_hash or '—')[:16] }}…</code></span><small>Lo que ves aquí es la captura guardada. Enviar a Repeater crea una solicitud nueva y la respuesta actual puede ser distinta.</small></div>
-            {% if ex.focused and ex.match_evidence %}
-            <div class="exchange-focus-evidence">
-              <b>Coincidencia que te trajo a este exchange</b>
-              {% for ev in ex.match_evidence %}
-              <div class="exchange-focus-item">
-                <div class="secret-origin-grid"><span>Investigación</span><a href="{{ target_base }}/hypotheses#hypothesis-{{ ev.lead_id }}">#{{ ev.lead_id }} · {{ ev.lead_title }}</a><span>Detectado</span><code>{{ ev.masked_value }}</code><span>Superficie</span><code>{{ ev.surface }}</code><span>Posición</span><code>{% if ev.match_found %}body offset {{ ev.body_offset }} · línea {{ ev.body_line }} · columna {{ ev.body_column }}{% else %}no resuelta{% endif %}</code></div>
-                {% if ev.context_snippet %}<pre class="http-message match-context">{{ ev.context_snippet }}</pre>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            {% endif %}
-            <div class="exchange-actions">
-              <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ ex.id }}">Ver en mapa</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Buscar Requests relacionadas</a>
-              <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ ex.id }}">Comparación inteligente</a>
-              <a class="button ghost small-button" href="{{ target_base }}/flows/add?exchange_id={{ ex.id }}">Agregar a Flujo</a>
-              <a class="button ghost small-button" href="{{ target_base }}/signals/custom?from_exchange={{ ex.id }}">👁 Crear Regla desde esta Request</a>
-              {% if ex.request_size and ex.request_size > 0 %}<form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><button class="button ghost small-button" type="submit">Reprobar ahora en Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
-              <form class="exchange-state-form" action="{{ target_base }}/exchange/{{ ex.id }}/human-state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="state" aria-label="Estado humano exchange {{ ex.id }}">{% for st in human_states %}<option value="{{ st }}" {% if ex.human_state.state==st %}selected{% endif %}>{{ ui_label(st) }}</option>{% endfor %}</select><input name="category" value="{{ ex.human_state.category or '' }}" placeholder="Categoría opcional"><button class="button ghost small-button" type="submit">Guardar estado</button></form>
-              <details><summary>Usar como evidencia de hallazgo</summary><div class="exchange-finding-actions">
-                <form class="compact-finding-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><input type="hidden" name="status" value="confirmed"><input name="title" required value="{{ o.method }} {{ resource.path }}" aria-label="Título del hallazgo"><select name="severity" aria-label="Severidad"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select><button class="button small-button" type="submit">Crear hallazgo</button></form>
-                {% if all_findings %}<form class="compact-finding-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="relation" value="affected"><select name="finding_id" aria-label="Hallazgo existente">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }}</option>{% endfor %}</select><button class="button ghost small-button" type="submit">Asociar</button></form>{% endif %}
-              </div></details>
-            </div>
-            <div class="http-split">
-              <div><div class="http-label">SOLICITUD · {{ ex.request_size }} B</div>{% if ex.request_truncated %}<div class="truncation-warning">Vista rápida limitada a 300 KB. La evidencia histórica completa sigue guardada.</div>{% endif %}<pre class="http-message">{{ ex.request_text or '[solicitud no almacenada]' }}</pre></div>
-              <div><div class="http-label">RESPUESTA · {{ ex.response_size }} B</div>{% if ex.response_truncated %}<div class="truncation-warning">Vista rápida limitada a 300 KB. Las Señales pueden apuntar a offsets fuera de esta vista.</div>{% endif %}<pre class="http-message">{{ ex.response_text or '[respuesta no almacenada]' }}</pre></div>
-            </div>
-          </details>
-          {% else %}<p class="empty">Todavía no hay evidencia HTTP guardada para este método.</p>{% endfor %}
-        </div>
-      </details>
-      {% else %}<div class="empty-state"><strong>Sin métodos observados.</strong><span>Navega con Burp y el tráfico aparecerá aquí automáticamente.</span></div>{% endfor %}
-    </section>
-
-    <section class="panel" id="hallazgos">
-      <div class="panel-head"><div><p class="eyebrow">HALLAZGOS</p><h2>Hallazgos relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
-      {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ ui_label(f.relation) }} · {{ ui_label(f.status) }}</small></span><span class="badge">{{ ui_label(f.severity) }}</span></a>{% else %}<p class="empty">Este recurso todavía no está asociado a un hallazgo confirmado.</p>{% endfor %}
-      <details class="create-finding-block"><summary>+ Crear o asociar hallazgo</summary><div class="two-col-forms">
-        <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><label>Título<input name="title" required placeholder="Ej. Autorización rota al actualizar orden"></label><div class="form-row"><label>Severidad<select name="severity"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label><label>Estado<select name="status"><option value="draft">Borrador</option><option value="confirmed">Confirmado</option><option value="reported">Reportado</option></select></label></div><textarea name="description" placeholder="Qué observamos y por qué importa"></textarea><button class="button" type="submit">Crear y asociar</button></form>
-        {% if all_findings %}<form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Hallazgo existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ ui_label(f.status) }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a la cadena</button></form>{% endif %}
-      </div></details>
-    </section>
-
-    <section class="panel" id="evidencia">
-      <div class="panel-head"><div><p class="eyebrow">MEMORIA</p><h2>Notas y evidencia</h2></div><span>{{ evidence|length }} capturas</span></div>
-      <form class="note-form" action="{{ target_base }}/resource/{{ resource.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" required placeholder="Qué probaste, qué pasó y qué queda pendiente…"></textarea><button class="button" type="submit">Agregar nota</button></form>
-      {% for n in notes %}<div class="mini-note"><small>{{ n.created_at }}</small><p>{{ n.body }}</p></div>{% endfor %}
-      <form class="evidence-form" action="{{ target_base }}/resource/{{ resource.id }}/evidence" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required><input type="text" name="caption" maxlength="500" placeholder="Qué demuestra la captura"><button class="button ghost" type="submit">Adjuntar evidencia</button></form>
-      {% if evidence %}<div class="evidence-grid">{% for ev in evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank" rel="noopener noreferrer"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
-    </section>
+<section class="panel request-workbench" id="http">
+  <div class="panel-head request-workbench-head">
+    <div><p class="eyebrow">REQUEST WORKBENCH</p><h2>Request y Response completos</h2><p class="muted small">Negro agrupa capturas idénticas y conserva su origen. Abre una variante para analizarla, buscar dentro del mensaje o enviarla a Repeater.</p></div>
+    <div class="workbench-summary">{% set ns=namespace(exec=0,var=0) %}{% for op in operations %}{% set ns.exec=ns.exec+op.execution_total %}{% set ns.var=ns.var+op.exchange_total %}{% endfor %}<b>{{ ns.exec }} ejecuciones</b><span>{{ ns.var }} variantes exactas</span></div>
   </div>
 
-  <aside class="resource-side">
-    <section class="panel sticky-panel state-card">
-      <p class="eyebrow">DECISIÓN HUMANA</p><h2>Investigación</h2>
-      <div class="state-pills"><span class="state-pill human-{{ resource_human_state.state }}"><i></i>{{ ui_label(resource_human_state.state) }}</span>{% if unreviewed_signal_count %}<span class="state-pill signal-negro"><i></i>🩵 {{ unreviewed_signal_count }} Señales</span>{% endif %}</div>
-      <form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/human-state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="state">{% for x in human_states %}<option value="{{ x }}" {% if resource_human_state.state==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label>Categoría<input name="category" value="{{ resource_human_state.category or '' }}" placeholder="OAuth / GraphQL / Access Control…"></label><label>Nota<input name="note" value="{{ resource_human_state.note or '' }}" placeholder="Por qué queda en este estado"></label><button class="button" type="submit">Guardar decisión</button></form>
-      <p class="muted small"><b>Señales ≠ estado.</b> Negro sólo genera pistas automáticas. Interesante, correlacionar, Hallazgo y descartado siempre son decisiones tuyas.</p>
-      <details class="legacy-state"><summary>Compatibilidad v0.19</summary><form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Revisión anterior<select name="review_state">{% for x in review_states %}<option value="{{ x }}" {% if resource.review_state==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label>Clasificación anterior<select name="classification">{% for x in classifications %}<option value="{{ x }}" {% if resource.classification==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><label>Prioridad<select name="priority">{% for x in priorities %}<option value="{{ x }}" {% if resource.priority==x %}selected{% endif %}>{{ ui_label(x) }}</option>{% endfor %}</select></label><button class="button ghost" type="submit">Guardar compatibilidad</button></form></details>
-      <hr><div class="side-kv"><span>Creado</span><b>{{ resource.created_at }}</b><span>Actualizado</span><b>{{ resource.updated_at }}</b></div>
-    </section>
-  </aside>
+  {% for op in operations %}{% set o=op.row %}
+  <details class="http-operation workbench-operation" {% if loop.first %}open{% endif %}>
+    <summary>
+      <span class="http-operation-title"><span class="method-pill method-{{ o.method|lower }}">{{ o.method }}</span><code>{{ resource.path or '/' }}</code><b>HTTP {{ o.last_status if o.last_status is not none else '—' }}</b>{% if o.authenticated_observed %}<span class="chip op-auth">con sesión</span>{% endif %}</span>
+      <span class="http-operation-summary"><b>{{ op.execution_total }} ejecuciones</b><span>{{ op.exchange_total }} variantes</span>{% for src in op.tool_totals[:4] %}<span class="source-chip source-{{ (src.tool or 'other')|lower }}">{{ src.label }} ×{{ src.seen_count }}</span>{% endfor %}</span>
+    </summary>
+    <div class="http-operation-body">
+      <div class="operation-toolbar workbench-operation-toolbar">
+        <form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><button class="button small-button" type="submit">Enviar última a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>
+        <span class="muted small">Última observación {{ o.last_seen_at or '—' }}{% if op.more_variants %} · mostrando las {{ op.exchanges|length }} variantes más recientes de {{ op.exchange_total }}{% endif %}</span>
+      </div>
+
+      <div class="request-variant-list">
+      {% for ex in op.exchanges %}
+        <details class="exchange-card request-variant-card" id="exchange-{{ ex.id }}" {% if ex.focused or loop.first %}open{% endif %}>
+          <summary>
+            <span class="request-variant-title"><b>Request #{{ ex.id }}</b><span>HTTP {{ ex.status_code if ex.status_code is not none else '—' }}</span><span>{{ ex.seen_count }} ejecución{% if ex.seen_count != 1 %}es{% endif %}</span>{% if ex.unreviewed_signal_count %}<span class="intel-mini-badge">⚡ {{ ex.unreviewed_signal_count }}</span>{% endif %}</span>
+            <span class="request-origin-summary">{% for pv in ex.provenance %}<span class="source-chip source-{{ (pv.tool or 'other')|lower }}">{{ pv.label }} ×{{ pv.seen_count }}</span>{% endfor %}<small>{{ ex.last_seen_at }}</small></span>
+          </summary>
+          <div class="request-variant-body">
+            <div class="request-context-strip">
+              <span><b>Primera:</b> {{ ex.first_seen_at }}</span><span><b>Última:</b> {{ ex.last_seen_at }}</span><span><b>Request:</b> {{ ex.request_size }} B</span><span><b>Response:</b> {{ ex.response_size }} B</span>
+              {% if ex.seen_count > 1 %}<span class="context-explain">Misma Request + Response + status observados varias veces; Negro los agrupa para evitar ruido.</span>{% endif %}
+            </div>
+
+            {% if ex.focused and ex.match_evidence %}
+            <div class="exchange-focus-evidence">
+              <b>Coincidencia que te trajo a esta Request</b>
+              {% for ev in ex.match_evidence %}<div class="exchange-focus-item"><div class="secret-origin-grid"><span>Investigación</span><a href="{{ target_base }}/hypotheses#hypothesis-{{ ev.lead_id }}">#{{ ev.lead_id }} · {{ ev.lead_title }}</a><span>Detectado</span><code>{{ ev.masked_value }}</code><span>Superficie</span><code>{{ ev.surface }}</code></div>{% if ev.context_snippet %}<pre class="http-message match-context">{{ ev.context_snippet }}</pre>{% endif %}</div>{% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="request-primary-actions">
+              {% if ex.request_size and ex.request_size > 0 %}<form action="{{ target_base }}/resource/{{ resource.id }}/send-repeater" method="post" data-repeater-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ o.method }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><button class="button small-button" type="submit">Enviar a Repeater →</button><small class="repeater-inline-status" data-repeater-status aria-live="polite"></small></form>{% endif %}
+              <a class="button ghost small-button" href="{{ target_base }}/signals/custom?from_exchange={{ ex.id }}">👁 Crear Regla</a>
+              <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ ex.id }}">Comparación inteligente</a>
+              <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ ex.id }}">Requests relacionadas</a>
+              <details class="request-more-actions"><summary>Más acciones</summary><div>
+                <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ ex.id }}">Ver en mapa</a>
+                <a class="button ghost small-button" href="{{ target_base }}/flows/add?exchange_id={{ ex.id }}">Agregar a Flujo</a>
+                <details class="nested-action"><summary>Estado / Hallazgo</summary><div class="secondary-action-stack">
+                  <form class="exchange-state-form" action="{{ target_base }}/exchange/{{ ex.id }}/human-state" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="state" aria-label="Estado humano Request {{ ex.id }}">{% for st in human_states %}<option value="{{ st }}" {% if ex.human_state.state==st %}selected{% endif %}>{{ ui_label(st) }}</option>{% endfor %}</select><input name="category" value="{{ ex.human_state.category or '' }}" placeholder="Categoría opcional"><button class="button ghost small-button" type="submit">Guardar estado</button></form>
+                  <form class="compact-finding-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><input type="hidden" name="exchange_id" value="{{ ex.id }}"><input type="hidden" name="status" value="confirmed"><input name="title" required value="{{ o.method }} {{ resource.path }}" aria-label="Título del hallazgo"><select name="severity" aria-label="Severidad"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select><button class="button ghost small-button" type="submit">Crear hallazgo</button></form>
+                </div></details>
+              </div></details>
+            </div>
+
+            <div class="http-workbench-grid">
+              <section class="http-pane" data-http-pane>
+                <div class="http-pane-head"><div><span class="http-label">REQUEST COMPLETA</span><small>{{ ex.request_size }} B</small></div><div class="http-pane-actions"><button type="button" class="mini-action" data-http-wrap>Ajustar líneas</button><button type="button" class="mini-action" data-http-copy>Copiar</button><button type="button" class="mini-action" data-http-expand>Pantalla completa</button></div></div>
+                <div class="http-search"><input type="search" placeholder="Buscar en Request…" data-http-search><span data-http-count>0 coincidencias</span><button type="button" class="mini-action" data-http-next>Siguiente</button></div>
+                <pre class="http-message http-message-full" data-http-content>{{ ex.request_text or '[Request no almacenada]' }}</pre>
+              </section>
+              <section class="http-pane" data-http-pane>
+                <div class="http-pane-head"><div><span class="http-label">RESPONSE COMPLETA</span><small>{{ ex.response_size }} B</small></div><div class="http-pane-actions"><button type="button" class="mini-action" data-http-wrap>Ajustar líneas</button><button type="button" class="mini-action" data-http-copy>Copiar</button><button type="button" class="mini-action" data-http-expand>Pantalla completa</button></div></div>
+                <div class="http-search"><input type="search" placeholder="Buscar en Response…" data-http-search><span data-http-count>0 coincidencias</span><button type="button" class="mini-action" data-http-next>Siguiente</button></div>
+                <pre class="http-message http-message-full" data-http-content>{{ ex.response_text or '[Response no almacenada]' }}</pre>
+              </section>
+            </div>
+          </div>
+        </details>
+      {% else %}<div class="empty-state compact"><strong>Sin evidencia HTTP guardada para este método.</strong><span>Navega con Burp y aparecerá aquí.</span></div>{% endfor %}
+      </div>
+    </div>
+  </details>
+  {% else %}<div class="empty-state"><strong>Sin métodos observados.</strong><span>Navega con Burp y el tráfico aparecerá aquí automáticamente.</span></div>{% endfor %}
+</section>
+
+<section class="resource-intelligence-grid">
+  <section class="panel signal-layer-panel" id="signals">
+    <div class="panel-head"><div><p class="eyebrow">SEÑALES</p><h2>Lo que Negro observó</h2></div><span>{{ unreviewed_signal_count }} sin revisar</span></div>
+    <p class="muted small">Una Señal es evidencia que coincidió con una Regla; no es una vulnerabilidad.</p>
+    {% if resource_signals %}<div class="signal-occurrence-list">
+    {% for sg in resource_signals %}<article class="signal-occurrence {% if not sg.reviewed_at %}unreviewed{% else %}reviewed{% endif %}"><div><span class="signal-dot">{% if not sg.reviewed_at %}⚡{% else %}·{% endif %}</span><strong>{{ sg.title }}</strong>{% if sg.occurrences>1 %}<span class="chip">{{ sg.occurrences }}×</span>{% endif %}</div><p>{{ sg.why.message or 'Coincidió con una Regla de Negro.' }}</p><small>Request #{{ sg.exchange_id }} · {{ ui_label(sg.source) }} · {{ sg.first_seen_at }}</small><div class="signal-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ resource.id }}?exchange={{ sg.exchange_id }}#exchange-{{ sg.exchange_id }}">Abrir evidencia</a></div></article>{% endfor %}
+    </div>{% else %}<div class="empty-state compact"><strong>Sin Señales todavía.</strong><span>Negro seguirá evaluando las Reglas activas sobre tu tráfico.</span></div>{% endif %}
+  </section>
+
+  <section class="panel resource-intel-panel" id="inteligencia-recurso">
+    <div class="panel-head"><div><p class="eyebrow">INVESTIGACIÓN</p><h2>Hipótesis relacionadas</h2></div><span>{{ resource_hypotheses|length }}</span></div>
+    <p class="muted small">Preguntas o escenarios que podrían merecer una prueba manual.</p>
+    {% if resource_hypotheses %}<div class="resource-hypothesis-list">{% for h in resource_hypotheses %}<a class="resource-hypothesis-card priority-{{ h.review_priority }}" href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><span><b>{{ h.title }}</b><small>{{ h.why_interesting or 'Relacionada con evidencia de este endpoint.' }}</small></span><span class="badge priority-{{ h.review_priority }}">{{ ui_label(h.review_priority) }}</span></a>{% endfor %}</div>{% else %}<div class="empty-state compact"><strong>Sin hipótesis relacionadas.</strong><span>Eso es normal: una Request puede ser útil sin tener una hipótesis todavía.</span></div>{% endif %}
+  </section>
+</section>
+
+<section class="resource-bottom-grid">
+  <section class="panel" id="hallazgos">
+    <div class="panel-head"><div><p class="eyebrow">HALLAZGOS</p><h2>Hallazgos relacionados</h2></div><span>{{ linked_findings|length }}</span></div>
+    {% for f in linked_findings %}<a class="finding-link severity-{{ f.severity }}" href="{{ target_base }}/finding/{{ f.id }}"><span><b>{{ f.title }}</b><small>{{ ui_label(f.relation) }} · {{ ui_label(f.status) }}</small></span><span class="badge">{{ ui_label(f.severity) }}</span></a>{% else %}<p class="empty">Este endpoint todavía no está asociado a un hallazgo confirmado.</p>{% endfor %}
+    <details class="create-finding-block"><summary>+ Crear o asociar hallazgo</summary><div class="two-col-forms">
+      <form class="stack-form" action="{{ target_base }}/findings/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="resource_id" value="{{ resource.id }}"><label>Título<input name="title" required placeholder="Ej. Autorización rota al actualizar orden"></label><div class="form-row"><label>Severidad<select name="severity"><option value="info">Informativa</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label><label>Estado<select name="status"><option value="draft">Borrador</option><option value="confirmed">Confirmado</option><option value="reported">Reportado</option></select></label></div><textarea name="description" placeholder="Qué observamos y por qué importa"></textarea><button class="button" type="submit">Crear y asociar</button></form>
+      {% if all_findings %}<form class="stack-form" action="{{ target_base }}/resource/{{ resource.id }}/finding-link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Hallazgo existente<select name="finding_id">{% for f in all_findings %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.title }} · {{ ui_label(f.status) }}</option>{% endfor %}</select></label><label>Relación<input name="relation" value="affected" placeholder="affected / step / evidence"></label><button class="button ghost" type="submit">Agregar a la cadena</button></form>{% endif %}
+    </div></details>
+  </section>
+
+  <section class="panel" id="evidencia">
+    <div class="panel-head"><div><p class="eyebrow">MEMORIA</p><h2>Notas y evidencia</h2></div><span>{{ evidence|length }} capturas</span></div>
+    <form class="note-form" action="{{ target_base }}/resource/{{ resource.id }}/note" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><textarea name="body" required placeholder="Qué probaste, qué pasó y qué queda pendiente…"></textarea><button class="button" type="submit">Agregar nota</button></form>
+    {% for n in notes %}<div class="mini-note"><small>{{ n.created_at }}</small><p>{{ n.body }}</p></div>{% endfor %}
+    <form class="evidence-form" action="{{ target_base }}/resource/{{ resource.id }}/evidence" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="file" name="evidence" accept="image/png,image/jpeg,image/webp,image/gif" required><input type="text" name="caption" maxlength="500" placeholder="Qué demuestra la captura"><button class="button ghost" type="submit">Adjuntar evidencia</button></form>
+    {% if evidence %}<div class="evidence-grid">{% for ev in evidence %}<a class="evidence-card" href="{{ target_base }}/evidence/{{ ev.id }}" target="_blank" rel="noopener noreferrer"><span>📷 {{ ev.original_name }}</span>{% if ev.caption %}<small>{{ ev.caption }}</small>{% endif %}<small>{{ ev.created_at }}</small></a>{% endfor %}</div>{% endif %}
+  </section>
 </section>
 {% endblock %}

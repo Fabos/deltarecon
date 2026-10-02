@@ -375,6 +375,26 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+# v0.38 — Negro ships with one integrated example only. The previous engines are
+# kept internally for backwards-compatible workspaces/migrations, but they are
+# retired from automatic evaluation unless they are reintroduced deliberately in
+# a future module. This keeps day-to-day Signals quiet and teaches the Rule →
+# Signal model with one high-signal, explainable example.
+ACTIVE_BUILTIN_RULE_IDS = {"error_disclosure"}
+RETIRED_BUILTIN_RULE_IDS = set(BUILTIN_RULES) - ACTIVE_BUILTIN_RULE_IDS
+for _rule_id, _rule_cfg in BUILTIN_RULES.items():
+    if _rule_id not in ACTIVE_BUILTIN_RULE_IDS:
+        _rule_cfg["enabled"] = False
+
+CATALOG = {
+    key: value for key, value in CATALOG.items()
+    if key in ACTIVE_BUILTIN_RULE_IDS
+}
+if "error_disclosure" in CATALOG:
+    CATALOG["error_disclosure"]["label"] = "Errores con detalles internos"
+    CATALOG["error_disclosure"]["family"] = "Divulgación de información"
+
+
 def _clean_list(values: Any) -> list[str]:
     if not isinstance(values, (list, tuple, set)):
         return []

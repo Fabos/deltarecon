@@ -1,3 +1,15 @@
+# v0.38.0 — Request Workbench + catálogo mínimo de Reglas
+
+- Reduce las Reglas integradas visibles a una sola muestra de alta señal: **Errores con detalles internos**.
+- Añade controles directos para activar/desactivar/eliminar/restaurar la Regla integrada y activar/desactivar/eliminar Reglas propias.
+- Retira de la bandeja activa las Signals históricas producidas por motores integrados retirados, conservando la evidencia y los datos de workspaces anteriores.
+- Añade `http_exchange_provenance` para conservar cuántas veces una misma evidencia HTTP exacta fue observada por Proxy, Repeater, Intruder u otra herramienta.
+- Rehace la vista de endpoint como **Request Workbench**: Request/Response completos, búsqueda dentro de cada mensaje, copiar, wrap, pantalla completa, Repeater, comparación y Requests relacionadas.
+- Agrupa capturas idénticas: una sola variante exacta puede mostrar `Proxy ×4 · Repeater ×1 · Intruder ×1` en vez de tarjetas repetidas.
+- Limita la lista visual a las variantes exactas más recientes cuando una operación tiene gran volumen (por ejemplo Intruder), manteniendo el total y cada variante persistida en la base.
+- Elimina de la vista de endpoint la guía opcional de pruebas, recordatorios y ejecución CORS para priorizar HTTP + evidencia + Signals/Hipótesis.
+- Añade regresión `v038_request_workbench_rules_test.py`.
+
 # v0.37.0 — Reglas de investigación + pasado/presente/futuro + español
 
 - Aclara el modelo de producto: **Regla → Señal → Hipótesis → prueba humana → Hallazgo**.
