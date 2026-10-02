@@ -2,11 +2,12 @@
 {% block title %}{{ detector.label }} · Reglas · Negro{% endblock %}
 {% block content %}
 <section class="hero detector-rule-hero">
-  <div><p class="eyebrow">KNOWLEDGE BASE · {{ detector.family }}</p><h1>{{ detector.label }}</h1><p class="muted">Aprende qué está buscando Negro, entiende por qué la señal existe y adapta el detector al vocabulario real de este programa.</p></div>
-  <div class="page-actions"><a class="button secondary" href="{{ target_base }}/settings#detectors">← Motores</a><span class="badge {{ 'class-lead' if effective.enabled else 'class-discarded' }}">{{ 'Activo' if effective.enabled else 'Desactivado' }}</span></div>
+  <div><p class="eyebrow">REGLA INTEGRADA · {{ detector.family }}</p><h1>{{ detector.label }}</h1><p class="muted">Aprende qué está buscando Negro, entiende por qué la señal existe y adapta la Regla al vocabulario real de este programa.</p></div>
+  <div class="page-actions"><a class="button secondary" href="{{ target_base }}/signals/custom">← Reglas</a><span class="badge {{ 'class-lead' if effective.enabled else 'class-discarded' }}">{{ 'Activo' if effective.enabled else 'Desactivado' }}</span></div>
 </section>
 
-{% if request.query_params.get('saved') %}<div class="callout success"><b>Reglas guardadas.</b> Las nuevas requests usarán esta configuración inmediatamente.</div>{% endif %}
+{% if request.query_params.get('saved') %}<div class="callout success"><b>Reglas guardadas.</b> La Regla queda activa para evidencia nueva; Negro también puede reinterpretar la evidencia histórica guardada.</div>{% endif %}
+{% if request.query_params.get('job') %}<div class="inline-job-progress" data-auto-job-url="/api/jobs/{{ request.query_params.get('job') }}" data-auto-job-refresh="{{ target_base }}/settings/detectors/{{ detector_id }}?saved=1">Revisando evidencia histórica guardada…</div>{% endif %}
 {% if request.query_params.get('reset') %}<div class="callout"><b>Capa restablecida.</b> Negro volvió a heredar la configuración inferior.</div>{% endif %}
 {% if regex_warnings %}<div class="callout warning"><b>Regex ignoradas:</b>{% for x in regex_warnings %}<code>{{ x }}</code>{% endfor %}</div>{% endif %}
 <div class="detector-recalc-strip"><div><b>¿Cambiaste una regla?</b><span>Las requests nuevas usan el cambio de inmediato. Para reinterpretar TODO lo que Negro ya conoce, recalcula la inteligencia local.</span></div><form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="settings"><button class="button secondary" type="submit">↻ Recalcular histórico</button></form></div>
@@ -21,13 +22,13 @@
     <article><span class="learning-number">05</span><h3>Falsos positivos comunes</h3><p>{{ detector.false_positives }}</p></article>
     <article><span class="learning-number">06</span><h3>Cómo validarlo manualmente</h3><p>{{ detector.manual_validation }}</p></article>
   </div>
-  <div class="callout rule-philosophy"><b>Principio:</b> una coincidencia de regla crea una <b>hipótesis</b>. Nunca convierte automáticamente el recurso en vulnerabilidad o finding.</div>
+  <div class="callout rule-philosophy"><b>Principio:</b> una coincidencia de Regla produce una <b>Señal</b> o evidencia revisable. Una Señal puede inspirar una Hipótesis, pero nunca se convierte automáticamente en Hallazgo.</div>
 </section>
 
 <form action="{{ target_base }}/settings/detectors/{{ detector_id }}" method="post" class="rule-editor-form">
 <input type="hidden" name="csrf" value="{{ csrf_token }}">
 <section class="panel inheritance-panel">
-  <div class="panel-head"><div><p class="eyebrow">HERENCIA</p><h2>¿Dónde debe vivir lo que aprendas?</h2><p class="muted">Built-in → Biblioteca personal → Proyecto. La última capa puede agregar o excluir sin modificar las anteriores.</p></div></div>
+  <div class="panel-head"><div><p class="eyebrow">HERENCIA</p><h2>¿Dónde debe vivir lo que aprendas?</h2><p class="muted">Integradas de Negro → Biblioteca personal → Proyecto. La última capa puede agregar o excluir sin modificar las anteriores.</p></div></div>
   <div class="inheritance-flow">
     <div class="inheritance-node built-in"><b>Negro</b><span>Base incorporada</span></div><span class="inherit-arrow">→</span>
     <div class="inheritance-node personal"><b>Biblioteca personal</b><span>Se hereda en futuros proyectos</span></div><span class="inherit-arrow">→</span>
@@ -46,14 +47,14 @@
     <b>Lo que Negro reconoce ahora</b>
     <div class="rule-chips">{% for entry in r.effective_entries %}<span class="rule-chip source-{{ entry.source }}">{{ entry.value }}<small>{% if entry.source=='project' %}proyecto{% elif entry.source=='personal' %}personal{% else %}Negro{% endif %}</small></span>{% else %}<span class="muted">Ningún valor efectivo.</span>{% endfor %}</div>
   </div>
-  <details class="builtin-rule-details"><summary>Ver reglas built-in de Negro</summary><pre>{{ r.builtin or '—' }}</pre></details>
+  <details class="builtin-rule-details"><summary>Ver reglas integradas de Negro</summary><pre>{{ r.builtin or '—' }}</pre></details>
   <div class="rule-layer-grid">
     <div class="rule-layer personal-layer"><div class="rule-layer-head"><b>Biblioteca personal</b><span>Se hereda en proyectos nuevos</span></div>
       <label>Agregar <small>uno por línea</small><textarea name="personal_add__{{ r.name }}" rows="5" placeholder="Ej. memberId">{{ r.personal_add }}</textarea></label>
       <label>Excluir de mi biblioteca <small>uno por línea</small><textarea name="personal_exclude__{{ r.name }}" rows="3" placeholder="Ej. trackingId">{{ r.personal_exclude }}</textarea></label>
     </div>
     <div class="rule-layer project-layer"><div class="rule-layer-head"><b>Sólo {{ project.name }}</b><span>Ajusta ruido de este programa</span></div>
-      <label>Agregar <small>uno por línea</small><textarea name="project_add__{{ r.name }}" rows="5" placeholder="Vocabulario propio del target">{{ r.project_add }}</textarea></label>
+      <label>Agregar <small>uno por línea</small><textarea name="project_add__{{ r.name }}" rows="5" placeholder="Vocabulario propio del proyecto">{{ r.project_add }}</textarea></label>
       <label>Excluir en este proyecto <small>uno por línea</small><textarea name="project_exclude__{{ r.name }}" rows="3" placeholder="Un término que aquí genera falsos positivos">{{ r.project_exclude }}</textarea></label>
     </div>
   </div>
@@ -62,11 +63,11 @@
 
 {% if condition_rows %}
 <section class="panel rule-section">
-  <div class="panel-head"><div><p class="eyebrow">REGLAS · CONDICIONES</p><h2>Cuándo una coincidencia merece alerta</h2><p class="muted">Aquí controlas el contexto que Negro exige además del nombre/patrón.</p></div></div>
+  <div class="panel-head"><div><p class="eyebrow">REGLAS · CONDICIONES</p><h2>Cuándo una coincidencia merece una Señal</h2><p class="muted">Aquí controlas el contexto que Negro exige además del nombre/patrón.</p></div></div>
   <div class="condition-table">
     {% for c in condition_rows %}
     <div class="condition-row">
-      <div class="condition-description"><b>{{ c.label }}</b><p>{{ c.help }}</p><small>Built-in: <code>{{ c.builtin }}</code> · efectivo: <code>{{ c.effective }}</code></small></div>
+      <div class="condition-description"><b>{{ c.label }}</b><p>{{ c.help }}</p><small>Integrada: <code>{{ c.builtin }}</code> · efectivo: <code>{{ c.effective }}</code></small></div>
       {% if c.type == 'bool' %}
       <label>Biblioteca<select name="personal_condition__{{ c.name }}"><option value="inherit" {% if c.personal is none %}selected{% endif %}>Heredar</option><option value="true" {% if c.personal is sameas true %}selected{% endif %}>Sí</option><option value="false" {% if c.personal is sameas false %}selected{% endif %}>No</option></select></label>
       <label>Proyecto<select name="project_condition__{{ c.name }}"><option value="inherit" {% if c.project is none %}selected{% endif %}>Heredar</option><option value="true" {% if c.project is sameas true %}selected{% endif %}>Sí</option><option value="false" {% if c.project is sameas false %}selected{% endif %}>No</option></select></label>
@@ -81,8 +82,8 @@
 {% endif %}
 
 <div class="rule-editor-savebar">
-  <div><b>Consejo de aprendizaje:</b><span>cuando una alerta sea ruido, no la apagues primero. Abre la evidencia, identifica qué regla coincidió y decide si conviene excluirla sólo aquí o enseñarle una excepción a tu biblioteca.</span></div>
-  <button class="button" name="action" value="save" type="submit">Guardar Knowledge Base</button>
+  <div><b>Consejo de aprendizaje:</b><span>cuando una Señal sea ruido, no la apagues primero. Abre la evidencia, identifica qué regla coincidió y decide si conviene excluirla sólo aquí o enseñarle una excepción a tu biblioteca.</span></div>
+  <button class="button" name="action" value="save" type="submit">Guardar Regla</button>
 </div>
 </form>
 

@@ -1,4 +1,20 @@
-# Negro Recon 🐕 — v0.36.0
+# Negro Recon 🐕 — v0.37.0
+
+## v0.37.0 — Reglas que recuerdan por ti
+
+Negro formaliza el modelo **Regla → Señal → Hipótesis → validación humana**. Una Regla expresa qué quieres que Negro recuerde o detecte; una Señal es una coincidencia real con evidencia. Las Reglas pueden vigilar una key, un valor exacto, regex o condiciones de contexto, y pueden crearse desde una Request, una Hipótesis o el editor general.
+
+### Pasado, presente y futuro
+
+Al guardar, editar o activar una Regla, Negro revisa automáticamente la evidencia local que ya posee (Requests y JavaScript analizado) sin volver a tocar el objetivo. Desde ese mismo momento la Regla queda activa para nueva evidencia de Burp y nuevos JavaScript analizados. Una edición vuelve a interpretar el historial y sustituye solamente las Señales generadas por esa Regla.
+
+### Proyecto ≠ host
+
+`/projects` administra investigaciones completas. Un proyecto puede contener muchos hosts y alcances del mismo programa; el Inicio del proyecto muestra únicamente métricas y trabajo de ese proyecto. Los hosts viven en Inventario/Surface, no como proyectos hermanos.
+
+### Idioma
+
+La UX es español-first. Se mantienen en inglés únicamente términos técnicos donde traducirlos resta claridad: Request, Response, Burp, HTTP, API, JWT, CORS, OAuth/OIDC y nombres propios de herramientas/protocolos.
 
 ## v0.36.0 — Investigation Memory / Correlation Engine
 
@@ -27,9 +43,9 @@ Negro es una capa local de inteligencia, memoria y organización encima de Burp 
 
 ## Modelo central
 
-`Rule → Signal → Hipótesis IA → Investigación humana`
+`Regla → Señal → Hipótesis → Investigación / prueba humana → Hallazgo`
 
-- **Rules**: conocimiento determinístico configurable.
+- **Reglas**: condiciones observables configurables; pueden ser integradas o creadas por el investigador.
 - **Signals**: observaciones automáticas con procedencia exacta; no son vulnerabilidades.
 - **Hipótesis IA**: aparecen únicamente cuando el usuario ejecuta IA y separan hechos, inferencia, incógnitas y próxima prueba.
 - **Investigaciones**: las crea el usuario al promover una hipótesis.

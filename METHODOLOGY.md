@@ -1,4 +1,22 @@
-# Negro Recon — Metodología v0.36.0
+# Negro Recon — Metodología v0.37.0
+
+## v0.37 — Regla, Señal y memoria temporal
+
+El modelo mental principal es:
+
+```text
+Regla → coincidencia → Señal → Hipótesis → prueba humana → Hallazgo
+```
+
+- **Regla**: algo que Negro debe vigilar o evaluar. Puede ser una key, valor exacto, regex o combinación de contexto.
+- **Señal**: hecho observado cuando una Regla coincide; conserva procedencia y no implica vulnerabilidad.
+- **Hipótesis**: pregunta/escenario comprobable que el investigador o la IA formula usando una o varias evidencias.
+- **Hallazgo**: sólo existe después de validación humana suficiente.
+
+Toda Regla activa cubre tres tiempos: **pasado** (revisión automática de evidencia local existente), **presente** (Señales surgidas de esa reinterpretación) y **futuro** (evaluación incremental de nuevas Requests/JavaScript). Revisar el pasado nunca hace nuevas peticiones al target.
+
+Una Regla puede crearse desde una Request, desde una Hipótesis o desde el catálogo de Reglas. El motivo/notas se conservan para que una coincidencia futura recuerde *por qué* se estaba buscando esa pieza.
+
 
 ## v0.36 — Memoria de investigación y correlación
 
@@ -9,7 +27,7 @@ Una Hypothesis puede declarar una pieza pendiente. Si esa pieza aparece más ade
 
 ## Modelo mental
 
-`Rule → Signal → Hipótesis IA → Investigación humana → Finding/cierre`
+`Regla → Señal → Hipótesis → Investigación humana → Hallazgo/cierre`
 
 Negro organiza evidencia y relaciones. No intenta decidir automáticamente qué es vulnerable.
 

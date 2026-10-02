@@ -2,8 +2,8 @@
 {% block title %}Inteligencia · {{ domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero">
-  <div><p class="eyebrow">RECON E INTELIGENCIA</p><h1>Recolectar y reinterpretar evidencia</h1><p class="muted">Esta pantalla amplía la superficie y muestra señales pasivas. Si ya sabes qué quieres probar, ve a <b>Hunt</b>.</p></div>
-  <div class="page-actions"><a class="button" href="{{ target_base }}/hypotheses">Ir a Hunt</a><a class="button secondary" href="{{ target_base }}/tree">Ver superficie</a></div>
+  <div><p class="eyebrow">RECON E INTELIGENCIA</p><h1>Recolectar y reinterpretar evidencia</h1><p class="muted">Esta pantalla amplía la superficie y muestra señales pasivas. Si ya sabes qué quieres probar, ve a <b>Investigación</b>.</p></div>
+  <div class="page-actions"><a class="button" href="{{ target_base }}/hypotheses">Ir a Investigación</a><a class="button secondary" href="{{ target_base }}/tree">Ver superficie</a></div>
 </section>
 
 <div class="grid two">
@@ -22,15 +22,15 @@
     <form action="{{ target_base }}/intel/active-dns" method="post" data-job-form data-job-label="DNS inteligente"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">DNS inteligente</button></form>
     <form action="{{ target_base }}/intel/leads" method="post" data-job-form data-job-label="Motor de correlación"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Generar señales</button></form>
   </div>
-  <p class="muted small">DNS inteligente usa nombres observados + detección de wildcard y respeta el máximo del perfil. No ejecuta listas masivas.</p>
+  <p class="muted small">DNS inteligente usa nombres observados + detección de comodín y respeta el máximo del perfil. No ejecuta listas masivas.</p>
 </section>
 </div>
 
 <div class="grid two">
 <section class="panel">
   <div class="panel-head"><div><p class="eyebrow">TRANSPARENCIA DE CERTIFICADOS</p><h2>Historial CT</h2></div><span>{{ ct.total }} hosts</span></div>
-  <div class="stats compact-stats"><div class="stat"><span>Nombres con wildcard</span><strong>{{ ct.wildcards }}</strong></div></div>
-  {% for h in ct.hosts[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.hostname }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.certificate_count }} certs{% if h.wildcard %} · wildcard{% endif %}</small>{% if h.issuers %}<small>{{ h.issuers[0] }}</small>{% endif %}</div></div>{% else %}<p class="empty">Ejecuta crt.sh para poblar historia de certificados.</p>{% endfor %}
+  <div class="stats compact-stats"><div class="stat"><span>Nombres con comodín</span><strong>{{ ct.comodíns }}</strong></div></div>
+  {% for h in ct.hosts[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.hostname }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.certificate_count }} certs{% if h.wildcard %} · comodín{% endif %}</small>{% if h.issuers %}<small>{{ h.issuers[0] }}</small>{% endif %}</div></div>{% else %}<p class="empty">Ejecuta crt.sh para poblar historia de certificados.</p>{% endfor %}
 </section>
 <section class="panel">
   <div class="panel-head"><div><p class="eyebrow">BÚSQUEDAS</p><h2>Consultas sugeridas</h2></div><span>{{ search.queries|length }}</span></div>
@@ -48,7 +48,7 @@
 <section class="panel passive-intel-panel">
   <div class="panel-head"><div><p class="eyebrow">BURP · INTELIGENCIA PASIVA</p><h2>Señales detectadas mientras navegas</h2></div><a href="{{ target_base }}/notifications">Ver notificaciones{% if notifications_unread %} · {{ notifications_unread }} nuevas{% endif %} →</a></div>
   <p class="muted small">Negro analiza únicamente las requests/responses que Burp ya capturó. Busca parámetros de redirección/URL, secretos o client config, credenciales/campos sensibles en respuestas, CORS observado, source maps, documentación API y errores internos. No ejecuta explotación automática.</p>
-  {% if notifications %}<div class="passive-intel-list">{% for n in notifications[:6] %}<a href="{% if n.href %}{{ target_base }}/{{ n.href }}{% else %}{{ target_base }}/notifications{% endif %}" class="passive-intel-item severity-{{ n.severity }}"><span></span><div><strong>{{ n.title }}</strong><small>{{ n.message }}</small></div><em>{{ ui_label(n.severity) }}</em></a>{% endfor %}</div>{% else %}<p class="empty">Todavía no hay señales pasivas. Navega el target con Burp y Negro irá correlacionando el tráfico.</p>{% endif %}
+  {% if notifications %}<div class="passive-intel-list">{% for n in notifications[:6] %}<a href="{% if n.href %}{{ target_base }}/{{ n.href }}{% else %}{{ target_base }}/notifications{% endif %}" class="passive-intel-item severity-{{ n.severity }}"><span></span><div><strong>{{ n.title }}</strong><small>{{ n.message }}</small></div><em>{{ ui_label(n.severity) }}</em></a>{% endfor %}</div>{% else %}<p class="empty">Todavía no hay señales pasivas. Navega el proyecto con Burp y Negro irá correlacionando el tráfico.</p>{% endif %}
 </section>
 
 <section class="panel" id="ai-target">
@@ -57,7 +57,7 @@
   <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/ai-target-estimate" data-run-url="{{ target_base }}/ai-target-run">
     <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
     <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. Verás tokens y costo máximo en COP/USD antes de enviar evidencia.</div>
-    <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar target</button></form>
+    <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar proyecto</button></form>
   </div>
   {% if latest_ai %}
   <div class="ai-result"><div class="panel-head"><strong>{{ latest_ai.row.model }}</strong><small>{{ latest_ai.row.created_at }}{% if latest_ai.usage.actual_cost_cop is defined %} · costo real ≈ COP {{ '%.2f'|format(latest_ai.usage.actual_cost_cop) }}{% endif %}</small></div>

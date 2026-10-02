@@ -41,7 +41,7 @@
     <div class="timeline-item"><span class="timeline-dot"></span><div class="trace-card">
       <div><b>#{{ x.exchange_id }} · {{ x.method }} <code>{{ x.path }}</code></b><span class="badge">HTTP {{ x.status_code or '—' }}</span>{% if x.identity_name %}<span class="badge identity-badge">{{ x.identity_name }}</span>{% endif %}</div>
       <small>{{ x.hostname }} · key <code>{{ x.identifier_name }}</code> · {{ x.first_seen_at }}</small>
-      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}">Abrir Request</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ x.exchange_id }}">Find Related</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ x.exchange_id }}">Ver contexto</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}">Abrir Request</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ x.exchange_id }}">Buscar relacionados</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ x.exchange_id }}">Ver contexto</a></div>
     </div></div>
   {% else %}<p class="empty">No hay Requests enlazadas a este valor.</p>{% endfor %}
   </div>
@@ -56,7 +56,7 @@
 
 {% if object_data.signals or object_data.hypotheses %}
 <section class="panel object-intelligence-summary">
-  <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA RELACIONADA</p><h2>Lo que Negro ya tiene mapeado alrededor de esta cosa</h2></div><div class="badges"><span class="badge">⚡ {{ object_data.signals|length }} Signals</span><span class="badge">◆ {{ object_data.hypotheses|length }} Hypotheses</span></div></div>
+  <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA RELACIONADA</p><h2>Lo que Negro ya tiene mapeado alrededor de esta cosa</h2></div><div class="badges"><span class="badge">⚡ {{ object_data.signals|length }} Señales</span><span class="badge">◆ {{ object_data.hypotheses|length }} Hipótesis</span></div></div>
   <div class="related-intelligence-list">
     {% for s in object_data.signals %}<a href="{{ target_base }}/hypotheses#signal-{{ s.id }}"><span>{% if s.signal_level=='correlation' %}⚡{% else %}🩵{% endif %}</span><div><b>{{ s.title }}</b><small>{{ s.signal_level or 'local' }} · {{ s.source }}</small></div></a>{% endfor %}
     {% for h in object_data.hypotheses %}<a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><span>◆</span><div><b>{{ h.title }}</b><small>{{ h.status }} · {{ h.review_priority }}</small></div></a>{% endfor %}
@@ -66,7 +66,7 @@
 
 <section class="object-summary-grid">
   <article class="panel"><p class="eyebrow">IDENTIDADES</p><h2>{{ object_data.identities|length }}</h2>{% for i in object_data.identities %}<div class="object-fact-row"><a href="{{ target_base }}/identities/view/{{ i.id }}">{{ i.name }}</a><span>{{ i.exchanges }} Request(s)</span></div>{% else %}<p class="empty">No asociadas todavía.</p>{% endfor %}</article>
-  <article class="panel"><p class="eyebrow">FLOWS</p><h2>{{ object_data.flows|length }}</h2>{% for f in object_data.flows %}<div class="object-fact-row"><a href="{{ target_base }}/flows/{{ f.id }}">{{ f.name }}</a><span>{{ f.steps }} paso(s)</span></div>{% else %}<p class="empty">No aparece en un Flow incluido.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">FLUJOS</p><h2>{{ object_data.flows|length }}</h2>{% for f in object_data.flows %}<div class="object-fact-row"><a href="{{ target_base }}/flows/{{ f.id }}">{{ f.name }}</a><span>{{ f.steps }} paso(s)</span></div>{% else %}<p class="empty">No aparece en un Flujo incluido.</p>{% endfor %}</article>
   <article class="panel"><p class="eyebrow">HOSTS</p><h2>{{ object_data.hosts|length }}</h2>{% for h in object_data.hosts %}<div class="object-fact-row"><b>{{ h.hostname }}</b><span>{{ h.exchanges }} Request(s)</span></div>{% else %}<p class="empty">—</p>{% endfor %}</article>
 </section>
 

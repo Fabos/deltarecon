@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Ajustes · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
-<section class="page-head"><div><p class="eyebrow">AJUSTES</p><h1>Proyecto, detectores e integraciones</h1><p class="muted">Negro debe explicar por qué alerta. Estudia, hereda y edita las reglas exactas que producen cada señal.</p></div></section>
+<section class="page-head"><div><p class="eyebrow">AJUSTES</p><h1>Proyecto e integraciones</h1><p class="muted">La configuración general vive aquí. Las Reglas de señales tienen su propia pantalla para que sea claro qué observa Negro y qué produjo cada Señal.</p></div></section>
 
 <div class="grid two settings-grid">
   <section class="panel project-settings-card">
-    <div class="panel-head"><div><p class="eyebrow">PROYECTO</p><h2>{{ project.name }}</h2></div><span class="badge class-informational">{{ project.scopes|length }} scope(s)</span></div>
+    <div class="panel-head"><div><p class="eyebrow">PROYECTO</p><h2>{{ project.name }}</h2></div><span class="badge class-informational">{{ project.scopes|length }} alcance(s)</span></div>
     <p class="muted small">Un proyecto agrupa todos los dominios/raíces que pertenecen a la misma prueba. Burp, mapa, hipótesis y CORS comparten este contexto.</p>
     <form class="project-settings-form" action="{{ target_base }}/project" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>Nombre del proyecto<input name="name" value="{{ project.name }}" required></label>
-      <label>Scopes <small>uno por línea; un scope incluye sus subdominios</small><textarea name="scopes" rows="5" required>{% for s in project.scopes %}{{ s }}{% if not loop.last %}
+      <label>Alcances <small>uno por línea; un alcance incluye sus subdominios</small><textarea name="scopes" rows="5" required>{% for s in project.scopes %}{{ s }}{% if not loop.last %}
 {% endif %}{% endfor %}</textarea></label>
-      <button class="button" type="submit">Guardar proyecto y scopes</button>
+      <button class="button" type="submit">Guardar proyecto y alcances</button>
     </form>
     <div class="callout"><strong>Ejemplo:</strong> para el lab puedes usar <code>app.accesslab.local</code> y <code>api.accesslab.local</code> dentro del mismo proyecto. Así un Origin entre ambos deja de parecer externo.</div>
   </section>
@@ -21,7 +21,7 @@
 </div>
 
 <section class="panel recalc-panel">
-  <div class="panel-head"><div><p class="eyebrow">REINTERPRETAR EVIDENCIA</p><h2>Recalcular inteligencia sin repetir enumeración</h2><p class="muted">Después de cambiar reglas, Negro puede volver a pasar todos sus motores locales sobre requests de Burp, Resources, análisis JavaScript, crawls e inspecciones ya guardadas. No hace nuevas peticiones al target y no consume IA.</p></div><span class="badge class-informational">local-only</span></div>
+  <div class="panel-head"><div><p class="eyebrow">REINTERPRETAR EVIDENCIA</p><h2>Recalcular inteligencia sin repetir enumeración</h2><p class="muted">Después de cambiar reglas, Negro puede volver a pasar todos sus motores locales sobre Requests de Burp, recursos, análisis JavaScript, crawls e inspecciones ya guardadas. No hace nuevas peticiones al objetivo y no consume IA.</p></div><span class="badge class-informational">sólo local</span></div>
   <div class="recalc-explainer"><span><b>Puede agregar</b> hipótesis que ahora coinciden.</span><span><b>Puede retirar</b> hipótesis que dejaron de cumplir tus reglas.</span><span><b>No borra</b> tus estados, notas ni hallazgos.</span></div>
   <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando inteligencia local" class="recalc-form">
     <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="settings">
@@ -30,31 +30,16 @@
 </section>
 
 <section class="panel detector-settings" id="detectors">
-  <div class="panel-head"><div><p class="eyebrow">KNOWLEDGE BASE · MOTORES</p><h2>Alertas transparentes y editables</h2><p class="muted">Cada detector ahora es una regla que puedes estudiar, heredar y personalizar. No hay “estricto/permisivo”: puedes ver exactamente qué nombres, patrones, ubicaciones y condiciones disparan cada señal.</p></div></div>
+  <div class="panel-head"><div><p class="eyebrow">REGLAS DE SEÑALES</p><h2>Qué está vigilando Negro</h2><p class="muted">Las Reglas integradas y tus Reglas personalizadas viven juntas en una sola pantalla. Una Regla define qué observar; una coincidencia genera una Señal. Ajustes conserva sólo la configuración general del proyecto.</p></div><a class="button" href="{{ target_base }}/signals/custom">Abrir Reglas de señales →</a></div>
   <div class="rule-engine-intro">
-    <div><b>1 · Negro built-in</b><span>Conocimiento base que viene con la herramienta.</span></div>
-    <div><b>2 · Tu biblioteca personal</b><span>Lo que aprendes se hereda automáticamente en proyectos nuevos.</span></div>
-    <div><b>3 · Este proyecto</b><span>Agrega o excluye reglas sólo para este programa sin contaminar los demás.</span></div>
+    <div><b>1 · Negro</b><span>Conocimiento integrado que viene con la herramienta.</span></div>
+    <div><b>2 · Tu biblioteca</b><span>Ajustes reutilizables que quieres heredar en otros proyectos.</span></div>
+    <div><b>3 · Este proyecto</b><span>Excepciones locales que no contaminan otros programas.</span></div>
   </div>
-  <form action="{{ target_base }}/settings/detectors" method="post">
-    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <div class="detector-grid detector-grid-knowledge">
-    {% for d in detector_rows %}
-      <article class="detector-card knowledge-card {% if not d.enabled %}disabled{% endif %}">
-        <div class="detector-card-head"><div><span class="eyebrow">{{ d.family }}</span><h3>{{ d.label }}</h3></div><label class="toggle-line"><input type="checkbox" name="detector_{{ d.id }}_enabled" {% if d.enabled %}checked{% endif %}><span>Activo</span></label></div>
-        <p class="detector-lesson-preview">{{ d.lesson }}</p>
-        <div class="detector-metrics"><span><b>{{ d.active_count or 0 }}</b> hipótesis activas</span><span><b>{{ d.notification_count or 0 }}</b> alertas históricas</span><span><b>{{ d.rule_count or 0 }}</b> reglas efectivas</span></div>
-        <div class="inheritance-mini"><span><b>{{ d.personal_count or 0 }}</b> personales</span><span><b>{{ d.project_count or 0 }}</b> del proyecto</span></div>
-        <a class="button secondary detector-edit-button" href="{{ target_base }}/settings/detectors/{{ d.id }}">Aprender y editar reglas →</a>
-      </article>
-    {% endfor %}
-    </div>
-    <div class="detector-savebar"><span>Este switch sólo activa/desactiva por proyecto. Para cambiar cómo se identifica una señal, entra al detector.</span><button class="button" type="submit">Guardar estados</button></div>
-  </form>
 </section>
 
 <div class="grid two settings-grid">
   <section class="panel"><div class="panel-head"><div><p class="eyebrow">SECRETOS</p><h2>Claves API</h2></div></div><p class="muted">Archivo local: <code>{{ secrets_path }}</code></p><div class="integration-status"><span>OpenAI <b class="{{ 'ok' if secret_status.OPENAI_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.OPENAI_API_KEY else 'falta' }}</b></span><span>URLScan <b class="{{ 'ok' if secret_status.URLSCAN_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.URLSCAN_API_KEY else 'falta' }}</b></span><span>SecurityTrails <b class="{{ 'ok' if secret_status.SECURITYTRAILS_API_KEY else 'missing' }}">{{ 'configurada' if secret_status.SECURITYTRAILS_API_KEY else 'falta' }}</b></span><span>GitHub <b class="{{ 'ok' if secret_status.GITHUB_TOKEN else 'missing' }}">{{ 'configurada' if secret_status.GITHUB_TOKEN else 'falta' }}</b></span></div><p class="muted small">Las variables de entorno tienen prioridad y Negro nunca muestra el valor de una key.</p></section>
-  <section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · TIEMPO REAL</p><h2>Negro Bridge</h2></div><span class="badge class-informational">local</span></div><p>La extensión enruta cada host al proyecto cuyo scope sea más específico.</p><div class="kv"><span>Salud</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingesta</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Proyecto → Scope/Host → Recurso → Método → Request</code></div></section>
+  <section class="panel burp-card"><div class="panel-head"><div><p class="eyebrow">BURP · TIEMPO REAL</p><h2>Negro Bridge</h2></div><span class="badge class-informational">local</span></div><p>La extensión enruta cada host al proyecto cuyo alcance sea más específico.</p><div class="kv"><span>Salud</span><code>GET http://127.0.0.1:8765/api/ingest/health</code><span>Ingesta</span><code>POST http://127.0.0.1:8765/api/ingest/http</code><span>Modelo</span><code>Proyecto → Alcance/Host → Recurso → Método → Request</code></div></section>
 </div>
 {% endblock %}

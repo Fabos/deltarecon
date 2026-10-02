@@ -48,13 +48,13 @@
   const typeLabel = {
     source:'Fuentes', target:'Proyecto', host:'Hosts', javascript:'JavaScript', resource:'Endpoints',
     operation:'Métodos', cluster:'Grupos', request:'Requests', observation:'Observaciones', identity:'Identidades',
-    flow:'Flows', object:'Objetos', state:'Estados', anomaly:'Anomalías', lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
+    flow:'Flujos', object:'Objetos', state:'Estados', anomaly:'Anomalías', lead:'Hipótesis', finding:'Hallazgos', external:'Relacionados'
   };
   const stateLabel = {normal:'Normal',untested:'Pendiente',testing:'En prueba',interesting:'Interesante',finding:'Hallazgo',tested:'Revisado'};
   const coverageLabel = {untested:'Pendiente',testing:'En prueba',tested:'Revisado'};
   const signalLabel = {normal:'Normal',interesting:'Interesante',finding:'Hallazgo'};
-  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flows',steps:'Pasos',object_type:'Tipo interno',identifier:'Valor observado',identifier_field:'Campo identificador',methods:'Métodos soportados',method_count:'Métodos',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
-  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flow',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención',called_endpoint:'consumió endpoint',appeared_in_endpoint:'apareció en endpoint',flow_endpoint:'Flow usó endpoint'};
+  const metaKeyLabel = {id:'ID',type:'Tipo',kind:'Tipo',status:'Estado',confidence:'Confianza',priority:'Prioridad',source:'Fuente',why:'Por qué',next_test:'Siguiente prueba',method:'Método',url:'URL',path:'Ruta',host:'Host',hostname:'Host',seen_count:'Veces visto',authenticated:'Con sesión',authenticated_observed:'Sesión observada',content_type:'Content-Type',request_content_type:'Content-Type Request',response_content_type:'Content-Type Response',first_seen:'Primera vez',first_seen_at:'Primera vez',last_seen:'Última vez',last_seen_at:'Última vez',finding_count:'Hallazgos',coverage:'Cobertura',signal:'Señal',count:'Cantidad',requests:'Requests',objects:'Objetos',flows:'Flujos',steps:'Pasos',object_type:'Tipo interno',identifier:'Valor observado',identifier_field:'Campo identificador',methods:'Métodos soportados',method_count:'Métodos',field:'Campo',identity:'Identidad',message:'Qué observó Negro',baseline:'Patrón repetido',current:'Esta instancia'};
+  const relationLabel = {contains:'contiene',supports:'soporta',observed_in:'observado en',observed_on:'observado en',observed:'observó',discovered:'descubrió',discovered_by:'descubierto por',tested_by:'probado con',produced_lead:'produjo hipótesis',supports_hypothesis:'soporta hipótesis',contradicts_hypothesis:'contradice hipótesis',evidence_for:'evidencia de',affected_by:'afectado por',related_to:'relacionado con',source:'fuente',calls:'llama',accepts:'acepta',produced:'produjo',returned_by:'devuelto por',authenticated_as:'autenticado como',belongs_to:'pertenece a',performed:'hizo Request',participates_in:'participó en',flow_actor:'actor del Flujo',flow_step:'incluye Request',next_step:'siguiente paso',touches:'toca objeto',touches_object:'toca objeto',observed_object:'observó objeto',co_observed:'visto junto con',state_observed:'estado observado',pattern_difference:'diferencia de patrón',attention:'merece atención',called_endpoint:'consumió endpoint',appeared_in_endpoint:'apareció en endpoint',flow_endpoint:'Flujo usó endpoint'};
   const valueLabel = v => ({candidate:'Candidata',testing:'En prueba',interesting:'Interesante',negative:'Negativa',postponed:'Para después',confirmed:'Confirmada',discarded:'Descartada',pending:'Pendiente',in_progress:'En revisión',reviewed:'Revisado',unknown:'Sin clasificar',lead:'Interesante',finding:'Hallazgo',high:'Alta',medium:'Media',low:'Baja',none:'Sin prioridad'}[String(v)] || v);
   const leadKindLabel = {
     access_object_reference:'IDOR / autorización horizontal', mass_assignment:'Asignación masiva',
@@ -155,7 +155,7 @@
     const sets=identityEndpointSets();
     if(preset!=='identity'||!sets.primaryId||!sets.compareId){identityCompareSummary.hidden=true;identityCompareSummary.innerHTML='';identityEndpointMode='all';return;}
     const opts=graph.meta?.filter_options?.identities||[];
-    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identity ${id}`;
+    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identidad ${id}`;
     const buttons=[
       ['all',`Todos · ${new Set([...sets.primary,...sets.compare]).size}`],
       ['shared',`Compartidos · ${sets.shared.size}`],
@@ -174,7 +174,7 @@
     if(preset!=='identity')return [];
     const opts=graph.meta?.filter_options?.identities||[];
     const selected=[Number(graph.meta?.identity_id||0),Number(graph.meta?.compare_identity_id||0)].filter(Boolean);
-    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identity ${id}`;
+    const label=id=>opts.find(x=>Number(x.id)===Number(id))?.name||graph.nodes.find(n=>n.id===`identity:${id}`)?.label||`Identidad ${id}`;
     return selected.map((iid,index)=>{
       const edge=graph.edges.find(e=>e.source===`identity:${iid}`&&e.target===nodeId&&e.relation==='called_endpoint');
       if(!edge)return null;
@@ -266,7 +266,7 @@
       if(hasResults){
         let x=-w/2+12;
         results.forEach((r,idx)=>{
-          const name=String(r.label||'Identity');const short=name.length>16?name.slice(0,15)+'…':name;
+          const name=String(r.label||'Identidad');const short=name.length>16?name.slice(0,15)+'…':name;
           const val=`${short} · ${r.statuses.join('/')}`;
           addText(x,15,val,`node-endpoint-status ${idx===0?'primary':'secondary'}`);
           x+=Math.min(145,Math.max(78,val.length*6.1+18));
@@ -1157,7 +1157,7 @@
     const section=(title,rows,copy='')=>rows.length?`<div class="graph-detail-group"><h3>${esc(title)}</h3>${copy?`<p>${esc(copy)}</p>`:''}${rows.map(g=>relationGroupRow(g)).join('')}</div>`:'';
     const noisy=noisyObjects.length?`<details class="graph-detail-technical"><summary>Identificadores sin clasificar · ${noisyObjects.reduce((s,g)=>s+g.count,0)}</summary><p>Negro observó estos valores, pero todavía no sabe qué entidad de negocio representan.</p>${noisyObjects.map(g=>relationGroupRow(g)).join('')}</details>`:'';
     const tech=technical.length?`<details class="graph-detail-technical"><summary>Relaciones técnicas · ${technical.length}</summary>${technical.slice(0,18).map(g=>relationGroupRow(g)).join('')}</details>`:'';
-    return `${section('Identidades que consumieron este endpoint',identities)}${section('Flows donde apareció',flows)}${section('Objetos con significado observados aquí',meaningfulObjects)}${noisy}${tech}`;
+    return `${section('Identidades que consumieron este endpoint',identities)}${section('Flujos donde apareció',flows)}${section('Objetos con significado observados aquí',meaningfulObjects)}${noisy}${tech}`;
   }
 
   function showNode(n){
@@ -1175,7 +1175,7 @@
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const intelligenceRows=Array.isArray(meta.intelligence)?meta.intelligence:[];
-    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Signal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'◆':item.signal_level==='correlation'?'↔':'⚡'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:item.signal_level==='correlation'?`Correlación · ${esc(item.source||'memory')}`:`Signal · ${esc(item.source||'engine')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
+    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Señal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'◆':item.signal_level==='correlation'?'↔':'⚡'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:item.signal_level==='correlation'?`Correlación · ${esc(item.source||'memory')}`:`Señal · ${esc(item.source||'motor')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
     const semanticNeutral=['identity','flow','object','request','state','target','host','resource'].includes(n.type) && slugState(n.state)==='normal';
     const statusHtml=(meta.coverage||meta.signal)
@@ -1321,10 +1321,10 @@
     root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===button));
     if(routePanel) routePanel.hidden = !['interesting','attack'].includes(next);
     const perspectiveCopy={
-      surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿qué endpoints tocó cada cuenta/sesión?',flow:'Flows · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿en qué endpoints apareció esta cosa?',intelligence:'Inteligencia · ¿qué merece atención?',
+      surface:'Superficie · ¿qué existe?',identity:'Identidades · ¿qué endpoints tocó cada cuenta/sesión?',flow:'Flujos · ¿qué ocurrió y en qué orden?',objects:'Objetos · ¿en qué endpoints apareció esta cosa?',intelligence:'Inteligencia · ¿qué merece atención?',
       untested:'Pendientes · ¿qué no he revisado?',interesting:'Interesante · ¿dónde hay señales?',burp:'Burp · Requests observadas',attack:'Qué probar ahora · rutas de investigación',all:'Todo · vista técnica ampliada'
     };
-    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona una o dos identidades: quedan a los lados y los endpoints compartidos en el centro.',flow:'Alterna entre grafo y línea de tiempo. Las rutas siempre conservan protagonismo.',objects:'Selecciona un objeto y mira directamente los endpoints donde apareció; identidades y Flows quedan como contexto lateral.',intelligence:'Una bandeja corta de diferencias, hipótesis y hallazgos. Si no aporta una decisión, no aparece aquí.'};
+    const helpCopy={surface:'Infraestructura y endpoints. Profundiza sólo cuando necesites detalle.',identity:'Selecciona una o dos identidades: quedan a los lados y los endpoints compartidos en el centro.',flow:'Alterna entre grafo y línea de tiempo. Las rutas siempre conservan protagonismo.',objects:'Selecciona un objeto y mira directamente los endpoints donde apareció; identidades y Flujos quedan como contexto lateral.',intelligence:'Una bandeja corta de diferencias, hipótesis y hallazgos. Si no aporta una decisión, no aparece aquí.'};
     if(scopeStatusEl) scopeStatusEl.textContent=perspectiveCopy[next]||'Mapa de investigación';
     if(scopeCopyEl) scopeCopyEl.textContent=helpCopy[next]||'Cambia de lente sin perder la evidencia original.';
     updateLeadFilterVisibility();

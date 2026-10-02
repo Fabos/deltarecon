@@ -1,5 +1,19 @@
 # Roadmap
 
+## v0.37 — Reglas como memoria de investigación ✅
+- Regla → Señal → Hipótesis como modelo explícito.
+- Reglas desde Request, Hipótesis o configuración.
+- Condiciones por key, valor exacto, regex y contexto HTTP/Identidad/Objeto.
+- Cobertura automática del pasado + evaluación incremental del futuro.
+- Requests y JavaScript analizado participan en el backfill local.
+- Reglas integradas y personalizadas reunidas en una UX única.
+- Administración de Proyectos separada del dashboard activo; un proyecto agrupa múltiples hosts/scopes.
+- UX español-first.
+
+## Siguiente paso
+Usar Negro en Bug Bounty/labs reales y priorizar únicamente problemas observados: ruido, rendimiento, señales que falten y fricción de investigación. Evitar nuevas fases por inventario de funciones.
+
+
 ## v0.13 — Bug Bounty Pilot ✅
 - Burp contextual actions: Open / Interesting / Create Finding / Attach / Retest evidence
 - Real multi-entity Findings as source of truth

@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Agregar a Flow · Negro{% endblock %}
+{% block title %}Agregar a Flujo · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero"><div><p class="eyebrow">AGREGAR A FLOW</p><h1>Request #{{ exchange.id }}</h1><p class="muted">{{ exchange.method }} {{ exchange.hostname }}<code>{{ exchange.path }}</code> · HTTP {{ exchange.status_code or '—' }}</p></div><div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a></div></section>
 <section class="panel narrow-panel">
   <form class="stack-form" action="{{ target_base }}/flows/add" method="post">
     <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="exchange_id" value="{{ exchange.id }}">
-    <label><span>Flow existente</span><select name="flow_id"><option value="">— Selecciona —</option>{% for f in flows %}<option value="{{ f.id }}">{{ f.name }} · {{ f.step_count }} pasos</option>{% endfor %}</select></label>
+    <label><span>Flujo existente</span><select name="flow_id"><option value="">— Selecciona —</option>{% for f in flows %}<option value="{{ f.id }}">{{ f.name }} · {{ f.step_count }} pasos</option>{% endfor %}</select></label>
     <div class="or-divider">o</div>
     <label><span>Crear flow nuevo</span><input name="new_flow_name" placeholder="Checkout · Cuenta secundaria"></label>
     <button class="button" type="submit">Agregar Request</button>

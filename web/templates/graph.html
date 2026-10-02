@@ -3,9 +3,10 @@
 {% block content %}
 <section class="graph-page investigation-views" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <span class="sr-only">INVESTIGATION MAP · Identidades · Flows · Objetos · Inteligencia · Negro no asume buyer, seller, admin ni ningún rol.</span>
+<span class="sr-only"><span>Flows</span></span>
   <header class="graph-toolbar simplified-toolbar">
     <div>
-      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.36.0</div>
+      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v0.37.0</div>
       <h1>Entiende una pregunta a la vez</h1>
       <p>Negro ya tiene mucha evidencia. Aquí no intentamos mostrarla toda: eliges <b>qué quieres entender</b> y la vista cambia para responderlo.</p>
     </div>
@@ -18,7 +19,7 @@
   <div class="investigation-lenses" data-graph-presets>
     <button class="investigation-lens active" data-graph-preset="surface"><b>Superficie</b><span>¿Qué existe?</span></button>
     <button class="investigation-lens" data-graph-preset="identity"><b>Identidad</b><span>¿Quién hizo qué?</span></button>
-    <button class="investigation-lens" data-graph-preset="flow"><b>Flow</b><span>¿Qué ocurrió?</span></button>
+    <button class="investigation-lens" data-graph-preset="flow"><b>Flujo</b><span>¿Qué ocurrió?</span></button>
     <button class="investigation-lens" data-graph-preset="objects"><b>Objeto</b><span>¿Qué sabemos de esta cosa?</span></button>
     <button class="investigation-lens" data-graph-preset="intelligence"><b>Atención</b><span>¿Qué merece mirar?</span></button>
   </div>
@@ -29,7 +30,7 @@
   </div>
 
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
-    <div class="graph-ai-head"><div><span class="eyebrow">HYPOTHESIS ENGINE 2.0</span><h2>Hipótesis con contexto correlacionado</h2><p data-graph-ai-scope>Analizar todo el target.</p><p class="muted">Cruza Identity, Flow, Object, State, Signals, anomalías y resultados de autorización observados. Genera preguntas para investigar; no declara vulnerabilidades.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
+    <div class="graph-ai-head"><div><span class="eyebrow">MOTOR DE HIPÓTESIS 2.0</span><h2>Hipótesis con contexto correlacionado</h2><p data-graph-ai-scope>Analizar todo el proyecto.</p><p class="muted">Cruza Identidad, Flujo, Objeto, Estado, Señales, anomalías y resultados de autorización observados. Genera preguntas para investigar; no declara vulnerabilidades.</p></div><button type="button" class="btn-secondary" data-graph-ai-close>Cerrar</button></div>
     {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. El resto de Negro funciona sin IA.</div>{% endif %}
     <div class="graph-ai-controls"><label>Modelo<select data-graph-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button type="button" class="btn-secondary" data-graph-ai-estimate-btn>Estimar costo</button><button type="button" class="button" data-graph-ai-run-btn hidden>Generar hipótesis</button></div>
     <div class="graph-ai-status" data-graph-ai-status>Negro enviará contexto estructurado correlacionado y evidencia seleccionada; no dumps HTTP completos. La IA sólo corre cuando tú lo pides.</div>
@@ -44,16 +45,16 @@
       <div class="identity-compare-summary" data-identity-compare-summary hidden></div>
     </div>
     <div data-graph-flow-controls hidden>
-      <label><span>Ver Flow</span><select data-graph-flow-select><option value="">Elige un Flow</option></select></label>
+      <label><span>Ver Flujo</span><select data-graph-flow-select><option value="">Elige un Flujo</option></select></label>
       <div class="flow-view-switch" data-flow-view-switch hidden>
         <button type="button" class="active" data-flow-view="graph">Grafo</button>
         <button type="button" data-flow-view="timeline">Línea de tiempo</button>
       </div>
-      <small>Puedes leer el mismo Flow como relaciones visuales o como secuencia temporal. Flow Compare sigue disponible desde la ficha del Flow.</small>
+      <small>Puedes leer el mismo Flujo como relaciones visuales o como secuencia temporal. Comparación de Flujos sigue disponible desde la ficha del Flujo.</small>
     </div>
     <div data-graph-object-controls hidden>
       <label><span>Seguir objeto</span><select data-graph-object-select><option value="">Elige un objeto</option></select></label>
-      <small>El objeto queda como foco y los endpoints donde apareció tienen el protagonismo. Identidades y Flows aparecen como contexto lateral.</small>
+      <small>El objeto queda como foco y los endpoints donde apareció tienen el protagonismo. Identidades y Flujos aparecen como contexto lateral.</small>
     </div>
   </div>
 
@@ -68,14 +69,14 @@
 
       <div class="graph-quick-layers" data-graph-layer-controls>
         <div class="graph-filter-title">Capas visuales</div>
-        <label data-layer-wrap="flow"><input type="checkbox" data-graph-layer="flow"> <span>Flows</span></label>
+        <label data-layer-wrap="flow"><input type="checkbox" data-graph-layer="flow"> <span>Flujos</span></label>
         <label data-layer-wrap="object"><input type="checkbox" data-graph-layer="object"> <span>Objetos</span></label>
         <label data-layer-wrap="request"><input type="checkbox" data-graph-layer="request"> <span>Requests individuales</span></label>
         <label data-layer-wrap="operation"><input type="checkbox" data-graph-layer="operation"> <span>Métodos HTTP</span></label>
         <div class="graph-intelligence-filter">
           <div class="graph-filter-title">Inteligencia</div>
           <label class="intel-only-toggle"><input type="checkbox" data-graph-intelligence-only> <span>Sólo con inteligencia</span></label>
-          <div class="intel-legend"><span class="signal">⚡ Signal</span><span class="correlation">↔ Correlación</span><span class="hypothesis">◆ Hipótesis</span></div>
+          <div class="intel-legend"><span class="signal">⚡ Señal</span><span class="correlation">↔ Correlación</span><span class="hypothesis">◆ Hipótesis</span></div>
         </div>
       </div>
 
@@ -99,7 +100,7 @@
       <div class="graph-semantic-mini">
         <span><i class="legend-dot legend-identity"></i>Identidad = quién</span>
         <span><i class="legend-dot legend-endpoint"></i>Endpoint = ruta</span>
-        <span><i class="legend-dot legend-flow"></i>Flow = historia</span>
+        <span><i class="legend-dot legend-flow"></i>Flujo = historia</span>
         <span><i class="legend-dot legend-object"></i>Objeto = contexto</span>
       </div>
     </aside>

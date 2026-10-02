@@ -1,3 +1,16 @@
+# v0.37.0 — Reglas de investigación + pasado/presente/futuro + español
+
+- Aclara el modelo de producto: **Regla → Señal → Hipótesis → prueba humana → Hallazgo**.
+- Las Reglas personalizadas ya no están sesgadas a keys: pueden combinar nombres de parámetro, valores exactos, regex, host, método, status HTTP, ruta, contenido de Request/Response, headers, Identidad y Objetos.
+- Una Regla puede nacer desde una Request, desde una Hipótesis o desde el editor general de Reglas.
+- Guardar/editar/activar una Regla reinterpreta automáticamente el **pasado** almacenado (Requests + JavaScript ya analizado), sin nuevas peticiones al objetivo, y sigue evaluando el **futuro** incrementalmente.
+- JavaScript analizado en el futuro también puede disparar Reglas personalizadas.
+- Las Reglas integradas de Negro y las Reglas del investigador se descubren desde una sola pantalla **Reglas de señales**; las rutas internas históricas se conservan por compatibilidad.
+- La pantalla de Ajustes deja de mezclar el catálogo completo de reglas con configuración general.
+- Separa la administración de **Proyectos** del Inicio del proyecto actual: `/projects` administra investigaciones; un proyecto puede contener múltiples hosts/scopes.
+- Pasada amplia de terminología a español, conservando en inglés términos técnicos estándar como Request, Response, Burp, HTTP, API, JWT, CORS y OAuth/OIDC.
+- Añade regresión v0.37 para cobertura histórica/futura, JavaScript, origen Request/Hipótesis, proyectos y UX de reglas.
+
 # v0.36.0 — Investigation Memory / Correlation Engine
 
 - Added incremental `identifier_observation_index` over existing parameter observations.

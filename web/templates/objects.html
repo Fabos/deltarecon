@@ -4,22 +4,22 @@
 <section class="hero compact-hero">
   <span class="sr-only">Access Control Lab</span>
   <div>
-    <p class="eyebrow">BUSINESS OBJECTS · v0.36.0</p>
+    <p class="eyebrow">OBJETOS DE NEGOCIO · v0.37.0</p>
     <h1>Sigue una cosa del negocio</h1>
     <p class="muted">Ejemplo: <code>Order 123</code>. Negro reúne dónde apareció, qué Requests lo tocaron, qué identidades lo vieron y qué estados observó.</p>
   </div>
   <div class="page-actions">
-    <form action="{{ target_base }}/objects/refresh" method="post" data-job-form data-job-label="Reconstruyendo Business Objects"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">↻ Reconstruir</button></form>
+    <form action="{{ target_base }}/objects/refresh" method="post" data-job-form data-job-label="Reconstruyendo Objetos de negocio"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">↻ Reconstruir</button></form>
     <a class="button ghost" href="{{ target_base }}/guide#objects">¿Qué es un objeto?</a>
   </div>
 </section>
 
 <details class="panel object-onboarding compact-learning">
-  <summary><b>¿Identity, Object o propiedad? Ver ejemplo rápido</b><span>Ana → Order 123 → ownerId=101</span></summary>
+  <summary><b>¿Identidad, Objeto o propiedad? Ver ejemplo rápido</b><span>Ana → Order 123 → ownerId=101</span></summary>
   <div class="object-concept-demo">
-    <div><span>IDENTITY · QUIÉN</span><b>Ana</b><small>actor / cuenta</small></div>
+    <div><span>IDENTIDAD · QUIÉN</span><b>Ana</b><small>actor / cuenta</small></div>
     <strong>actúa sobre</strong>
-    <div><span>OBJECT · QUÉ</span><b>Order 123</b><small>misma cosa en varias Requests</small></div>
+    <div><span>OBJETO · QUÉ</span><b>Order 123</b><small>misma cosa en varias Requests</small></div>
     <strong>tiene</strong>
     <div><span>PROPIEDAD</span><b>ownerId=101</b><small>dato del Order</small></div>
   </div>
@@ -33,7 +33,7 @@
     <div class="metric"><b>{{ objects_data.stats.types }}</b><span>tipos enseñados</span></div>
     <div class="metric"><b>{{ objects_data.stats.identifiers }}</b><span>campos / aliases</span></div>
     <div class="metric"><b>{{ objects_data.stats.objects }}</b><span>instancias</span></div>
-    <div class="metric"><b>{{ objects_data.stats.cross_host_objects }}</b><span>cross-host</span></div>
+    <div class="metric"><b>{{ objects_data.stats.cross_host_objects }}</b><span>entre hosts</span></div>
     <div class="metric"><b>{{ objects_data.stats.relation_observations }}</b><span>co-observaciones</span></div>
   </section>
 </details>
@@ -46,7 +46,7 @@
     {% for t in objects_data.types if t.ui_quality != 'ambiguous' %}
     <a class="object-type-card" href="{{ target_base }}/objects?type_id={{ t.id }}">
       <div><b>{{ t.name }}</b><small>{{ t.identifier_count }} campo{% if t.identifier_count != 1 %}s{% endif %} · {{ t.object_count }} instancia{% if t.object_count != 1 %}s{% endif %}</small></div>
-      <div><span class="badge">{{ t.host_count }} hosts</span>{% if t.cross_host_objects %}<span class="badge state-chip">{{ t.cross_host_objects }} cross-host</span>{% endif %}</div>
+      <div><span class="badge">{{ t.host_count }} hosts</span>{% if t.cross_host_objects %}<span class="badge state-chip">{{ t.cross_host_objects }} entre hosts</span>{% endif %}</div>
     </a>
     {% else %}<div class="empty-state friendly"><b>Todavía no has enseñado ningún tipo.</b><span>Empieza con algo inequívoco, por ejemplo <code>orderId → Order</code>. Las sugerencias de abajo son candidatos, no decisiones automáticas.</span><a href="{{ target_base }}/guide#objects">Ver ejemplo →</a></div>{% endfor %}
   </div>
@@ -88,7 +88,7 @@
 
 {% if objects_data.anomaly_cards %}
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">PATTERN ANOMALIES</p><h2>Diferencias frente a patrones repetidos</h2></div><a href="{{ target_base }}/guide#objects">¿Cómo leer esto?</a></div>
+  <div class="panel-head"><div><p class="eyebrow">ANOMALÍAS DE PATRÓN</p><h2>Diferencias frente a patrones repetidos</h2></div><a href="{{ target_base }}/guide#objects">¿Cómo leer esto?</a></div>
   <div class="pattern-anomaly-list">
   {% for card in objects_data.anomaly_cards %}
     <article class="pattern-anomaly-card">

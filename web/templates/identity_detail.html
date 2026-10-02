@@ -14,7 +14,7 @@
 {% if resolver_observation %}
 <div class="callout success"><b>Resolver guardado:</b> la observación #{{ resolver_observation }} ahora puede ayudar a reconocer <b>{{ i.name }}</b> en tráfico futuro.</div>
 {% endif %}
-<div class="callout info"><b>Cómo leer esta página:</b> la identidad es la cuenta estable que tú conoces; los contextos describen rol/tenant; Auth Material son las cookies/tokens concretos observados; los resolvers son valores estables que permiten reconocer esa misma cuenta en tráfico futuro.</div>
+<div class="callout info"><b>Cómo leer esta página:</b> la identidad es la cuenta estable que tú conoces; los contextos describen rol/tenant; material de autenticación son las cookies/tokens concretos observados; los resolvers son valores estables que permiten reconocer esa misma cuenta en tráfico futuro.</div>
 
 <section class="identity-layout">
   <div class="panel">
@@ -37,7 +37,7 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">AUTH MATERIAL</p><h2>Cookies/tokens que Negro vio para {{ i.name }}</h2><p class="muted">Valores completos visibles porque el workspace es local. Un token nuevo no crea otra identidad: simplemente es otro Auth Material de la misma cuenta.</p></div><span>{{ identity_detail.materials|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">MATERIAL DE AUTENTICACIÓN</p><h2>Cookies/tokens que Negro vio para {{ i.name }}</h2><p class="muted">Valores completos visibles porque el espacio de trabajo es local. Un token nuevo no crea otra identidad: simplemente es otro material de autenticación de la misma cuenta.</p></div><span>{{ identity_detail.materials|length }}</span></div>
   <div class="identity-material-list">
     {% for a in identity_detail.materials %}<div class="identity-material-row"><div><b>{{ a.material_type }} · {{ a.material_name }}</b><code class="raw-value">{{ a.raw_value or a.masked_preview or '(valor histórico no recuperable todavía)' }}</code></div><small>{{ a.source }} · first {{ a.first_seen_at }} · last {{ a.last_seen_at }}</small></div>{% else %}<p class="muted">Aún no se aprendieron credenciales.</p>{% endfor %}
   </div>
@@ -56,7 +56,7 @@
     {% for e in identity_detail.exchanges %}
     <div class="unknown-exchange-row">
       <div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · fuente {{ e.source }}{% if e.context_label %} · {{ e.context_label }}{% endif %}{% if e.notes %} · {{ e.notes }}{% endif %}</small></div>
-      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Find Related</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Buscar relacionados</a></div>
     </div>
     {% else %}<p class="muted">Sin Requests asociadas.</p>{% endfor %}
   </div>

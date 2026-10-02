@@ -3,9 +3,9 @@
 {% block content %}
 <section class="hero search-hero">
   <div>
-    <p class="eyebrow">SEARCH · v0.36.0</p>
+    <p class="eyebrow">SEARCH · v0.37.0</p>
     <h1>Buscar en todo el proyecto</h1>
-    <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Signals, notas, hipótesis, investigaciones y Findings.</p>
+    <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Señales, notas, hipótesis, investigaciones y hallazgos.</p>
   </div>
   <div class="page-actions">
     <a class="button ghost" href="{{ target_base }}/parameters">Índice de parámetros</a>
@@ -43,7 +43,7 @@
       <code>method:</code><span>método HTTP</span>
       <code>status:</code><span>código HTTP</span>
       <code>state:</code><span>estado humano</span>
-      <code>signal:</code><span>Signal</span>
+      <code>signal:</code><span>Señal</span>
       <code>param:</code><span>nombre de parámetro</span>
       <code>cookie:</code><span>cookie</span>
       <code>header:</code><span>header</span>
@@ -68,12 +68,12 @@
 
     {% if identifier_memory %}
     <section class="panel identifier-memory-search">
-      <div class="panel-head"><div><p class="eyebrow">MEMORIA DE IDENTIFICADORES</p><h2>Negro recuerda dónde apareció</h2><p class="muted">Agrupa la misma key/valor entre Requests, hosts, Flows e identidades. Esto es contexto, no una vulnerabilidad.</p></div><span>{{ identifier_memory|length }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">MEMORIA DE IDENTIFICADORES</p><h2>Negro recuerda dónde apareció</h2><p class="muted">Agrupa la misma key/valor entre Requests, hosts, Flujos e identidades. Esto es contexto, no una vulnerabilidad.</p></div><span>{{ identifier_memory|length }}</span></div>
       <div class="identifier-memory-grid">
         {% for m in identifier_memory %}
         <article class="identifier-memory-card">
           <div><code>{{ m.normalized_name }}</code><b>{{ m.value or 'valor observado' }}</b></div>
-          <div class="badges"><span class="badge">{{ m.requests }} Requests</span><span class="badge">{{ m.hosts }} hosts</span><span class="badge">{{ m.flows }} Flows</span><span class="badge">{{ m.identities }} identities</span>{% if m.signals %}<span class="badge correlation-badge">⚡ {{ m.signals }} Signals</span>{% endif %}</div>
+          <div class="badges"><span class="badge">{{ m.requests }} Requests</span><span class="badge">{{ m.hosts }} hosts</span><span class="badge">{{ m.flows }} Flujos</span><span class="badge">{{ m.identities }} identidades</span>{% if m.signals %}<span class="badge correlation-badge">⚡ {{ m.signals }} Señales</span>{% endif %}</div>
           <div class="memory-direction"><span>Salida · {{ m.output_observations }}</span><span>Entrada · {{ m.input_observations }}</span></div>
           <div class="row-actions"><a class="btn-secondary" href="{{ target_base }}/parameters/{{ m.normalized_name|urlencode }}">Ver key</a>{% if m.value %}<a class="btn-secondary" href="{{ target_base }}/search?q={{ m.value|urlencode }}">Buscar valor</a>{% endif %}</div>
         </article>
@@ -84,7 +84,7 @@
 
     {% if parameter_hits %}
     <section class="panel unified-parameter-results">
-      <div class="panel-head"><div><p class="eyebrow">VALORES Y PARÁMETROS</p><h2>Coincidencias que Negro puede seguir</h2><p class="muted">Estas coincidencias vienen del índice estructurado y permiten Follow Value, relaciones e identidad.</p></div><span>{{ parameter_hits|length }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">VALORES Y PARÁMETROS</p><h2>Coincidencias que Negro puede seguir</h2><p class="muted">Estas coincidencias vienen del índice estructurado y permiten Seguir valor, relaciones e identidad.</p></div><span>{{ parameter_hits|length }}</span></div>
       <div class="parameter-hit-list">
         {% for p in parameter_hits %}
         <article class="parameter-hit-card">
@@ -95,10 +95,10 @@
           </div>
           <div class="row-actions parameter-hit-actions">
             <a class="button ghost small-button" href="{{ p.http_href }}">HTTP</a>
-            <a class="button secondary small-button" href="{{ p.follow_href }}">Follow Value</a>
+            <a class="button secondary small-button" href="{{ p.follow_href }}">Seguir valor</a>
             <a class="button ghost small-button" href="{{ p.parameter_href }}">Explorar parámetro</a>
-            <a class="button ghost small-button" href="{{ p.related_href }}">Find Related Request</a>
-            <a class="button ghost small-button" href="{{ p.diff_href }}">Smart Compare</a>
+            <a class="button ghost small-button" href="{{ p.related_href }}">Buscar Requests relacionadas</a>
+            <a class="button ghost small-button" href="{{ p.diff_href }}">Comparación inteligente</a>
             {% if p.identity_resolver_allowed %}<a class="button ghost small-button" href="{{ p.identity_resolver_href }}">Usar para identidad</a>{% elif p.identity_resolver_kind == 'object_or_context' %}<span class="badge" title="{{ p.identity_resolver_reason }}">Objeto/contexto · no actor</span>{% endif %}
           </div>
         </article>
@@ -130,8 +130,8 @@
         {% if r.exchange_id %}
         <div class="row-actions search-result-actions">
           <a class="button ghost small-button" href="{{ r.href }}">Abrir HTTP</a>
-          <a class="button ghost small-button" href="{{ r.related_href }}">Find Related Request</a>
-          <a class="button ghost small-button" href="{{ r.diff_href }}">Smart Compare</a>
+          <a class="button ghost small-button" href="{{ r.related_href }}">Buscar Requests relacionadas</a>
+          <a class="button ghost small-button" href="{{ r.diff_href }}">Comparación inteligente</a>
           <a class="button ghost small-button" href="{{ r.identity_href }}">Asignar identidad</a>
         </div>
         {% endif %}

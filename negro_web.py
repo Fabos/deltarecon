@@ -71,13 +71,13 @@ UI_LABELS = {
     "not_applicable": "No aplica", "quick": "Chequeo rápido",
     "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
-    "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Custom Signal",
+    "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Regla personalizada",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
     "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
     "request": "Request", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
-    "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Feature flags", "other": "Otro",
+    "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Banderas de función", "other": "Otro",
     "bola_surface": "Superficie BOLA/IDOR", "cloud_storage": "Almacenamiento cloud", "directory_listing": "Listado de directorio",
     "dom_xss": "DOM XSS", "oauth_oidc_surface": "Superficie OAuth/OIDC", "open_redirect": "Open redirect",
     "secret_or_client_config": "Secretos/configuración cliente", "source_map": "Source map", "ssrf_surface": "Superficie SSRF",
@@ -2407,24 +2407,24 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/settings", {"anchor":"settings","title":"Configuración","question":"¿Qué controla Negro y qué puedo recalcular sin tocar el target?","when":"Configura políticas, IA, detectores, proveedores y reconstrucciones locales.","example":"Después de mejorar una regla de Access Control, usa recalcular inteligencia para reinterpretar requests ya capturadas sin repetir recon.","caution":"Recalcular localmente no equivale a volver a enviar peticiones al objetivo."}),
             (r"^/notifications", {"anchor":"signals","title":"Notificaciones","question":"¿Qué observación nueva merece mi atención?","when":"Revisa señales recientes que Negro detectó mientras navegabas o analizabas tráfico.","example":"Diego recibe 200 en un endpoint relacionado con un Order donde otros casos daban 403; Negro lo puede elevar como señal para revisar.","caution":"Una notificación es una pista priorizada, no una vulnerabilidad confirmada."}),
             (r"^/intelligence", {"anchor":"intelligence","title":"Inteligencia","question":"¿Qué señales determinísticas encontró Negro?","when":"Úsala para revisar patrones detectados en HTTP, JS, recon y configuraciones.","example":"En el lab, una request sensible con X-Original-URL o un ownerId puede alimentar una hipótesis de Access Control para prueba manual.","caution":"Señal ≠ hipótesis ≠ finding."}),
-            (r"^/signals/custom", {"anchor":"custom-signals","title":"Custom Signals","question":"¿Qué patrón propio quiero que Negro recuerde mientras navego?","when":"Crea una regla cuando ya sabes qué combinación de endpoint, parámetro, Identity, objeto o texto merece una segunda mirada en este negocio.","example":"Marca Requests autenticadas que contengan ownerId/accountId y sugiere comparar identidades o Follow Value; Negro guarda la coincidencia exacta sin llamarla IDOR.","caution":"Una Custom Rule produce Signals determinísticos; no crea findings ni reemplaza la validación manual."}),
-            (r"^/hypotheses", {"anchor":"hunt","title":"Hunt / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
+            (r"^/signals/custom", {"anchor":"custom-signals","title":"Reglas personalizadas","question":"¿Qué patrón propio quiero que Negro recuerde mientras navego?","when":"Crea una Regla cuando quieras que Negro recuerde una key, un valor, una condición o una combinación que merezca atención en este proyecto.","example":"Vigila businessKey, un valor exacto o una combinación ownerId + Identidad; cuando aparezca, Negro crea una Señal con el contexto exacto.","caution":"Una Regla produce Señales determinísticas; no crea hallazgos ni reemplaza la validación manual."}),
+            (r"^/hypotheses", {"anchor":"hunt","title":"Investigación / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
             (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas las Requests, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
             (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
             (r"^/host/", {"anchor":"enumeration","title":"Herramientas del host","question":"¿Qué nueva superficie puedo descubrir de forma controlada?","when":"Ejecuta sólo la herramienta que responde a una pregunta: DNS/TLS, robots/well-known, enlaces, JS, SAN, DNS pasivo, CORS o VHost.","example":"En el lab, Recon web descubre /.well-known/openid-configuration; eso amplía la superficie sin convertirlo en hallazgo.","caution":"No ejecutes módulos a ciegas: cada acción debe tener un objetivo y respetar el scope."}),
             (r"^/resource/", {"anchor":"resources","title":"Recurso / endpoint","question":"¿Qué sé de esta ruta y qué pruebas ya hice?","when":"Úsalo como ficha persistente del endpoint: métodos, Requests, señales, cobertura y notas.","example":"/api/orders/123 puede tener GET, POST o variantes de método. Negro conserva cada operación y la evidencia asociada.","caution":"Un recurso 'revisado' puede volver a ser candidato cuando aprendes una técnica nueva."}),
             (r"^/search", {"anchor":"search","title":"Buscar","question":"¿Dónde aparece esta pista?","when":"Cuando ya tienes un valor, nombre de campo, header, host o fragmento de respuesta y quieres encontrar todas sus apariciones.","example":"Busca ownerId, 101, /api/orders o X-Original-URL para saltar desde una pista a todas las Requests relacionadas.","caution":"Search encuentra apariciones; no afirma que dos cosas tengan la misma semántica."}),
-            (r"^/parameters/follow/", {"anchor":"follow-value","title":"Follow Value","question":"¿Dónde reaparece exactamente este valor?","when":"Sigue un ID, email, UUID o token concreto aunque cambie de campo o de request/response.","example":"El valor 101 visto como /me.id puede reaparecer como ownerId=101 en un Order; eso conecta evidencia, pero ownerId no se vuelve identidad automáticamente.","caution":"Mismo valor no siempre significa mismo concepto."}),
-            (r"^/parameters/related/", {"anchor":"find-related","title":"Find Related","question":"¿Qué otras Requests comparten evidencia útil con ésta?","when":"Úsalo cuando una request parece importante y quieres encontrar vecinos por IDs, emails, referencias y otros valores específicos.","example":"Un GET /api/orders/123 puede relacionarse con /invoice y /cancel por orderId=123 y ownerId=101.","caution":"Relación significa coincidencia de evidencia, no causalidad ni vulnerabilidad."}),
-            (r"^/parameters/diff", {"anchor":"smart-compare","title":"Smart Compare","question":"¿Qué cambió realmente entre A y B?","when":"Compara dos Requests eliminando ruido para ver identidad, parámetros, status y valores de negocio.","example":"Compara la misma operación con Ana y Diego: auth cambia, orderId se mantiene y el status pasa 200→403 o 403→200.","caution":"Una diferencia es materia de investigación; por sí sola no demuestra control de acceso roto."}),
+            (r"^/parameters/follow/", {"anchor":"follow-value","title":"Seguir valor","question":"¿Dónde reaparece exactamente este valor?","when":"Sigue un ID, email, UUID o token concreto aunque cambie de campo o de request/response.","example":"El valor 101 visto como /me.id puede reaparecer como ownerId=101 en un Order; eso conecta evidencia, pero ownerId no se vuelve identidad automáticamente.","caution":"Mismo valor no siempre significa mismo concepto."}),
+            (r"^/parameters/related/", {"anchor":"find-related","title":"Buscar relacionados","question":"¿Qué otras Requests comparten evidencia útil con ésta?","when":"Úsalo cuando una request parece importante y quieres encontrar vecinos por IDs, emails, referencias y otros valores específicos.","example":"Un GET /api/orders/123 puede relacionarse con /invoice y /cancel por orderId=123 y ownerId=101.","caution":"Relación significa coincidencia de evidencia, no causalidad ni vulnerabilidad."}),
+            (r"^/parameters/diff", {"anchor":"smart-compare","title":"Comparación inteligente","question":"¿Qué cambió realmente entre A y B?","when":"Compara dos Requests eliminando ruido para ver identidad, parámetros, status y valores de negocio.","example":"Compara la misma operación con Ana y Diego: auth cambia, orderId se mantiene y el status pasa 200→403 o 403→200.","caution":"Una diferencia es materia de investigación; por sí sola no demuestra control de acceso roto."}),
             (r"^/parameters/", {"anchor":"parameters","title":"Detalle de parámetro","question":"¿Cómo se comporta este campo en el target?","when":"Revisa valores, ubicaciones, hosts y Requests de un nombre concreto antes de decidir si representa identidad, objeto o ruido.","example":"ownerId puede describir propiedad de un Order; id en /me puede identificar al actor. El mismo sufijo 'id' no significa lo mismo.","caution":"No conviertas IDs genéricos en identidades u objetos sin contexto."}),
-            (r"^/parameters$", {"anchor":"parameters","title":"Parameter Explorer","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
-            (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Authorization Matrix","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
-            (r"^/identities", {"anchor":"identities","title":"Identity Contexts","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
-            (r"^/flows/compare", {"anchor":"flow-compare","title":"Flow Compare","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
-            (r"^/flows", {"anchor":"flows","title":"Flows","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
-            (r"^/objects", {"anchor":"objects","title":"Business Objects","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
-            (r"^/graph", {"anchor":"map","title":"Investigation Views","question":"¿Qué pregunta quiero responder sin ver todo el ruido?","when":"Usa Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"En el lab, Flow muestra en timeline GET /admin→403 y luego la variante con X-Original-URL→200; sólo después enfocas Ana/Diego u Order 123 si necesitas contexto.","caution":"Cada vista oculta evidencia secundaria a propósito. Una línea o diferencia observada no demuestra vulnerabilidad por sí sola."}),
+            (r"^/parameters$", {"anchor":"parameters","title":"Explorador de parámetros","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
+            (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Matriz de autorización","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
+            (r"^/identities", {"anchor":"identities","title":"Contextos de identidad","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
+            (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
+            (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
+            (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
+            (r"^/graph", {"anchor":"map","title":"Vistas de investigación","question":"¿Qué pregunta quiero responder sin ver todo el ruido?","when":"Usa Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"En el lab, Flow muestra en timeline GET /admin→403 y luego la variante con X-Original-URL→200; sólo después enfocas Ana/Diego u Order 123 si necesitas contexto.","caution":"Cada vista oculta evidencia secundaria a propósito. Una línea o diferencia observada no demuestra vulnerabilidad por sí sola."}),
             (r"^/$", default),
         ]
         for pattern, meta in rules:
@@ -2453,6 +2453,25 @@ def create_app(default_domain: str, default_workspace: Path):
     def verify_csrf(value: str) -> None:
         if not secrets.compare_digest(value or "", csrf_token):
             raise HTTPException(status_code=403, detail="CSRF token inválido")
+
+    @app.get("/projects", response_class=HTMLResponse)
+    def projects_page(request: Request):
+        data = core.targets_load()
+        targets = core.list_targets()
+        last_target = str(data.get("last_target") or "")
+        if last_target and not core.get_target(last_target):
+            last_target = ""
+        return templates.TemplateResponse(
+            request=request,
+            name="projects.html",
+            context={
+                "version": core.VERSION,
+                "csrf_token": csrf_token,
+                "targets": targets,
+                "target_cards": _target_cards(),
+                "last_target": last_target,
+            },
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def root_redirect(request: Request):
@@ -2799,7 +2818,10 @@ def create_app(default_domain: str, default_workspace: Path):
             else: project_rules.pop(detector_id,None)
             intel.save_settings({"detector_rule_library":personal_library})
             conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('detector_rules_json',?)",(json.dumps(project_rules,ensure_ascii=False,sort_keys=True),))
-        return RedirectResponse(url=f"/t/{target_key}/settings/detectors/{detector_id}?saved=1",status_code=303)
+        # Igual que las Reglas personalizadas: el cambio cubre pasado y futuro.
+        # La revisión histórica es completamente local y no vuelve a tocar el target.
+        job_id = _start_job(f"Regla integrada · {hunter.DETECTOR_CATALOG[detector_id].get('label', detector_id)} · revisar historial", target_key, core.recalculate_hunter_intelligence, domain, paths)
+        return RedirectResponse(url=f"/t/{target_key}/settings/detectors/{detector_id}?saved=1&job={job_id}",status_code=303)
 
     @app.get("/t/{target_key}/", response_class=HTMLResponse)
     def dashboard(request: Request, target_key: str):
@@ -2808,7 +2830,7 @@ def create_app(default_domain: str, default_workspace: Path):
         data = _dashboard_data(paths)
         with JOBS_LOCK:
             jobs = [j for j in JOBS.values() if j.get("target_key") == target_key][-8:][::-1]
-        return render(request, "dashboard.html", target_key, domain, workspace, **data, jobs=jobs, target_cards=_target_cards())
+        return render(request, "dashboard.html", target_key, domain, workspace, **data, jobs=jobs)
 
     @app.get("/t/{target_key}/notifications", response_class=HTMLResponse)
     def notifications_page(request: Request, target_key: str):
@@ -3072,17 +3094,69 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/hypotheses", status_code=303)
 
     @app.get("/t/{target_key}/signals/custom", response_class=HTMLResponse)
-    def custom_signals_page(request: Request, target_key: str, edit: int = 0, saved: int = 0):
+    def custom_signals_page(request: Request, target_key: str, edit: int = 0, saved: int = 0, job: str = "", from_exchange: int = 0, from_hypothesis: int = 0):
         import negro_custom_signals as custom_signals
+        import negro_hunter as hunter
         domain, workspace, paths = _target_context(target_key)
+        origin_context = None
+        prefill = {"name":"", "description":"", "origin_note":"", "rule_kind":"watch", "parameter_names":[], "exact_values":[], "path_terms":[], "suggested_action":""}
         with _db(paths) as conn:
             custom_signals.init_schema(conn)
             rules = custom_signals.list_rules(conn)
             edit_rule = custom_signals.get_rule(conn, int(edit)) if edit else None
-        return render(request, "custom_signals.html", target_key, domain, workspace, rules=rules, edit_rule=edit_rule, saved=saved)
+            if not edit_rule and from_exchange:
+                ctx = custom_signals._exchange_context(conn, int(from_exchange))
+                if ctx:
+                    origin_context = {
+                        "type":"request", "id":int(from_exchange),
+                        "title":f"Request #{int(from_exchange)} · {ctx.get('method') or ''} {ctx.get('path') or ''}",
+                        "subtitle":f"{ctx.get('hostname') or ''} · HTTP {ctx.get('status_code') if ctx.get('status_code') is not None else '—'}",
+                        "note":"Crea una Regla para recordar una condición observada aquí o una pieza que esperas encontrar después.",
+                    }
+                    prefill.update({
+                        "name":f"Vigilar algo de {ctx.get('path') or 'esta Request'}",
+                        "description":f"Creada desde Request #{int(from_exchange)} para continuar esta investigación cuando aparezca una coincidencia.",
+                        "origin_note":f"Origen: Request #{int(from_exchange)} · {ctx.get('method') or ''} {ctx.get('path') or ''}",
+                        "path_terms":[],
+                        "suggested_action":f"Volver a Request #{int(from_exchange)} y revisar si la nueva coincidencia completa lo que faltaba.",
+                    })
+            elif not edit_rule and from_hypothesis:
+                lead = conn.execute("SELECT id,title,next_test,why_interesting FROM leads_v2 WHERE id=?", (int(from_hypothesis),)).fetchone()
+                if lead:
+                    pending = conn.execute("SELECT key_pattern,description FROM hypothesis_requirements WHERE lead_id=? AND status='pending' ORDER BY id LIMIT 1", (int(from_hypothesis),)).fetchone()
+                    origin_context = {
+                        "type":"hypothesis", "id":int(from_hypothesis), "title":str(lead['title']),
+                        "subtitle":str(lead['next_test'] or lead['why_interesting'] or ''),
+                        "note":str(pending['description'] if pending and pending['description'] else 'Crea una Regla para encontrar una pieza que permita continuar esta hipótesis.'),
+                    }
+                    key = str(pending['key_pattern']) if pending else ''
+                    prefill.update({
+                        "name":f"Encontrar {key}" if key else f"Regla para hipótesis #{int(from_hypothesis)}",
+                        "description":f"Buscar evidencia que permita continuar: {lead['title']}",
+                        "origin_note":str(pending['description'] if pending and pending['description'] else f"Relacionada con hipótesis #{int(from_hypothesis)}"),
+                        "parameter_names":[key] if key else [],
+                        "suggested_action":f"Volver a la hipótesis #{int(from_hypothesis)} y revisar si esta coincidencia completa una pieza pendiente.",
+                    })
+            family_es = {
+                "Access Control":"Control de acceso", "Cross-origin":"Origen cruzado / CORS",
+                "URL / Navigation":"URL / navegación", "SSRF / URL fetch":"SSRF / solicitud URL",
+                "Secrets":"Secretos", "Data exposure":"Exposición de datos",
+                "Information disclosure":"Divulgación de información",
+            }
+            builtin_rules = []
+            for detector_id, meta in hunter.DETECTOR_CATALOG.items():
+                cfg = hunter.detector_settings(detector_id, conn)
+                builtin_rules.append({
+                    "id": detector_id,
+                    "label": meta.get("label") or detector_id,
+                    "family": family_es.get(meta.get("family"), meta.get("family") or "General"),
+                    "lesson": meta.get("lesson") or "",
+                    "enabled": bool(cfg.get("enabled", True)),
+                })
+        return render(request, "custom_signals.html", target_key, domain, workspace, rules=rules, builtin_rules=builtin_rules, edit_rule=edit_rule, saved=saved, job_id=job, origin_context=origin_context, prefill=prefill)
 
     @app.post("/t/{target_key}/signals/custom/save")
-    def custom_signal_save(request: Request, target_key: str, rule_id: int = Form(0), name: str = Form(...), description: str = Form(""), category: str = Form("other"), severity: str = Form("info"), enabled: str = Form(""), methods: str = Form(""), statuses: str = Form(""), path_terms: str = Form(""), parameter_names: str = Form(""), request_terms: str = Form(""), response_terms: str = Form(""), header_names: str = Form(""), object_types: str = Form(""), identity_mode: str = Form("any"), suggested_action: str = Form(""), csrf: str = Form(...)):
+    def custom_signal_save(request: Request, target_key: str, rule_id: int = Form(0), name: str = Form(...), description: str = Form(""), category: str = Form("other"), severity: str = Form("info"), enabled: str = Form(""), methods: str = Form(""), statuses: str = Form(""), path_terms: str = Form(""), parameter_names: str = Form(""), request_terms: str = Form(""), response_terms: str = Form(""), header_names: str = Form(""), object_types: str = Form(""), exact_values: str = Form(""), regex_terms: str = Form(""), host_terms: str = Form(""), identity_mode: str = Form("any"), rule_kind: str = Form("watch"), origin_type: str = Form("manual"), origin_id: str = Form(""), origin_note: str = Form(""), suggested_action: str = Form(""), csrf: str = Form(...)):
         import negro_custom_signals as custom_signals
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
@@ -3094,17 +3168,27 @@ def create_app(default_domain: str, default_workspace: Path):
                     path_terms=_split_custom_rule_input(path_terms), parameter_names=_split_custom_rule_input(parameter_names),
                     request_terms=_split_custom_rule_input(request_terms), response_terms=_split_custom_rule_input(response_terms),
                     header_names=_split_custom_rule_input(header_names), object_types=_split_custom_rule_input(object_types),
-                    identity_mode=identity_mode, suggested_action=suggested_action,
+                    exact_values=_split_custom_rule_input(exact_values), regex_terms=_split_custom_rule_input(regex_terms),
+                    host_terms=_split_custom_rule_input(host_terms), identity_mode=identity_mode, rule_kind=rule_kind,
+                    origin_type=origin_type, origin_id=int(origin_id) if str(origin_id).strip().isdigit() else None, origin_note=origin_note,
+                    suggested_action=suggested_action,
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={rid}&saved=1", status_code=303)
+        # Una Regla cubre tres tiempos: el futuro se evalúa en el ingest de Burp;
+        # el pasado se reinterpreta ahora sin volver a tocar el target. El backfill
+        # corre en segundo plano para no bloquear workspaces grandes.
+        job_id = ""
+        if enabled == "on":
+            job_id = _start_job(f"Regla #{rid} · revisar historial", target_key, _recalculate_custom_signal_history, paths, int(rid))
+        suffix = f"&job={job_id}" if job_id else ""
+        return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={rid}&saved=1{suffix}", status_code=303)
 
     @app.post("/t/{target_key}/signals/custom/{rule_id}/recalculate", response_class=JSONResponse)
     def custom_signal_recalculate(request: Request, target_key: str, rule_id: int, csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
-        job_id = _start_job(f"Custom Signal #{rule_id} · historial", target_key, _recalculate_custom_signal_history, paths, int(rule_id))
+        job_id = _start_job(f"Regla #{rule_id} · historial", target_key, _recalculate_custom_signal_history, paths, int(rule_id))
         return JSONResponse({"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "refresh_url": f"/t/{target_key}/signals/custom?edit={int(rule_id)}"})
 
     @app.post("/t/{target_key}/signals/custom/{rule_id}/toggle")
@@ -3112,10 +3196,15 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_custom_signals as custom_signals
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
+        enabling = False
         with _db(paths) as conn:
             rule = custom_signals.get_rule(conn, int(rule_id))
-            if not rule: raise HTTPException(status_code=404, detail="Custom Signal no encontrado")
-            conn.execute("UPDATE custom_signal_rules SET enabled=?,updated_at=? WHERE id=?", (0 if rule.get("enabled") else 1, _now(), int(rule_id)))
+            if not rule: raise HTTPException(status_code=404, detail="Regla personalizada no encontrada")
+            enabling = not bool(rule.get("enabled"))
+            conn.execute("UPDATE custom_signal_rules SET enabled=?,updated_at=? WHERE id=?", (1 if enabling else 0, _now(), int(rule_id)))
+        if enabling:
+            job_id = _start_job(f"Regla #{rule_id} · revisar historial", target_key, _recalculate_custom_signal_history, paths, int(rule_id))
+            return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={int(rule_id)}&job={job_id}", status_code=303)
         return RedirectResponse(url=f"/t/{target_key}/signals/custom?edit={int(rule_id)}", status_code=303)
 
     @app.post("/t/{target_key}/signals/custom/{rule_id}/delete")

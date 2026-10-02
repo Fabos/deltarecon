@@ -2,12 +2,12 @@
 {% block title %}{{ flow_data.flow.name }} · Flow · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">FLOW #{{ flow_data.flow.id }}</p><h1>{{ flow_data.flow.name }}</h1><p class="muted">{{ flow_data.flow.description or 'Secuencia observada de Requests.' }}</p><div class="hero-meta">{% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}<span class="badge">{{ flow_data.included_steps|length }}/{{ flow_data.steps|length }} incluidos</span>{% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● Capture Window abierta</span>{% endif %}</div></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=flow:{{ flow_data.flow.id }}">Ver en mapa</a><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/flows">← Flows</a><a class="button secondary" href="{{ target_base }}/flows/compare?a={{ flow_data.flow.id }}">Comparar</a>{% if flow_data.flow.capture_status == 'capturing' %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Stop Flow</button></form>{% endif %}</div>
+  <div><p class="eyebrow">FLUJO #{{ flow_data.flow.id }}</p><h1>{{ flow_data.flow.name }}</h1><p class="muted">{{ flow_data.flow.description or 'Secuencia observada de Requests.' }}</p><div class="hero-meta">{% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}<span class="badge">{{ flow_data.included_steps|length }}/{{ flow_data.steps|length }} incluidos</span>{% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● Ventana de captura abierta</span>{% endif %}</div></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=flow:{{ flow_data.flow.id }}">Ver en mapa</a><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/flows">← Flujos</a><a class="button secondary" href="{{ target_base }}/flows/compare?a={{ flow_data.flow.id }}">Comparar</a>{% if flow_data.flow.capture_status == 'capturing' %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener Flujo</button></form>{% endif %}</div>
 </section>
 
 <section class="flow-tools panel">
-  <div><p class="eyebrow">AGREGAR EVIDENCIA</p><h2>Completar el recorrido</h2><p class="muted small">Desde Burp también puedes Start/End/Add/Create Flow sobre requests seleccionadas.</p></div>
+  <div><p class="eyebrow">AGREGAR EVIDENCIA</p><h2>Completar el recorrido</h2><p class="muted small">Desde Burp también puedes iniciar/detener/agregar/crear Flujo sobre requests seleccionadas.</p></div>
   <div class="flow-add-forms">
     <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-exchange" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="exchange_id" type="number" min="1" required placeholder="Request #"><button class="button ghost" type="submit">Agregar</button></form>
     <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-range" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="start_exchange" type="number" min="1" required placeholder="Desde #"><input name="end_exchange" type="number" min="1" required placeholder="Hasta #"><input type="hidden" name="exclude_options" value="1"><button class="button ghost" type="submit">Agregar rango sin OPTIONS</button></form>
@@ -34,8 +34,8 @@
 
 {% if flow_data.meaningful_business_objects or flow_data.ambiguous_business_objects %}
 <section class="panel" id="flow-business-objects">
-  <div class="panel-head"><div><p class="eyebrow">OBJETOS DEL FLOW</p><h2>Cosas de negocio con significado</h2><p class="muted">Negro prioriza objetos como <code>Order 4101</code> o <code>User 101</code>. IDs sin clasificar se conservan como evidencia, pero no compiten con la historia del Flow.</p></div><small>{{ flow_data.meaningful_business_objects|length }} claros</small></div>
-  {% if flow_data.meaningful_business_objects %}<div class="related-object-grid">{% for o in flow_data.meaningful_business_objects %}<a class="related-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · {{ o.host_count }} host(s){% if o.identifier_field %} · key {{ o.identifier_field }}{% endif %}</small></a>{% endfor %}</div>{% else %}<p class="empty">Este Flow todavía no tiene objetos de negocio claramente clasificados.</p>{% endif %}
+  <div class="panel-head"><div><p class="eyebrow">OBJETOS DEL FLUJO</p><h2>Cosas de negocio con significado</h2><p class="muted">Negro prioriza objetos como <code>Order 4101</code> o <code>User 101</code>. IDs sin clasificar se conservan como evidencia, pero no compiten con la historia del Flujo.</p></div><small>{{ flow_data.meaningful_business_objects|length }} claros</small></div>
+  {% if flow_data.meaningful_business_objects %}<div class="related-object-grid">{% for o in flow_data.meaningful_business_objects %}<a class="related-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · {{ o.host_count }} host(s){% if o.identifier_field %} · key {{ o.identifier_field }}{% endif %}</small></a>{% endfor %}</div>{% else %}<p class="empty">Este Flujo todavía no tiene objetos de negocio claramente clasificados.</p>{% endif %}
   {% if flow_data.ambiguous_business_objects %}<details class="advanced-context"><summary>Identificadores sin clasificar · {{ flow_data.ambiguous_business_objects|length }}</summary><div class="related-object-grid">{% for o in flow_data.ambiguous_business_objects %}<a class="related-object-card ambiguous-object-card" href="{{ target_base }}/objects/{{ o.id }}"><div><code>{{ o.identifier_field or 'identifier' }}={{ o.identifier_raw or o.identifier_preview }}</code></div><small>{{ o.step_count }} paso(s) · tipo interno {{ o.object_type }}</small></a>{% endfor %}</div></details>{% endif %}
 </section>
 {% endif %}
@@ -48,7 +48,7 @@
 {% endif %}
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>{{ flow_data.steps|length }} candidatos</h2></div><small>Ignore no borra evidencia: sólo la excluye del Flow Compare.</small></div>
+  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>{{ flow_data.steps|length }} candidatos</h2></div><small>Ignore no borra evidencia: sólo la excluye del comparación de Flujos.</small></div>
   <div class="flow-timeline">
   {% for s in flow_data.steps %}
     <article class="flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}">
@@ -58,7 +58,7 @@
         {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
 
         {% if s.identifier_values %}
-        <details class="flow-step-edit state-track-editor"><summary>Track identifier as Business Object</summary>
+        <details class="flow-step-edit state-track-editor"><summary>Seguir identificador como Objeto de negocio</summary>
           <form class="stack-form" action="{{ target_base }}/objects/track" method="post">
             <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="{{ request.url.path }}">
             <label><span>Identifier</span><select name="observation_id">{% for v in s.identifier_values %}<option value="{{ v.id }}">{{ v.normalized_name }} = {{ v.value }}</option>{% endfor %}</select></label>
@@ -73,7 +73,7 @@
         <details class="flow-step-edit state-track-editor"><summary>Track as business state</summary>
           <form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/state/track" method="post">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
-            <label><span>State field</span><select name="state_observation_id">{% for v in s.state_values %}<option value="{{ v.id }}">{{ v.normalized_name }} = {{ v.value }}</option>{% endfor %}</select></label>
+            <label><span>Campo de estado</span><select name="state_observation_id">{% for v in s.state_values %}<option value="{{ v.id }}">{{ v.normalized_name }} = {{ v.value }}</option>{% endfor %}</select></label>
             <label><span>Object identifier</span><select name="object_observation_id">{% for v in s.identifier_values %}<option value="{{ v.id }}">{{ v.normalized_name }} = {{ v.value }}</option>{% endfor %}</select></label>
             <label><span>Object type (opcional)</span><input name="object_type" placeholder="Order / Payment / Shipment"></label>
             <small>Esto enseña una definición, por ejemplo <code>Order: orderId + status</code>. Negro observará otras instancias con esos mismos campos.</small>
@@ -84,8 +84,8 @@
 
         <div class="row-actions flow-step-actions">
           <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/resource/{{ s.resource_id }}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}">HTTP</a>
-          <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Find Related</a>
-          {% if not loop.first %}<a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Smart Compare anterior</a>{% endif %}
+          <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Buscar relacionados</a>
+          {% if not loop.first %}<a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparación inteligente anterior</a>{% endif %}
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="button ghost small-button" type="submit">{{ 'Include' if not s.included else 'Ignore' }}</button></form>
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="start"><button class="button ghost small-button" type="submit">Set as Start</button></form>
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="end"><button class="button ghost small-button" type="submit">Set as End</button></form>
@@ -93,7 +93,7 @@
         <details class="flow-step-edit"><summary>Etiqueta / estado manual / nota</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Etiqueta</span><input name="label" value="{{ s.label or '' }}" placeholder="Confirmar pago"></label><label><span>Estado manual</span><input name="state_label" value="{{ s.state_label or '' }}" placeholder="PAID / CANCELLED / ..."></label><label><span>Nota</span><textarea name="notes">{{ s.notes or '' }}</textarea></label><button class="button ghost" type="submit">Guardar paso</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger ghost" type="submit">Quitar definitivamente del flow</button></form></details>
       </div>
     </article>
-  {% else %}<p class="empty">Este flow todavía no tiene Requests.{% if flow_data.flow.capture_status == 'capturing' %} Navega en el target y pulsa Stop Flow al terminar.{% endif %}</p>{% endfor %}
+  {% else %}<p class="empty">Este flujo todavía no tiene Requests.{% if flow_data.flow.capture_status == 'capturing' %} Navega en el objetivo y pulsa Detener Flujo al terminar.{% endif %}</p>{% endfor %}
   </div>
 </section>
 {% endblock %}

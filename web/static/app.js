@@ -312,6 +312,16 @@
     }
   };
 
+  document.querySelectorAll('[data-auto-job-url]').forEach((node) => {
+    const jobUrl = node.dataset.autoJobUrl;
+    const refreshUrl = node.dataset.autoJobRefresh || window.location.pathname;
+    if (!jobUrl) return;
+    const startedAt = Date.now();
+    pollJob(jobUrl, refreshUrl, node, null, startedAt).catch((err) => {
+      setProgressMessage(node, `No pude revisar el historial: ${err.message}`, 'error');
+    });
+  });
+
   document.querySelectorAll('form[data-job-form]').forEach(form => {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -386,8 +396,8 @@
             <div class="ai-cost-detail"><span>Entrada estimada</span><strong>${Number(data.input_tokens_est).toLocaleString('es-CO')} tokens</strong></div>
             <div class="ai-cost-detail"><span>Salida presupuestada</span><strong>máx. ${Number(data.output_tokens_budget).toLocaleString('es-CO')} tokens</strong></div>
           </div>
-          <div class="ai-cost-foot">${cacheHit ? `Cache hit: no se hará una nueva llamada billable. El análisis original tendría un tope teórico de ${formatCop(cop)}.` : 'Es un <b>tope estimado</b>; el costo real puede ser menor.'} Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>
-          <div class="ai-evidence-note">${data.task_type === 'target_triage' ? (data.cached ? `✓ Cache hit: esta evidencia ya fue analizada con ${esc(data.model)}. Se reutilizará el resultado con costo estimado COP $0.` : `✓ Triage global: Negro enviará sólo leads/evidencia correlacionada, fingerprints e histórico filtrado. Evidence hash: ${esc((data.evidence_hash || '').slice(0,12))}…`) : (data.source_map_included ? `✓ La evidencia de IA incluirá el <b>source map confirmado</b>${data.source_map_application_sources !== undefined ? ` · ${Number(data.source_map_application_sources).toLocaleString('es-CO')} fuentes de aplicación` : ''}${data.source_map_sources_with_content !== undefined ? ` · ${Number(data.source_map_sources_with_content).toLocaleString('es-CO')} con contenido` : ''}.` : 'La estimación usa sólo el análisis local del bundle; no hay source map confirmado asociado.')}</div>`;
+          <div class="ai-cost-foot">${cacheHit ? `Acierto de caché: no se hará una nueva llamada facturable. El análisis original tendría un tope teórico de ${formatCop(cop)}.` : 'Es un <b>tope estimado</b>; el costo real puede ser menor.'} Conversión usada: 1 USD = ${Number(data.usd_cop_rate).toLocaleString('es-CO',{maximumFractionDigits:2})} COP · precios ${esc(data.pricing_snapshot)}${data.long_context ? ' · contexto largo' : ''}.</div>
+          <div class="ai-evidence-note">${data.task_type === 'target_triage' ? (data.cached ? `✓ Acierto de caché: esta evidencia ya fue analizada con ${esc(data.model)}. Se reutilizará el resultado con costo estimado COP $0.` : `✓ Priorización global: Negro enviará sólo leads/evidencia correlacionada, fingerprints e histórico filtrado. Hash de evidencia: ${esc((data.evidence_hash || '').slice(0,12))}…`) : (data.source_map_included ? `✓ La evidencia de IA incluirá el <b>source map confirmado</b>${data.source_map_application_sources !== undefined ? ` · ${Number(data.source_map_application_sources).toLocaleString('es-CO')} fuentes de aplicación` : ''}${data.source_map_sources_with_content !== undefined ? ` · ${Number(data.source_map_sources_with_content).toLocaleString('es-CO')} con contenido` : ''}.` : 'La estimación usa sólo el análisis local del bundle; no hay source map confirmado asociado.')}</div>`;
         runModel.value = data.model;
         runForm.action = box.dataset.runUrl;
         runForm.hidden = false;

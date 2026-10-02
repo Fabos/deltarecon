@@ -10,14 +10,14 @@
   </div>
   <div class="page-actions">
     <a class="button" href="{{ target_base }}/graph">Abrir mapa</a>
-    <a class="button secondary" href="{{ target_base }}/hypotheses">Abrir Hunt</a>
-    <a class="button ghost" href="{{ target_base }}/backup">Crear backup ↓</a>
+    <a class="button secondary" href="{{ target_base }}/hypotheses">Abrir Investigación</a>
+    <a class="button ghost" href="{{ target_base }}/backup">Crear copia de seguridad ↓</a>
   </div>
 </section>
 
 <section class="dashboard-goals">
   <a href="{{ target_base }}/hosts"><span>1</span><div><b>Ordenar superficie</b><small>Qué hosts/endpoints existen y qué falta revisar.</small></div></a>
-  <a href="{{ target_base }}/graph"><span>2</span><div><b>Entender tráfico</b><small>Quién actuó, qué Flow ocurrió y qué objeto tocó.</small></div></a>
+  <a href="{{ target_base }}/graph"><span>2</span><div><b>Entender tráfico</b><small>Quién actuó, qué Flujo ocurrió y qué objeto tocó.</small></div></a>
   <a href="{{ target_base }}/hypotheses"><span>3</span><div><b>Investigar una pista</b><small>Convertir evidencia en una prueba manual y luego en hallazgo.</small></div></a>
 </section>
 
@@ -57,7 +57,7 @@
   <a href="{{ target_base }}/hosts?review=pending"><b data-stat-key="host_pending">{{ stats.host_pending }}</b><span>Hosts pendientes</span></a>
   <a href="{{ target_base }}/hosts?resource_review=pending"><b data-stat-key="resource_pending">{{ stats.resource_pending }}</b><span>Recursos pendientes</span></a>
   <a class="attention-interesting" href="{{ target_base }}/hosts?classification=lead"><b data-stat-key="leads">{{ stats.leads }}</b><span>Interesantes</span></a>
-  <a class="attention-alerts" href="{{ target_base }}/notifications"><b data-stat-key="notifications_unread">{{ stats.notifications_unread }}</b><span>Alertas nuevas</span></a>
+  <a class="attention-alerts" href="{{ target_base }}/notifications"><b data-stat-key="notifications_unread">{{ stats.notifications_unread }}</b><span>Notificaciones nuevas</span></a>
 </section>
 
 <div class="grid dashboard-grid">
@@ -88,44 +88,16 @@
   </section>
 </div>
 
-<div class="grid dashboard-grid">
-  <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">PROYECTOS</p><h2>Espacios de trabajo</h2></div><span class="muted small">cambio rápido</span></div>
-    <div class="target-cards">
-      {% for t in target_cards %}
-      <div class="target-card-shell {% if t.key==target_key %}active{% endif %}">
-        <a class="target-card" href="/t/{{ t.key }}/">
-          <div><strong>{{ t.name or t.domain }}</strong><small>{{ t.scopes|join(', ') }}</small><small>{{ t.workspace }}</small></div>
-          {% if t.error %}<span class="badge class-finding">Error</span>{% else %}<span class="target-metrics">{{ t.hosts }} H · {{ t.resources }} R · {{ t.leads }} I · {{ t.findings }} F</span>{% endif %}
-        </a>
-        <details class="target-delete"><summary>Eliminar</summary>
-          <form action="/targets/{{ t.key }}/delete" method="post" class="target-delete-form">
-            <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="delete_workspace" value="yes">
-            <p>Se eliminará el target y todo su workspace local. Los backups externos no se borran.</p>
-            <label>Escribe <code>{{ t.domain }}</code><input name="confirm_domain" required autocomplete="off"></label>
-            <button class="button danger-button" type="submit">Eliminar definitivamente</button>
-          </form>
-        </details>
-      </div>
-      {% endfor %}
-    </div>
-    <div class="inline-details-row">
-      <details class="new-target"><summary>+ Agregar proyecto</summary><form action="/targets/create" method="post" class="target-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Nombre del proyecto<input name="name" placeholder="Programa Bug Bounty / Pentest ACME" autocomplete="off"></label><label>Scope principal<input name="domain" required placeholder="example.com" autocomplete="off"></label><label>Scopes adicionales <span class="muted">(uno por línea)</span><textarea name="scopes" rows="4" placeholder="api.example.com
-other-brand.example"></textarea></label><label>Espacio de trabajo <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/acme" autocomplete="off"></label><button class="button" type="submit">Crear proyecto</button></form></details>
-      <details class="new-target"><summary>↥ Restaurar backup</summary><form action="/targets/restore" method="post" enctype="multipart/form-data" class="target-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Backup de Negro<input type="file" name="backup" accept="application/zip,.zip" required></label><label>Espacio de trabajo destino <span class="muted">(opcional)</span><input name="workspace" placeholder="~/recon/restored-target" autocomplete="off"></label><button class="button ghost" type="submit">Restaurar</button></form></details>
-    </div>
-  </section>
 
-  <section class="panel">
-    <div class="panel-head"><div><p class="eyebrow">RECON</p><h2>Fuentes manuales</h2></div><a href="{{ target_base }}/intelligence">Más inteligencia →</a></div>
-    <p class="muted small">Acciones explícitas y de bajo impacto. Negro no hace fuzzing ni explotación automática aquí.</p>
-    <div class="scan-grid compact-scan-grid">
-      {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass pasivo'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl'),('wayback_cdx','Wayback · CDX'),('urlscan_direct','URLScan'),('securitytrails','SecurityTrails'),('github_code','GitHub · código público')] %}
-      <form action="{{ target_base }}/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="source" value="{{ source }}"><button class="button scan" type="submit">{{ label }}</button></form>
-      {% endfor %}
-    </div>
-  </section>
-</div>
+<section class="panel dashboard-recon-panel">
+  <div class="panel-head"><div><p class="eyebrow">RECON</p><h2>Fuentes manuales del proyecto actual</h2></div><a href="{{ target_base }}/intelligence">Más inteligencia →</a></div>
+  <p class="muted small">Acciones explícitas y de bajo impacto para <b>{{ project.name if project else domain }}</b>. Administrar otros proyectos está separado de este Inicio.</p>
+  <div class="scan-grid compact-scan-grid">
+    {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass pasivo'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl'),('wayback_cdx','Wayback · CDX'),('urlscan_direct','URLScan'),('securitytrails','SecurityTrails'),('github_code','GitHub · código público')] %}
+    <form action="{{ target_base }}/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="source" value="{{ source }}"><button class="button scan" type="submit">{{ label }}</button></form>
+    {% endfor %}
+  </div>
+</section>
 
 <section class="panel subdued-panel">
   <div class="panel-head"><div><p class="eyebrow">HISTORIAL</p><h2>Últimas fuentes ejecutadas</h2></div></div>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Follow Value · Negro{% endblock %}
+{% block title %}Seguir valor · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
   <div><p class="eyebrow">FOLLOW VALUE</p><h1><code>{{ follow.base.name }}</code> = <code>{{ follow.base.value_raw or follow.base.value_preview or '(vacío)' }}</code></h1><p class="muted">Sigue el mismo valor exacto aunque cambie de nombre, superficie, endpoint o host. Negro conserva también el hash para correlación.</p></div>
@@ -19,7 +19,7 @@
         <div><b>#{{ o.exchange_id }} · {{ o.method }} <code>{{ o.path }}</code></b><span class="badge">{{ o.location }}</span></div>
         <small>{{ o.hostname }} · HTTP {{ o.status_code or '—' }} · {{ o.exchange_seen_at }}</small>
         <p><code>{{ o.name }}</code> = <code>{{ o.value_raw or o.value_preview or '(vacío)' }}</code></p>
-        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ o.resource_id }}?exchange={{ o.exchange_id }}#exchange-{{ o.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Find Related Request</a></div>
+        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ o.resource_id }}?exchange={{ o.exchange_id }}#exchange-{{ o.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Buscar Requests relacionadas</a></div>
       </div>
     </div>
   {% endfor %}

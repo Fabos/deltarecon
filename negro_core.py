@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.36.0
+Negro Recon v0.37.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.36.0"
+VERSION = "0.37.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -1952,6 +1952,14 @@ def local_analyze_js_asset(domain: str, paths: dict[str, Path], asset_id: int, t
                     },
                     emit=True,
                 )
+        # Las Reglas personalizadas también observan JavaScript analizado. Esto
+        # permite que una watch rule de una key/valor/regex encuentre una pieza
+        # horas después fuera del tráfico HTTP original.
+        try:
+            import negro_custom_signals as custom_signals
+            custom_signals.evaluate_js_asset(conn, int(asset_id))
+        except Exception as custom_exc:
+            print(f"[custom-rule-js] asset={asset_id} error={type(custom_exc).__name__}: {str(custom_exc)[:160]}")
     rebuild_inventory(paths, domain)
     return {"asset_id": asset_id, "url": row["url"], "size_bytes": len(raw), "sha256": sha, "local_path": str(raw_path), "sourcemap_url": sourcemap_url, "analysis": local,
             "routes": {"in_scope": len(discovered_urls), "new": len(new_urls), "interesting": len(sensitive_urls)}}
