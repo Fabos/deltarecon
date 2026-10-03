@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.39.0
+Negro Recon v0.40.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.39.0"
+VERSION = "0.40.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -3651,7 +3651,8 @@ def ai_run_flow_logic(domain: str, paths: dict[str, Path], flow_id: int, model: 
             try: result=json.loads(cached["result_json"] or "{}")
             except Exception: result={}
             if hunter.flow_logic_result_is_cacheable(result):
-                result["cached"]=True; result["evidence_hash"]=evidence_hash
+                persisted=hunter.persist_flow_ai_batch(conn,flow_id=int(flow_id),model=selected_model,evidence_hash=evidence_hash,result=result,context_snapshot=payload)
+                result["cached"]=True; result["evidence_hash"]=evidence_hash; result.update(persisted)
                 return result
             conn.execute("UPDATE ai_tasks SET status='invalid' WHERE id=?",(cached["id"],))
     result,usage=hunter.run_openai_flow_logic_ideas(payload,model=selected_model,output_tokens=output_tokens,reasoning_effort=reasoning)
@@ -3662,4 +3663,7 @@ def ai_run_flow_logic(domain: str, paths: dict[str, Path], flow_id: int, model: 
         hunter.init_schema(conn)
         conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
                      (task_type,evidence_hash,selected_model,"done" if cacheable else "invalid",None,json.dumps(usage,ensure_ascii=False),json.dumps(result,ensure_ascii=False),now_iso()))
+        if cacheable:
+            persisted=hunter.persist_flow_ai_batch(conn,flow_id=int(flow_id),model=selected_model,evidence_hash=evidence_hash,result=result,context_snapshot=payload)
+            result.update(persisted)
     return result

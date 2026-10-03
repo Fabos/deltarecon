@@ -531,6 +531,48 @@ def init_schema(conn) -> None:
             UNIQUE(investigation_id, entity_type, entity_id, relation),
             FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS ai_idea_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_type TEXT NOT NULL DEFAULT 'flow',
+            flow_id INTEGER,
+            investigation_id INTEGER,
+            model TEXT NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            summary TEXT,
+            context_snapshot_json TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(origin_type, flow_id, investigation_id, model, evidence_hash),
+            FOREIGN KEY(flow_id) REFERENCES flows(id) ON DELETE SET NULL,
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS ai_ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL,
+            flow_id INTEGER,
+            investigation_id INTEGER,
+            question TEXT NOT NULL,
+            alias TEXT,
+            category TEXT,
+            priority TEXT,
+            rationale TEXT,
+            facts_json TEXT,
+            unknowns_json TEXT,
+            test_goal TEXT,
+            confirm_if TEXT,
+            discard_if TEXT,
+            runner_json TEXT,
+            status TEXT NOT NULL DEFAULT 'new',
+            decision_reason TEXT,
+            converted_hypothesis_id INTEGER,
+            reconsidered_from_idea_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES ai_idea_batches(id) ON DELETE CASCADE,
+            FOREIGN KEY(flow_id) REFERENCES flows(id) ON DELETE SET NULL,
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE SET NULL,
+            FOREIGN KEY(converted_hypothesis_id) REFERENCES leads_v2(id) ON DELETE SET NULL,
+            FOREIGN KEY(reconsidered_from_idea_id) REFERENCES ai_ideas(id) ON DELETE SET NULL
+        );
         CREATE TABLE IF NOT EXISTS hypothesis_requirements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lead_id INTEGER NOT NULL,
@@ -605,6 +647,10 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
         CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_investigation_links_entity ON investigation_links(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_idea_batches_flow ON ai_idea_batches(flow_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_idea_batches_investigation ON ai_idea_batches(investigation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_ideas_flow ON ai_ideas(flow_id, status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_ideas_investigation ON ai_ideas(investigation_id, status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_open ON hypothesis_requirements(status,key_pattern,lead_id);
         CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_lead ON hypothesis_requirements(lead_id,status,id);
         """
@@ -636,6 +682,17 @@ def init_schema(conn) -> None:
     signal_cols = {row["name"] for row in conn.execute("PRAGMA table_info(signal_occurrences)")}
     if "signal_level" not in signal_cols:
         conn.execute("ALTER TABLE signal_occurrences ADD COLUMN signal_level TEXT NOT NULL DEFAULT 'local'")
+    signal_cols = {row["name"] for row in conn.execute("PRAGMA table_info(signal_occurrences)")}
+    if "human_decision" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN human_decision TEXT NOT NULL DEFAULT 'new'")
+    if "decision_reason" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN decision_reason TEXT")
+    if "decision_at" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN decision_at TEXT")
+    if "decision_occurrences" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN decision_occurrences INTEGER NOT NULL DEFAULT 0")
+    if "reconsideration_needed" not in signal_cols:
+        conn.execute("ALTER TABLE signal_occurrences ADD COLUMN reconsideration_needed INTEGER NOT NULL DEFAULT 0")
 
     row = conn.execute("SELECT value FROM meta WHERE key='policy_profile'").fetchone()
     if not row:
@@ -744,7 +801,8 @@ def _persist_correlation_signal(conn, *, dedupe_key: str, exchange_id: int | Non
         conn.execute(
             """UPDATE signal_occurrences SET exchange_id=COALESCE(?,exchange_id),operation_id=COALESCE(?,operation_id),
                  resource_id=COALESCE(?,resource_id),title=?,category='correlation',severity=?,why_json=?,evidence_json=?,
-                 source='correlation',signal_level='correlation',occurrences=occurrences+1,last_seen_at=? WHERE id=?""",
+                 source='correlation',signal_level='correlation',occurrences=occurrences+1,last_seen_at=?,
+                 reconsideration_needed=CASE WHEN COALESCE(human_decision,'new')='dismissed' THEN 1 ELSE reconsideration_needed END WHERE id=?""",
             (exchange_id, operation_id, resource_id, title[:240], severity,
              json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), now, int(row["id"])),
         )
@@ -1847,7 +1905,8 @@ def _upsert_signal_occurrence(conn, *, signal_key: str, kind: str, severity: str
     evidence = dict(data or {})
     if row:
         conn.execute(
-            """UPDATE signal_occurrences SET occurrences=occurrences+1,last_seen_at=?,severity=?,title=?,why_json=?,evidence_json=? WHERE id=?""",
+            """UPDATE signal_occurrences SET occurrences=occurrences+1,last_seen_at=?,severity=?,title=?,why_json=?,evidence_json=?,
+               reconsideration_needed=CASE WHEN COALESCE(human_decision,'new')='dismissed' THEN 1 ELSE reconsideration_needed END WHERE id=?""",
             (now, severity, title, json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), int(row["id"])),
         )
     else:
@@ -4055,11 +4114,10 @@ def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]
     if existing:
         return dict(existing)
     now = now_iso()
-    cur = conn.execute(
-        "INSERT INTO investigations(title,category,status,summary,notes,source_hypothesis_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-        (str(row["title"]), str(row["lead_type"] or "other"), "active", str(row["why_interesting"] or ""), "", int(lead_id), now, now),
+    investigation_id = create_investigation(
+        conn, title=str(row["title"]), category=str(row["lead_type"] or "other"),
+        summary=str(row["why_interesting"] or ""), source_hypothesis_id=int(lead_id),
     )
-    investigation_id = int(cur.lastrowid)
     try:
         evidence = json.loads(row["evidence_json"] or "[]")
     except Exception:
@@ -4105,6 +4163,242 @@ def update_investigation(conn, investigation_id: int, *, status: str | None = No
     conn.execute("UPDATE investigations SET status=?,notes=?,updated_at=? WHERE id=?", (next_status, next_notes, now_iso(), int(investigation_id)))
     return dict(conn.execute("SELECT * FROM investigations WHERE id=?", (int(investigation_id),)).fetchone())
 
+
+# ---------------------------------------------------------------------------
+# v0.40 · Human decisions, Investigation workspace and persistent AI Ideas
+# ---------------------------------------------------------------------------
+
+AI_IDEA_STATES = {"new", "saved", "investigating", "dismissed", "postponed", "converted_to_hypothesis"}
+SIGNAL_DECISIONS = {"new", "interesting", "investigating", "dismissed"}
+
+
+def set_signal_decision(conn, signal_id: int, *, decision: str, reason: str = "") -> dict[str, Any]:
+    """Record a human decision without deleting machine evidence.
+
+    Dismissal is memory, not deletion. `dismissed_at` is retained as a backwards-
+    compatible projection for older views, while `human_decision` is authoritative.
+    """
+    init_schema(conn)
+    decision = str(decision or "new").strip().lower()
+    if decision not in SIGNAL_DECISIONS:
+        raise ValueError("Decisión de Señal inválida")
+    row = conn.execute("SELECT * FROM signal_occurrences WHERE id=?", (int(signal_id),)).fetchone()
+    if not row:
+        raise ValueError("Señal no encontrada")
+    now = now_iso()
+    dismissed_at = now if decision == "dismissed" else None
+    reviewed_at = None if decision == "new" else (row["reviewed_at"] or now)
+    conn.execute(
+        """UPDATE signal_occurrences
+           SET human_decision=?,decision_reason=?,decision_at=?,decision_occurrences=occurrences,
+               reconsideration_needed=0,reviewed_at=?,dismissed_at=?
+           WHERE id=?""",
+        (decision, str(reason or "").strip()[:2000], now, reviewed_at, dismissed_at, int(signal_id)),
+    )
+    return dict(conn.execute("SELECT * FROM signal_occurrences WHERE id=?", (int(signal_id),)).fetchone())
+
+
+def create_manual_signal(conn, exchange_id: int, *, title: str, note: str = "", category: str = "manual") -> int:
+    """Persist a human-authored observable fact using the existing Signals table."""
+    init_schema(conn)
+    ex = conn.execute(
+        """SELECT e.id,e.operation_id,o.resource_id,o.method,r.path,h.hostname,e.status_code
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not ex:
+        raise ValueError("Request no encontrada")
+    clean_title = str(title or "").strip()[:240]
+    if not clean_title:
+        raise ValueError("Describe qué observaste")
+    now = now_iso()
+    import hashlib
+    fingerprint = hashlib.sha256(f"manual:{exchange_id}:{clean_title.lower()}:{now}".encode()).hexdigest()[:24]
+    why = {"message": str(note or clean_title).strip()[:2000], "human_created": True}
+    evidence = {
+        "source": "manual", "exchange_id": int(exchange_id), "method": ex["method"],
+        "path": ex["path"], "host": ex["hostname"], "status": ex["status_code"],
+        "note": str(note or "").strip()[:4000],
+    }
+    cur = conn.execute(
+        """INSERT INTO signal_occurrences(
+               dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,
+               why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at,signal_level,
+               human_decision,decision_occurrences,reconsideration_needed)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,'interesting',1,0)""",
+        (f"manual:{fingerprint}", int(exchange_id), int(ex["operation_id"]), int(ex["resource_id"]),
+         "manual_observation", str(category or "manual")[:80], "info", clean_title,
+         json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), "manual", now, now, "local"),
+    )
+    return int(cur.lastrowid)
+
+
+def create_manual_hypothesis(conn, exchange_id: int, *, title: str, why: str = "", next_test: str = "") -> int:
+    """Create a human-owned Hypothesis from an existing Request without a parallel model."""
+    init_schema(conn)
+    ex = conn.execute(
+        """SELECT e.id,e.operation_id,o.resource_id,o.method,r.path,r.host_id,h.hostname,e.status_code
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not ex:
+        raise ValueError("Request no encontrada")
+    clean_title = str(title or "").strip()[:240]
+    if not clean_title:
+        raise ValueError("Título de Hipótesis requerido")
+    import hashlib
+    key = hashlib.sha256(f"manual:{exchange_id}:{clean_title.lower()}".encode()).hexdigest()[:22]
+    evidence = [{
+        "source": "manual_request", "exchange_id": int(exchange_id),
+        "node_ids": [f"exchange:{int(exchange_id)}", f"resource:{int(ex['resource_id'])}"],
+        "method": ex["method"], "path": ex["path"], "host": ex["hostname"], "status": ex["status_code"],
+    }]
+    hid, _ = upsert_lead(
+        conn, lead_key=f"manual:{key}", host_id=int(ex["host_id"]), resource_id=int(ex["resource_id"]),
+        lead_type="manual", title=clean_title, confidence="medium", review_priority="medium",
+        evidence=evidence, why=str(why or "").strip()[:4000], next_test=str(next_test or "").strip()[:4000],
+        confirm_if="", discard_if="", source="MANUAL",
+    )
+    return int(hid)
+
+
+def create_investigation(conn, *, title: str, category: str = "other", summary: str = "", notes: str = "",
+                         source_hypothesis_id: int | None = None) -> int:
+    init_schema(conn)
+    clean = str(title or "").strip()[:240]
+    if not clean:
+        raise ValueError("Título de Investigación requerido")
+    if source_hypothesis_id:
+        row = conn.execute("SELECT id FROM investigations WHERE source_hypothesis_id=?", (int(source_hypothesis_id),)).fetchone()
+        if row:
+            return int(row["id"])
+    now = now_iso()
+    cur = conn.execute(
+        "INSERT INTO investigations(title,category,status,summary,notes,source_hypothesis_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        (clean, str(category or "other")[:80], "active", str(summary or "")[:5000], str(notes or "")[:10000], source_hypothesis_id, now, now),
+    )
+    iid = int(cur.lastrowid)
+    if source_hypothesis_id:
+        link_investigation_entity(conn, iid, "hypothesis", int(source_hypothesis_id), "pursuing")
+        conn.execute("UPDATE leads_v2 SET promoted_investigation_id=?,updated_at=? WHERE id=?", (iid, now, int(source_hypothesis_id)))
+    return iid
+
+
+def link_investigation_entity(conn, investigation_id: int, entity_type: str, entity_id: int, relation: str = "context") -> None:
+    init_schema(conn)
+    if not conn.execute("SELECT id FROM investigations WHERE id=?", (int(investigation_id),)).fetchone():
+        raise ValueError("Investigación no encontrada")
+    allowed = {"exchange","resource","signal","hypothesis","flow","business_object","identity","runner","ai_idea","finding"}
+    et = str(entity_type or "").strip().lower()
+    if et not in allowed:
+        raise ValueError("Tipo de contexto no soportado")
+    conn.execute(
+        "INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)",
+        (int(investigation_id), et, int(entity_id), str(relation or "context")[:80], now_iso()),
+    )
+    conn.execute("UPDATE investigations SET updated_at=? WHERE id=?", (now_iso(), int(investigation_id)))
+
+
+def _ai_idea_dict_from_row(row) -> dict[str, Any]:
+    item = dict(row)
+    for src, dst, default in (("facts_json","facts",[]),("unknowns_json","unknowns",[]),("runner_json","runner",None)):
+        try: item[dst] = json.loads(item.get(src) or ("[]" if default == [] else "null"))
+        except Exception: item[dst] = default
+    return item
+
+
+def persist_flow_ai_batch(conn, *, flow_id: int, model: str, evidence_hash: str, result: dict[str, Any],
+                          context_snapshot: str, investigation_id: int | None = None) -> dict[str, Any]:
+    """Persist an AI exploration as first-class memory; identical evidence reuses its batch."""
+    init_schema(conn)
+    # If this Flow already belongs to exactly one active Investigation, keep that origin
+    # on the generation. With multiple Investigations we keep it Flow-scoped to avoid
+    # inventing ownership; the workspace can still surface it through the Flow link.
+    if investigation_id is None:
+        linked = conn.execute(
+            """SELECT DISTINCT i.id FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
+               WHERE l.entity_type='flow' AND l.entity_id=? AND i.status!='closed' ORDER BY i.updated_at DESC LIMIT 2""",
+            (int(flow_id),),
+        ).fetchall()
+        if len(linked) == 1:
+            investigation_id = int(linked[0]["id"])
+    existing = conn.execute(
+        """SELECT * FROM ai_idea_batches WHERE origin_type='flow' AND flow_id=? AND
+           ((investigation_id IS NULL AND ? IS NULL) OR investigation_id=?) AND model=? AND evidence_hash=?""",
+        (int(flow_id), investigation_id, investigation_id, str(model), str(evidence_hash)),
+    ).fetchone()
+    if existing:
+        return {"batch_id": int(existing["id"]), "reused": True}
+    now = now_iso()
+    cur = conn.execute(
+        """INSERT INTO ai_idea_batches(origin_type,flow_id,investigation_id,model,evidence_hash,summary,context_snapshot_json,created_at)
+           VALUES('flow',?,?,?,?,?,?,?)""",
+        (int(flow_id), investigation_id, str(model), str(evidence_hash), str(result.get("summary") or "")[:8000], str(context_snapshot or ""), now),
+    )
+    batch_id = int(cur.lastrowid)
+    for idea in result.get("ideas") or []:
+        if not isinstance(idea, dict):
+            continue
+        question = str(idea.get("question") or idea.get("alias") or "Pregunta de lógica").strip()[:1000]
+        prior = conn.execute(
+            """SELECT ai.id FROM ai_ideas ai JOIN ai_idea_batches b ON b.id=ai.batch_id
+               WHERE ai.flow_id=? AND ai.status='dismissed' AND lower(trim(ai.question))=lower(trim(?))
+               ORDER BY ai.id DESC LIMIT 1""",
+            (int(flow_id), question),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO ai_ideas(batch_id,flow_id,investigation_id,question,alias,category,priority,rationale,facts_json,unknowns_json,
+               test_goal,confirm_if,discard_if,runner_json,status,reconsidered_from_idea_id,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new',?,?,?)""",
+            (batch_id, int(flow_id), investigation_id, question, str(idea.get("alias") or "")[:240], str(idea.get("category") or "other")[:80],
+             str(idea.get("priority") or "medium")[:20], str(idea.get("rationale") or "")[:8000],
+             json.dumps(idea.get("facts") or [], ensure_ascii=False), json.dumps(idea.get("unknowns") or [], ensure_ascii=False),
+             str(idea.get("test_goal") or "")[:8000], str(idea.get("confirm_if") or "")[:4000], str(idea.get("discard_if") or "")[:4000],
+             json.dumps(idea.get("runner"), ensure_ascii=False) if idea.get("runner") is not None else None,
+             int(prior["id"]) if prior else None, now, now),
+        )
+    return {"batch_id": batch_id, "reused": False}
+
+
+def list_ai_idea_batches(conn, *, flow_id: int | None = None, investigation_id: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
+    init_schema(conn)
+    where=[]; params=[]
+    if flow_id is not None:
+        where.append("b.flow_id=?"); params.append(int(flow_id))
+    if investigation_id is not None:
+        where.append("(b.investigation_id=? OR EXISTS(SELECT 1 FROM investigation_links il WHERE il.investigation_id=? AND il.entity_type='flow' AND il.entity_id=b.flow_id))")
+        params.extend([int(investigation_id), int(investigation_id)])
+    where_sql=(" WHERE " + " AND ".join(where) if where else "")
+    total=int(conn.execute("SELECT COUNT(*) c FROM ai_idea_batches b"+where_sql,tuple(params)).fetchone()["c"] or 0)
+    sql = "SELECT b.* FROM ai_idea_batches b" + where_sql + " ORDER BY b.id DESC LIMIT ?"
+    batches=[]
+    for idx,row in enumerate(conn.execute(sql, tuple(params+[max(1,min(int(limit),100))])).fetchall()):
+        b=dict(row)
+        b["generation_number"]=max(1,total-idx)
+        b["ideas"]=[_ai_idea_dict_from_row(x) for x in conn.execute("SELECT * FROM ai_ideas WHERE batch_id=? ORDER BY id", (int(row["id"]),)).fetchall()]
+        batches.append(b)
+    return batches
+
+
+def get_ai_idea(conn, idea_id: int) -> dict[str, Any] | None:
+    init_schema(conn)
+    row = conn.execute("SELECT * FROM ai_ideas WHERE id=?", (int(idea_id),)).fetchone()
+    return _ai_idea_dict_from_row(row) if row else None
+
+
+def update_ai_idea_state(conn, idea_id: int, *, status: str, reason: str = "") -> dict[str, Any]:
+    init_schema(conn)
+    state = str(status or "new").strip().lower()
+    if state not in AI_IDEA_STATES:
+        raise ValueError("Estado de idea IA inválido")
+    row = conn.execute("SELECT id FROM ai_ideas WHERE id=?", (int(idea_id),)).fetchone()
+    if not row:
+        raise ValueError("Idea IA no encontrada")
+    conn.execute("UPDATE ai_ideas SET status=?,decision_reason=?,updated_at=? WHERE id=?",
+                 (state, str(reason or "").strip()[:3000], now_iso(), int(idea_id)))
+    return get_ai_idea(conn, int(idea_id)) or {}
 
 def actual_ai_cost(usage: dict[str, Any], model: str, usd_cop_rate: float) -> dict[str, Any]:
     prices = intel.OPENAI_PRICING.get(model)
@@ -4228,9 +4522,11 @@ def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int 
         "signals":[],
         "previous_runners":[],
         "previous_hypotheses":[],
+        "previous_ai_ideas":[],
         "instructions":{
             "goal":"Proponer preguntas de lógica de negocio nuevas y comprobables sobre este Flujo.",
-            "do_not_repeat":"Evita ideas ya cubiertas por Runners/Hypotheses negativos o ejecutados salvo que nueva evidencia justifique un retest.",
+            "do_not_repeat":"Evita ideas ya descartadas o cubiertas por pruebas VÁLIDAS. Un Run con transport_error/timeout/dns_error/tls_error/proxy_error/runner_error NO cuenta como prueba y la pregunta sigue pendiente.",
+            "dismissed_memory":"Las ideas descartadas siguen siendo memoria. No repitas exactamente la misma propuesta salvo que nueva evidencia concreta justifique reconsiderarla; si la reconsideras, explica la evidencia nueva.",
             "execution":"La IA sólo propone borradores. El humano revisa y ejecuta manualmente cada Runner.",
         }
     }
@@ -4260,7 +4556,7 @@ def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int 
         marks=",".join("?" for _ in step_exchange_ids)
         try:
             for row in conn.execute(
-                f"SELECT id,title,kind,category,signal_level,source,exchange_id,why_json,evidence_json FROM signal_occurrences WHERE dismissed_at IS NULL AND exchange_id IN ({marks}) ORDER BY id DESC LIMIT 80",
+                f"SELECT id,title,kind,category,signal_level,source,exchange_id,why_json,evidence_json,human_decision,decision_reason,decision_at,occurrences,decision_occurrences FROM signal_occurrences WHERE exchange_id IN ({marks}) ORDER BY id DESC LIMIT 80",
                 tuple(step_exchange_ids)).fetchall():
                 item=dict(row)
                 item["why"]=_load_json_for_flow_ai(item.pop("why_json",None),{})
@@ -4284,12 +4580,15 @@ def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int 
         # Request/Response behavior. Keep this bounded: only recent runners/runs
         # and short sanitized HTTP previews are included.
         for run_index, run in enumerate(detail["runs"][:12]):
-            run_memory={"id":int(run["id"]),"status":run["status"],"outcome":run["outcome"],"summary":run.get("summary") or {},"error":run.get("error"),"evidence":[]}
+            run_memory={"id":int(run["id"]),"status":run["status"],"execution_class":run.get("execution_class") or "pending",
+                        "counts_as_test":bool(run.get("counts_as_test")),"outcome":run["outcome"] if bool(run.get("counts_as_test")) else "not_counted",
+                        "summary":run.get("summary") or {},"error":run.get("error"),"evidence":[]}
             if runner_index < 6 and run_index < 2:
                 try:
                     evidence_rows=conn.execute(
-                        """SELECT rrr.repeat_index,rrr.elapsed_ms,rrr.status_code,rrr.error,rrr.exchange_id,
-                                  o.method,r.path,h.hostname,e.request_b64,e.response_b64
+                        """SELECT rrr.repeat_index,rrr.elapsed_ms,rrr.status_code,rrr.error,rrr.exchange_id,rrr.execution_class,
+                                  COALESCE(o.method,rrr.method) method,r.path,h.hostname,COALESCE(e.request_b64,rrr.request_b64) request_b64,
+                                  COALESCE(e.response_b64,rrr.response_b64) response_b64,rrr.url
                            FROM runner_run_requests rrr
                            LEFT JOIN http_exchanges e ON e.id=rrr.exchange_id
                            LEFT JOIN resource_operations o ON o.id=e.operation_id
@@ -4304,8 +4603,9 @@ def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int 
                         run_memory["evidence"].append({
                             "exchange_id":int(erow["exchange_id"]) if erow["exchange_id"] else None,
                             "repeat_index":int(erow["repeat_index"] or 1),
-                            "method":erow["method"],"host":erow["hostname"],"path":erow["path"],
-                            "status":erow["status_code"],"elapsed_ms":erow["elapsed_ms"],"error":erow["error"],
+                            "method":erow["method"],"host":erow["hostname"] or (urllib.parse.urlsplit(str(erow["url"] or "")).hostname or ""),
+                            "path":erow["path"] or (urllib.parse.urlsplit(str(erow["url"] or "")).path or "/"),
+                            "status":erow["status_code"],"execution_class":erow["execution_class"],"elapsed_ms":erow["elapsed_ms"],"error":erow["error"],
                             "request":_redact_http_for_flow_ai(req,max_chars=1200),
                             "response":_redact_http_for_flow_ai(resp,max_chars=1800),
                         })
@@ -4322,6 +4622,18 @@ def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int 
             continue
         context["previous_hypotheses"].append({k:row[k] for k in ("id","title","status","why_interesting","next_test","result_notes")})
         if len(context["previous_hypotheses"])>=30: break
+    # Persistent AI Ideas are memory even before/without becoming Hypotheses.
+    # Dismissed/postponed proposals are included so future generations do not
+    # blindly repeat them; a model may reconsider only when current evidence changed.
+    try:
+        for idea in conn.execute(
+            """SELECT ai.id,ai.question,ai.alias,ai.category,ai.priority,ai.status,ai.decision_reason,ai.created_at,ai.updated_at,
+                      b.evidence_hash,b.created_at batch_created_at
+               FROM ai_ideas ai JOIN ai_idea_batches b ON b.id=ai.batch_id
+               WHERE ai.flow_id=? ORDER BY ai.id DESC LIMIT 120""", (int(flow_id),)).fetchall():
+            context["previous_ai_ideas"].append(dict(idea))
+    except Exception:
+        pass
     raw=json.dumps(context,ensure_ascii=False,separators=(",",":"))
     if len(raw)>max_chars:
         # Preserve structure and prior-test memory; trim HTTP previews first.
@@ -4363,7 +4675,8 @@ Recibes: secuencia del Flujo, Requests/Responses sanitizadas, parámetros, Ident
 OBJETIVO:
 - Proponer preguntas de lógica de negocio específicas a ESTE proceso, no una lista OWASP genérica.
 - Prioriza: pasos omitibles/reordenables/repetibles, valores controlados por cliente, estados que podrían saltarse, referencias reutilizables/stale, replay, cambios después de validación, operaciones que podrían ejecutarse varias veces y cruces de identidad cuando la evidencia lo justifique.
-- USA lo ya probado: no repitas un Runner/Hypothesis que terminó negative o ya fue ejecutado, salvo que exista NUEVA evidencia concreta que justifique un retest; si lo haces, explica por qué.
+- USA la memoria completa. NO cuentes como prueba un Run cuyo execution_class no sea application_response o counts_as_test=false. Un 504/proxy error/timeout/dns/tls sólo significa que la prueba no llegó válidamente al aplicativo.
+- No repitas un Runner/Hypothesis que terminó negative en una prueba válida, ni una AI Idea descartada, salvo que exista NUEVA evidencia concreta que justifique reconsiderarla; si lo haces, explica exactamente qué cambió.
 - Usa parámetros/rutas/status reales. No inventes endpoints, roles, campos, cupones, IDs o Responses.
 - Si una idea requiere una pieza que no existe, dilo en unknowns/review_before_run; no inventes valores.
 

@@ -1,5 +1,41 @@
-# Negro Recon 🐕 — v0.39.0
+# Negro Recon 🐕 — v0.40.0
 
+
+## v0.40.0 — Investigation Workspace + AI Ideas persistentes + transporte confiable
+
+La primera prueba real de `Flow → AI Ideas → Runner` cambió el foco de esta versión: Negro separa con más rigor **evidencia, preguntas, decisiones humanas y ejecución válida**. El modelo operativo queda como `Signal → AI Idea → Hypothesis → Runner/Run → Finding/Discarded`, sin promociones automáticas a vulnerabilidad.
+
+### Request Workbench como punto de decisión
+
+Desde una Request exacta se puede reutilizar el contexto existente para crear una **Entity/Objeto de negocio**, una **Signal manual**, una **Hypothesis**, un **Runner**, adjuntar/crear una **Investigation** y crear/adjuntar un **Finding**. Los candidatos de Entity se sugieren a partir de parámetros y HTTP observado (`userId`, `username`, `email`, `orderId`, etc.); el investigador decide qué representa cada Entity y la observación conserva provenance al exchange original.
+
+### Signal conserva la decisión humana
+
+Una Signal puede marcarse **Interesante**, **Investigar** o **Descartar**. Descartar nunca elimina evidencia: se conserva fecha, motivo humano, provenance y el número de observaciones conocidas al tomar la decisión. Si aparece evidencia posterior, Negro puede indicar que existe información nueva para reconsiderarla.
+
+### Investigation es un workspace propio
+
+Cada Investigation dispone de `/investigations/:id` y separa visualmente:
+
+- **Contexto conocido**: Entities, Identities, Signals, Flows, Requests/Responses y evidencia relacionada.
+- **Qué estoy investigando**: Hypotheses activas.
+- **Pruebas realizadas**: Runners y Runs.
+- **Ideas de la IA**: historial persistente por generaciones.
+- **Decisiones finales**: Findings y cierres humanos.
+
+La UI deja de mezclar “lo que sabemos” con “lo que decidimos perseguir”.
+
+### AI Ideas existen antes de Hypothesis
+
+Las ideas generadas por **Explorar lógica** son objetos persistentes con pregunta, explicación, hechos/incógnitas, contexto usado, Flow/Investigation de origen, generación, fecha y estado (`new`, `saved`, `investigating`, `dismissed`, `postponed`, `converted_to_hypothesis`). Una idea descartada sigue siendo memoria y futuras generaciones reciben esa historia para evitar repeticiones exactas salvo que haya nueva evidencia que justifique reconsiderarla.
+
+### Un Run fallido no es evidencia del aplicativo
+
+Runner separa el resultado de transporte del resultado de seguridad: `application_response`, `transport_error`, `timeout`, `dns_error`, `tls_error`, `proxy_error` y `runner_error`. Sólo `application_response` entra como evidencia HTTP canónica y puede contar como prueba. Un Run de transporte fallido permanece en historial, no cubre la Hypothesis, no puede marcarse como negativa y ofrece **Reintentar**.
+
+El transporte del Runner ahora es explícito (`direct`, `environment` o proxy configurado), preserva semántica de `Host`/SNI, permite TLS/CA/timeout configurables y ofrece diagnóstico DNS/TCP/TLS/proxy sin contaminar la evidencia del proyecto.
+
+> **El contexto genera interés compuesto.** Negro conserva contexto amplio, pero sólo promueve atención cuando existe evidencia o una decisión humana que lo justifique.
 
 ## v0.39.0 — Flow Intelligence + Runner
 

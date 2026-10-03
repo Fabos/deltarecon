@@ -615,7 +615,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     };
     try{
       const initial=JSON.parse(root.querySelector('[data-flow-ai-initial]')?.textContent||'{}');
-      if(initial && Array.isArray(initial.ideas) && initial.ideas.length){render(initial);status.textContent=`Análisis anterior disponible${initial.created_at?' · '+initial.created_at:''}. Estima de nuevo si el Flow cambió.`;}
+      if(initial && Array.isArray(initial.ideas) && initial.ideas.length){status.textContent=`Historial disponible${initial.created_at?' · última exploración '+initial.created_at:''}. Las Ideas persistentes están debajo.`;}
     }catch(_e){}
     estimateBtn?.addEventListener('click',async()=>{
       estimateBtn.disabled=true; status.textContent='Construyendo contexto del Flow y de los Runners previos…';
@@ -631,7 +631,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
       try{
         const fd=new FormData();fd.set('csrf',csrf);fd.set('confirm_cost','yes');fd.set('model',model?.value||'');
         const r=await fetch(root.dataset.runUrl,{method:'POST',body:fd,headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
-        while(true){await new Promise(x=>setTimeout(x,1200));const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();if(job.status==='done'){const result=job.summary?.result||{};render(result);status.textContent=result.cached?'Usé el análisis cacheado de esta misma evidencia.':'Ideas generadas. Nada se ejecutó: revisa y decide.';break;}if(job.status==='error')throw new Error(job.error||'La IA falló');status.textContent='IA analizando Requests/Responses, Runners anteriores y estado del Flow…';}
+        while(true){await new Promise(x=>setTimeout(x,1200));const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();if(job.status==='done'){status.textContent='Ideas guardadas en el historial. Actualizando…';location.href=location.pathname+'#ai-ideas-history';break;}if(job.status==='error')throw new Error(job.error||'La IA falló');status.textContent='IA analizando Requests/Responses, Runners anteriores y estado del Flow…';}
       }catch(err){status.textContent=`Error: ${err.message}`;}finally{runBtn.disabled=false;}
     });
   }
@@ -641,4 +641,20 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const id=jobBox.dataset.jobId;const text=jobBox.querySelector('[data-runner-job-status]');
     const poll=async()=>{try{const r=await fetch(`/api/jobs/${encodeURIComponent(id)}`,{headers:{Accept:'application/json'}});const d=await r.json();if(d.status==='done'){if(text)text.textContent='Runner terminado. Actualizando evidencia…';setTimeout(()=>{const u=new URL(location.href);u.searchParams.delete('job');location.href=u.toString()+'#runner-history';},450);return;}if(d.status==='error'){if(text)text.textContent=`Error: ${d.error||'Runner falló'}`;return;}if(text)text.textContent='Ejecutando secuencialmente…';setTimeout(poll,1200);}catch(err){if(text)text.textContent=`No pude consultar el estado: ${err.message}`;}};poll();
   }
+})();
+
+// v0.40 · Runner transport diagnostic (explicit, one HEAD request)
+(()=>{
+  document.querySelectorAll('[data-transport-diagnose]').forEach(btn=>{
+    btn.addEventListener('click',async()=>{
+      const out=btn.closest('.transport-diagnostic')?.querySelector('[data-transport-result]');
+      btn.disabled=true;if(out)out.textContent='Diagnosticando DNS, TCP, TLS/SNI y transporte HTTP…';
+      try{
+        const r=await fetch(btn.dataset.url,{headers:{Accept:'application/json'}});
+        const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
+        if(out)out.textContent=JSON.stringify(d,null,2);
+      }catch(err){if(out)out.textContent=`Error de diagnóstico: ${err.message}`;}
+      finally{btn.disabled=false;}
+    });
+  });
 })();

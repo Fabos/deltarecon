@@ -1,5 +1,35 @@
-# Negro Recon — Metodología v0.39.0
+# Negro Recon — Metodología v0.40.0
 
+
+## v0.40 — Evidence → AI Idea → decisión humana → prueba válida
+
+La primera prueba real confirma una separación metodológica estricta:
+
+```text
+Signal = evidencia observable
+  ↓
+AI Idea = pregunta sugerida
+  ↓
+Hypothesis = algo que el humano decide perseguir
+  ↓
+Runner / Run = prueba
+  ↓
+Finding / Discarded = decisión humana
+```
+
+Una **AI Idea** existe antes de Hypothesis y conserva el contexto que la originó. Guardar, posponer o descartar una idea forma parte de la memoria; la IA debe conocer lo ya propuesto/probado para no repetir automáticamente la misma línea.
+
+Una **Investigation** es el workspace que reúne las piezas sin confundirlas: “Contexto conocido” representa hechos/evidencia; “Qué estoy investigando” representa Hypotheses elegidas; “Pruebas realizadas” representa Runners/Runs; “Ideas de la IA” conserva propuestas; Findings reflejan decisiones finales.
+
+### Transporte no es comportamiento del aplicativo
+
+Un Run sólo cuenta como prueba si llegó al objetivo con una respuesta clasificable como `application_response`. DNS, TLS, timeout, proxy/gateway y errores internos del Runner son **historial de ejecución**, no evidencia de seguridad del aplicativo. Se conservan para diagnóstico y retry, pero no alimentan coverage ni permiten declarar una Hypothesis negativa.
+
+La captura original y el replay pueden recorrer redes distintas. Runner debe declarar su modo de transporte, respetar `Host`/SNI y ofrecer diagnóstico explícito antes de interpretar errores de conectividad como comportamiento de negocio.
+
+### El contexto genera interés compuesto
+
+Negro intenta que evidencia ya observada gane valor cuando aparecen nuevas relaciones, sin afirmar que “nada puede pasar desapercibido”. Contexto y decisiones humanas se conservan; el ruido también puede acumularse, por lo que la UI debe capturar mucho pero destacar poco.
 
 ## v0.39 — Flow → pregunta → Hypothesis → Runner → evidencia
 

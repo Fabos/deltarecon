@@ -92,7 +92,7 @@
 
   {% if h.test_plan %}<div class="test-plan test-plan-now"><div class="test-plan-title"><span>▶</span><h3>Prueba manual propuesta</h3></div><ol>{% for step in h.test_plan %}<li><b>{{ step.action }}</b>{% if step.what_to_watch %}<small>Qué mirar: {{ step.what_to_watch }}</small>{% endif %}</li>{% endfor %}</ol></div>{% endif %}
   <section class="hypothesis-needed-pieces">
-    <div class="needed-pieces-head"><div><span class="eyebrow">MEMORIA DE INVESTIGACIÓN</span><h3>Qué me falta para continuar</h3><p>Negro recordará estas piezas y te avisará si aparecen más adelante en otra API, Flujo o Identidad.</p></div><div class="badges"><span class="badge">{{ h.requirements_pending }} pendientes</span>{% if h.requirements_matched %}<span class="badge class-interesting">{{ h.requirements_matched }} encontradas</span>{% endif %}</div></div>
+    <div class="needed-pieces-head"><div><span class="eyebrow">PIEZAS PENDIENTES</span><h3>Qué me falta para continuar</h3><p>Negro recordará estas piezas y te avisará si aparecen más adelante en otra API, Flujo o Identidad.</p></div><div class="badges"><span class="badge">{{ h.requirements_pending }} pendientes</span>{% if h.requirements_matched %}<span class="badge class-interesting">{{ h.requirements_matched }} encontradas</span>{% endif %}</div></div>
     {% if h.requirements %}
     <div class="needed-piece-list">
       {% for piece in h.requirements %}
@@ -113,22 +113,17 @@
   <div class="hypothesis-actionbar">
     {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}{% if h.primary_exchange_id %}?exchange={{ h.primary_exchange_id }}#exchange-{{ h.primary_exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}
     <a class="btn-secondary" href="{{ target_base }}/signals/custom?from_hypothesis={{ h.id }}">👁 Crear Regla desde esta hipótesis</a>
-    {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/promote" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">→ Convertir en Investigación</button></form>{% else %}<a class="button" href="#investigation-{{ h.promoted_investigation_id }}">Abrir Investigación #{{ h.promoted_investigation_id }}</a>{% endif %}
+    {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/promote" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">→ Convertir en Investigación</button></form>{% else %}<a class="button" href="{{ target_base }}/investigations/{{ h.promoted_investigation_id }}">Abrir Investigation ↗</a>{% endif %}
   </div>
   {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Decisión<select name="status"><option value="candidate" {% if h.status=='candidate' %}selected{% endif %}>Mantener propuesta</option><option value="postponed" {% if h.status=='postponed' %}selected{% endif %}>Guardar para después</option><option value="discarded" {% if h.status=='discarded' %}selected{% endif %}>Descartar hipótesis</option></select></label><label class="grow">Nota<textarea name="result_notes" placeholder="Por qué la guardas o descartas">{{ h.result_notes or '' }}</textarea></label><button class="btn-secondary" type="submit">Guardar</button></form>{% endif %}
 </article>
 {% else %}<section class="panel empty-state"><strong>No hay hipótesis IA con estos filtros.</strong><span>Negro no las genera automáticamente. Pulsa “Generar hipótesis con IA” cuando quieras que razone sobre la evidencia acumulada.</span></section>{% endfor %}
 </section>
 
-<section class="section-heading"><div><p class="eyebrow">INVESTIGACIONES HUMANAS</p><h2>Lo que decidiste perseguir</h2><p class="muted">Esta es tu mesa de trabajo. Una investigación puede reunir Señales y evidencia sin declarar todavía una vulnerabilidad.</p></div></section>
-<section class="investigation-list">
+<section class="section-heading"><div><p class="eyebrow">INVESTIGATIONS</p><h2>Workspaces que decidiste perseguir</h2><p class="muted">Aquí sólo las lanzamos. Cada Investigation tiene su propia página con contexto conocido, Hypotheses, pruebas, Ideas IA y Findings claramente separados.</p></div></section>
+<section class="investigation-list compact-investigation-launchers">
 {% for i in investigations %}
-<article class="panel human-investigation state-{{ i.status }}" id="investigation-{{ i.id }}">
-  <div class="panel-head"><div><div class="badges"><span class="badge">#{{ i.id }}</span><span class="badge">{{ i.category or 'other' }}</span><span class="badge state-chip">{{ 'Activa' if i.status=='active' else ('Pausada' if i.status=='paused' else 'Cerrada') }}</span></div><h2>{{ i.title }}</h2></div><div class="investigation-counts"><span>🩵 {{ i.signal_count }} Señales</span><span>{{ i.exchange_count }} Requests</span><span>{{ i.resource_count }} recursos</span></div></div>
-  {% if i.summary %}<p><b>Por qué nació:</b> {{ i.summary }}</p>{% endif %}
-  {% if i.next_test %}<div class="hypothesis-plain"><b>Siguiente pregunta:</b> {{ i.next_test }}</div>{% endif %}
-  <form action="{{ target_base }}/investigation/{{ i.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status"><option value="active" {% if i.status=='active' %}selected{% endif %}>Activa</option><option value="paused" {% if i.status=='paused' %}selected{% endif %}>Pausada</option><option value="closed" {% if i.status=='closed' %}selected{% endif %}>Cerrada</option></select></label><label class="grow">Memoria de investigación<textarea name="notes" placeholder="Qué probaste, qué falta, qué correlacionar…">{{ i.notes or '' }}</textarea></label><button class="button" type="submit">Guardar Investigación</button></form>
-</article>
-{% else %}<section class="panel empty-state"><strong>Todavía no promoviste ninguna hipótesis.</strong><span>La IA propone. Tú decides cuáles merecen convertirse en una Investigación.</span></section>{% endfor %}
+<article class="panel human-investigation state-{{ i.status }}" id="investigation-{{ i.id }}"><div class="panel-head"><div><div class="badges"><span class="badge">#{{ i.id }}</span><span class="badge">{{ i.category or 'other' }}</span><span class="badge state-chip">{{ 'Activa' if i.status=='active' else ('Pausada' if i.status=='paused' else 'Cerrada') }}</span></div><h2>{{ i.title }}</h2>{% if i.summary %}<p class="muted">{{ i.summary }}</p>{% endif %}</div><div class="investigation-counts"><span>⚡ {{ i.signal_count }} Signals</span><span>{{ i.exchange_count }} Requests</span><span>{{ i.resource_count }} endpoints</span></div></div><div class="page-actions"><a class="button secondary" href="{{ target_base }}/investigations/{{ i.id }}">Abrir Investigation ↗</a></div></article>
+{% else %}<section class="panel empty-state"><strong>Todavía no abriste ninguna Investigation.</strong><span>Una Hypothesis puede promoverse cuando decidas perseguirla, o puedes crear una Investigation desde cualquier Request.</span></section>{% endfor %}
 </section>
 {% endblock %}

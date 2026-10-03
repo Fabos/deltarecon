@@ -5,6 +5,9 @@ import json
 import re
 import time
 import urllib.parse
+import os
+import socket
+import ssl
 from datetime import datetime, timezone
 from typing import Any
 
@@ -107,6 +110,25 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_runner_run_requests_run ON runner_run_requests(run_id, id);
         """
     )
+    runner_cols={row["name"] for row in conn.execute("PRAGMA table_info(runners)")}
+    if "investigation_id" not in runner_cols:
+        conn.execute("ALTER TABLE runners ADD COLUMN investigation_id INTEGER")
+    run_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_runs)")}
+    if "execution_class" not in run_cols:
+        conn.execute("ALTER TABLE runner_runs ADD COLUMN execution_class TEXT NOT NULL DEFAULT 'pending'")
+    if "counts_as_test" not in run_cols:
+        conn.execute("ALTER TABLE runner_runs ADD COLUMN counts_as_test INTEGER NOT NULL DEFAULT 0")
+    req_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_run_requests)")}
+    for name,ddl in {
+        "execution_class":"TEXT NOT NULL DEFAULT 'pending'",
+        "method":"TEXT",
+        "url":"TEXT",
+        "request_b64":"TEXT",
+        "response_b64":"TEXT",
+        "transport_detail_json":"TEXT"
+    }.items():
+        if name not in req_cols:
+            conn.execute(f"ALTER TABLE runner_run_requests ADD COLUMN {name} {ddl}")
 
 
 def _load_json(value: Any, default: Any) -> Any:
@@ -159,7 +181,7 @@ def _flow_steps(conn, flow_id: int) -> list[dict[str, Any]]:
 
 
 def create_runner_from_flow(conn, flow_id: int, *, alias: str, description: str = "", hypothesis_id: int | None = None,
-                            identity_id: int | None = None, origin: str = "manual", ai_idea: dict[str, Any] | None = None,
+                            identity_id: int | None = None, investigation_id: int | None = None, origin: str = "manual", ai_idea: dict[str, Any] | None = None,
                             step_actions: list[dict[str, Any]] | None = None, variables: list[dict[str, Any]] | None = None) -> int:
     init_schema(conn)
     flow = conn.execute("SELECT id,name,identity_id FROM flows WHERE id=?", (int(flow_id),)).fetchone()
@@ -178,6 +200,13 @@ def create_runner_from_flow(conn, flow_id: int, *, alias: str, description: str 
          json.dumps(ai_idea,ensure_ascii=False) if ai_idea else None,now,now),
     )
     runner_id=int(cur.lastrowid)
+    if investigation_id is not None:
+        conn.execute("UPDATE runners SET investigation_id=? WHERE id=?", (int(investigation_id), runner_id))
+        try:
+            import negro_hunter as hunter
+            hunter.link_investigation_entity(conn, int(investigation_id), "runner", runner_id, "test")
+        except Exception:
+            pass
     actions_by_position={}
     actions_by_step={}
     for action in step_actions or []:
@@ -242,8 +271,8 @@ def list_runners(conn, *, flow_id: int | None = None, limit: int = 100) -> list[
     rows=conn.execute(
         f"""SELECT ru.*,f.name flow_name,i.name identity_name,h.title hypothesis_title,
                     (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id) run_count,
-                    (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='interesting') interesting_runs,
-                    (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='negative') negative_runs
+                    (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='interesting' AND COALESCE(rr.counts_as_test,0)=1) interesting_runs,
+                    (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='negative' AND COALESCE(rr.counts_as_test,0)=1) negative_runs
              FROM runners ru JOIN flows f ON f.id=ru.flow_id
              LEFT JOIN identities i ON i.id=ru.identity_id LEFT JOIN leads_v2 h ON h.id=ru.hypothesis_id
              {where} ORDER BY ru.updated_at DESC,ru.id DESC LIMIT ?""",
@@ -255,9 +284,9 @@ def list_runners(conn, *, flow_id: int | None = None, limit: int = 100) -> list[
 def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
     init_schema(conn)
     row=conn.execute(
-        """SELECT ru.*,f.name flow_name,f.description flow_description,i.name identity_name,h.title hypothesis_title
+        """SELECT ru.*,f.name flow_name,f.description flow_description,i.name identity_name,h.title hypothesis_title,inv.title investigation_title
            FROM runners ru JOIN flows f ON f.id=ru.flow_id LEFT JOIN identities i ON i.id=ru.identity_id
-           LEFT JOIN leads_v2 h ON h.id=ru.hypothesis_id WHERE ru.id=?""",
+           LEFT JOIN leads_v2 h ON h.id=ru.hypothesis_id LEFT JOIN investigations inv ON inv.id=ru.investigation_id WHERE ru.id=?""",
         (int(runner_id),),
     ).fetchone()
     if not row:
@@ -440,6 +469,160 @@ def _headers_list(headers: dict[str,str]) -> list[dict[str,str]]:
     return [{"name":str(k),"value":str(v)} for k,v in headers.items()]
 
 
+
+EXECUTION_CLASSES = {"application_response","transport_error","timeout","dns_error","tls_error","proxy_error","runner_error"}
+
+
+def transport_settings() -> dict[str, Any]:
+    import negro_intel as intel
+    settings=intel.load_settings()
+    mode=str(settings.get("runner_transport_mode") or "direct").lower()
+    if mode not in {"direct","environment","proxy"}: mode="direct"
+    return {
+        "mode":mode,
+        "proxy_url":str(settings.get("runner_proxy_url") or "").strip(),
+        "verify_tls":bool(settings.get("runner_verify_tls", True)),
+        "ca_bundle":str(settings.get("runner_ca_bundle") or "").strip(),
+        "timeout_seconds":max(2,min(int(settings.get("runner_timeout_seconds") or 20),120)),
+    }
+
+
+def _build_session(cfg: dict[str, Any]):
+    import requests
+    session=requests.Session()
+    mode=str(cfg.get("mode") or "direct")
+    session.trust_env = mode == "environment"
+    if mode == "proxy":
+        proxy=str(cfg.get("proxy_url") or "").strip()
+        if not proxy:
+            raise ValueError("Transporte proxy seleccionado pero no hay URL de proxy configurada")
+        session.proxies.update({"http":proxy,"https":proxy})
+    return session
+
+
+def _verify_value(cfg: dict[str, Any]):
+    if not bool(cfg.get("verify_tls",True)):
+        return False
+    ca=str(cfg.get("ca_bundle") or "").strip()
+    return ca or True
+
+
+def _effective_proxy_for_url(session, url: str, cfg: dict[str, Any]) -> str | None:
+    mode=str(cfg.get("mode") or "direct")
+    if mode == "proxy":
+        return str(cfg.get("proxy_url") or "") or None
+    if mode == "environment":
+        try:
+            import requests
+            proxies=requests.utils.get_environ_proxies(url)
+            return proxies.get(urllib.parse.urlsplit(url).scheme) or proxies.get("https") or proxies.get("http")
+        except Exception:
+            return None
+    return None
+
+
+def _classify_exception(exc: Exception) -> str:
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.ProxyError): return "proxy_error"
+        if isinstance(exc, requests.exceptions.Timeout): return "timeout"
+        if isinstance(exc, requests.exceptions.SSLError): return "tls_error"
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            msg=str(exc).lower()
+            if any(x in msg for x in ("name resolution","failed to resolve","getaddrinfo","nodename nor servname","temporary failure in name resolution")):
+                return "dns_error"
+            return "transport_error"
+        if isinstance(exc, requests.exceptions.RequestException): return "transport_error"
+    except Exception:
+        pass
+    msg=str(exc).lower()
+    if any(x in msg for x in ("getaddrinfo","name resolution","failed to resolve")): return "dns_error"
+    if "ssl" in msg or "certificate" in msg or "tls" in msg: return "tls_error"
+    if "proxy" in msg: return "proxy_error"
+    if "timed out" in msg or "timeout" in msg: return "timeout"
+    return "runner_error"
+
+
+def _classify_response(resp, *, proxy_url: str | None) -> tuple[str, dict[str, Any]]:
+    """Separate a target HTTP response from a gateway/proxy transport failure.
+
+    5xx remains application evidence unless the request actually used a proxy and
+    the response contains generic proxy/gateway failure indicators. This avoids
+    treating a real application 504 as a transport error.
+    """
+    detail={"proxy_used":bool(proxy_url),"proxy":proxy_url or "","status":int(resp.status_code)}
+    if int(resp.status_code) not in {502,503,504}:
+        return "application_response",detail
+    head=" ".join(f"{k}:{v}" for k,v in resp.headers.items()).lower()
+    body=(resp.text or "")[:5000].lower()
+    # Generic gateway/connectivity pages are transport evidence even when the proxy is
+    # transparent to requests (container gateway, corporate egress, service mesh, etc.).
+    # A plain application 5xx without these transport indicators remains app evidence.
+    indicators=("proxy error","gateway timeout","bad gateway","upstream connect","upstream request timeout",
+                "connect error","connection refused","connecting to","tunnel connection failed",
+                "connection timed out","name resolution failed","dns resolution failed")
+    header_indicators=("via:","x-squid-error","proxy-agent:","x-envoy", "x-cache:","x-served-by:")
+    if any(x in body for x in indicators) or any(x in head for x in header_indicators):
+        detail["reason"]="Respuesta genérica de gateway/conectividad durante el transporte; no se usa como evidencia del aplicativo."
+        return ("proxy_error" if proxy_url else "transport_error"),detail
+    return "application_response",detail
+
+
+def diagnose_transport(url: str) -> dict[str, Any]:
+    """Local diagnostic for the Runner process. It does not mutate project evidence."""
+    import requests
+    cfg=transport_settings(); parsed=urllib.parse.urlsplit(str(url))
+    host=parsed.hostname or ""; port=parsed.port or (443 if parsed.scheme=="https" else 80)
+    result={"url":url,"mode":cfg["mode"],"target_host":host,"target_port":port,"proxy_url":cfg.get("proxy_url") or "",
+            "verify_tls":cfg.get("verify_tls"),"dns":None,"tcp":None,"tls":None,"http":None,"execution_class":None,"notes":[]}
+    if not host:
+        result["execution_class"]="runner_error"; result["notes"].append("URL sin hostname"); return result
+    proxy_host=None; proxy_port=None; effective_proxy=None
+    try:
+        probe_session=_build_session(cfg)
+        effective_proxy=_effective_proxy_for_url(probe_session,str(url),cfg)
+    except Exception as exc:
+        result["execution_class"]="proxy_error"; result["notes"].append(str(exc)[:500]); return result
+    if effective_proxy:
+        pp=urllib.parse.urlsplit(str(effective_proxy)); proxy_host=pp.hostname; proxy_port=pp.port or (443 if pp.scheme=="https" else 80)
+        result["effective_proxy"]=effective_proxy
+    dns_host=proxy_host or host
+    try:
+        infos=socket.getaddrinfo(dns_host, proxy_port or port, type=socket.SOCK_STREAM)
+        ips=sorted({x[4][0] for x in infos})
+        result["dns"]={"ok":True,"host":dns_host,"ips":ips[:8]}
+    except Exception as exc:
+        result["dns"]={"ok":False,"host":dns_host,"error":str(exc)[:500]}; result["execution_class"]="dns_error"; return result
+    try:
+        with socket.create_connection((dns_host,proxy_port or port),timeout=min(8,cfg["timeout_seconds"])):
+            result["tcp"]={"ok":True,"host":dns_host,"port":proxy_port or port}
+    except Exception as exc:
+        result["tcp"]={"ok":False,"host":dns_host,"port":proxy_port or port,"error":str(exc)[:500]}; result["execution_class"]="transport_error"; return result
+    # Direct TLS probe is meaningful only when the Runner itself terminates TLS.
+    if parsed.scheme=="https" and not effective_proxy:
+        try:
+            ctx=ssl.create_default_context()
+            if not cfg.get("verify_tls"):
+                ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+            elif cfg.get("ca_bundle"):
+                ctx.load_verify_locations(cafile=str(cfg["ca_bundle"]))
+            with socket.create_connection((host,port),timeout=min(8,cfg["timeout_seconds"])) as raw:
+                with ctx.wrap_socket(raw,server_hostname=host) as tls_sock:
+                    result["tls"]={"ok":True,"sni":host,"version":tls_sock.version()}
+        except Exception as exc:
+            result["tls"]={"ok":False,"sni":host,"error":str(exc)[:500]}; result["execution_class"]="tls_error"; return result
+    try:
+        session=_build_session(cfg); proxy=_effective_proxy_for_url(session,url,cfg)
+        resp=session.request("HEAD",url,allow_redirects=False,timeout=cfg["timeout_seconds"],verify=_verify_value(cfg))
+        klass,detail=_classify_response(resp,proxy_url=proxy)
+        result["http"]={"ok":klass=="application_response","status":int(resp.status_code),"class":klass,"proxy_used":bool(proxy)}
+        result["execution_class"]=klass
+        if klass!="application_response": result["notes"].append(detail.get("reason") or "Fallo de transporte")
+    except Exception as exc:
+        result["execution_class"]=_classify_exception(exc); result["http"]={"ok":False,"error":f"{type(exc).__name__}: {str(exc)[:500]}"}
+    return result
+
+
 def _postprocess_exchange(conn, exchange_id: int, resource_id: int, host_id: int, domain: str, identity_id: int | None) -> None:
     import negro_hunter as hunter
     import negro_identity as identity_tools
@@ -467,35 +650,35 @@ def _postprocess_exchange(conn, exchange_id: int, resource_id: int, host_id: int
 
 
 def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[str,Any]:
-    """Execute one explicit Runner sequentially. Never runs automatically.
+    """Execute a bounded investigation Runner and classify transport separately.
 
-    Hard caps keep this an investigation helper rather than a fuzzer: max 100 total
-    HTTP requests, max 20 repetitions per step, no concurrency.
+    Only valid application responses enter Negro's canonical HTTP evidence. DNS,
+    TLS, timeout and proxy failures stay in Run history so they never masquerade
+    as application behavior or count as a tested Hypothesis.
     """
     import requests
     import negro_core as core
     import negro_flows as flow_tools
-    import negro_identity as identity_tools
 
+    cfg=transport_settings()
     with core.db_connect(paths) as conn:
         data=get_runner(conn,int(runner_id))
         if not data: raise ValueError("Runner no encontrado")
         runner=data["runner"]; steps=data["steps"]
-        planned=sum(0 if s["action"]=="omit" else (int(s["repeat_count"]) if s["action"]=="repeat" else 1) for s in steps)
+        planned=sum(0 if st["action"]=="omit" else (int(st["repeat_count"]) if st["action"]=="repeat" else 1) for st in steps)
         cap=min(100,int(runner.get("max_requests") or 30))
         if planned>cap:
             raise ValueError(f"El Runner intentaría {planned} Requests y su límite es {cap}. Ajusta repeticiones o el límite antes de ejecutar.")
         now=now_iso()
-        cur=conn.execute("INSERT INTO runner_runs(runner_id,identity_id,status,started_at,created_at,updated_at) VALUES(?,?,'running',?,?,?)",
+        cur=conn.execute("""INSERT INTO runner_runs(runner_id,identity_id,status,execution_class,counts_as_test,started_at,created_at,updated_at)
+                            VALUES(?,?,'running','pending',0,?,?,?)""",
                          (int(runner_id),runner.get("identity_id"),now,now,now))
         run_id=int(cur.lastrowid)
-        result_flow_id=flow_tools.create_flow(conn,f"Run · {runner['alias']} · #{run_id}",description=f"Resultado del Runner #{runner_id}: {runner['description'] or ''}",identity_id=runner.get("identity_id"))
-        conn.execute("UPDATE runner_runs SET result_flow_id=? WHERE id=?",(result_flow_id,run_id))
 
-    session=requests.Session()
+    session=_build_session(cfg)
     extracted: dict[int,dict[str,str]]={}
-    request_count=0; statuses=[]; errors=[]; exchange_ids=[]
-    first_cookie_seed=True
+    request_count=0; statuses=[]; errors=[]; exchange_ids=[]; execution_classes=[]
+    first_cookie_seed=True; result_flow_id=None
     try:
         for step in steps:
             if step["action"]=="omit":
@@ -507,12 +690,10 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                     raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),runner.get("identity_id"))
                     vars_for_step=[dict(v) for v in conn.execute("SELECT * FROM runner_variables WHERE target_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall()]
                     for var in vars_for_step:
-                        mode=str(var["mode"])
-                        new_value=None
+                        mode=str(var["mode"]); new_value=None
                         if mode=="values":
                             vals=_load_json(var["values_json"],[])
-                            if vals:
-                                new_value=str(vals[(rep_idx-1)%len(vals)])
+                            if vals: new_value=str(vals[(rep_idx-1)%len(vals)])
                         elif mode=="response_key" and var["source_runner_step_id"]:
                             new_value=(extracted.get(int(var["source_runner_step_id"])) or {}).get(str(var["source_name"] or ""))
                         elif mode=="response_regex" and var["source_runner_step_id"]:
@@ -520,54 +701,78 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                         if new_value is not None:
                             raw=_replace_value(raw,str(var["target_value"] or ""),str(new_value))
                     method,url,headers,body=_split_raw_request(raw,base_url)
-                # Let requests maintain session cookies across steps. Seed cookies from
-                # the captured request only when they are not already present.
+
+                # Keep the original Host header when present. Requests still uses
+                # the URL hostname for TCP/SNI, while Host preserves vhost semantics.
                 cookie_header=None
                 for key in list(headers):
                     if key.lower()=="cookie": cookie_header=headers.pop(key)
-                    elif key.lower() in {"content-length","connection","proxy-connection","host"}: headers.pop(key,None)
+                    elif key.lower() in {"content-length","connection","proxy-connection"}: headers.pop(key,None)
                 if cookie_header:
                     for piece in cookie_header.split(";"):
                         if "=" not in piece: continue
                         ck,cv=piece.split("=",1); ck=ck.strip(); cv=cv.strip()
-                        if ck and (first_cookie_seed or ck not in session.cookies):
-                            session.cookies.set(ck,cv)
+                        if ck and (first_cookie_seed or ck not in session.cookies): session.cookies.set(ck,cv)
                     first_cookie_seed=False
-                start=time.perf_counter()
-                error=None; resp=None
+
+                request_line=urllib.parse.urlsplit(url)
+                target=(request_line.path or "/")+("?"+request_line.query if request_line.query else "")
+                raw_headers=dict(headers)
+                if session.cookies:
+                    raw_headers["Cookie"]="; ".join(f"{c.name}={c.value}" for c in session.cookies)
+                actual_raw=f"{method} {target} HTTP/1.1\r\n"+"\r\n".join(f"{k}: {v}" for k,v in raw_headers.items())+"\r\n\r\n"+body
+                req_b64=base64.b64encode(actual_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
+                proxy_url=_effective_proxy_for_url(session,url,cfg)
+                transport_detail={
+                    "mode":cfg["mode"],"proxy_used":bool(proxy_url),"proxy":proxy_url or "",
+                    "url_host":request_line.hostname or "","host_header":raw_headers.get("Host") or raw_headers.get("host") or "",
+                    "sni":request_line.hostname or "","verify_tls":cfg.get("verify_tls",True),
+                }
+                start=time.perf_counter(); error=None; resp=None; response_b64=None
                 try:
-                    resp=session.request(method,url,headers=headers,data=body.encode("iso-8859-1",errors="replace"),allow_redirects=False,timeout=20)
+                    resp=session.request(method,url,headers=headers,data=body.encode("iso-8859-1",errors="replace"),
+                                         allow_redirects=False,timeout=cfg["timeout_seconds"],verify=_verify_value(cfg))
                     elapsed=int((time.perf_counter()-start)*1000)
-                    status=int(resp.status_code); statuses.append(status)
+                    status=int(resp.status_code)
+                    exec_class,detail=_classify_response(resp,proxy_url=proxy_url)
+                    transport_detail.update(detail)
+                    response_raw=_response_raw(resp)
+                    response_b64=base64.b64encode(response_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
                 except Exception as exc:
-                    elapsed=int((time.perf_counter()-start)*1000); status=None; error=f"{type(exc).__name__}: {str(exc)[:500]}"; errors.append(error)
-                if resp is not None:
+                    elapsed=int((time.perf_counter()-start)*1000); status=None
+                    exec_class=_classify_exception(exc)
+                    error=f"{type(exc).__name__}: {str(exc)[:1000]}"; errors.append(error)
+                    transport_detail["exception_type"]=type(exc).__name__; transport_detail["error"]=str(exc)[:1000]
+                request_count+=1; execution_classes.append(exec_class)
+
+                exid=None
+                if resp is not None and exec_class=="application_response":
+                    statuses.append(status)
                     actual_headers=dict(headers)
-                    # Record actual Cookie header from the live session without exposing
-                    # it elsewhere in runner metadata.
                     if session.cookies:
                         actual_headers["Cookie"]="; ".join(f"{c.name}={c.value}" for c in session.cookies)
-                    request_line=urllib.parse.urlsplit(url)
-                    target=(request_line.path or "/")+("?"+request_line.query if request_line.query else "")
-                    actual_raw=f"{method} {target} HTTP/1.1\r\n"+"\r\n".join(f"{k}: {v}" for k,v in actual_headers.items())+"\r\n\r\n"+body
-                    response_raw=_response_raw(resp)
-                    req_b64=base64.b64encode(actual_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
-                    resp_b64=base64.b64encode(response_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
+                    # Ensure the exact Host used by the captured request remains in canonical evidence.
+                    host_key=next((k for k in raw_headers if k.lower()=="host"),None)
+                    if host_key: actual_headers[host_key]=raw_headers[host_key]
                     result=core.upsert_http_observation(paths,domain,url=url,method=method,source="negro_runner",status_code=status,
                         authenticated=bool(runner.get("identity_id")),request_content_type=resp.request.headers.get("Content-Type"),
-                        response_content_type=resp.headers.get("Content-Type"),tool="RUNNER",request_b64=req_b64,response_b64=resp_b64,
+                        response_content_type=resp.headers.get("Content-Type"),tool="RUNNER",request_b64=req_b64,response_b64=response_b64,
                         request_headers=_headers_list(actual_headers),response_headers=_headers_list(dict(resp.headers)),query=dict(urllib.parse.parse_qsl(request_line.query,keep_blank_values=True)),
                         response_body_b64=base64.b64encode(resp.content).decode("ascii"))
-                    exid=int(result["exchange_id"]); exchange_ids.append(exid); request_count+=1
+                    exid=int(result["exchange_id"]); exchange_ids.append(exid)
                     with core.db_connect(paths) as conn:
+                        if result_flow_id is None:
+                            result_flow_id=flow_tools.create_flow(conn,f"Run · {runner['alias']} · #{run_id}",description=f"Resultado del Runner #{runner_id}: {runner['description'] or ''}",identity_id=runner.get("identity_id"))
+                            conn.execute("UPDATE runner_runs SET result_flow_id=? WHERE id=?",(result_flow_id,run_id))
+                            if runner.get("investigation_id"):
+                                try:
+                                    import negro_hunter as hunter
+                                    hunter.link_investigation_entity(conn,int(runner["investigation_id"]),"flow",int(result_flow_id),"run_result")
+                                except Exception: pass
                         _postprocess_exchange(conn,exid,int(result["resource_id"]),int(result["host_id"]),domain,runner.get("identity_id"))
                         flow_tools.add_step(conn,result_flow_id,exid,allow_duplicate=True)
-                        conn.execute("INSERT INTO runner_run_requests(run_id,runner_step_id,repeat_index,exchange_id,status_code,elapsed_ms,error,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                                     (run_id,int(step["id"]),rep_idx,exid,status,elapsed,None,now_iso()))
-                        # Extract values that later steps may reference. JSON keys are
-                        # indexed by normalized key name; regex extractors are stored by variable id.
-                        body_text=resp.text or ""
-                        bucket=extracted.setdefault(int(step["id"]),{})
+                        # Extract values only from valid application responses.
+                        body_text=resp.text or ""; bucket=extracted.setdefault(int(step["id"]),{})
                         for v in conn.execute("SELECT * FROM runner_variables WHERE source_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall():
                             if str(v["mode"])=="response_key":
                                 val=_extract_json_key(body_text,str(v["source_name"] or ""))
@@ -578,23 +783,46 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                                     if m: bucket[f"regex:{int(v['id'])}"]=m.group(1) if m.groups() else m.group(0)
                                 except re.error: pass
                 else:
-                    request_count+=1
-                    with core.db_connect(paths) as conn:
-                        conn.execute("INSERT INTO runner_run_requests(run_id,runner_step_id,repeat_index,status_code,elapsed_ms,error,created_at) VALUES(?,?,?,?,?,?,?)",
-                                     (run_id,int(step["id"]),rep_idx,None,elapsed,error,now_iso()))
+                    if resp is not None:
+                        errors.append(transport_detail.get("reason") or f"HTTP {status} clasificado como {exec_class}")
+
+                with core.db_connect(paths) as conn:
+                    conn.execute("""INSERT INTO runner_run_requests(
+                        run_id,runner_step_id,repeat_index,exchange_id,status_code,elapsed_ms,error,execution_class,
+                        method,url,request_b64,response_b64,transport_detail_json,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (run_id,int(step["id"]),rep_idx,exid,status,elapsed,error,exec_class,method,url,req_b64,response_b64,
+                         json.dumps(transport_detail,ensure_ascii=False),now_iso()))
+
+        app_count=sum(1 for c in execution_classes if c=="application_response")
+        failure_classes=[c for c in execution_classes if c!="application_response"]
+        if request_count and not failure_classes and app_count==request_count:
+            run_class="application_response"; counts_as_test=1
+        elif failure_classes:
+            counts_as_test=0
+            if app_count:
+                run_class="transport_error"
+            else:
+                priority=("proxy_error","timeout","dns_error","tls_error","runner_error","transport_error")
+                run_class=next((c for c in priority if c in failure_classes),failure_classes[0])
+        else:
+            run_class="runner_error"; counts_as_test=0
         with core.db_connect(paths) as conn:
             sig_count=0
             if exchange_ids:
                 marks=",".join("?" for _ in exchange_ids)
-                sig_count=int(conn.execute(f"SELECT COUNT(*) c FROM signal_occurrences WHERE dismissed_at IS NULL AND exchange_id IN ({marks})",tuple(exchange_ids)).fetchone()["c"] or 0)
-            summary={"requests":request_count,"statuses":statuses,"errors":len(errors),"signals":sig_count,"exchange_ids":exchange_ids[:100]}
-            conn.execute("UPDATE runner_runs SET status='completed',summary_json=?,finished_at=?,updated_at=? WHERE id=?",
-                         (json.dumps(summary,ensure_ascii=False),now_iso(),now_iso(),run_id))
+                sig_count=int(conn.execute(f"SELECT COUNT(*) c FROM signal_occurrences WHERE exchange_id IN ({marks}) AND COALESCE(human_decision,'new')!='dismissed'",tuple(exchange_ids)).fetchone()["c"] or 0)
+            summary={"requests":request_count,"application_responses":app_count,"transport_failures":len(failure_classes),
+                     "statuses":statuses,"errors":len(errors),"signals":sig_count,"exchange_ids":exchange_ids[:100],
+                     "execution_class":run_class,"counts_as_test":bool(counts_as_test),"transport":cfg}
+            conn.execute("""UPDATE runner_runs SET status='completed',execution_class=?,counts_as_test=?,summary_json=?,finished_at=?,updated_at=? WHERE id=?""",
+                         (run_class,counts_as_test,json.dumps(summary,ensure_ascii=False),now_iso(),now_iso(),run_id))
             conn.execute("UPDATE runners SET status='ready',updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
         return {"run_id":run_id,"runner_id":int(runner_id),"result_flow_id":result_flow_id,**summary}
     except Exception as exc:
         with core.db_connect(paths) as conn:
-            conn.execute("UPDATE runner_runs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?",(f"{type(exc).__name__}: {str(exc)[:1000]}",now_iso(),now_iso(),run_id))
+            conn.execute("UPDATE runner_runs SET status='failed',execution_class='runner_error',counts_as_test=0,error=?,finished_at=?,updated_at=? WHERE id=?",
+                         (f"{type(exc).__name__}: {str(exc)[:1000]}",now_iso(),now_iso(),run_id))
         raise
 
 
@@ -602,4 +830,10 @@ def update_run_outcome(conn, run_id: int, outcome: str) -> None:
     init_schema(conn)
     if outcome not in {"unreviewed","negative","interesting","confirmed","needs_retest"}:
         raise ValueError("Resultado inválido")
+    row=conn.execute("SELECT counts_as_test,execution_class FROM runner_runs WHERE id=?",(int(run_id),)).fetchone()
+    if not row:
+        raise ValueError("Run no encontrado")
+    if outcome in {"negative","interesting","confirmed"} and not bool(row["counts_as_test"]):
+        raise ValueError("Este Run no alcanzó válidamente al aplicativo y no puede usarse como resultado de seguridad. Reinténtalo primero.")
     conn.execute("UPDATE runner_runs SET outcome=?,updated_at=? WHERE id=?",(outcome,now_iso(),int(run_id)))
+

@@ -33,7 +33,7 @@ class FakeResponse:
 
 class FakeSession:
     def __init__(self): self.cookies=requests.cookies.RequestsCookieJar(); self.calls=[]
-    def request(self,method,url,headers=None,data=None,allow_redirects=False,timeout=20):
+    def request(self,method,url,headers=None,data=None,allow_redirects=False,timeout=20,verify=True):
         self.calls.append((method,url,headers,data)); return FakeResponse(url,method,headers or {},data or b'')
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.39.
+"""Local web workspace for Negro Recon v0.40.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -787,7 +787,7 @@ def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[
                LEFT JOIN resources r ON r.id=s.resource_id
                LEFT JOIN resource_operations o ON o.id=s.operation_id
                LEFT JOIN http_exchanges e ON e.id=s.exchange_id
-               WHERE s.dismissed_at IS NULL AND s.reviewed_at IS NULL
+               WHERE COALESCE(s.human_decision,'new')='new'
                ORDER BY CASE s.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
                         s.last_seen_at DESC, s.id DESC
                LIMIT ?""",
@@ -803,6 +803,89 @@ def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[
             item['why_text']=str((item['why'] or {}).get('message') or '')
             out.append(item)
         return out
+
+
+def _signal_detail(paths: dict[str, Path], signal_id: int) -> dict[str, Any] | None:
+    import negro_hunter as hunter
+    with _db(paths) as conn:
+        hunter.init_schema(conn)
+        row=conn.execute(
+            """SELECT s.*,o.method,r.path,r.url resource_url,h.hostname,e.status_code
+               FROM signal_occurrences s LEFT JOIN http_exchanges e ON e.id=s.exchange_id
+               LEFT JOIN resource_operations o ON o.id=COALESCE(s.operation_id,e.operation_id)
+               LEFT JOIN resources r ON r.id=COALESCE(s.resource_id,o.resource_id)
+               LEFT JOIN hosts h ON h.id=r.host_id WHERE s.id=?""",(int(signal_id),)
+        ).fetchone()
+        if not row: return None
+        signal=dict(row)
+        try: signal["why"]=json.loads(signal.get("why_json") or "{}")
+        except Exception: signal["why"]={}
+        try: signal["evidence"]=json.loads(signal.get("evidence_json") or "{}")
+        except Exception: signal["evidence"]={}
+        signal["needs_reconsideration"]=bool(int(signal.get("occurrences") or 0)>int(signal.get("decision_occurrences") or 0) and str(signal.get("human_decision") or "new")=='dismissed')
+        investigations=[dict(x) for x in conn.execute(
+            """SELECT i.*,l.relation FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
+               WHERE l.entity_type='signal' AND l.entity_id=? ORDER BY i.updated_at DESC""",(int(signal_id),)).fetchall()]
+        active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+        return {"signal":signal,"signal_investigations":investigations,"active_investigations":active_investigations}
+
+
+def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict[str, Any] | None:
+    import negro_hunter as hunter
+    import negro_runners as runner_tools
+    with _db(paths) as conn:
+        hunter.init_schema(conn); runner_tools.init_schema(conn)
+        inv=conn.execute(
+            """SELECT i.*,h.title source_hypothesis_title,h.status source_hypothesis_status
+               FROM investigations i LEFT JOIN leads_v2 h ON h.id=i.source_hypothesis_id WHERE i.id=?""",(int(investigation_id),)
+        ).fetchone()
+        if not inv: return None
+        links=[dict(x) for x in conn.execute("SELECT * FROM investigation_links WHERE investigation_id=? ORDER BY id",(int(investigation_id),)).fetchall()]
+        context=[]; hypothesis_ids=set(); runner_ids=set(); finding_ids=set()
+        if inv["source_hypothesis_id"]: hypothesis_ids.add(int(inv["source_hypothesis_id"]))
+        for link in links:
+            typ=str(link["entity_type"]); eid=int(link["entity_id"]); item={"type":typ,"id":eid,"relation":link["relation"],"label":f"{typ} #{eid}","href":None,"meta":""}
+            if typ=="exchange":
+                r=conn.execute("""SELECT e.status_code,o.method,r.path,r.id resource_id,h.hostname FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",(eid,)).fetchone()
+                if r: item.update(label=f"Request #{eid} · {r['method']} {r['path']}",meta=f"{r['hostname']} · HTTP {r['status_code'] or '—'}",href=f"resource/{r['resource_id']}?exchange={eid}#exchange-{eid}")
+            elif typ=="resource":
+                r=conn.execute("SELECT r.path,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",(eid,)).fetchone()
+                if r: item.update(label=str(r["path"]),meta=str(r["hostname"]),href=f"resource/{eid}")
+            elif typ=="signal":
+                r=conn.execute("SELECT title,human_decision FROM signal_occurrences WHERE id=?",(eid,)).fetchone()
+                if r: item.update(label=f"⚡ {r['title']}",meta=str(r["human_decision"] or "new"),href=f"signals/{eid}")
+            elif typ=="business_object":
+                r=conn.execute("""SELECT bo.identifier_preview,bt.name object_type FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id WHERE bo.id=?""",(eid,)).fetchone()
+                if r: item.update(label=f"{r['object_type']} · {r['identifier_preview'] or eid}",href=f"objects/{eid}")
+            elif typ=="identity":
+                r=conn.execute("SELECT name FROM identities WHERE id=?",(eid,)).fetchone()
+                if r: item.update(label=f"Identity · {r['name']}",href=f"identities/{eid}")
+            elif typ=="flow":
+                r=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
+                if r: item.update(label=f"Flujo · {r['name']}",href=f"flows/{eid}")
+            elif typ=="hypothesis": hypothesis_ids.add(eid); continue
+            elif typ=="runner": runner_ids.add(eid); continue
+            elif typ=="finding": finding_ids.add(eid); continue
+            elif typ=="ai_idea": continue
+            context.append(item)
+        hypotheses=[]
+        if hypothesis_ids:
+            marks=','.join('?' for _ in hypothesis_ids)
+            hypotheses=[dict(x) for x in conn.execute(f"SELECT * FROM leads_v2 WHERE id IN ({marks}) ORDER BY updated_at DESC",tuple(hypothesis_ids)).fetchall()]
+        # Runners can be linked explicitly or carry investigation_id directly.
+        for r in conn.execute("SELECT id FROM runners WHERE investigation_id=?",(int(investigation_id),)).fetchall(): runner_ids.add(int(r["id"]))
+        runners=[]
+        for rid in sorted(runner_ids):
+            d=runner_tools.get_runner(conn,rid)
+            if d: runners.append(d)
+        ai_batches=hunter.list_ai_idea_batches(conn,investigation_id=int(investigation_id),limit=30)
+        for r in conn.execute("SELECT finding_id FROM finding_entities WHERE entity_type='investigation' AND entity_id=?",(int(investigation_id),)).fetchall(): finding_ids.add(int(r["finding_id"]))
+        findings=[]
+        if finding_ids:
+            marks=','.join('?' for _ in finding_ids)
+            findings=[dict(x) for x in conn.execute(f"SELECT * FROM findings WHERE id IN ({marks}) ORDER BY updated_at DESC",tuple(finding_ids)).fetchall()]
+        return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_runners":runners,
+                "investigation_ai_batches":ai_batches,"investigation_findings":findings}
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
@@ -1122,6 +1205,7 @@ def _decode_http_blob(value: str | None, limit: int | None = None) -> str:
 
 def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id: int = 0) -> dict[str, Any] | None:
     import negro_hunter as hunter
+    import negro_objects as object_tools
     with _db(paths) as conn:
         row = conn.execute(
             """SELECT r.*, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?""",
@@ -1183,6 +1267,16 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                     "SELECT id,human_state,request_hash,response_hash,observed_at,created_at FROM evidence_snapshots WHERE exchange_id=? ORDER BY id DESC",
                     (int(ex["id"]),),
                 ).fetchall()]
+                exd["entity_candidates"] = object_tools.entity_candidates_for_exchange(conn, int(ex["id"]), limit=24)
+                exd["flows"] = [dict(x) for x in conn.execute(
+                    """SELECT DISTINCT f.id,f.name FROM flows f JOIN flow_steps fs ON fs.flow_id=f.id
+                       WHERE fs.exchange_id=? ORDER BY f.updated_at DESC LIMIT 40""", (int(ex["id"]),)).fetchall()]
+                exd["signals"] = []
+                for sx in conn.execute("SELECT * FROM signal_occurrences WHERE exchange_id=? ORDER BY last_seen_at DESC,id DESC LIMIT 30", (int(ex["id"]),)).fetchall():
+                    si=dict(sx)
+                    try: si["why"]=json.loads(si.get("why_json") or "{}")
+                    except Exception: si["why"]={}
+                    exd["signals"].append(si)
                 exd["provenance"] = []
                 for pr in conn.execute(
                     "SELECT source,tool,first_seen_at,last_seen_at,seen_count FROM http_exchange_provenance WHERE exchange_id=? ORDER BY seen_count DESC,last_seen_at DESC",
@@ -1258,8 +1352,8 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
         resource_human_state = core.get_human_state(conn, "resource", resource_id)
         resource_signals = []
         for sr in conn.execute(
-            """SELECT * FROM signal_occurrences WHERE resource_id=? AND dismissed_at IS NULL
-               ORDER BY CASE WHEN reviewed_at IS NULL THEN 0 ELSE 1 END,last_seen_at DESC LIMIT 60""",
+            """SELECT * FROM signal_occurrences WHERE resource_id=?
+               ORDER BY CASE COALESCE(human_decision,'new') WHEN 'new' THEN 0 WHEN 'investigating' THEN 1 WHEN 'interesting' THEN 2 ELSE 3 END,last_seen_at DESC LIMIT 60""",
             (resource_id,),
         ).fetchall():
             sd = dict(sr)
@@ -1269,6 +1363,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
             except Exception: sd["evidence"] = {}
             resource_signals.append(sd)
         all_findings = conn.execute("SELECT id,title,status,severity FROM findings ORDER BY updated_at DESC LIMIT 200").fetchall()
+        active_investigations = conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()
         coverage = _coverage_state(row["review_state"])
         signal, finding_count = _entity_signal(conn, "resource", resource_id, row["classification"])
         return {
@@ -1289,6 +1384,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
             "review_aids": review_aids,
             "linked_findings": linked_findings,
             "all_findings": all_findings,
+            "active_investigations": active_investigations,
             "coverage_state": coverage,
             "signal_state": signal,
             "finding_count": finding_count,
@@ -3085,7 +3181,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{inv['id']}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{inv['id']}", status_code=303)
 
     @app.post("/t/{target_key}/hypothesis/{lead_id}/requirements/add")
     def hypothesis_requirement_add(request: Request, target_key: str, lead_id: int,
@@ -3131,7 +3227,120 @@ def create_app(default_domain: str, default_workspace: Path):
                 _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/hypotheses#investigation-{investigation_id}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{investigation_id}", status_code=303)
+
+    @app.get("/t/{target_key}/investigations/{investigation_id}", response_class=HTMLResponse)
+    def investigation_detail_page(request: Request, target_key: str, investigation_id: int):
+        domain, workspace, paths = _target_context(target_key)
+        detail=_investigation_detail(paths,int(investigation_id))
+        if not detail: raise HTTPException(status_code=404,detail="Investigación no encontrada")
+        return render(request,"investigation_detail.html",target_key,domain,workspace,**detail)
+
+    @app.post("/t/{target_key}/investigations/create")
+    def investigation_create(target_key: str, title: str = Form(...), summary: str = Form(""), exchange_id: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            iid=hunter.create_investigation(conn,title=title,summary=summary,category="manual")
+            if str(exchange_id).isdigit():
+                hunter.link_investigation_entity(conn,iid,"exchange",int(exchange_id),"evidence")
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{iid}",status_code=303)
+
+    @app.get("/t/{target_key}/signals/{signal_id:int}", response_class=HTMLResponse)
+    def signal_detail_page(request: Request, target_key: str, signal_id: int):
+        domain, workspace, paths = _target_context(target_key)
+        detail=_signal_detail(paths,int(signal_id))
+        if not detail: raise HTTPException(status_code=404,detail="Señal no encontrada")
+        return render(request,"signal_detail.html",target_key,domain,workspace,**detail)
+
+    @app.post("/t/{target_key}/signals/{signal_id:int}/decision")
+    def signal_decision(target_key: str, signal_id: int, decision: str = Form(...), reason: str = Form(""),
+                        return_resource_id: str = Form(""), return_exchange_id: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                hunter.set_signal_decision(conn,int(signal_id),decision=decision,reason=reason)
+                sr=conn.execute("SELECT exchange_id,resource_id FROM signal_occurrences WHERE id=?",(int(signal_id),)).fetchone()
+                if sr: _refresh_search(conn,resource_id=sr["resource_id"],exchange_id=sr["exchange_id"])
+        except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+        if str(return_resource_id).isdigit():
+            suffix=f"?exchange={int(return_exchange_id)}#exchange-{int(return_exchange_id)}" if str(return_exchange_id).isdigit() else "#signals"
+            return RedirectResponse(url=f"/t/{target_key}/resource/{int(return_resource_id)}{suffix}",status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/signals/{int(signal_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/signals/{signal_id:int}/investigation")
+    def signal_attach_investigation(target_key: str, signal_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn: hunter.link_investigation_entity(conn,int(investigation_id),"signal",int(signal_id),"evidence")
+        return RedirectResponse(url=f"/t/{target_key}/signals/{int(signal_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/entity")
+    def exchange_create_entity(target_key: str, exchange_id: int, observation_id: int = Form(...), entity_type: str = Form(...), csrf: str = Form(...)):
+        import negro_objects as object_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            obs=conn.execute("SELECT id,resource_id FROM parameter_observations WHERE id=? AND exchange_id=?",(int(observation_id),int(exchange_id))).fetchone()
+            if not obs: raise HTTPException(status_code=400,detail="El candidato no pertenece a esta Request")
+            try: result=object_tools.track_observation(conn,int(observation_id),entity_type,allow_manual=True)
+            except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+            resource_id=int(obs["resource_id"])
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/signal")
+    def exchange_create_signal(target_key: str, exchange_id: int, title: str = Form(...), note: str = Form(""), investigation_id: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            ex=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(exchange_id),)).fetchone()
+            if not ex: raise HTTPException(status_code=404,detail="Request no encontrada")
+            sid=hunter.create_manual_signal(conn,int(exchange_id),title=title,note=note)
+            if str(investigation_id).isdigit(): hunter.link_investigation_entity(conn,int(investigation_id),"signal",sid,"evidence")
+            _refresh_search(conn,resource_id=int(ex["resource_id"]),exchange_id=int(exchange_id))
+            resource_id=int(ex["resource_id"])
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/hypothesis")
+    def exchange_create_hypothesis(target_key: str, exchange_id: int, title: str = Form(...), why: str = Form(""), next_test: str = Form(""), investigation_id: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            hid=hunter.create_manual_hypothesis(conn,int(exchange_id),title=title,why=why,next_test=next_test)
+            if str(investigation_id).isdigit(): hunter.link_investigation_entity(conn,int(investigation_id),"hypothesis",hid,"pursuing")
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hid}",status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/investigation")
+    def exchange_attach_investigation(target_key: str, exchange_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            ex=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(exchange_id),)).fetchone()
+            if not ex: raise HTTPException(status_code=404,detail="Request no encontrada")
+            hunter.link_investigation_entity(conn,int(investigation_id),"exchange",int(exchange_id),"evidence")
+            resource_id=int(ex["resource_id"])
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/runner")
+    def exchange_create_runner(target_key: str, exchange_id: int, alias: str = Form(...), description: str = Form(""), flow_id: str = Form(""), investigation_id: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        import negro_runners as runner_tools
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            ex=conn.execute("SELECT e.id,o.resource_id,o.method,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?",(int(exchange_id),)).fetchone()
+            if not ex: raise HTTPException(status_code=404,detail="Request no encontrada")
+            if str(flow_id).isdigit():
+                fid=int(flow_id)
+                if not conn.execute("SELECT 1 FROM flow_steps WHERE flow_id=? AND exchange_id=?",(fid,int(exchange_id))).fetchone():
+                    raise HTTPException(status_code=400,detail="La Request no pertenece al Flujo seleccionado")
+            else:
+                fid=flow_tools.create_flow(conn,f"Request #{int(exchange_id)} · {ex['method']} {ex['path']}",description="Baseline de una sola Request creado desde Request Workbench.")
+                flow_tools.add_step(conn,fid,int(exchange_id))
+            iid=int(investigation_id) if str(investigation_id).isdigit() else None
+            rid=runner_tools.create_runner_from_flow(conn,fid,alias=alias,description=description,investigation_id=iid,origin="request")
+            if iid: hunter.link_investigation_entity(conn,iid,"exchange",int(exchange_id),"runner_origin")
+        return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
 
     @app.post("/t/{target_key}/signal/{signal_id}/review")
     def signal_review(request: Request, target_key: str, signal_id: int, csrf: str = Form(...)):
@@ -3518,23 +3727,26 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_flows as flow_tools
         import negro_runners as runner_tools
         import negro_intel as intel
+        import negro_hunter as hunter
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             data = flow_tools.get_flow(conn, int(flow_id))
             if not data:
                 raise HTTPException(status_code=404, detail="Flujo no encontrado")
-            runner_tools.init_schema(conn)
+            runner_tools.init_schema(conn); hunter.init_schema(conn)
             flow_runners = runner_tools.list_runners(conn, flow_id=int(flow_id), limit=40)
-            latest = conn.execute("SELECT result_json,created_at FROM ai_tasks WHERE task_type=? AND status='done' ORDER BY id DESC LIMIT 1", (f"flow_logic:{int(flow_id)}",)).fetchone()
+            logic_ai_batches = hunter.list_ai_idea_batches(conn, flow_id=int(flow_id), limit=30)
             logic_ai_latest = {}
-            if latest:
-                try:
-                    logic_ai_latest = json.loads(latest["result_json"] or "{}")
-                    logic_ai_latest["created_at"] = latest["created_at"]
-                except Exception:
-                    logic_ai_latest = {}
+            if logic_ai_batches:
+                b=logic_ai_batches[0]
+                logic_ai_latest={"summary":b.get("summary") or "","ideas":b.get("ideas") or [],"created_at":b.get("created_at"),"batch_id":b.get("id")}
+            flow_investigations=[dict(x) for x in conn.execute(
+                """SELECT i.* FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
+                   WHERE l.entity_type='flow' AND l.entity_id=? ORDER BY i.updated_at DESC""",(int(flow_id),)).fetchall()]
+            active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
         return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data,
-                      flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, settings=intel.load_settings())
+                      flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, logic_ai_batches=logic_ai_batches,
+                      flow_investigations=flow_investigations, active_investigations=active_investigations, settings=intel.load_settings())
 
 
     @app.get("/t/{target_key}/runners", response_class=HTMLResponse)
@@ -3559,7 +3771,17 @@ def create_app(default_domain: str, default_workspace: Path):
         planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
         active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
-                      planned_requests=planned, active_steps=active_steps, job=job)
+                      planned_requests=planned, active_steps=active_steps, job=job, transport=runner_tools.transport_settings())
+
+    @app.post("/t/{target_key}/flows/{flow_id}/investigation")
+    def flow_attach_investigation(target_key: str, flow_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            if not conn.execute("SELECT 1 FROM flows WHERE id=?",(int(flow_id),)).fetchone():
+                raise HTTPException(status_code=404,detail="Flujo no encontrado")
+            hunter.link_investigation_entity(conn,int(investigation_id),"flow",int(flow_id),"context")
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}",status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/runners/create")
     def runner_create_manual(request: Request, target_key: str, flow_id: int, alias: str = Form(...), description: str = Form(""), csrf: str = Form(...)):
@@ -3569,6 +3791,68 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             runner_id = runner_tools.create_runner_from_flow(conn, int(flow_id), alias=alias, description=description, origin="manual")
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/ai-ideas/{idea_id}/state")
+    def ai_idea_state(target_key: str, idea_id: int, status: str = Form(...), reason: str = Form(""), csrf: str = Form(...)):
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                idea=hunter.update_ai_idea_state(conn,int(idea_id),status=status,reason=reason)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        if idea.get("investigation_id"):
+            url=f"/t/{target_key}/investigations/{int(idea['investigation_id'])}#ai-ideas"
+        else:
+            url=f"/t/{target_key}/flows/{int(idea['flow_id'])}#ai-ideas-history"
+        return RedirectResponse(url=url,status_code=303)
+
+    @app.post("/t/{target_key}/ai-ideas/{idea_id}/hypothesis")
+    def ai_idea_to_hypothesis(target_key: str, idea_id: int, csrf: str = Form(...)):
+        import negro_hunter as hunter
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            idea=hunter.get_ai_idea(conn,int(idea_id))
+            if not idea: raise HTTPException(status_code=404,detail="Idea IA no encontrada")
+            hid=int(idea.get("converted_hypothesis_id") or 0)
+            if not hid:
+                hid=runner_tools.create_hypothesis_from_idea(conn,flow_id=int(idea["flow_id"]),idea=idea)
+                conn.execute("UPDATE ai_ideas SET converted_hypothesis_id=?,status='converted_to_hypothesis',updated_at=? WHERE id=?",(hid,_now(),int(idea_id)))
+            inv_id=idea.get("investigation_id")
+            if inv_id:
+                hunter.link_investigation_entity(conn,int(inv_id),"hypothesis",hid,"pursuing")
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hid}",status_code=303)
+
+    @app.post("/t/{target_key}/ai-ideas/{idea_id}/runner")
+    def ai_idea_to_runner(target_key: str, idea_id: int, csrf: str = Form(...)):
+        import negro_hunter as hunter
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            idea=hunter.get_ai_idea(conn,int(idea_id))
+            if not idea: raise HTTPException(status_code=404,detail="Idea IA no encontrada")
+            # Crear un Runner es una decisión humana de perseguir la idea, por eso materializamos
+            # también la Hipótesis. La IA nunca ejecuta ni promueve por sí sola.
+            hid=int(idea.get("converted_hypothesis_id") or 0)
+            if not hid:
+                hid=runner_tools.create_hypothesis_from_idea(conn,flow_id=int(idea["flow_id"]),idea=idea)
+            inv_id=idea.get("investigation_id")
+            if not inv_id:
+                linked=conn.execute("""SELECT DISTINCT i.id FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
+                                       WHERE l.entity_type='flow' AND l.entity_id=? AND i.status!='closed' ORDER BY i.updated_at DESC LIMIT 2""",(int(idea["flow_id"]),)).fetchall()
+                if len(linked)==1: inv_id=int(linked[0]["id"])
+            draft=idea.get("runner") if isinstance(idea.get("runner"),dict) else {}
+            rid=runner_tools.create_runner_from_flow(conn,int(idea["flow_id"]),alias=str(idea.get("alias") or idea.get("question") or "Runner IA"),
+                description=str(draft.get("description") or idea.get("test_goal") or idea.get("rationale") or ""),hypothesis_id=hid,
+                investigation_id=int(inv_id) if inv_id else None,origin="ai_idea",ai_idea=idea,
+                step_actions=list(draft.get("step_actions") or []),variables=list(draft.get("variables") or []))
+            conn.execute("UPDATE ai_ideas SET converted_hypothesis_id=?,status='investigating',investigation_id=COALESCE(investigation_id,?),updated_at=? WHERE id=?",
+                         (hid,int(inv_id) if inv_id else None,_now(),int(idea_id)))
+            if inv_id:
+                hunter.link_investigation_entity(conn,int(inv_id),"ai_idea",int(idea_id),"origin")
+                hunter.link_investigation_entity(conn,int(inv_id),"hypothesis",hid,"pursuing")
+        return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/runners/from-ai")
     def runner_create_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), create_hypothesis: str = Form("1"), csrf: str = Form(...)):
@@ -3604,6 +3888,28 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             hypothesis_id = runner_tools.create_hypothesis_from_idea(conn, flow_id=int(flow_id), idea=idea)
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hypothesis_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/transport")
+    def runner_transport_update(target_key: str, runner_id: int, mode: str = Form("direct"), proxy_url: str = Form(""), verify_tls: str = Form("1"), ca_bundle: str = Form(""), timeout_seconds: int = Form(20), csrf: str = Form(...)):
+        import negro_intel as intel
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        if mode not in {"direct","environment","proxy"}: raise HTTPException(status_code=400,detail="Modo de transporte inválido")
+        if mode=="proxy" and not str(proxy_url).strip(): raise HTTPException(status_code=400,detail="Indica la URL del proxy explícito (por ejemplo, Burp accesible desde Negro)")
+        intel.save_settings({"runner_transport_mode":mode,"runner_proxy_url":str(proxy_url).strip(),"runner_verify_tls":str(verify_tls)!="0",
+                             "runner_ca_bundle":str(ca_bundle).strip(),"runner_timeout_seconds":max(3,min(int(timeout_seconds),120))})
+        return RedirectResponse(url=f"/t/{target_key}/runners/{int(runner_id)}#transport",status_code=303)
+
+    @app.get("/api/t/{target_key}/runners/{runner_id}/transport-diagnose", response_class=JSONResponse)
+    def runner_transport_diagnose(target_key: str, runner_id: int):
+        import negro_runners as runner_tools
+        _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            row=conn.execute("""SELECT r.url FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
+                                JOIN http_exchanges e ON e.id=fs.exchange_id JOIN resource_operations o ON o.id=e.operation_id
+                                JOIN resources r ON r.id=o.resource_id WHERE rs.runner_id=? AND rs.action!='omit' ORDER BY rs.position LIMIT 1""",(int(runner_id),)).fetchone()
+        if not row: raise HTTPException(status_code=400,detail="El Runner no tiene pasos activos")
+        try: return runner_tools.diagnose_transport(str(row["url"]))
+        except Exception as exc: raise HTTPException(status_code=400,detail=str(exc))
 
     @app.post("/t/{target_key}/runners/{runner_id}/update")
     def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""), max_requests: int = Form(30), csrf: str = Form(...)):
@@ -4133,7 +4439,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "findings.html", target_key, domain, workspace, findings=rows, finding_status=status, finding_severity=severity)
 
     @app.post("/t/{target_key}/findings/create")
-    def finding_create(target_key: str, title: str = Form(...), severity: str = Form("info"), status: str = Form("draft"), description: str = Form(""), resource_id: int | None = Form(None), host_id: int | None = Form(None), exchange_id: int | None = Form(None), csrf: str = Form(...)):
+    def finding_create(target_key: str, title: str = Form(...), severity: str = Form("info"), status: str = Form("draft"), description: str = Form(""), resource_id: int | None = Form(None), host_id: int | None = Form(None), exchange_id: int | None = Form(None), investigation_id: int | None = Form(None), csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
@@ -4146,6 +4452,13 @@ def create_app(default_domain: str, default_workspace: Path):
                 conn.execute("UPDATE hosts SET classification='finding', updated_at=? WHERE id=?", (_now(), host_id))
             if exchange_id:
                 _link_finding(conn, fid, "exchange", exchange_id, "evidence")
+            if investigation_id:
+                _link_finding(conn, fid, "investigation", investigation_id, "result")
+                try:
+                    import negro_hunter as hunter
+                    hunter.link_investigation_entity(conn,int(investigation_id),"finding",fid,"decision")
+                except Exception:
+                    pass
         return RedirectResponse(url=f"/t/{target_key}/finding/{fid}", status_code=303)
 
     @app.get("/t/{target_key}/finding/{finding_id}", response_class=HTMLResponse)
@@ -4220,12 +4533,22 @@ def create_app(default_domain: str, default_workspace: Path):
     def finding_add_entity(target_key: str, finding_id: int, entity_type: str = Form(...), entity_id: int = Form(...), relation: str = Form("affected"), csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
-        if entity_type not in {"resource","host","exchange","operation","js_asset","observation"}:
+        if entity_type not in {"resource","host","exchange","operation","js_asset","observation","investigation","business_object","identity","flow"}:
             raise HTTPException(status_code=400, detail="Tipo de entidad no permitido")
         with _db(paths) as conn:
             conn.execute("INSERT OR IGNORE INTO finding_entities(finding_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (finding_id, entity_type, entity_id, relation.strip()[:80] or "affected", _now()))
             conn.execute("UPDATE findings SET updated_at=? WHERE id=?", (_now(), finding_id))
         return RedirectResponse(url=f"/t/{target_key}/finding/{finding_id}#chain", status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/finding-link")
+    def exchange_link_finding(target_key: str, exchange_id: int, finding_id: int = Form(...), relation: str = Form("evidence"), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            row=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(exchange_id),)).fetchone()
+            if not row: raise HTTPException(status_code=404,detail="Request no encontrada")
+            _link_finding(conn,int(finding_id),"exchange",int(exchange_id),relation.strip()[:80] or "evidence")
+            rid=int(row["resource_id"])
+        return RedirectResponse(url=f"/t/{target_key}/resource/{rid}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
 
     @app.post("/t/{target_key}/resource/{resource_id}/finding-link")
     def resource_link_finding(target_key: str, resource_id: int, finding_id: int = Form(...), relation: str = Form("affected"), csrf: str = Form(...)):

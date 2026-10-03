@@ -1,3 +1,13 @@
+## v0.40 — Investigation Workspace + AI Ideas persistentes + transporte confiable ✅
+
+- Request Workbench permite crear/reutilizar Entity, Signal, Hypothesis, Runner, Investigation y Finding desde evidencia exacta.
+- Signals conservan decisión humana (`Interesante`, `Investigar`, `Descartar`) sin borrar evidencia.
+- Investigation tiene workspace propio con contexto, Hypotheses, pruebas, AI Ideas y Findings visualmente separados.
+- AI Ideas persisten por generaciones antes de convertirse en Hypothesis.
+- Runs distinguen `application_response` de errores DNS/TLS/timeout/proxy/transporte/Runner.
+- Runs inválidos no cuentan como prueba, no producen evidencia canónica y pueden reintentarse.
+- Runner tiene transporte explícito + diagnóstico general sin hacks por target.
+
 ## v0.39 — Flow Intelligence + Runner ✅
 
 - IA on-demand sobre Flow con HTTP sanitizado y memoria de Runners/Runs previos.

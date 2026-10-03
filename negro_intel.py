@@ -40,6 +40,14 @@ DEFAULT_SETTINGS = {
     "flow_ai_max_chars": 240000,
     "flow_ai_output_tokens": 6500,
     "flow_ai_reasoning_effort": "medium",
+    # Runner transport is explicit and predictable. `direct` ignores inherited
+    # HTTP(S)_PROXY variables; `environment` honours them; `proxy` uses the URL
+    # configured below (for example a local Burp listener reachable by Negro).
+    "runner_transport_mode": "direct",
+    "runner_proxy_url": "",
+    "runner_verify_tls": True,
+    "runner_ca_bundle": "",
+    "runner_timeout_seconds": 20,
     "job_max_workers": 3,
     "urlscan_detail_limit": 8,
     "wayback_limit": 5000,

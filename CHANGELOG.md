@@ -1,3 +1,38 @@
+# v0.40.0 — Investigation Workspace + AI Ideas persistentes + transporte confiable
+
+## Request Workbench
+- Acciones directas desde una Request exacta: Entity, Signal, Hypothesis, Runner, Investigation y Finding.
+- Los candidatos de Entity se infieren de parámetros/Request/Response, pero el significado final lo decide el investigador.
+- Se reutiliza el modelo existente de Business Objects y se mantiene provenance al `exchange_id` original.
+
+## Signals con decisión humana
+- Estados humanos explícitos: **Interesante**, **Investigar** y **Descartar**.
+- Descartar conserva la Signal, evidencia, provenance, fecha y motivo; no equivale a borrar.
+- Si una Signal descartada recibe evidencia posterior, queda marcada para posible reconsideración.
+
+## Investigation como workspace
+- Nueva vista dedicada `/investigations/:id`.
+- Separación clara entre **Contexto conocido**, **Qué estoy investigando**, **Pruebas realizadas**, **Ideas de la IA** y **Decisiones finales**.
+- Flows, Signals, Runners, AI Ideas y Findings pueden enlazarse al mismo workspace sin crear modelos paralelos.
+
+## AI Ideas persistentes
+- `ai_idea_batches` guarda cada generación/contexto; `ai_ideas` guarda cada pregunta antes de que exista una Hypothesis.
+- Estados: `new`, `saved`, `investigating`, `dismissed`, `postponed`, `converted_to_hypothesis`.
+- Descartes y motivos siguen entrando como memoria de futuras exploraciones para reducir repetición.
+- Crear Hypothesis o Runner sigue siendo una decisión humana.
+
+## Runner: transporte ≠ resultado de seguridad
+- Clasificación explícita: `application_response`, `transport_error`, `timeout`, `dns_error`, `tls_error`, `proxy_error`, `runner_error`.
+- Sólo `application_response` se materializa como HTTP canónico y alimenta Signals/Objects/memoria.
+- Un Run de transporte fallido tiene `counts_as_test=false`, no cubre la Hypothesis, no puede marcarse negativa y es reintentable.
+- Modos de transporte: directo, variables de entorno o proxy explícito; configuración de TLS, CA y timeout.
+- Diagnóstico general DNS/TCP/TLS/proxy/HTTP sin Requests de diagnóstico dentro de la evidencia del proyecto.
+
+## Diagnóstico de la primera prueba real
+En v0.39 el camino de captura y el de Runner eran distintos: Burp capturaba `browser → Burp → target`, mientras Runner usaba `requests.Session()` desde el proceso de Negro y heredaba proxies de entorno. Además, se eliminaba `Host` antes del replay y cualquier HTTP 504 podía terminar registrado como si fuera evidencia del aplicativo. v0.40 hace explícito el transporte, conserva `Host`/SNI y evita que respuestas de gateway/conectividad genéricas contaminen la investigación.
+
+---
+
 # v0.39.0 — Flow Intelligence + Runner
 
 - Añade **🧠 Explorar lógica** en Flow: IA on-demand sobre secuencia, HTTP sanitizado, parámetros, Identity, Objects, States, Signals, Hypotheses y Runners previos.

@@ -360,6 +360,10 @@ def search_identifier_memory(conn, query: str, *, limit: int = 24) -> list[dict[
 def _infer_type(identifier_name: str) -> str:
     n = _normalize_name(identifier_name)
     compact = n.replace("_", "")
+    if compact in {"username","email","mail","login","userid","user"} or compact.startswith("user"):
+        return "User"
+    if compact.startswith("account") or compact.startswith("tenant") or compact.startswith("organization") or compact.startswith("org"):
+        return "Account"
     for suffix in ("identifier", "uuid", "id"):
         if compact.endswith(suffix):
             compact = compact[: -len(suffix)]
@@ -397,6 +401,37 @@ def _valid_identifier_value(value: Any) -> bool:
     if len(text) > 2000:
         return False
     return True
+
+
+def entity_candidates_for_exchange(conn, exchange_id: int, limit: int = 30) -> list[dict[str, Any]]:
+    """Suggest scalar observations that a human may promote to an Entity.
+
+    This reuses parameter_observations + Business Objects; suggestions are only
+    UX hints. The user still decides what the Entity represents.
+    """
+    init_schema(conn)
+    rows=conn.execute(
+        """SELECT id,name,normalized_name,location,value_preview,value_raw,first_seen_at
+           FROM parameter_observations WHERE exchange_id=? ORDER BY id""",(int(exchange_id),)
+    ).fetchall()
+    out=[]
+    for row in rows:
+        d=dict(row); name=str(d.get("normalized_name") or d.get("name") or "")
+        value=str(d.get("value_raw") or d.get("value_preview") or "")
+        low=name.lower().replace("-","_")
+        if not _valid_identifier_value(value): continue
+        if any(tok in low for tok in SENSITIVE_HINTS): continue
+        score=0; reason=[]
+        if _identifierish(name,str(d.get("location") or "")): score+=5; reason.append("parece identificador")
+        if low in {"username","user_name","email","mail","login","account","account_name","customer","customer_name"}: score+=5; reason.append("puede identificar una entidad humana/negocio")
+        if low.endswith("id") or low.endswith("_id") or low.endswith("uuid") or low.endswith("_uuid"): score+=3
+        if "email" in low or "username" in low: score+=4
+        if score<=0: continue
+        d["suggested_type"]=_infer_type(name)
+        d["score"]=score; d["reason"]=" · ".join(reason) or "candidato observado"
+        out.append(d)
+    out.sort(key=lambda x:(-int(x["score"]),str(x["normalized_name"])))
+    return out[:max(1,min(int(limit),80))]
 
 
 def ensure_type(conn, name: str) -> int:
@@ -446,14 +481,16 @@ def ensure_identifier(conn, object_type: str, normalized_name: str, *, source_ob
     return identifier_id
 
 
-def track_observation(conn, observation_id: int, object_type: str = "") -> dict[str, Any]:
+def track_observation(conn, observation_id: int, object_type: str = "", *, allow_manual: bool = False) -> dict[str, Any]:
     init_schema(conn)
     obs = conn.execute("SELECT * FROM parameter_observations WHERE id=?", (int(observation_id),)).fetchone()
     if not obs:
         raise ValueError("Observación no encontrada")
     name = str(obs["normalized_name"] or obs["name"] or "")
-    if not _identifierish(name, str(obs["location"] or "")):
+    if not allow_manual and not _identifierish(name, str(obs["location"] or "")):
         raise ValueError("El campo seleccionado no parece un identificador de objeto")
+    if allow_manual and not _valid_identifier_value(obs["value_raw"] or obs["value_preview"]):
+        raise ValueError("El valor seleccionado no sirve como identificador de Entity")
     inferred = str(object_type or _infer_type(name)).strip()
     identifier_id = ensure_identifier(conn, inferred, name, source_observation_id=int(observation_id))
     ident = conn.execute(
