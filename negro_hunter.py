@@ -4117,3 +4117,275 @@ def actual_ai_cost(usage: dict[str, Any], model: str, usd_cop_rate: float) -> di
     out_rate = prices["long_output"] if long_context else prices["output"]
     usd = (inp/1_000_000)*in_rate + (out/1_000_000)*out_rate
     return {"actual_cost_usd":usd,"actual_cost_cop":usd*usd_cop_rate,"usd_cop_rate":usd_cop_rate,"input_rate_per_m":in_rate,"output_rate_per_m":out_rate}
+
+# ---------------------------------------------------------------------------
+# v0.39 · Flow Intelligence / Runner ideas
+# ---------------------------------------------------------------------------
+
+def _flow_logic_schema() -> dict[str, Any]:
+    action_schema = {
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "position":{"type":"integer"},
+            "action":{"type":"string","enum":["keep","omit","repeat"]},
+            "repeat_count":{"type":"integer"},
+            "notes":{"type":"string"},
+        },
+        "required":["position","action","repeat_count","notes"],
+    }
+    variable_schema = {
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "target_position":{"type":"integer"},
+            "target_name":{"type":"string"},
+            "target_value":{"type":"string"},
+            "mode":{"type":"string","enum":["values","response_key","response_regex"]},
+            "values":{"type":"array","items":{"type":"string"}},
+            "source_position":{"type":["integer","null"]},
+            "source_name":{"type":"string"},
+            "regex_pattern":{"type":"string"},
+            "why":{"type":"string"},
+        },
+        "required":["target_position","target_name","target_value","mode","values","source_position","source_name","regex_pattern","why"],
+    }
+    runner_schema = {
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "description":{"type":"string"},
+            "step_actions":{"type":"array","items":action_schema},
+            "variables":{"type":"array","items":variable_schema},
+            "review_before_run":{"type":"array","items":{"type":"string"}},
+        },
+        "required":["description","step_actions","variables","review_before_run"],
+    }
+    idea_schema = {
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "question":{"type":"string"},
+            "alias":{"type":"string"},
+            "category":{"type":"string","enum":["step_order","step_omission","replay","state","client_value","stale_reference","cross_identity","race_candidate","other"]},
+            "priority":{"type":"string","enum":["high","medium","quick"]},
+            "rationale":{"type":"string"},
+            "facts":{"type":"array","items":{"type":"string"}},
+            "unknowns":{"type":"array","items":{"type":"string"}},
+            "test_goal":{"type":"string"},
+            "confirm_if":{"type":"string"},
+            "discard_if":{"type":"string"},
+            "runner":{"type":["object","null"],"additionalProperties":False,
+                      "properties":runner_schema["properties"],"required":runner_schema["required"]},
+        },
+        "required":["question","alias","category","priority","rationale","facts","unknowns","test_goal","confirm_if","discard_if","runner"],
+    }
+    return {
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "summary":{"type":"string"},
+            "ideas":{"type":"array","items":idea_schema},
+            "already_covered":{"type":"array","items":{"type":"string"}},
+            "context_gaps":{"type":"array","items":{"type":"string"}},
+        },
+        "required":["summary","ideas","already_covered","context_gaps"],
+    }
+
+
+def _redact_http_for_flow_ai(raw: str, *, max_chars: int) -> str:
+    text=str(raw or "")
+    if not text:
+        return ""
+    lines=text.replace("\r\n","\n").split("\n")
+    out=[]
+    for line in lines:
+        if ":" in line:
+            name=line.split(":",1)[0].strip().lower()
+            if name in {"authorization","cookie","set-cookie","proxy-authorization"}:
+                out.append(line.split(":",1)[0]+": <redacted>")
+                continue
+        out.append(line)
+    result="\n".join(out)
+    return result[:max(2000,int(max_chars))]
+
+
+def build_flow_logic_payload(conn, domain: str, flow_id: int, *, max_chars: int = 240_000) -> tuple[str,str]:
+    """Build a flow-centric AI context including prior Runner outcomes.
+
+    Unlike Graph AI, this is intentionally centered on one observed business
+    process. It includes bounded HTTP text so the model can reason about the
+    actual parameters and responses while auth headers/cookies are redacted.
+    """
+    import negro_flows as flow_tools
+    import negro_runners as runner_tools
+    init_schema(conn); runner_tools.init_schema(conn)
+    flow=flow_tools.get_flow(conn,int(flow_id))
+    if not flow:
+        raise ValueError("Flujo no encontrado")
+    f=flow["flow"]
+    context: dict[str,Any]={
+        "target":domain,
+        "flow":{"id":int(f["id"]),"name":f["name"],"description":f.get("description") or "","identity":f.get("identity_name")},
+        "steps":[],
+        "objects":flow.get("meaningful_business_objects") or [],
+        "state_timelines":flow.get("state_timelines") or [],
+        "signals":[],
+        "previous_runners":[],
+        "previous_hypotheses":[],
+        "instructions":{
+            "goal":"Proponer preguntas de lógica de negocio nuevas y comprobables sobre este Flujo.",
+            "do_not_repeat":"Evita ideas ya cubiertas por Runners/Hypotheses negativos o ejecutados salvo que nueva evidencia justifique un retest.",
+            "execution":"La IA sólo propone borradores. El humano revisa y ejecuta manualmente cada Runner.",
+        }
+    }
+    step_exchange_ids=[]
+    for s in flow.get("included_steps") or []:
+        exid=int(s["exchange_id"]); step_exchange_ids.append(exid)
+        row=conn.execute("SELECT request_b64,response_b64 FROM http_exchanges WHERE id=?",(exid,)).fetchone()
+        req=resp=""
+        if row:
+            req=_decode_http_b64(row["request_b64"]); resp=_decode_http_b64(row["response_b64"])
+        params=[]
+        try:
+            params=[dict(r) for r in conn.execute(
+                """SELECT name,normalized_name,location,COALESCE(value_raw,value_preview,'') value
+                   FROM parameter_observations WHERE exchange_id=? ORDER BY id LIMIT 80""",(exid,)).fetchall()]
+        except Exception:
+            params=[]
+        context["steps"].append({
+            "position":int(s["position"]),"flow_step_id":int(s["id"]),"exchange_id":exid,
+            "method":s.get("method"),"host":s.get("hostname"),"path":s.get("path"),"status":s.get("status_code"),
+            "identity":s.get("identity_name"),"label":s.get("label") or "","notes":s.get("notes") or "",
+            "parameters":params[:60],
+            "request":_redact_http_for_flow_ai(req,max_chars=12_000),
+            "response":_redact_http_for_flow_ai(resp,max_chars=18_000),
+        })
+    if step_exchange_ids:
+        marks=",".join("?" for _ in step_exchange_ids)
+        try:
+            for row in conn.execute(
+                f"SELECT id,title,kind,category,signal_level,source,exchange_id,why_json,evidence_json FROM signal_occurrences WHERE dismissed_at IS NULL AND exchange_id IN ({marks}) ORDER BY id DESC LIMIT 80",
+                tuple(step_exchange_ids)).fetchall():
+                item=dict(row)
+                item["why"]=_load_json_for_flow_ai(item.pop("why_json",None),{})
+                item["evidence"]=_load_json_for_flow_ai(item.pop("evidence_json",None),{})
+                context["signals"].append(item)
+        except Exception:
+            pass
+    # Prior Runners and outcomes are first-class context. This is what stops the
+    # assistant from suggesting the same business-logic question every session.
+    for runner_index, rr in enumerate(runner_tools.list_runners(conn,flow_id=int(flow_id),limit=30)):
+        detail=runner_tools.get_runner(conn,int(rr["id"]))
+        if not detail: continue
+        runner_memory={
+            "id":int(rr["id"]),"alias":rr["alias"],"description":rr.get("description") or "",
+            "hypothesis":rr.get("hypothesis_title"),"status":rr.get("status"),
+            "steps":[{"position":int(s["position"]),"method":s["method"],"path":s["path"],"action":s["action"],"repeat_count":int(s["repeat_count"])} for s in detail["steps"]],
+            "runs":[],
+        }
+        # Recent Runner evidence is intentionally first-class context. A negative
+        # experiment can still teach the assistant something from the actual
+        # Request/Response behavior. Keep this bounded: only recent runners/runs
+        # and short sanitized HTTP previews are included.
+        for run_index, run in enumerate(detail["runs"][:12]):
+            run_memory={"id":int(run["id"]),"status":run["status"],"outcome":run["outcome"],"summary":run.get("summary") or {},"error":run.get("error"),"evidence":[]}
+            if runner_index < 6 and run_index < 2:
+                try:
+                    evidence_rows=conn.execute(
+                        """SELECT rrr.repeat_index,rrr.elapsed_ms,rrr.status_code,rrr.error,rrr.exchange_id,
+                                  o.method,r.path,h.hostname,e.request_b64,e.response_b64
+                           FROM runner_run_requests rrr
+                           LEFT JOIN http_exchanges e ON e.id=rrr.exchange_id
+                           LEFT JOIN resource_operations o ON o.id=e.operation_id
+                           LEFT JOIN resources r ON r.id=o.resource_id
+                           LEFT JOIN hosts h ON h.id=r.host_id
+                           WHERE rrr.run_id=? ORDER BY rrr.id LIMIT 5""",
+                        (int(run["id"]),),
+                    ).fetchall()
+                    for erow in evidence_rows:
+                        req=_decode_http_b64(erow["request_b64"]) if erow["request_b64"] else ""
+                        resp=_decode_http_b64(erow["response_b64"]) if erow["response_b64"] else ""
+                        run_memory["evidence"].append({
+                            "exchange_id":int(erow["exchange_id"]) if erow["exchange_id"] else None,
+                            "repeat_index":int(erow["repeat_index"] or 1),
+                            "method":erow["method"],"host":erow["hostname"],"path":erow["path"],
+                            "status":erow["status_code"],"elapsed_ms":erow["elapsed_ms"],"error":erow["error"],
+                            "request":_redact_http_for_flow_ai(req,max_chars=1200),
+                            "response":_redact_http_for_flow_ai(resp,max_chars=1800),
+                        })
+                except Exception:
+                    pass
+            runner_memory["runs"].append(run_memory)
+        context["previous_runners"].append(runner_memory)
+    # Existing AI hypotheses that explicitly cite this flow are useful negative/
+    # positive memory even if they never became a Runner.
+    flow_ref=f"flow:{int(flow_id)}"
+    for row in conn.execute("SELECT id,title,status,why_interesting,next_test,result_notes,evidence_json FROM leads_v2 WHERE upper(COALESCE(source,''))='AI' ORDER BY updated_at DESC,id DESC LIMIT 200").fetchall():
+        ev=str(row["evidence_json"] or "")
+        if flow_ref not in ev:
+            continue
+        context["previous_hypotheses"].append({k:row[k] for k in ("id","title","status","why_interesting","next_test","result_notes")})
+        if len(context["previous_hypotheses"])>=30: break
+    raw=json.dumps(context,ensure_ascii=False,separators=(",",":"))
+    if len(raw)>max_chars:
+        # Preserve structure and prior-test memory; trim HTTP previews first.
+        for step in context["steps"]:
+            step["request"]=str(step.get("request") or "")[:5000]
+            step["response"]=str(step.get("response") or "")[:7000]
+            step["parameters"]=(step.get("parameters") or [])[:30]
+        raw=json.dumps(context,ensure_ascii=False,separators=(",",":"))
+    if len(raw)>max_chars:
+        context["previous_runners"]=context["previous_runners"][:15]
+        context["signals"]=context["signals"][:40]
+        raw=json.dumps(context,ensure_ascii=False,separators=(",",":"))[:max_chars]
+    evidence_hash=hashlib.sha256(raw.encode("utf-8",errors="ignore")).hexdigest()
+    return raw,evidence_hash
+
+
+def _load_json_for_flow_ai(value: Any, default: Any) -> Any:
+    try: return json.loads(value or "")
+    except Exception: return default
+
+
+def flow_logic_result_is_cacheable(result: Any) -> bool:
+    return isinstance(result,dict) and isinstance(result.get("ideas"),list) and isinstance(result.get("summary"),str) and not result.get("parse_warning")
+
+
+def run_openai_flow_logic_ideas(payload: str, *, model: str, output_tokens: int = 6500, reasoning_effort: str = "medium") -> tuple[dict[str,Any],dict[str,Any]]:
+    key=intel.load_secrets().get("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError(f"Falta OPENAI_API_KEY en {intel.SECRETS_PATH}")
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("El SDK de OpenAI no está disponible. Ejecuta ./install-web.sh") from exc
+    system="""Eres el copiloto de lógica de negocio de un pentester durante una investigación AUTORIZADA. Responde SIEMPRE en español claro.
+Tu trabajo NO es declarar vulnerabilidades ni ejecutar nada. Debes ayudar al humano a formular preguntas nuevas y de alto valor sobre UN Flujo real observado por Negro.
+
+Recibes: secuencia del Flujo, Requests/Responses sanitizadas, parámetros, Identity, objetos/estados, Signals, Hypotheses previas y Runners ya ejecutados con sus resultados.
+
+OBJETIVO:
+- Proponer preguntas de lógica de negocio específicas a ESTE proceso, no una lista OWASP genérica.
+- Prioriza: pasos omitibles/reordenables/repetibles, valores controlados por cliente, estados que podrían saltarse, referencias reutilizables/stale, replay, cambios después de validación, operaciones que podrían ejecutarse varias veces y cruces de identidad cuando la evidencia lo justifique.
+- USA lo ya probado: no repitas un Runner/Hypothesis que terminó negative o ya fue ejecutado, salvo que exista NUEVA evidencia concreta que justifique un retest; si lo haces, explica por qué.
+- Usa parámetros/rutas/status reales. No inventes endpoints, roles, campos, cupones, IDs o Responses.
+- Si una idea requiere una pieza que no existe, dilo en unknowns/review_before_run; no inventes valores.
+
+RUNNER DRAFT:
+- Cada idea puede incluir un Runner borrador si puede expresarse con el Flujo observado.
+- step_actions usa posiciones REALES del Flujo. keep conserva, omit salta, repeat repite; repeat_count 1..20.
+- variables sólo si el parámetro/valor aparece realmente en la evidencia. mode=values sirve para una lista manual; response_key toma una key JSON de una Response anterior; response_regex sólo cuando el texto real hace razonable ese patrón.
+- El Runner nunca se ejecuta automáticamente. review_before_run debe recordar al humano cualquier punto que deba revisar antes.
+- Alias corto y profesional, por ejemplo “Checkout · sin Payment”, “Cupón · reutilización”, “Quantity · cambio tardío”.
+
+Para cada idea separa hechos de inferencias. Una pregunta útil debe poder probarse y descartarse con evidencia observable.
+Devuelve únicamente JSON válido que cumpla el schema."""
+    client=OpenAI(api_key=key)
+    fmt={"type":"json_schema","name":"negro_flow_logic_ideas","description":"Preguntas de lógica de negocio y borradores de Runner basados en un Flujo real.","schema":_flow_logic_schema(),"strict":True}
+    response=client.responses.create(model=model,reasoning={"effort":reasoning_effort},max_output_tokens=max(2500,int(output_tokens)),instructions=system,input=payload,text={"format":fmt})
+    usage=_response_usage_dict(response)
+    refusal=_response_refusal_text(response)
+    if refusal:
+        return {"summary":"El modelo rechazó este análisis.","ideas":[],"already_covered":[],"context_gaps":[],"structured_ok":False,"refusal":refusal},usage
+    text=getattr(response,"output_text","") or ""
+    result=_safe_json_object(text,{"summary":"No pude validar la respuesta estructurada.","ideas":[],"already_covered":[],"context_gaps":[]})
+    result["structured_ok"]=not bool(result.get("parse_warning"))
+    if not isinstance(result.get("ideas"),list): result["ideas"]=[]
+    result["ideas"]=result["ideas"][:7]
+    return result,usage

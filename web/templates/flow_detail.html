@@ -14,6 +14,19 @@
   </div>
 </section>
 
+
+<section class="panel flow-logic-panel" data-flow-logic data-flow-id="{{ flow_data.flow.id }}" data-estimate-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-estimate" data-run-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-run">
+  <div class="panel-head flow-logic-head">
+    <div><p class="eyebrow">COPILOTO DE LÓGICA</p><h2>🧠 Explorar lógica de este Flujo</h2><p class="muted">La IA ve la secuencia, Requests/Responses sanitizadas, parámetros, Signals, estados y los Runners que ya probaste, incluyendo outcomes y muestras HTTP de Runs recientes. Propone preguntas nuevas; tú decides qué convertir en Hipótesis o Runner.</p></div>
+    <div class="flow-logic-actions"><select data-flow-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select><button class="btn-secondary" type="button" data-flow-ai-estimate>Estimar costo</button><button class="button" type="button" data-flow-ai-run hidden>Dame ideas</button></div>
+  </div>
+  <div class="flow-logic-status" data-flow-ai-status>Negro no ejecuta nada: primero analiza y te propone preguntas sobre el proceso.</div>
+  <div class="flow-logic-results" data-flow-ai-results></div>
+  {% if flow_runners %}<details class="runner-existing"><summary>Runners ya creados · {{ flow_runners|length }}</summary><div class="runner-mini-grid">{% for r in flow_runners %}<a href="{{ target_base }}/runners/{{ r.id }}"><b>▶ {{ r.alias }}</b><small>{{ r.run_count }} run(s){% if r.negative_runs %} · {{ r.negative_runs }} negativa(s){% endif %}{% if r.interesting_runs %} · {{ r.interesting_runs }} interesante(s){% endif %}</small></a>{% endfor %}</div></details>{% endif %}
+  <details class="runner-manual-create"><summary>+ Crear Runner manual desde este Flujo</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Alias<input name="alias" placeholder="Checkout · sin Payment" required></label><label>Descripción<textarea name="description" placeholder="Qué pregunta quieres probar"></textarea></label><button class="button secondary" type="submit">Crear borrador</button></form></details>
+  <script type="application/json" data-flow-ai-initial>{{ logic_ai_latest|tojson }}</script>
+</section>
+
 {% if flow_data.state_anomalies %}
 <section class="panel callout warning"><p class="eyebrow">SECUENCIA DIFERENTE OBSERVADA</p>{% for a in flow_data.state_anomalies %}<p><b>{{ a.object_type }}.{{ a.state_field }}</b> · otras {{ a.previous_count }} observaciones: <code>{{ a.previous_sequence|join(' → ') }}</code> · este flow: <code>{{ a.current_sequence|join(' → ') }}</code></p>{% endfor %}<small>Esto no afirma una vulnerabilidad ni que una transición sea inválida; sólo señala una diferencia respecto de secuencias repetidas previamente.</small></section>
 {% endif %}

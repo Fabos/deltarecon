@@ -571,3 +571,74 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     });
   });
 })();
+
+// v0.39 · Flow Intelligence + Runner UX
+(()=>{
+  const root=document.querySelector('[data-flow-logic]');
+  if(root){
+    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const flowId=Number(root.dataset.flowId||0);
+    const base=(location.pathname.match(/^\/t\/[^/]+/)||[''])[0];
+    const estimateBtn=root.querySelector('[data-flow-ai-estimate]');
+    const runBtn=root.querySelector('[data-flow-ai-run]');
+    const model=root.querySelector('[data-flow-ai-model]');
+    const status=root.querySelector('[data-flow-ai-status]');
+    const results=root.querySelector('[data-flow-ai-results]');
+    const csrf=document.querySelector('input[name="csrf"]')?.value||'';
+    const money=n=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(n||0));
+    const ideaCard=(idea,idx)=>{
+      const facts=(idea.facts||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+      const unknowns=(idea.unknowns||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+      const review=(idea.runner?.review_before_run||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+      const steps=(idea.runner?.step_actions||[]).filter(x=>x.action!=='keep').map(x=>`<span class="runner-draft-change">Paso ${Number(x.position||0)} · ${esc(({omit:'omitir',repeat:'repetir'}[x.action]||x.action))}${x.action==='repeat'?` ×${Number(x.repeat_count||1)}`:''}</span>`).join('');
+      const vars=(idea.runner?.variables||[]).map(x=>`<span class="runner-draft-change">${esc(x.target_name)} · ${esc(x.mode)}</span>`).join('');
+      const payload=esc(JSON.stringify(idea));
+      return `<article class="flow-idea-card priority-${esc(idea.priority||'medium')}">
+        <div class="flow-idea-top"><div><span class="badge">${esc(idea.category||'lógica')}</span><span class="badge">${esc(idea.priority||'medium')}</span></div><small>Idea ${idx+1}</small></div>
+        <h3>${esc(idea.question||idea.alias||'Pregunta de lógica')}</h3>
+        <p class="flow-idea-rationale">${esc(idea.rationale||'')}</p>
+        <div class="flow-idea-goal"><b>Qué intentamos comprobar</b><span>${esc(idea.test_goal||'')}</span></div>
+        ${steps||vars?`<div class="runner-draft-preview"><b>Runner sugerido · ${esc(idea.alias||'Borrador')}</b><div>${steps}${vars}</div></div>`:''}
+        <details><summary>Por qué / qué falta</summary><div class="grid two"><div><b>Hechos</b><ul>${facts||'<li>Sin hechos adicionales.</li>'}</ul></div><div><b>Incógnitas</b><ul>${unknowns||'<li>Sin incógnitas listadas.</li>'}</ul></div></div>${review?`<div><b>Revisar antes de ejecutar</b><ul>${review}</ul></div>`:''}<p><b>Confirmaría interés si:</b> ${esc(idea.confirm_if||'')}</p><p><b>Descartaría si:</b> ${esc(idea.discard_if||'')}</p></details>
+        <div class="flow-idea-actions">
+          ${idea.runner?`<form action="${base}/flows/${flowId}/runners/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="create_hypothesis" value="1"><textarea name="idea_json" hidden>${payload}</textarea><button class="button" type="submit">▶ Convertir en Runner</button></form>`:''}
+          <form action="${base}/flows/${flowId}/hypothesis/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><textarea name="idea_json" hidden>${payload}</textarea><button class="btn-secondary" type="submit">◆ Guardar como Hipótesis</button></form>
+        </div>
+      </article>`;
+    };
+    const render=data=>{
+      if(!results) return;
+      const ideas=Array.isArray(data?.ideas)?data.ideas:[];
+      const covered=(data?.already_covered||[]).map(x=>`<span class="badge">✓ ${esc(x)}</span>`).join('');
+      const gaps=(data?.context_gaps||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+      results.innerHTML=`${data?.summary?`<div class="flow-ai-summary">${esc(data.summary)}</div>`:''}${covered?`<details class="flow-ai-memory"><summary>Lo que Negro evitó repetir</summary><div class="badges">${covered}</div></details>`:''}<div class="flow-idea-grid">${ideas.map(ideaCard).join('')}</div>${!ideas.length?'<div class="empty-state"><strong>No encontré una pregunta nueva suficientemente anclada en evidencia.</strong><span>Eso también es útil: sigue navegando o captura más estado del proceso y vuelve a intentarlo.</span></div>':''}${gaps?`<details><summary>Contexto que ayudaría a pensar mejor</summary><ul>${gaps}</ul></details>`:''}`;
+    };
+    try{
+      const initial=JSON.parse(root.querySelector('[data-flow-ai-initial]')?.textContent||'{}');
+      if(initial && Array.isArray(initial.ideas) && initial.ideas.length){render(initial);status.textContent=`Análisis anterior disponible${initial.created_at?' · '+initial.created_at:''}. Estima de nuevo si el Flow cambió.`;}
+    }catch(_e){}
+    estimateBtn?.addEventListener('click',async()=>{
+      estimateBtn.disabled=true; status.textContent='Construyendo contexto del Flow y de los Runners previos…';
+      try{
+        const u=new URL(root.dataset.estimateUrl,location.origin);u.searchParams.set('model',model?.value||'');
+        const r=await fetch(u,{headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
+        status.innerHTML=`<b>${d.cached?'Análisis cacheado':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':money(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens<br><small>Incluye secuencia, HTTP sanitizado, Signals, estados y memoria de Runners previos con muestras de Runs recientes.</small>`;
+        runBtn?.removeAttribute('hidden');
+      }catch(err){status.textContent=`No pude estimar: ${err.message}`;}finally{estimateBtn.disabled=false;}
+    });
+    runBtn?.addEventListener('click',async()=>{
+      runBtn.disabled=true;status.textContent='IA pensando sobre el Flow y evitando repetir lo ya probado…';
+      try{
+        const fd=new FormData();fd.set('csrf',csrf);fd.set('confirm_cost','yes');fd.set('model',model?.value||'');
+        const r=await fetch(root.dataset.runUrl,{method:'POST',body:fd,headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
+        while(true){await new Promise(x=>setTimeout(x,1200));const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();if(job.status==='done'){const result=job.summary?.result||{};render(result);status.textContent=result.cached?'Usé el análisis cacheado de esta misma evidencia.':'Ideas generadas. Nada se ejecutó: revisa y decide.';break;}if(job.status==='error')throw new Error(job.error||'La IA falló');status.textContent='IA analizando Requests/Responses, Runners anteriores y estado del Flow…';}
+      }catch(err){status.textContent=`Error: ${err.message}`;}finally{runBtn.disabled=false;}
+    });
+  }
+
+  const jobBox=document.querySelector('[data-runner-job]');
+  if(jobBox){
+    const id=jobBox.dataset.jobId;const text=jobBox.querySelector('[data-runner-job-status]');
+    const poll=async()=>{try{const r=await fetch(`/api/jobs/${encodeURIComponent(id)}`,{headers:{Accept:'application/json'}});const d=await r.json();if(d.status==='done'){if(text)text.textContent='Runner terminado. Actualizando evidencia…';setTimeout(()=>{const u=new URL(location.href);u.searchParams.delete('job');location.href=u.toString()+'#runner-history';},450);return;}if(d.status==='error'){if(text)text.textContent=`Error: ${d.error||'Runner falló'}`;return;}if(text)text.textContent='Ejecutando secuencialmente…';setTimeout(poll,1200);}catch(err){if(text)text.textContent=`No pude consultar el estado: ${err.message}`;}};poll();
+  }
+})();

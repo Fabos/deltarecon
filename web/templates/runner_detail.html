@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ runner_data.runner.alias }} · Runner · Negro{% endblock %}
+{% block content %}
+{% set r=runner_data.runner %}
+<section class="hero compact-hero runner-hero">
+  <div><p class="eyebrow">RUNNER #{{ r.id }}</p><h1>▶ {{ r.alias }}</h1><p class="muted">{{ r.description or 'Experimento basado en un Flujo observado.' }}</p><div class="hero-meta"><a class="badge" href="{{ target_base }}/flows/{{ r.flow_id }}">Flujo · {{ r.flow_name }}</a>{% if r.identity_name %}<span class="badge identity-badge">{{ r.identity_name }}</span>{% endif %}{% if r.hypothesis_id %}<a class="badge" href="{{ target_base }}/hypotheses#hypothesis-{{ r.hypothesis_id }}">◆ {{ r.hypothesis_title or ('Hipótesis #' ~ r.hypothesis_id) }}</a>{% endif %}<span class="badge">{{ ui_label(r.status) }}</span></div></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners">← Runners</a><a class="button ghost" href="{{ target_base }}/flows/{{ r.flow_id }}">Abrir Flujo</a></div>
+</section>
+
+{% if job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Runner en progreso…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Ejecutando secuencialmente. Esta página se actualizará al terminar.</p></section>{% endif %}
+
+<section class="grid two runner-config-grid">
+  <article class="panel">
+    <div class="panel-head"><div><p class="eyebrow">IDENTIDAD DEL EXPERIMENTO</p><h2>Configuración</h2></div></div>
+    <form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Alias<input name="alias" value="{{ r.alias }}" required></label>
+      <label>Descripción<textarea name="description" rows="4">{{ r.description or '' }}</textarea></label>
+      <label>Ejecutar como<select name="identity_id"><option value="">Usar auth capturado del Flow</option>{% for i in identities %}<option value="{{ i.id }}" {% if r.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select></label>
+      <label>Límite máximo de Requests<input type="number" name="max_requests" min="1" max="100" value="{{ r.max_requests or 30 }}"><small>Protección deliberada: Runner es automatización de investigación, no un fuzzer.</small></label>
+      <button class="button secondary" type="submit">Guardar configuración</button>
+    </form>
+  </article>
+  <article class="panel runner-execute-card">
+    <div><p class="eyebrow">EJECUCIÓN EXPLÍCITA</p><h2>{{ planned_requests }} Requests planificadas</h2><p class="muted">Secuencial, sin concurrencia. Cada respuesta vuelve a Negro como evidencia y alimenta Signals, Objetos, memoria e Identidad.</p></div>
+    <div class="runner-safety-summary"><span>Flujo base <b>{{ r.flow_name }}</b></span><span>Pasos activos <b>{{ active_steps }}</b></span><span>Límite <b>{{ r.max_requests }}</b></span></div>
+    <form action="{{ target_base }}/runners/{{ r.id }}/execute" method="post" onsubmit="return confirm('¿Ejecutar este Runner ahora? Enviará {{ planned_requests }} Requests al objetivo de forma secuencial.');"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button runner-run-button" type="submit" {% if planned_requests>r.max_requests %}disabled title="Reduce repeticiones o aumenta el límite"{% endif %}>▶ Ejecutar Runner</button></form>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">PLAN DEL RUNNER</p><h2>Qué cambia respecto al Flujo normal</h2><p class="muted">Mantén el baseline intacto y modifica sólo lo necesario para responder una pregunta.</p></div><span>{{ runner_data.steps|length }} pasos</span></div>
+  <div class="runner-step-list">
+  {% for s in runner_data.steps %}
+    <article class="runner-step action-{{ s.action }}">
+      <div class="runner-step-number">{{ s.position }}</div>
+      <div class="runner-step-body">
+        <div class="runner-step-title"><div><b>{{ s.method }} <code>{{ s.path }}</code></b><small>Request #{{ s.exchange_id }} · HTTP {{ s.status_code or '—' }}</small></div><span class="runner-action-chip">{{ {'keep':'Mantener','omit':'Omitir','repeat':'Repetir'}.get(s.action,s.action) }}{% if s.action=='repeat' %} ×{{ s.repeat_count }}{% endif %}</span></div>
+        <form class="runner-step-form" action="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Acción<select name="action"><option value="keep" {% if s.action=='keep' %}selected{% endif %}>Mantener</option><option value="omit" {% if s.action=='omit' %}selected{% endif %}>Omitir</option><option value="repeat" {% if s.action=='repeat' %}selected{% endif %}>Repetir</option></select></label><label>Veces<input type="number" name="repeat_count" min="1" max="20" value="{{ s.repeat_count }}"></label><label class="grow">Nota<input name="notes" value="{{ s.notes or '' }}" placeholder="Qué intentas comprobar en este paso"></label><button class="btn-secondary" type="submit">Guardar</button></form>
+        {% if s.variables %}<div class="runner-variable-list"><b>Variables</b>{% for v in s.variables %}<div class="runner-variable"><span><code>{{ v.target_name }}</code> · {% if v.mode=='values' %}lista: {{ v['values']|join(' → ') }}{% elif v.mode=='response_key' %}Response anterior → <code>{{ v.source_name }}</code>{% else %}Regex de Response{% endif %}</span><form action="{{ target_base }}/runners/{{ r.id }}/variables/{{ v.id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="Eliminar variable">×</button></form></div>{% endfor %}</div>{% endif %}
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel runner-variable-builder">
+  <div class="panel-head"><div><p class="eyebrow">VARIABLES DINÁMICAS</p><h2>Cambiar o reutilizar valores sin editar HTTP a mano</h2></div><small>Opcional</small></div>
+  <form class="runner-variable-form" action="{{ target_base }}/runners/{{ r.id }}/variables/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Campo destino<select name="target_ref" required><option value="">Selecciona un parámetro observado…</option>{% for s in runner_data.steps %}{% for p in s.request_params %}<option value="{{ s.id }}|||{{ p.normalized_name or p.name }}|||{{ p.value|e }}">Paso {{ s.position }} · {{ p.normalized_name or p.name }} = {{ p.value }}</option>{% endfor %}{% endfor %}</select></label>
+    <label>Fuente<select name="mode"><option value="values">Lista de valores</option><option value="response_key">Key JSON de Response anterior</option><option value="response_regex">Regex de Response anterior</option></select></label>
+    <label class="grow">Valores <small>uno por línea</small><textarea name="values_text" rows="3" placeholder="WELCOME10&#10;NEWUSER20"></textarea></label>
+    <label>Paso fuente<select name="source_runner_step_id"><option value="">— sólo para Response —</option>{% for s in runner_data.steps %}<option value="{{ s.id }}">Paso {{ s.position }} · {{ s.method }} {{ s.path }}</option>{% endfor %}</select></label>
+    <label>Key JSON<input name="source_name" placeholder="csrf / token / quoteId"></label>
+    <label>Regex<input name="regex_pattern" placeholder='name="csrf" value="([^\"]+)"'></label>
+    <button class="button secondary" type="submit">+ Añadir variable</button>
+  </form>
+  <p class="muted small">Consejo: para alternar varios valores, marca el paso como <b>Repetir</b> y usa una lista. Para tokens dinámicos, extrae una key de una Response anterior y úsala en un paso posterior.</p>
+</section>
+
+<section class="panel" id="runner-history">
+  <div class="panel-head"><div><p class="eyebrow">HISTORIAL</p><h2>Runs anteriores</h2><p class="muted">La IA usa estos resultados la próxima vez que pulses “Explorar lógica”, para no repetirte ideas ya probadas.</p></div><span>{{ runner_data.runs|length }}</span></div>
+  <div class="runner-run-list">
+  {% for run in runner_data.runs %}<article class="runner-run outcome-{{ run.outcome }}"><div class="runner-run-main"><b>Run #{{ run.id }}</b><span class="badge">{{ ui_label(run.status) }}</span><span class="badge">{{ {'unreviewed':'Sin revisar','negative':'Negativa','interesting':'Interesante','confirmed':'Confirmada','needs_retest':'Retest'}.get(run.outcome,run.outcome) }}</span><small>{{ run.request_count }} Requests · {{ run.signal_count }} Signals{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div><div class="row-actions">{% if run.result_flow_id %}<a class="btn-secondary" href="{{ target_base }}/flows/{{ run.result_flow_id }}">Ver Flujo resultante</a><a class="btn-secondary" href="{{ target_base }}/flows/compare?a={{ r.flow_id }}&b={{ run.result_flow_id }}">Comparar con baseline</a>{% endif %}<form action="{{ target_base }}/runners/runs/{{ run.id }}/outcome" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="outcome"><option value="unreviewed" {% if run.outcome=='unreviewed' %}selected{% endif %}>Sin revisar</option><option value="negative" {% if run.outcome=='negative' %}selected{% endif %}>Negativa</option><option value="interesting" {% if run.outcome=='interesting' %}selected{% endif %}>Interesante</option><option value="confirmed" {% if run.outcome=='confirmed' %}selected{% endif %}>Confirmada</option><option value="needs_retest" {% if run.outcome=='needs_retest' %}selected{% endif %}>Retest</option></select><button class="btn-secondary">Guardar</button></form></div>{% if run.error %}<p class="callout warning">{{ run.error }}</p>{% endif %}</article>{% else %}<p class="empty">Aún no has ejecutado este Runner.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}

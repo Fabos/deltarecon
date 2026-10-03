@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.38.
+"""Local web workspace for Negro Recon v0.39.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -69,12 +69,12 @@ UI_LABELS = {
     "draft": "Borrador", "reported": "Reportado", "retest_required": "Retest pendiente", "still_vulnerable": "Sigue vulnerable",
     "fixed": "Corregido", "fix_verified": "Corrección verificada", "closed": "Cerrado", "inconclusive": "No concluyente",
     "not_applicable": "No aplica", "quick": "Chequeo rápido",
-    "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "error": "Error",
+    "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "completed": "Completado", "failed": "Falló", "ready": "Listo", "error": "Error",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Regla personalizada",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
-    "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp",
+    "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp", "negro_runner": "Negro Runner",
     "request": "Request", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
     "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Banderas de función", "other": "Otro",
@@ -2474,6 +2474,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/parameters$", {"anchor":"parameters","title":"Explorador de parámetros","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
             (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Matriz de autorización","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
             (r"^/identities", {"anchor":"identities","title":"Contextos de identidad","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
+            (r"^/runners", {"anchor":"runners","title":"Runners","question":"¿Cómo automatizo una pregunta sobre un Flujo sin repetir trabajo manual?","when":"Crea un Runner cuando una hipótesis requiere repetir, omitir o variar pasos de un proceso observado.","example":"Checkout · sin Payment omite sólo ese paso; Cupón · reutilización repite /coupon varias veces manteniendo el resto del Flujo.","caution":"Runner automatiza una prueba que tú configuraste; no es Intruder, fuzzer ni scanner y nunca se ejecuta solo."}),
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
@@ -3515,12 +3516,188 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/t/{target_key}/flows/{flow_id}", response_class=HTMLResponse)
     def flow_detail_page(request: Request, target_key: str, flow_id: int):
         import negro_flows as flow_tools
+        import negro_runners as runner_tools
+        import negro_intel as intel
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             data = flow_tools.get_flow(conn, int(flow_id))
             if not data:
-                raise HTTPException(status_code=404, detail="Flow no encontrado")
-        return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data)
+                raise HTTPException(status_code=404, detail="Flujo no encontrado")
+            runner_tools.init_schema(conn)
+            flow_runners = runner_tools.list_runners(conn, flow_id=int(flow_id), limit=40)
+            latest = conn.execute("SELECT result_json,created_at FROM ai_tasks WHERE task_type=? AND status='done' ORDER BY id DESC LIMIT 1", (f"flow_logic:{int(flow_id)}",)).fetchone()
+            logic_ai_latest = {}
+            if latest:
+                try:
+                    logic_ai_latest = json.loads(latest["result_json"] or "{}")
+                    logic_ai_latest["created_at"] = latest["created_at"]
+                except Exception:
+                    logic_ai_latest = {}
+        return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data,
+                      flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, settings=intel.load_settings())
+
+
+    @app.get("/t/{target_key}/runners", response_class=HTMLResponse)
+    def runners_page(request: Request, target_key: str):
+        import negro_runners as runner_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.init_schema(conn)
+            runners = runner_tools.list_runners(conn, limit=300)
+        return render(request, "runners.html", target_key, domain, workspace, runners=runners)
+
+    @app.get("/t/{target_key}/runners/{runner_id}", response_class=HTMLResponse)
+    def runner_detail_page(request: Request, target_key: str, runner_id: int, job: str = ""):
+        import negro_runners as runner_tools
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = runner_tools.get_runner(conn, int(runner_id))
+            if not data:
+                raise HTTPException(status_code=404, detail="Runner no encontrado")
+            identities = identity_tools.list_identities(conn)
+        planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
+        active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
+        return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
+                      planned_requests=planned, active_steps=active_steps, job=job)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runners/create")
+    def runner_create_manual(request: Request, target_key: str, flow_id: int, alias: str = Form(...), description: str = Form(""), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            runner_id = runner_tools.create_runner_from_flow(conn, int(flow_id), alias=alias, description=description, origin="manual")
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runners/from-ai")
+    def runner_create_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), create_hypothesis: str = Form("1"), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            idea = json.loads(idea_json)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Idea IA inválida")
+        if not isinstance(idea, dict):
+            raise HTTPException(status_code=400, detail="Idea IA inválida")
+        with _db(paths) as conn:
+            hypothesis_id = runner_tools.create_hypothesis_from_idea(conn, flow_id=int(flow_id), idea=idea) if str(create_hypothesis) != "0" else None
+            draft = idea.get("runner") if isinstance(idea.get("runner"), dict) else {}
+            runner_id = runner_tools.create_runner_from_flow(
+                conn, int(flow_id), alias=str(idea.get("alias") or idea.get("question") or "Runner IA"),
+                description=str(draft.get("description") or idea.get("test_goal") or idea.get("rationale") or ""),
+                hypothesis_id=hypothesis_id, origin="ai_flow", ai_idea=idea,
+                step_actions=list(draft.get("step_actions") or []), variables=list(draft.get("variables") or []),
+            )
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/hypothesis/from-ai")
+    def flow_hypothesis_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            idea = json.loads(idea_json)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Idea IA inválida")
+        with _db(paths) as conn:
+            hypothesis_id = runner_tools.create_hypothesis_from_idea(conn, flow_id=int(flow_id), idea=idea)
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hypothesis_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/update")
+    def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""), max_requests: int = Form(30), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        iid = int(identity_id) if str(identity_id).isdigit() else None
+        with _db(paths) as conn:
+            runner_tools.update_runner(conn, int(runner_id), alias=alias, description=description, identity_id=iid, max_requests=max_requests)
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/update")
+    def runner_step_update(request: Request, target_key: str, runner_id: int, runner_step_id: int, action: str = Form("keep"), repeat_count: int = Form(1), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.update_runner_step(conn, int(runner_id), int(runner_step_id), action=action, repeat_count=repeat_count, notes=notes)
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/variables/add")
+    def runner_variable_add(request: Request, target_key: str, runner_id: int, target_ref: str = Form(...), mode: str = Form("values"), values_text: str = Form(""), source_runner_step_id: str = Form(""), source_name: str = Form(""), regex_pattern: str = Form(""), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            step_raw, target_name, target_value = str(target_ref).split("|||", 2)
+            target_step_id = int(step_raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Campo destino inválido")
+        values = [x.strip() for x in str(values_text or "").splitlines() if x.strip()]
+        source_step_id = int(source_runner_step_id) if str(source_runner_step_id).isdigit() else None
+        with _db(paths) as conn:
+            runner_tools.add_variable(conn, int(runner_id), target_runner_step_id=target_step_id, target_name=target_name,
+                                      target_value=target_value, mode=mode, values=values, source_runner_step_id=source_step_id,
+                                      source_name=source_name, regex_pattern=regex_pattern)
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/variables/{variable_id}/delete")
+    def runner_variable_delete(request: Request, target_key: str, runner_id: int, variable_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.delete_variable(conn, int(runner_id), int(variable_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/execute")
+    def runner_execute(request: Request, target_key: str, runner_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            data = runner_tools.get_runner(conn, int(runner_id))
+            if not data:
+                raise HTTPException(status_code=404, detail="Runner no encontrado")
+            alias = str(data["runner"]["alias"])
+        job_id = _start_job(f"Runner · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?job={job_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/runs/{run_id}/outcome")
+    def runner_run_outcome(request: Request, target_key: str, run_id: int, outcome: str = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("SELECT runner_id FROM runner_runs WHERE id=?", (int(run_id),)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Run no encontrado")
+            runner_tools.update_run_outcome(conn, int(run_id), outcome)
+            runner_id = int(row["runner_id"])
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}#runner-history", status_code=303)
+
+    @app.get("/api/t/{target_key}/flows/{flow_id}/logic-estimate", response_class=JSONResponse)
+    def flow_logic_estimate(target_key: str, flow_id: int, model: str = ""):
+        domain, _, paths = _target_context(target_key)
+        try:
+            return core.ai_estimate_flow_logic(domain, paths, int(flow_id), model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/t/{target_key}/flows/{flow_id}/logic-run", response_class=JSONResponse)
+    def flow_logic_run(request: Request, target_key: str, flow_id: int, model: str = Form(""), confirm_cost: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if confirm_cost != "yes":
+            raise HTTPException(status_code=400, detail="Primero estima y confirma el costo")
+        domain, _, paths = _target_context(target_key)
+        # Re-estimate immediately before creating the billable job.
+        try:
+            estimate = core.ai_estimate_flow_logic(domain, paths, int(flow_id), model or None)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        job_id = _start_job(f"IA lógica · Flujo #{int(flow_id)}", target_key, core.ai_run_flow_logic, domain, paths, int(flow_id), model or None)
+        return {"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "estimate": estimate}
 
     @app.post("/t/{target_key}/flows/{flow_id}/add-exchange")
     def flow_add_exchange(request: Request, target_key: str, flow_id: int, exchange_id: int = Form(...), csrf: str = Form(...)):

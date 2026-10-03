@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Runners · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">RUNNERS</p><h1>Experimentos reproducibles</h1><p class="muted">Un Runner automatiza la parte tediosa de una pregunta de investigación usando un Flujo real. No ejecuta nada hasta que tú lo ordenas.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows">Ver Flujos</a><a class="button ghost" href="{{ target_base }}/hypotheses">Investigación</a></div>
+</section>
+
+<section class="runner-principle panel">
+  <div class="runner-model-strip"><span><b>Flujo</b><small>proceso normal</small></span><i>→</i><span><b>Hipótesis</b><small>pregunta</small></span><i>→</i><span class="active"><b>Runner</b><small>cómo probarla</small></span><i>→</i><span><b>Run</b><small>ejecución concreta</small></span><i>→</i><span><b>Evidencia</b><small>qué ocurrió</small></span></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">BIBLIOTECA</p><h2>{{ runners|length }} Runners</h2></div><small>Alias claros para no perder qué estabas intentando probar.</small></div>
+  <div class="runner-grid">
+  {% for r in runners %}
+    <a class="runner-card" href="{{ target_base }}/runners/{{ r.id }}">
+      <div class="runner-card-head"><span class="runner-play">▶</span><div><b>{{ r.alias }}</b><small>{{ r.flow_name }}</small></div><span class="badge">{{ ui_label(r.status) }}</span></div>
+      <p>{{ r.description or 'Sin descripción.' }}</p>
+      <div class="runner-card-meta"><span>{{ r.run_count }} run(s)</span>{% if r.interesting_runs %}<span class="intel-hot">{{ r.interesting_runs }} interesante(s)</span>{% endif %}{% if r.negative_runs %}<span>{{ r.negative_runs }} negativo(s)</span>{% endif %}{% if r.identity_name %}<span>{{ r.identity_name }}</span>{% endif %}</div>
+    </a>
+  {% else %}
+    <div class="empty-state"><strong>Aún no tienes Runners.</strong><span>Abre un Flujo, pulsa <b>Explorar lógica</b> y convierte una pregunta en Runner; o crea uno manualmente desde el Flujo.</span></div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

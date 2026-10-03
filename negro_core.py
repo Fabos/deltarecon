@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.38.0
+Negro Recon v0.39.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.38.0"
+VERSION = "0.39.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -65,6 +65,7 @@ HOST_SOURCE_ORDER = [
     "burp_proxy",
     "burp_repeater",
     "burp_other",
+    "negro_runner",
 ]
 
 GAU_PROVIDERS = {
@@ -106,6 +107,7 @@ SOURCE_INFO = {
     "burp_proxy": ("TIEMPO REAL", "Burp Proxy", "Tráfico HTTP observado en Burp Proxy e ingerido por Negro."),
     "burp_repeater": ("TIEMPO REAL", "Burp Repeater", "Requests/responses probados manualmente en Burp Repeater."),
     "burp_other": ("TIEMPO REAL", "Burp traffic", "Tráfico observado por otras herramientas de Burp."),
+    "negro_runner": ("DIRIGIDA", "Negro Runner", "Requests ejecutadas explícitamente por un Runner de investigación."),
     "lead_engine": ("LOCAL", "Correlation & Lead Engine", "Correlaciona evidencia para generar hipótesis accionables; no confirma findings."),
     "ai_target": ("OPCIONAL", "AI target triage", "Prioriza leads y explica pruebas concretas; requiere estimación y confirmación de costo."),
 }
@@ -3607,3 +3609,57 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# ---------------------------------------------------------------------------
+# v0.39 · Flow Intelligence
+# ---------------------------------------------------------------------------
+def ai_estimate_flow_logic(domain: str, paths: dict[str, Path], flow_id: int, model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    import negro_intel as intel
+    settings=intel.load_settings()
+    selected_model=model or str(settings.get("ai_model","gpt-6-luna"))
+    output_tokens=int(settings.get("flow_ai_output_tokens",6500))
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        payload,evidence_hash=hunter.build_flow_logic_payload(conn,domain,int(flow_id),max_chars=int(settings.get("flow_ai_max_chars",240000)))
+        task_type=f"flow_logic:{int(flow_id)}"
+        cached=conn.execute("SELECT result_json,usage_json,created_at FROM ai_tasks WHERE task_type=? AND evidence_hash=? AND model=? AND status='done'",(task_type,evidence_hash,selected_model)).fetchone()
+        if cached:
+            try: cached_result=json.loads(cached["result_json"] or "{}")
+            except Exception: cached_result={}
+            if not hunter.flow_logic_result_is_cacheable(cached_result): cached=None
+    estimate=intel.estimate_ai_cost(payload,selected_model,output_tokens,float(settings.get("usd_cop_rate",3344.62)))
+    estimate.update({"task_type":f"flow_logic:{int(flow_id)}","model":selected_model,"flow_id":int(flow_id),"output_tokens_budget":output_tokens,"evidence_hash":evidence_hash,"cached":bool(cached)})
+    if cached:
+        estimate["max_total_usd_est"]=0.0; estimate["max_total_cop_est"]=0.0; estimate["cost_note"]="Resultado ya cacheado para esta evidencia."
+    return estimate
+
+
+def ai_run_flow_logic(domain: str, paths: dict[str, Path], flow_id: int, model: str | None = None) -> dict:
+    import negro_hunter as hunter
+    import negro_intel as intel
+    settings=intel.load_settings()
+    selected_model=model or str(settings.get("ai_model","gpt-6-luna"))
+    output_tokens=int(settings.get("flow_ai_output_tokens",6500))
+    reasoning=str(settings.get("flow_ai_reasoning_effort","medium"))
+    task_type=f"flow_logic:{int(flow_id)}"
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        payload,evidence_hash=hunter.build_flow_logic_payload(conn,domain,int(flow_id),max_chars=int(settings.get("flow_ai_max_chars",240000)))
+        cached=conn.execute("SELECT * FROM ai_tasks WHERE task_type=? AND evidence_hash=? AND model=? AND status='done'",(task_type,evidence_hash,selected_model)).fetchone()
+        if cached:
+            try: result=json.loads(cached["result_json"] or "{}")
+            except Exception: result={}
+            if hunter.flow_logic_result_is_cacheable(result):
+                result["cached"]=True; result["evidence_hash"]=evidence_hash
+                return result
+            conn.execute("UPDATE ai_tasks SET status='invalid' WHERE id=?",(cached["id"],))
+    result,usage=hunter.run_openai_flow_logic_ideas(payload,model=selected_model,output_tokens=output_tokens,reasoning_effort=reasoning)
+    usage.update(hunter.actual_ai_cost(usage,selected_model,float(settings.get("usd_cop_rate",3344.62))))
+    cacheable=hunter.flow_logic_result_is_cacheable(result)
+    result["cached"]=False; result["evidence_hash"]=evidence_hash; result["usage"]=usage
+    with db_connect(paths) as conn:
+        hunter.init_schema(conn)
+        conn.execute("INSERT OR REPLACE INTO ai_tasks(task_type,evidence_hash,model,status,estimate_json,usage_json,result_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                     (task_type,evidence_hash,selected_model,"done" if cacheable else "invalid",None,json.dumps(usage,ensure_ascii=False),json.dumps(result,ensure_ascii=False),now_iso()))
+    return result

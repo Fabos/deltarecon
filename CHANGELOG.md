@@ -1,3 +1,15 @@
+# v0.39.0 — Flow Intelligence + Runner
+
+- Añade **🧠 Explorar lógica** en Flow: IA on-demand sobre secuencia, HTTP sanitizado, parámetros, Identity, Objects, States, Signals, Hypotheses y Runners previos.
+- La memoria de IA incluye outcomes y muestras acotadas de Request/Response de Runs recientes para evitar repetir pruebas y generar preguntas con contexto real.
+- Cada idea de IA separa pregunta, razón, hechos, incógnitas, objetivo de prueba y, cuando aplica, un borrador de Runner.
+- Una idea puede guardarse como Hypothesis o convertirse en Runner; la IA nunca ejecuta Requests automáticamente.
+- Añade biblioteca **Runners** con alias, descripción, Flow baseline, Identity, Hypothesis asociada e historial de Runs.
+- Runner permite mantener/omitir/repetir pasos, listas de valores y reutilizar una key JSON o Regex extraída de una Response anterior.
+- Cada Run es secuencial y acotado (30 Requests por defecto, 100 máximo, 20 repeticiones por paso, sin concurrencia) y reingresa cada Request/Response a Negro.
+- Cada Run produce un Flow resultante para reutilizar Flow Compare contra el baseline.
+- Añade regresión `v039_flow_runner_ai_test.py`.
+
 # v0.38.0 — Request Workbench + catálogo mínimo de Reglas
 
 - Reduce las Reglas integradas visibles a una sola muestra de alta señal: **Errores con detalles internos**.

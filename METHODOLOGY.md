@@ -1,4 +1,29 @@
-# Negro Recon — Metodología v0.38.0
+# Negro Recon — Metodología v0.39.0
+
+
+## v0.39 — Flow → pregunta → Hypothesis → Runner → evidencia
+
+El Flow describe el proceso observado. La IA puede ayudar a formular preguntas específicas de lógica de negocio usando el HTTP real sanitizado y el historial de lo ya probado. La IA es un **copiloto de pensamiento**, no un ejecutor: propone preguntas y borradores, pero el investigador decide qué guardar, configurar y ejecutar.
+
+Un **Runner** es un experimento reproducible con alias propio. Parte del Flow normal, modifica sólo lo necesario (omitir/repetir pasos, variar un valor o reutilizar datos de una Response anterior) y registra cada Run. Los outcomes humanos y el HTTP acotado de Runs previos se incluyen en futuros análisis para no repetir ideas negativas y aprovechar nueva evidencia.
+
+```text
+Flow baseline
+  ↓
+Explorar lógica
+  ↓
+Pregunta / Hypothesis
+  ↓
+Runner revisado por humano
+  ↓
+Run secuencial
+  ↓
+Request/Response → Signals / Objects / memoria
+  ↓
+Flow resultante → Compare con baseline
+```
+
+Runner no es un clon de Intruder: no hace fuzzing masivo, brute force ni concurrencia. Su propósito es quitar trabajo tedioso de experimentos de lógica de negocio manteniendo contexto, trazabilidad y límites explícitos.
 
 
 ## v0.38 — Menos reglas de fábrica, mejor mesa de trabajo HTTP

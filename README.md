@@ -1,4 +1,13 @@
-# Negro Recon 🐕 — v0.38.0
+# Negro Recon 🐕 — v0.39.0
+
+
+## v0.39.0 — Flow Intelligence + Runner
+
+Negro puede convertir un **Flujo observado** en una biblioteca de experimentos reproducibles de lógica de negocio. El botón **🧠 Explorar lógica** analiza bajo demanda la secuencia real del Flujo, Requests/Responses sanitizadas, parámetros, Identity, Objetos, estados, Signals, Hypotheses y el historial de Runners ya probados. Los Runs recientes aportan también muestras acotadas de su HTTP real y resultado humano (`Negativa`, `Interesante`, `Retest`, etc.), para evitar repetir ideas y proponer preguntas nuevas con contexto.
+
+La IA sólo propone preguntas y borradores. El investigador decide si guarda una **Hypothesis**, convierte una idea en **Runner** y cuándo ejecuta. Un Runner parte del Flow baseline y permite mantener, omitir o repetir pasos, alternar listas de valores y reutilizar datos extraídos de una Response anterior por key JSON o Regex. Puede ejecutarse bajo una Identity Context concreta.
+
+Cada Run es secuencial y deliberadamente acotado (30 Requests por defecto, 100 máximo; 20 repeticiones máximas por paso; sin concurrencia). Cada Request/Response resultante vuelve a Negro como evidencia normal y alimenta Signals, Objetos, memoria y Search. Además, cada Run genera un **Flujo resultante** que puede compararse con el baseline usando Flow Compare. Runner no pretende reemplazar Intruder, fuzzers ni scanners: automatiza experimentos de proceso tediosos y contextuales.
 
 
 ## v0.38.0 — Reglas mínimas + Request Workbench

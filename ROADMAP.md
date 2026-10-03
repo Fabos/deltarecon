@@ -1,3 +1,12 @@
+## v0.39 — Flow Intelligence + Runner ✅
+
+- IA on-demand sobre Flow con HTTP sanitizado y memoria de Runners/Runs previos.
+- Preguntas de lógica específicas al proceso, sin ejecutar automáticamente.
+- Conversión de idea → Hypothesis o idea → Runner draft.
+- Runner con alias, keep/omit/repeat, listas de valores y extracción desde Responses.
+- Identity Context opcional, ejecución secuencial y límites duros anti-fuzzing.
+- Cada Run vuelve a Negro como evidencia y crea un Flow resultante comparable con baseline.
+
 ## v0.38 — Request Workbench + reducción de ruido ✅
 - Una sola Regla integrada de ejemplo; el resto del conocimiento se agrega bajo demanda.
 - Activar/desactivar/eliminar/restaurar Reglas desde una UX directa.
