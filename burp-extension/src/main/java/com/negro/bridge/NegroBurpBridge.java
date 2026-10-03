@@ -31,9 +31,11 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +44,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.26.0
+ * Negro Burp Bridge v0.27.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -69,13 +71,14 @@ public class NegroBurpBridge implements BurpExtension {
     private volatile long lastSuccessfulContactMs = 0L;
     private final String bridgeInstanceId = UUID.randomUUID().toString();
     private final AtomicBoolean unloading = new AtomicBoolean(false);
+    private final Set<String> runnerBridgeInFlight = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService bridgePoller = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "negro-repeater-bridge"); t.setDaemon(true); return t; });
 
     @Override
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.26.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.27.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -147,7 +150,7 @@ public class NegroBurpBridge implements BurpExtension {
         legend.add(legendItem(new Color(92, 176, 112), "Descartado", "Pruebas suficientes para cerrar"));
         panel.add(legend);
         panel.add(Box.createVerticalStrut(10));
-        JLabel philosophy = new JLabel("Rule → Signal automático · Hipótesis IA sólo bajo demanda · Estado = decisión humana");
+        JLabel philosophy = new JLabel("Regla → Signal automático · Idea IA → Hipótesis humana · Runner = prueba explícita");
         philosophy.setFont(philosophy.getFont().deriveFont(Font.ITALIC));
         panel.add(philosophy);
 
@@ -232,6 +235,10 @@ public class NegroBurpBridge implements BurpExtension {
                     return ResponseReceivedAction.continueWith(response, response.annotations());
                 }
                 String tool = response.toolSource().toolType().name();
+                String runnerKey = request.method().toUpperCase() + " " + request.url();
+                if ("EXTENSIONS".equalsIgnoreCase(tool) && runnerBridgeInFlight.contains(runnerKey)) {
+                    return ResponseReceivedAction.continueWith(response, response.annotations());
+                }
                 String json = toJson(request, response, tool);
                 sendAsync(json, request.method(), request.url(), tool, response.annotations());
             } catch (Exception ex) {
@@ -250,7 +257,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.26.0")
+                    .header("X-Negro-Bridge-Version", "0.27.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -261,7 +268,9 @@ public class NegroBurpBridge implements BurpExtension {
             java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
             String body = resp.body() == null ? "" : resp.body();
             boolean pending = jsonBoolean(body, "pending", false);
-            api.logging().logToOutput("Negro → Repeater poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending + " · instance=" + bridgeInstanceId.substring(0, 8));
+            if (resp.statusCode() != 200 || pending || jsonBoolean(body, "upgrade_required", false)) {
+                api.logging().logToOutput("Negro → Bridge poll: HTTP " + resp.statusCode() + " · body=" + body.length() + " chars · pending=" + pending + " · instance=" + bridgeInstanceId.substring(0, 8));
+            }
             if (resp.statusCode() != 200 || !pending) return;
 
             api.logging().logToOutput("Negro → Repeater: item pendiente recibido del backend");
@@ -270,10 +279,19 @@ public class NegroBurpBridge implements BurpExtension {
             String method = jsonString(body, "method");
             String caption = jsonString(body, "caption");
             String requestB64 = jsonString(body, "request_b64");
+            String jobKind = jsonString(body, "job_kind");
+            if (jobKind == null || jobKind.isBlank()) jobKind = "repeater";
             long queueId = jsonLong(body, "id");
-            api.logging().logToOutput("Negro → Repeater claim: queue=" + queueId + " target=" + targetKey + " method=" + method + " url=" + url + " b64chars=" + (requestB64 == null ? 0 : requestB64.length()));
+            api.logging().logToOutput("Negro → Bridge claim: queue=" + queueId + " kind=" + jobKind + " target=" + targetKey + " method=" + method + " url=" + url + " b64chars=" + (requestB64 == null ? 0 : requestB64.length()));
             boolean ok = false;
             String error = "";
+            String resultRequestB64 = "";
+            String responseB64 = "";
+            String responseBodyB64 = "";
+            String responseHeadersJson = "[]";
+            Integer statusCode = null;
+            String resultUrl = url == null ? "" : url;
+            long elapsedMs = 0L;
             try {
                 HttpRequest request;
                 URI u = URI.create(url);
@@ -285,25 +303,51 @@ public class NegroBurpBridge implements BurpExtension {
                 if (requestB64 != null && !requestB64.isBlank()) {
                     byte[] raw = Base64.getDecoder().decode(requestB64);
                     rawLength = raw.length;
-                    byte[] repeaterRaw = normalizeRawRequestForRepeater(raw);
-                    normalizedHttp2 = repeaterRaw != raw;
-                    request = HttpRequest.httpRequest(service, ByteArray.byteArray(repeaterRaw));
+                    byte[] replayRaw = normalizeRawRequestForRepeater(raw);
+                    normalizedHttp2 = replayRaw != raw;
+                    request = HttpRequest.httpRequest(service, ByteArray.byteArray(replayRaw));
                     if (request.toByteArray().length() == 0 || request.method() == null || request.method().isBlank()) {
-                        api.logging().logToError("Negro → Repeater: request reconstruida vacía; usando fallback URL. queue=" + queueId + " raw=" + rawLength + "B");
+                        api.logging().logToError("Negro → Bridge: request reconstruida vacía; usando fallback URL. queue=" + queueId + " raw=" + rawLength + "B");
                         request = fallbackRequest(url, method, service);
                     }
                 } else {
                     request = fallbackRequest(url, method, service);
                 }
-                String tabName = caption == null || caption.isBlank() ? "Negro · " + (method == null ? "GET" : method) : caption;
-                api.repeater().sendToRepeater(request, tabName);
-                ok = true;
-                api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
+
+                if ("execute".equalsIgnoreCase(jobKind)) {
+                    String inflightKey = request.method().toUpperCase() + " " + request.url();
+                    runnerBridgeInFlight.add(inflightKey);
+                    long startedNs = System.nanoTime();
+                    try {
+                        HttpRequestResponse pair = api.http().sendRequest(request);
+                        elapsedMs = Math.max(0L, (System.nanoTime() - startedNs) / 1_000_000L);
+                        if (pair == null || !pair.hasResponse() || pair.response() == null) {
+                            throw new IllegalStateException("Burp no recibió una Response del target");
+                        }
+                        HttpRequest sent = pair.request() == null ? request : pair.request();
+                        HttpResponse received = pair.response();
+                        resultRequestB64 = Base64.getEncoder().encodeToString(sent.toByteArray().getBytes());
+                        responseB64 = Base64.getEncoder().encodeToString(received.toByteArray().getBytes());
+                        responseBodyB64 = Base64.getEncoder().encodeToString(received.body().getBytes());
+                        responseHeadersJson = headersJson(received.headers());
+                        statusCode = (int) received.statusCode();
+                        resultUrl = sent.url();
+                        ok = true;
+                        api.logging().logToOutput("Negro Runner ✓ Burp transport · queue=" + queueId + " HTTP " + statusCode + " · " + elapsedMs + "ms · " + sent.method() + " " + sent.url());
+                    } finally {
+                        runnerBridgeInFlight.remove(inflightKey);
+                    }
+                } else {
+                    String tabName = caption == null || caption.isBlank() ? "Negro · " + (method == null ? "GET" : method) : caption;
+                    api.repeater().sendToRepeater(request, tabName);
+                    ok = true;
+                    api.logging().logToOutput("Negro → Repeater: queue=" + queueId + " raw=" + rawLength + "B reconstructed=" + request.toByteArray().length() + "B h2_normalized=" + normalizedHttp2 + " · " + request.method() + " " + request.url());
+                }
             } catch (Throwable ex) {
                 error = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                api.logging().logToError("Negro → Repeater falló: " + ex.getClass().getSimpleName() + ": " + error);
+                api.logging().logToError("Negro → Bridge falló: " + ex.getClass().getSimpleName() + ": " + error);
             }
-            ackRepeater(targetKey, queueId, ok, error);
+            ackBridge(targetKey, queueId, ok, error, resultRequestB64, responseB64, responseBodyB64, responseHeadersJson, statusCode, resultUrl, elapsedMs);
         } catch (Throwable ex) {
             String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
             api.logging().logToError("Negro → Repeater poll falló: " + ex.getClass().getSimpleName() + ": " + msg);
@@ -359,9 +403,21 @@ public class NegroBurpBridge implements BurpExtension {
         }
     }
 
-    private void ackRepeater(String targetKey, long queueId, boolean ok, String error) {
+    private void ackBridge(String targetKey, long queueId, boolean ok, String error,
+                           String requestB64, String responseB64, String responseBodyB64,
+                           String responseHeadersJson, Integer statusCode, String resultUrl, long elapsedMs) {
         if (targetKey == null || queueId <= 0) return;
-        String json = "{\"ok\":" + ok + "," + kv("error", error == null ? "" : error) + "}";
+        String json = "{" +
+                "\"ok\":" + ok + "," +
+                kv("error", error == null ? "" : error) + "," +
+                kv("request_b64", requestB64 == null ? "" : requestB64) + "," +
+                kv("response_b64", responseB64 == null ? "" : responseB64) + "," +
+                kv("response_body_b64", responseBodyB64 == null ? "" : responseBodyB64) + "," +
+                "\"response_headers\":" + (responseHeadersJson == null || responseHeadersJson.isBlank() ? "[]" : responseHeadersJson) + "," +
+                "\"status_code\":" + (statusCode == null ? "null" : statusCode.toString()) + "," +
+                kv("url", resultUrl == null ? "" : resultUrl) + "," +
+                "\"elapsed_ms\":" + Math.max(0L, elapsedMs) +
+                "}";
         java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/bridge/repeater/" + targetKey + "/" + queueId + "/ack"))
                 .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")

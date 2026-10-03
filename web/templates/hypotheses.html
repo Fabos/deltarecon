@@ -5,11 +5,11 @@
 <section class="hero">
   <div>
     <p class="eyebrow">INVESTIGACIÓN · MEMORIA DE TRABAJO</p>
-    <h1>Señales → Hipótesis IA → Investigaciones</h1>
-    <p class="muted">Las Reglas reconocen condiciones. Las Señales conservan qué ocurrió. La IA sólo formula hipótesis cuando tú la ejecutas. Una hipótesis se vuelve Investigación únicamente cuando tú la promueves.</p>
+    <h1>Hipótesis que decidiste perseguir</h1>
+    <p class="muted">Las Reglas producen Señales automáticas cuando coincide evidencia. La IA puede sugerir Ideas, y tú también puedes hacerte preguntas directamente. Sólo cuando tú eliges perseguir una pregunta se convierte en Hipótesis y pasa a prueba manual o Runner.</p>
   </div>
   <div class="page-actions">
-    <a class="button" href="{{ target_base }}/graph">🧠 Generar hipótesis con IA</a>
+    <a class="button" href="{{ target_base }}/flows">🧠 Explorar lógica desde un Flujo</a>
     <a class="button ghost" href="{{ target_base }}/signals/custom">Reglas personalizadas</a>
     <form action="{{ target_base }}/intel/recalculate" method="post" data-job-form data-job-label="Recalculando Señales">
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="hypotheses">
@@ -18,19 +18,19 @@
   </div>
 </section>
 
-<section class="hunt-model hunt-model-four panel">
-  <div class="hunt-model-item rule-model"><b>1 · Regla</b><span>Conocimiento determinístico configurable.</span><small>Ej. reconocer <code>tenantId</code>, <code>redirect_uri</code>, IDs o CORS.</small></div>
+<section class="hunt-model hunt-model-four panel hypothesis-model-corrected">
+  <div class="hunt-model-item rule-model"><b>Regla → Señal</b><span>La Señal nace sólo de una Regla que coincidió con evidencia.</span><small>No se crea manualmente y no afirma una vulnerabilidad.</small></div>
   <div class="hunt-model-arrow">→</div>
-  <div class="hunt-model-item signal-model"><b>2 · 🩵 Señal</b><span>Hecho observado en evidencia real.</span><small>No afirma una vulnerabilidad y explica por qué coincidió.</small></div>
+  <div class="hunt-model-item hypothesis-model"><b>Idea IA / pregunta propia</b><span>La IA puede sugerir; tú también puedes detectar una duda investigable.</span><small>Todavía no es una prueba.</small></div>
   <div class="hunt-model-arrow">→</div>
-  <div class="hunt-model-item hypothesis-model"><b>3 · 🧠 Hipótesis IA</b><span>Inferencia creada sólo cuando tú pides análisis.</span><small>Separa hechos, inferencia, incógnitas y próxima prueba.</small></div>
+  <div class="hunt-model-item investigation-model"><b>Hipótesis humana</b><span>Pregunta que tú decidiste perseguir.</span><small>Se prueba manualmente o con Runner.</small></div>
   <div class="hunt-model-arrow">→</div>
-  <div class="hunt-model-item investigation-model"><b>4 · Investigación</b><span>Línea de trabajo que tú decidiste perseguir.</span><small>Puede reunir muchos Señales, Requests y recursos.</small></div>
+  <div class="hunt-model-item signal-model"><b>Prueba → decisión</b><span>Run/evidencia → Finding o nada.</span><small>La decisión final sigue siendo humana.</small></div>
 </section>
 
 <section class="hunt-queue">
   <article><span>🩵 Señales pendientes</span><b>{{ signals|length }}</b></article>
-  <article><span>🧠 Hipótesis IA</span><b>{{ hypotheses|length }}</b></article>
+  <article><span>◆ Hipótesis</span><b>{{ hypotheses|length }}</b></article>
   <article><span>🔎 Investigaciones</span><b>{{ investigations|length }}</b></article>
   <article><span>🔵 Pendiente aprendizaje</span><b>{{ state_counts.get('learning',0) }}</b></article>
   <article><span>🟣 Correlacionar</span><b>{{ state_counts.get('correlate',0) }}</b></article>
@@ -66,7 +66,7 @@
   {% else %}<div class="empty-state compact"><strong>No hay Señales pendientes.</strong><span>Las Reglas seguirán observando tráfico de Burp sin generar hipótesis automáticamente.</span></div>{% endif %}
 </section>
 
-<section class="section-heading"><div><p class="eyebrow">HIPÓTESIS IA</p><h2>Preguntas que la IA propuso bajo demanda</h2><p class="muted">Aquí sólo aparecen ideas generadas por una ejecución explícita de IA. No son Hallazgos ni Investigaciones todavía.</p></div><a class="button secondary" href="{{ target_base }}/graph">🧠 Analizar evidencia</a></section>
+<section class="section-heading"><div><p class="eyebrow">HIPÓTESIS</p><h2>Preguntas que decidiste probar</h2><p class="muted">Pueden nacer de una pregunta tuya o de una Idea IA que aceptaste. Aquí ya existe intención humana de testear; todavía no son Findings.</p></div><a class="button secondary" href="{{ target_base }}/flows">Abrir Flujos</a></section>
 
 <form class="filters panel" method="get">
   <label class="filter-search">Buscar<input name="q" value="{{ q }}" placeholder="authorization, OAuth, refund…"></label>
@@ -78,7 +78,7 @@
 {% for h in hypotheses %}
 <article class="hypothesis-work-card ai-hypothesis-card state-{{ h.status }}" id="hypothesis-{{ h.id }}">
   <div class="hypothesis-head">
-    <div><div class="badges hypothesis-priority-row"><span class="badge evidence-chip">{{ h.evidence_label }} · {{ h.evidence_count }} refs</span><span class="badge cost-chip">{{ h.test_cost_label }}</span><span class="badge">{{ h.lead_type }}</span><span class="badge">🧠 IA</span></div><h2>{{ h.title }}</h2></div>
+    <div><div class="badges hypothesis-priority-row"><span class="badge evidence-chip">{{ h.evidence_label }} · {{ h.evidence_count }} refs</span><span class="badge cost-chip">{{ h.test_cost_label }}</span><span class="badge">{{ h.lead_type }}</span>{% if h.source|upper == 'MANUAL' %}<span class="badge">Pregunta propia</span>{% elif h.source|upper in ['AI','AI_IDEA'] %}<span class="badge">Origen: Idea IA</span>{% else %}<span class="badge">{{ h.source or 'Humana' }}</span>{% endif %}</div><h2>{{ h.title }}</h2></div>
     <div class="badges">{% if h.promoted_investigation_id %}<span class="badge class-interesting">Promovida → Investigación #{{ h.promoted_investigation_id }}</span>{% else %}<span class="badge state-chip">{{ 'Guardada' if h.status=='postponed' else ('Descartada' if h.status=='discarded' else 'Propuesta') }}</span>{% endif %}</div>
   </div>
   {% if h.plain_language %}<div class="hypothesis-plain"><b>En simple:</b> {{ h.plain_language }}</div>{% endif %}
@@ -108,22 +108,23 @@
     <details class="needed-piece-add"><summary>+ Añadir pieza pendiente</summary><form action="{{ target_base }}/hypothesis/{{ h.id }}/requirements/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Key / identificador<input name="key_pattern" placeholder="order_id · cardId · *_id" required></label><label>Contexto de identidad<select name="identity_mode"><option value="any">Cualquier identidad</option><option value="specific">Una identidad concreta</option><option value="different">Una identidad distinta de…</option></select></label><label>Identidad<select name="identity_id"><option value="">— sólo si aplica —</option>{% for ident in identities %}<option value="{{ ident.id }}">{{ ident.name }}</option>{% endfor %}</select></label><label class="grow">Qué necesitas<input name="description" placeholder="Ej. cardId observado bajo la otra cuenta"></label><button class="button" type="submit">Recordar esta pieza</button></form></details>
   </section>
   <div class="hypothesis-copy"><p><b>Pregunta de investigación:</b> {{ h.next_test }}</p><p><b>Por qué puede importar:</b> {{ h.why_interesting }}</p></div>
-  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia que recibió la IA</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}{% if ref.exchange_id %}?exchange={{ ref.exchange_id }}#exchange-{{ ref.exchange_id }}{% else %}#http{% endif %}"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Request #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
+  {% if h.evidence_refs %}<div class="hypothesis-evidence"><h3>Evidencia / contexto asociado</h3><div class="evidence-ref-list">{% for ref in h.evidence_refs %}<a class="evidence-ref" href="{{ target_base }}/resource/{{ ref.resource_id }}{% if ref.exchange_id %}?exchange={{ ref.exchange_id }}#exchange-{{ ref.exchange_id }}{% else %}#http{% endif %}"><span>{% if ref.method %}<b>{{ ref.method }}</b> {% endif %}<code>{{ ref.path }}{% if ref.query %}?{{ ref.query }}{% endif %}</code></span><small>{% if ref.exchange_id %}Request #{{ ref.exchange_id }} · {% endif %}{% if ref.status is not none %}HTTP {{ ref.status }}{% elif ref.exchange_status is not none %}HTTP {{ ref.exchange_status }}{% endif %}</small></a>{% endfor %}</div></div>{% endif %}
   <div class="grid two hypothesis-signals"><div><b>Apoyaría la hipótesis si</b><p>{{ h.confirm_if }}</p></div><div><b>La debilitaría/descartaría si</b><p>{{ h.discard_if }}</p></div></div>
   <div class="hypothesis-actionbar">
     {% if h.resource_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ h.resource_id }}{% if h.primary_exchange_id %}?exchange={{ h.primary_exchange_id }}#exchange-{{ h.primary_exchange_id }}{% endif %}">Abrir evidencia</a>{% endif %}
     <a class="btn-secondary" href="{{ target_base }}/signals/custom?from_hypothesis={{ h.id }}">👁 Crear Regla desde esta hipótesis</a>
-    {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/promote" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">→ Convertir en Investigación</button></form>{% else %}<a class="button" href="{{ target_base }}/investigations/{{ h.promoted_investigation_id }}">Abrir Investigation ↗</a>{% endif %}
+    {% if h.flow_ids %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/runner" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="flow_id" value="{{ h.flow_ids[0] }}"><button class="button secondary" type="submit">▶ Crear Runner para probarla</button></form>{% endif %}
+    {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/promote" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">→ Convertir en Investigación</button></form>{% else %}<a class="button" href="{{ target_base }}/investigations/{{ h.promoted_investigation_id }}">Abrir Investigación ↗</a>{% endif %}
   </div>
   {% if not h.promoted_investigation_id %}<form action="{{ target_base }}/hypothesis/{{ h.id }}/update" method="post" class="hypothesis-update"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Decisión<select name="status"><option value="candidate" {% if h.status=='candidate' %}selected{% endif %}>Mantener propuesta</option><option value="postponed" {% if h.status=='postponed' %}selected{% endif %}>Guardar para después</option><option value="discarded" {% if h.status=='discarded' %}selected{% endif %}>Descartar hipótesis</option></select></label><label class="grow">Nota<textarea name="result_notes" placeholder="Por qué la guardas o descartas">{{ h.result_notes or '' }}</textarea></label><button class="btn-secondary" type="submit">Guardar</button></form>{% endif %}
 </article>
-{% else %}<section class="panel empty-state"><strong>No hay hipótesis IA con estos filtros.</strong><span>Negro no las genera automáticamente. Pulsa “Generar hipótesis con IA” cuando quieras que razone sobre la evidencia acumulada.</span></section>{% endfor %}
+{% else %}<section class="panel empty-state"><strong>No hay Hipótesis con estos filtros.</strong><span>Crea una pregunta desde una Request o convierte una Idea IA de un Flujo cuando decidas perseguirla.</span></section>{% endfor %}
 </section>
 
-<section class="section-heading"><div><p class="eyebrow">INVESTIGATIONS</p><h2>Workspaces que decidiste perseguir</h2><p class="muted">Aquí sólo las lanzamos. Cada Investigation tiene su propia página con contexto conocido, Hypotheses, pruebas, Ideas IA y Findings claramente separados.</p></div></section>
+<section class="section-heading"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Workspaces que decidiste perseguir</h2><p class="muted">Aquí sólo las lanzamos. Cada Investigación tiene su propia página con contexto conocido, Hypotheses, pruebas, Ideas IA y Findings claramente separados.</p></div></section>
 <section class="investigation-list compact-investigation-launchers">
 {% for i in investigations %}
-<article class="panel human-investigation state-{{ i.status }}" id="investigation-{{ i.id }}"><div class="panel-head"><div><div class="badges"><span class="badge">#{{ i.id }}</span><span class="badge">{{ i.category or 'other' }}</span><span class="badge state-chip">{{ 'Activa' if i.status=='active' else ('Pausada' if i.status=='paused' else 'Cerrada') }}</span></div><h2>{{ i.title }}</h2>{% if i.summary %}<p class="muted">{{ i.summary }}</p>{% endif %}</div><div class="investigation-counts"><span>⚡ {{ i.signal_count }} Signals</span><span>{{ i.exchange_count }} Requests</span><span>{{ i.resource_count }} endpoints</span></div></div><div class="page-actions"><a class="button secondary" href="{{ target_base }}/investigations/{{ i.id }}">Abrir Investigation ↗</a></div></article>
-{% else %}<section class="panel empty-state"><strong>Todavía no abriste ninguna Investigation.</strong><span>Una Hypothesis puede promoverse cuando decidas perseguirla, o puedes crear una Investigation desde cualquier Request.</span></section>{% endfor %}
+<article class="panel human-investigation state-{{ i.status }}" id="investigation-{{ i.id }}"><div class="panel-head"><div><div class="badges"><span class="badge">#{{ i.id }}</span><span class="badge">{{ i.category or 'other' }}</span><span class="badge state-chip">{{ 'Activa' if i.status=='active' else ('Pausada' if i.status=='paused' else 'Cerrada') }}</span></div><h2>{{ i.title }}</h2>{% if i.summary %}<p class="muted">{{ i.summary }}</p>{% endif %}</div><div class="investigation-counts"><span>⚡ {{ i.signal_count }} Signals</span><span>{{ i.exchange_count }} Requests</span><span>{{ i.resource_count }} endpoints</span></div></div><div class="page-actions"><a class="button secondary" href="{{ target_base }}/investigations/{{ i.id }}">Abrir Investigación ↗</a></div></article>
+{% else %}<section class="panel empty-state"><strong>Todavía no abriste ninguna Investigación.</strong><span>Una Hypothesis puede promoverse cuando decidas perseguirla, o puedes crear una Investigación desde cualquier Request.</span></section>{% endfor %}
 </section>
 {% endblock %}

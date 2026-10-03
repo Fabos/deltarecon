@@ -40,10 +40,11 @@ DEFAULT_SETTINGS = {
     "flow_ai_max_chars": 240000,
     "flow_ai_output_tokens": 6500,
     "flow_ai_reasoning_effort": "medium",
-    # Runner transport is explicit and predictable. `direct` ignores inherited
-    # HTTP(S)_PROXY variables; `environment` honours them; `proxy` uses the URL
-    # configured below (for example a local Burp listener reachable by Negro).
-    "runner_transport_mode": "direct",
+    # Runner transport prefers the already-connected Burp Bridge so replay uses
+    # the same DNS/TCP/TLS/upstream path that captured the baseline. Direct,
+    # environment and explicit proxy remain opt-in fallbacks.
+    "runner_transport_mode": "burp_bridge",
+    "runner_transport_generation": 2,
     "runner_proxy_url": "",
     "runner_verify_tls": True,
     "runner_ca_bundle": "",
@@ -153,6 +154,14 @@ def load_settings() -> dict[str, Any]:
             raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 data.update(raw)
+                # v0.41 changes the default transport architecture: Runner traffic
+                # should reuse the already-connected Burp Bridge instead of opening
+                # a second Python network path. v0.40 persisted ``direct`` as its
+                # default, so migrate that old implicit value once. Explicit proxy
+                # or environment choices are preserved.
+                if int(raw.get("runner_transport_generation") or 0) < 2 and str(raw.get("runner_transport_mode") or "direct").lower() == "direct":
+                    data["runner_transport_mode"] = "burp_bridge"
+                    data["runner_transport_generation"] = 2
         except Exception:
             pass
     return data

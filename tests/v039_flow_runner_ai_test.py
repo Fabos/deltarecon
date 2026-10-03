@@ -10,6 +10,7 @@ import negro_core as core
 import negro_hunter as hunter
 import negro_flows as flows
 import negro_runners as runners
+import negro_intel as intel
 from negro_web import create_app
 from fastapi.testclient import TestClient
 
@@ -41,7 +42,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix='negro-v039-') as td:
         root=Path(td); old_targets=core.TARGETS_PATH; core.TARGETS_PATH=root/'targets.json'
         old_session=requests.Session
+        old_cfg_dir,old_settings=intel.CONFIG_DIR,intel.SETTINGS_PATH
         try:
+            intel.CONFIG_DIR=root/'config'; intel.SETTINGS_PATH=intel.CONFIG_DIR/'settings.json'
+            intel.save_settings({'runner_transport_mode':'direct','runner_transport_generation':2,'runner_verify_tls':True,'runner_timeout_seconds':5})
             domain='runner.local'; workspace=root/'workspace'; paths=core.ensure_workspace(workspace,domain)
             a=capture(paths,domain,'/cart','GET','', '{"cartId":88,"total":100,"csrf":"old"}')
             b=capture(paths,domain,'/coupon','POST','{"coupon":"BASE","csrf":"old"}', '{"accepted":true,"total":90}')
@@ -102,9 +106,9 @@ def main():
             listing=client.get(f'/t/{key}/runners')
             assert listing.status_code==200 and 'Experimentos reproducibles' in listing.text
         finally:
-            requests.Session=old_session; core.TARGETS_PATH=old_targets
+            requests.Session=old_session; core.TARGETS_PATH=old_targets; intel.CONFIG_DIR=old_cfg_dir; intel.SETTINGS_PATH=old_settings
     print('[OK] Flow Intelligence context includes real sanitized HTTP plus prior Runner memory')
-    print('[OK] AI-selected question can become a Hypothesis + Runner draft without executing automatically')
+    print('[OK] a human-selected AI Idea can become a Hypothesis, then a Runner draft, without executing automatically')
     print('[OK] Runner can keep/omit/repeat Flow steps, cycle parameter values, and feed each result back into Negro')
     print('[OK] every Run produces a result Flow that can be compared with the baseline')
 

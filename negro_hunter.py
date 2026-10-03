@@ -4199,39 +4199,8 @@ def set_signal_decision(conn, signal_id: int, *, decision: str, reason: str = ""
 
 
 def create_manual_signal(conn, exchange_id: int, *, title: str, note: str = "", category: str = "manual") -> int:
-    """Persist a human-authored observable fact using the existing Signals table."""
-    init_schema(conn)
-    ex = conn.execute(
-        """SELECT e.id,e.operation_id,o.resource_id,o.method,r.path,h.hostname,e.status_code
-           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
-           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
-        (int(exchange_id),),
-    ).fetchone()
-    if not ex:
-        raise ValueError("Request no encontrada")
-    clean_title = str(title or "").strip()[:240]
-    if not clean_title:
-        raise ValueError("Describe qué observaste")
-    now = now_iso()
-    import hashlib
-    fingerprint = hashlib.sha256(f"manual:{exchange_id}:{clean_title.lower()}:{now}".encode()).hexdigest()[:24]
-    why = {"message": str(note or clean_title).strip()[:2000], "human_created": True}
-    evidence = {
-        "source": "manual", "exchange_id": int(exchange_id), "method": ex["method"],
-        "path": ex["path"], "host": ex["hostname"], "status": ex["status_code"],
-        "note": str(note or "").strip()[:4000],
-    }
-    cur = conn.execute(
-        """INSERT INTO signal_occurrences(
-               dedupe_key,exchange_id,operation_id,resource_id,kind,category,severity,title,
-               why_json,evidence_json,source,occurrences,first_seen_at,last_seen_at,signal_level,
-               human_decision,decision_occurrences,reconsideration_needed)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,'interesting',1,0)""",
-        (f"manual:{fingerprint}", int(exchange_id), int(ex["operation_id"]), int(ex["resource_id"]),
-         "manual_observation", str(category or "manual")[:80], "info", clean_title,
-         json.dumps(why, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), "manual", now, now, "local"),
-    )
-    return int(cur.lastrowid)
+    """Deprecated compatibility guard. Signals are emitted exclusively by Rules."""
+    raise ValueError("Las Señales sólo nacen de Reglas. Crea una Regla para observar esta condición.")
 
 
 def create_manual_hypothesis(conn, exchange_id: int, *, title: str, why: str = "", next_test: str = "") -> int:

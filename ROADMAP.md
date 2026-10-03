@@ -1,3 +1,13 @@
+## v0.41 — Signal desde Regla + Burp-native Runner + HTTP Workbench ✅
+
+- Signal sólo desde Regla.
+- Idea IA → decisión humana → Hipótesis.
+- Burp Bridge v0.27 como transporte recomendado del Runner.
+- Diagnóstico por intento y errores de transporte fuera de coverage.
+- Lectura HTTP con syntax cues y búsqueda local.
+
+---
+
 ## v0.40 — Investigation Workspace + AI Ideas persistentes + transporte confiable ✅
 
 - Request Workbench permite crear/reutilizar Entity, Signal, Hypothesis, Runner, Investigation y Finding desde evidencia exacta.

@@ -1,5 +1,28 @@
-# Negro Recon 🐕 — v0.40.0
+# Negro Recon 🐕 — v0.41.0
 
+
+## v0.41.0 — Signal desde Regla + Burp-native Runner + HTTP Workbench
+
+La segunda prueba real corrige dos decisiones de modelo y una diferencia de transporte. **Signals no se crean manualmente:** sólo nacen cuando una Regla coincide con evidencia. Desde una Request puedes crear una Regla, Entity, Hipótesis, Runner, adjuntar una Investigación o un Finding. Una Hipótesis es siempre una pregunta que el investigador decidió perseguir; puede nacer directamente del humano o de una Idea IA que el humano convirtió explícitamente.
+
+El flujo operativo queda:
+
+```text
+Regla → Signal automático
+Idea IA / pregunta propia → Hipótesis humana → prueba manual o Runner → Finding o nada
+```
+
+### Runner usa Burp como transporte recomendado
+
+El modo por defecto es `burp_bridge`: Negro entrega la Request exacta al **Negro Burp Bridge v0.27.0+** y Burp la envía con su propia pila DNS/TCP/TLS/upstream proxy. Esto elimina la divergencia `Browser → Burp → target` frente a `Python/container → target` que seguía causando errores de transporte en labs accesibles desde Burp. Los transportes Python directo/entorno/proxy continúan disponibles como fallback explícito.
+
+Un fallo de transporte corta el Run secuencial en el primer punto no válido, se conserva con diagnóstico por intento y nunca cuenta como cobertura o resultado negativo.
+
+### Request Workbench
+
+Request/Response completas siguen siendo el centro. La lectura HTTP añade tipografía monoespaciada más cómoda, números de línea y resaltado ligero de método/ruta/status, headers, keys JSON/form, strings/números y headers sensibles; la búsqueda local mantiene el resaltado sin perder sintaxis.
+
+---
 
 ## v0.40.0 — Investigation Workspace + AI Ideas persistentes + transporte confiable
 
@@ -283,15 +306,17 @@ negro web
 
 ## Extensión Burp
 
-Para las acciones de Flow/Identity sigue siendo compatible **Negro Burp Bridge v0.26.0**; v0.27 no requiere cambios en el JAR.
+**v0.41 requiere Negro Burp Bridge v0.27.0+ para ejecutar Runners mediante Burp.** Las acciones anteriores de Flow/Identity siguen disponibles, pero un Bridge v0.26.x no puede consumir trabajos `execute` del Runner y Negro lo mostrará como extensión desactualizada.
 
-Para compilarla:
+Compila el JAR en la misma máquina donde vas a usar Burp:
 
 ```bash
 cd burp-extension
 ./build-extension.sh
 ```
 
-Carga `build/libs/negro-burp-bridge-0.26.0.jar` desde Burp → Extensions.
+Carga `build/libs/negro-burp-bridge-0.27.0.jar` desde **Burp → Extensions → Installed → Add → Java** y elimina/deshabilita la versión anterior para evitar dos pollers compitiendo por la cola. Con Burp abierto, entra al Runner y usa **Diagnosticar transporte**: debe mostrar `runner_transport_ready: true`.
+
+El modo recomendado es **Burp Bridge** porque Burp realiza la conexión al target con su propia ruta DNS/TCP/TLS/upstream proxy. Los modos Python Directo/Entorno/Proxy explícito quedan como fallback.
 
 Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.

@@ -1,3 +1,26 @@
+# v0.41.0 — Signal desde Regla + Burp-native Runner + HTTP Workbench
+
+## Modelo corregido
+- Una **Signal sólo puede nacer de una Regla**. Se retira “Crear Señal” del Request Workbench y el endpoint histórico queda como guard explícito.
+- Una **Idea IA** es una sugerencia. No crea Runner directamente. El humano puede convertirla en **Hipótesis**; la Hipótesis es la pregunta elegida que luego se prueba manualmente o mediante Runner.
+- Las Hipótesis manuales vuelven a ser first-class en la vista de Hipótesis; ya no se filtra sólo `source=AI`.
+- Las vistas de Request/Mapa/Hipótesis sólo llaman **Hipótesis** a preguntas asumidas por el humano (`MANUAL`, `AI_IDEA` o una investigación ya promovida); sugerencias automáticas históricas no se mezclan con ellas.
+
+## Runner / transporte
+- Nuevo modo recomendado y predeterminado `burp_bridge`.
+- Reutiliza la cola existente de Burp/Reapeater con `job_kind=execute`; no crea una integración paralela.
+- Negro Burp Bridge **v0.27.0** consume el trabajo y usa `api.http().sendRequest(...)`, por lo que DNS/TCP/TLS/upstream proxy pertenecen a Burp, igual que en la captura original.
+- Migración única: el viejo default v0.40 `direct` pasa a `burp_bridge`; elecciones explícitas `environment`/`proxy` se conservan.
+- Runner corta el Flow en el primer error de transporte y guarda diagnóstico por intento (`mode`, host, Host header, SNI, queue/bridge IDs, razón/error).
+- Diagnóstico del modo Burp informa versión/actividad del Bridge y exige v0.27.0+.
+
+## Request Workbench
+- Tipografía monoespaciada más legible, números de línea y syntax cues para HTTP.
+- Resaltado de método/ruta/status, nombres de headers, keys JSON/form, strings/números/literales y headers sensibles.
+- Búsqueda, copiar, wrap y pantalla completa siguen operando sobre el raw HTTP íntegro.
+
+---
+
 # v0.40.0 — Investigation Workspace + AI Ideas persistentes + transporte confiable
 
 ## Request Workbench

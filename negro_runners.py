@@ -318,6 +318,17 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
         (int(runner_id),),
     ).fetchall():
         item=dict(rr); item["summary"]=_load_json(item.get("summary_json"),{})
+        attempts=[]
+        for ar in conn.execute(
+            """SELECT rrr.*,rs.position flow_position
+               FROM runner_run_requests rrr LEFT JOIN runner_steps rs ON rs.id=rrr.runner_step_id
+               WHERE rrr.run_id=? ORDER BY rrr.id""",
+            (int(item["id"]),),
+        ).fetchall():
+            attempt=dict(ar)
+            attempt["transport_detail"]=_load_json(attempt.get("transport_detail_json"),{})
+            attempts.append(attempt)
+        item["attempts"]=attempts
         runs.append(item)
     return {"runner":runner,"steps":steps,"runs":runs,"ai_idea":_load_json(runner.get("ai_idea_json"),{})}
 
@@ -377,11 +388,11 @@ def create_hypothesis_from_idea(conn, *, flow_id: int, idea: dict[str, Any]) -> 
     why=str(idea.get("rationale") or idea.get("why_interesting") or "").strip()
     suggested=str(idea.get("test_goal") or idea.get("runner_description") or "").strip()
     fingerprint=hashlib.sha256(f"flow:{flow_id}|{title.lower()}".encode()).hexdigest()[:20]
-    evidence=[{"source":"ai_flow_logic","node_ids":[f"flow:{int(flow_id)}"],"facts":idea.get("facts") or [],"unknowns":idea.get("unknowns") or [],"runner_draft":idea.get("runner") or {}}]
+    evidence=[{"source":"ai_flow_logic","human_selected":True,"node_ids":[f"flow:{int(flow_id)}"],"facts":idea.get("facts") or [],"unknowns":idea.get("unknowns") or [],"runner_draft":idea.get("runner") or {}}]
     hunter.upsert_lead(conn, lead_key=f"ai_flow:{fingerprint}", host_id=None, resource_id=None,
                        lead_type="business_logic", title=title, confidence="medium", review_priority="medium",
                        evidence=evidence, why=why, next_test=suggested,
-                       confirm_if=str(idea.get("confirm_if") or ""), discard_if=str(idea.get("discard_if") or ""), source="AI")
+                       confirm_if=str(idea.get("confirm_if") or ""), discard_if=str(idea.get("discard_if") or ""), source="AI_IDEA")
     row=conn.execute("SELECT id FROM leads_v2 WHERE lead_key=?",(f"ai_flow:{fingerprint}",)).fetchone()
     return int(row["id"])
 
@@ -476,8 +487,8 @@ EXECUTION_CLASSES = {"application_response","transport_error","timeout","dns_err
 def transport_settings() -> dict[str, Any]:
     import negro_intel as intel
     settings=intel.load_settings()
-    mode=str(settings.get("runner_transport_mode") or "direct").lower()
-    if mode not in {"direct","environment","proxy"}: mode="direct"
+    mode=str(settings.get("runner_transport_mode") or "burp_bridge").lower()
+    if mode not in {"burp_bridge","direct","environment","proxy"}: mode="burp_bridge"
     return {
         "mode":mode,
         "proxy_url":str(settings.get("runner_proxy_url") or "").strip(),
@@ -568,6 +579,120 @@ def _classify_response(resp, *, proxy_url: str | None) -> tuple[str, dict[str, A
     return "application_response",detail
 
 
+class BurpBridgeTransportError(RuntimeError):
+    def __init__(self, message: str, execution_class: str = "transport_error", detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.execution_class = execution_class if execution_class in EXECUTION_CLASSES else "transport_error"
+        self.detail = detail or {}
+
+
+def _queue_bridge_execute(paths: dict[str, Any], *, resource_id: int, method: str, url: str, request_b64: str, timeout_seconds: int) -> dict[str, Any]:
+    """Execute one exact Request through the already connected Burp Bridge.
+
+    This deliberately reuses `burp_repeater_queue` with job_kind=execute instead
+    of creating a second bridge protocol. Burp therefore owns DNS, TCP, TLS/SNI,
+    upstream proxy behavior and the actual HTTP send path -- the same networking
+    stack that captured the baseline traffic.
+    """
+    import negro_core as core
+    created = now_iso()
+    with core.db_connect(paths) as conn:
+        cur = conn.execute(
+            """INSERT INTO burp_repeater_queue(resource_id,method,url,request_b64,caption,status,job_kind,created_at)
+               VALUES(?,?,?,?,?,'pending','execute',?)""",
+            (int(resource_id), str(method or "GET").upper(), str(url), str(request_b64 or ""), "Negro Runner", created),
+        )
+        queue_id = int(cur.lastrowid)
+    print(f"[runner-transport] queued bridge execute id={queue_id} {method} {url}", flush=True)
+
+    # Fail fast when no current extension claims the request, but once Burp has
+    # claimed it allow the configured network timeout plus a small bridge margin.
+    claim_deadline = time.monotonic() + min(6.0, max(3.0, float(timeout_seconds) / 3.0))
+    finish_deadline = time.monotonic() + float(timeout_seconds) + 15.0
+    seen_claim = False
+    last_status = "pending"
+    while time.monotonic() < finish_deadline:
+        with core.db_connect(paths) as conn:
+            row = conn.execute("SELECT * FROM burp_repeater_queue WHERE id=?", (queue_id,)).fetchone()
+            item = dict(row) if row else None
+        if not item:
+            raise BurpBridgeTransportError("El trabajo de transporte desapareció de la cola de Burp.", "runner_error", {"queue_id": queue_id})
+        last_status = str(item.get("status") or "pending")
+        if last_status == "claimed":
+            seen_claim = True
+        if last_status == "done":
+            if not item.get("response_b64") or item.get("response_status") is None:
+                raise BurpBridgeTransportError(
+                    "Burp recibió el trabajo pero no devolvió una Response. Actualiza/reinstala la extensión Negro Burp Bridge incluida en esta versión.",
+                    "transport_error", {"queue_id": queue_id, "bridge_instance_id": item.get("bridge_instance_id")},
+                )
+            print(f"[runner-transport] bridge execute done id={queue_id} status={item.get('response_status')} elapsed={item.get('elapsed_ms')}ms", flush=True)
+            return item
+        if last_status == "error":
+            msg = str(item.get("error") or "Burp no pudo enviar la Request")
+            klass = "timeout" if "timeout" in msg.lower() or "timed out" in msg.lower() else "transport_error"
+            if "dns" in msg.lower() or "resolve" in msg.lower(): klass = "dns_error"
+            if "tls" in msg.lower() or "certificate" in msg.lower() or "ssl" in msg.lower(): klass = "tls_error"
+            raise BurpBridgeTransportError(msg, klass, {"queue_id": queue_id, "bridge_instance_id": item.get("bridge_instance_id")})
+        if not seen_claim and time.monotonic() >= claim_deadline:
+            with core.db_connect(paths) as conn:
+                conn.execute(
+                    "UPDATE burp_repeater_queue SET status='error',finished_at=?,error=? WHERE id=? AND status='pending'",
+                    (now_iso(), "burp_bridge_not_connected_or_outdated", queue_id),
+                )
+            raise BurpBridgeTransportError(
+                "Negro no detectó una extensión Burp Bridge compatible consumiendo el Runner. Reemplaza el JAR por el incluido en v0.41 y confirma que el panel Negro de Burp aparece conectado.",
+                "proxy_error", {"queue_id": queue_id},
+            )
+        time.sleep(0.12)
+
+    with core.db_connect(paths) as conn:
+        conn.execute(
+            "UPDATE burp_repeater_queue SET status='error',finished_at=?,error=? WHERE id=? AND status IN ('pending','claimed')",
+            (now_iso(), "burp_bridge_timeout_waiting_response", queue_id),
+        )
+    raise BurpBridgeTransportError(
+        f"Burp no devolvió una Response en {timeout_seconds}s.", "timeout", {"queue_id": queue_id, "last_status": last_status},
+    )
+
+
+def _headers_from_json(value: Any) -> list[dict[str, str]]:
+    try:
+        data = json.loads(value or "[]") if not isinstance(value, list) else value
+    except Exception:
+        data = []
+    out=[]
+    for item in data if isinstance(data,list) else []:
+        if isinstance(item,dict) and item.get("name"):
+            out.append({"name":str(item.get("name")),"value":str(item.get("value") or "")})
+    return out
+
+
+def _header_value(headers: list[dict[str,str]], name: str) -> str | None:
+    low=str(name).lower()
+    for h in headers:
+        if str(h.get("name") or "").lower()==low:
+            return str(h.get("value") or "")
+    return None
+
+
+def _apply_response_cookies(session, headers: list[dict[str,str]]) -> None:
+    # Runner needs cookie rotation between Flow steps even when Burp performs the
+    # network send. We only persist the cookie name/value from Set-Cookie; scope
+    # attributes are not needed because the Runner explicitly builds Cookie for
+    # the next step from this isolated session jar.
+    for h in headers:
+        if str(h.get("name") or "").lower() != "set-cookie":
+            continue
+        first = str(h.get("value") or "").split(";",1)[0]
+        if "=" not in first:
+            continue
+        name,value=first.split("=",1)
+        name=name.strip(); value=value.strip()
+        if name:
+            session.cookies.set(name,value)
+
+
 def diagnose_transport(url: str) -> dict[str, Any]:
     """Local diagnostic for the Runner process. It does not mutate project evidence."""
     import requests
@@ -575,6 +700,11 @@ def diagnose_transport(url: str) -> dict[str, Any]:
     host=parsed.hostname or ""; port=parsed.port or (443 if parsed.scheme=="https" else 80)
     result={"url":url,"mode":cfg["mode"],"target_host":host,"target_port":port,"proxy_url":cfg.get("proxy_url") or "",
             "verify_tls":cfg.get("verify_tls"),"dns":None,"tcp":None,"tls":None,"http":None,"execution_class":None,"notes":[]}
+    if cfg["mode"] == "burp_bridge":
+        result["execution_class"]="pending"
+        result["notes"].append("El modo Burp Bridge se diagnostica durante el Run con la Request real para reutilizar exactamente la misma pila de red de Burp.")
+        result["bridge"]={"recommended":True,"requires_extension":"0.27.0+"}
+        return result
     if not host:
         result["execution_class"]="runner_error"; result["notes"].append("URL sin hostname"); return result
     proxy_host=None; proxy_port=None; effective_proxy=None
@@ -650,13 +780,19 @@ def _postprocess_exchange(conn, exchange_id: int, resource_id: int, host_id: int
 
 
 def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[str,Any]:
-    """Execute a bounded investigation Runner and classify transport separately.
+    """Execute a bounded investigation Runner.
 
-    Only valid application responses enter Negro's canonical HTTP evidence. DNS,
-    TLS, timeout and proxy failures stay in Run history so they never masquerade
-    as application behavior or count as a tested Hypothesis.
+    v0.41 prefers the existing Negro Burp Bridge as transport. This makes replay
+    use Burp's own DNS/TCP/TLS/upstream-proxy stack instead of asking Python to
+    rediscover a different network path. Direct/environment/explicit-proxy modes
+    remain available for users who intentionally do not want Burp in the path.
+
+    Only valid application responses enter canonical evidence. A transport failure
+    breaks the sequential Run immediately: later Flow steps would no longer have a
+    trustworthy application state and therefore must not count as coverage.
     """
     import requests
+    import types
     import negro_core as core
     import negro_flows as flow_tools
 
@@ -675,17 +811,26 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                          (int(runner_id),runner.get("identity_id"),now,now,now))
         run_id=int(cur.lastrowid)
 
-    session=_build_session(cfg)
+    # Even Burp-transport Runs use an isolated cookie jar so Set-Cookie rotations
+    # can be carried into later Flow steps without mutating browser/Burp state.
+    session=requests.Session()
+    session.trust_env=False
+    if cfg["mode"] != "burp_bridge":
+        session=_build_session(cfg)
     extracted: dict[int,dict[str,str]]={}
     request_count=0; statuses=[]; errors=[]; exchange_ids=[]; execution_classes=[]
-    first_cookie_seed=True; result_flow_id=None
+    first_cookie_seed=True; result_flow_id=None; stop_after_transport_error=False
     try:
         for step in steps:
+            if stop_after_transport_error:
+                break
             if step["action"]=="omit":
                 continue
             repeats=int(step["repeat_count"] or 1) if step["action"]=="repeat" else 1
             repeats=max(1,min(20,repeats))
             for rep_idx in range(1,repeats+1):
+                if stop_after_transport_error:
+                    break
                 with core.db_connect(paths) as conn:
                     raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),runner.get("identity_id"))
                     vars_for_step=[dict(v) for v in conn.execute("SELECT * FROM runner_variables WHERE target_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall()]
@@ -702,8 +847,8 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                             raw=_replace_value(raw,str(var["target_value"] or ""),str(new_value))
                     method,url,headers,body=_split_raw_request(raw,base_url)
 
-                # Keep the original Host header when present. Requests still uses
-                # the URL hostname for TCP/SNI, while Host preserves vhost semantics.
+                # Cookies are state, not a static copy of the baseline. Seed them
+                # from the first captured Request and then carry server rotations.
                 cookie_header=None
                 for key in list(headers):
                     if key.lower()=="cookie": cookie_header=headers.pop(key)
@@ -722,43 +867,67 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                     raw_headers["Cookie"]="; ".join(f"{c.name}={c.value}" for c in session.cookies)
                 actual_raw=f"{method} {target} HTTP/1.1\r\n"+"\r\n".join(f"{k}: {v}" for k,v in raw_headers.items())+"\r\n\r\n"+body
                 req_b64=base64.b64encode(actual_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
-                proxy_url=_effective_proxy_for_url(session,url,cfg)
+                proxy_url=_effective_proxy_for_url(session,url,cfg) if cfg["mode"] != "burp_bridge" else None
                 transport_detail={
                     "mode":cfg["mode"],"proxy_used":bool(proxy_url),"proxy":proxy_url or "",
                     "url_host":request_line.hostname or "","host_header":raw_headers.get("Host") or raw_headers.get("host") or "",
                     "sni":request_line.hostname or "","verify_tls":cfg.get("verify_tls",True),
+                    "runner_step_id":int(step["id"]),"flow_step_position":int(step.get("position") or 0),
                 }
-                start=time.perf_counter(); error=None; resp=None; response_b64=None
+                start=time.perf_counter(); error=None; response_b64=None; status=None
+                response_headers: list[dict[str,str]]=[]; response_body_b64=None; response_text=""; canonical_request_b64=req_b64
+                exec_class="runner_error"
                 try:
-                    resp=session.request(method,url,headers=headers,data=body.encode("iso-8859-1",errors="replace"),
-                                         allow_redirects=False,timeout=cfg["timeout_seconds"],verify=_verify_value(cfg))
+                    if cfg["mode"] == "burp_bridge":
+                        item=_queue_bridge_execute(paths,resource_id=int(step["resource_id"]),method=method,url=url,request_b64=req_b64,timeout_seconds=int(cfg["timeout_seconds"]))
+                        elapsed=int(item.get("elapsed_ms") or ((time.perf_counter()-start)*1000))
+                        status=int(item["response_status"])
+                        response_b64=str(item.get("response_b64") or "") or None
+                        response_body_b64=str(item.get("response_body_b64") or "") or None
+                        response_headers=_headers_from_json(item.get("response_headers_json"))
+                        canonical_request_b64=str(item.get("result_request_b64") or req_b64)
+                        try:
+                            response_text=base64.b64decode(response_body_b64 or "",validate=False).decode("iso-8859-1",errors="replace")
+                        except Exception:
+                            response_text=""
+                        pseudo=types.SimpleNamespace(status_code=status,headers={h["name"]:h["value"] for h in response_headers},text=response_text)
+                        exec_class,detail=_classify_response(pseudo,proxy_url=None)
+                        transport_detail.update(detail)
+                        transport_detail.update({"bridge_queue_id":int(item["id"]),"bridge_instance_id":item.get("bridge_instance_id") or "","burp_transport":True})
+                        _apply_response_cookies(session,response_headers)
+                    else:
+                        resp=session.request(method,url,headers=headers,data=body.encode("iso-8859-1",errors="replace"),
+                                             allow_redirects=False,timeout=cfg["timeout_seconds"],verify=_verify_value(cfg))
+                        elapsed=int((time.perf_counter()-start)*1000)
+                        status=int(resp.status_code)
+                        exec_class,detail=_classify_response(resp,proxy_url=proxy_url)
+                        transport_detail.update(detail)
+                        response_raw=_response_raw(resp)
+                        response_b64=base64.b64encode(response_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
+                        response_headers=_headers_list(dict(resp.headers))
+                        response_body_b64=base64.b64encode(resp.content).decode("ascii")
+                        response_text=resp.text or ""
+                except BurpBridgeTransportError as exc:
                     elapsed=int((time.perf_counter()-start)*1000)
-                    status=int(resp.status_code)
-                    exec_class,detail=_classify_response(resp,proxy_url=proxy_url)
-                    transport_detail.update(detail)
-                    response_raw=_response_raw(resp)
-                    response_b64=base64.b64encode(response_raw.encode("iso-8859-1",errors="replace")).decode("ascii")
+                    exec_class=exc.execution_class
+                    error=f"{type(exc).__name__}: {str(exc)[:1000]}"; errors.append(error)
+                    transport_detail.update(exc.detail); transport_detail["error"]=str(exc)[:1000]
                 except Exception as exc:
-                    elapsed=int((time.perf_counter()-start)*1000); status=None
+                    elapsed=int((time.perf_counter()-start)*1000)
                     exec_class=_classify_exception(exc)
                     error=f"{type(exc).__name__}: {str(exc)[:1000]}"; errors.append(error)
                     transport_detail["exception_type"]=type(exc).__name__; transport_detail["error"]=str(exc)[:1000]
-                request_count+=1; execution_classes.append(exec_class)
 
+                request_count+=1; execution_classes.append(exec_class)
                 exid=None
-                if resp is not None and exec_class=="application_response":
+                if status is not None and exec_class=="application_response":
                     statuses.append(status)
-                    actual_headers=dict(headers)
-                    if session.cookies:
-                        actual_headers["Cookie"]="; ".join(f"{c.name}={c.value}" for c in session.cookies)
-                    # Ensure the exact Host used by the captured request remains in canonical evidence.
-                    host_key=next((k for k in raw_headers if k.lower()=="host"),None)
-                    if host_key: actual_headers[host_key]=raw_headers[host_key]
+                    actual_headers=dict(raw_headers)
                     result=core.upsert_http_observation(paths,domain,url=url,method=method,source="negro_runner",status_code=status,
-                        authenticated=bool(runner.get("identity_id")),request_content_type=resp.request.headers.get("Content-Type"),
-                        response_content_type=resp.headers.get("Content-Type"),tool="RUNNER",request_b64=req_b64,response_b64=response_b64,
-                        request_headers=_headers_list(actual_headers),response_headers=_headers_list(dict(resp.headers)),query=dict(urllib.parse.parse_qsl(request_line.query,keep_blank_values=True)),
-                        response_body_b64=base64.b64encode(resp.content).decode("ascii"))
+                        authenticated=bool(runner.get("identity_id")),request_content_type=next((v for k,v in actual_headers.items() if k.lower()=="content-type"),None),
+                        response_content_type=_header_value(response_headers,"Content-Type"),tool="RUNNER",request_b64=canonical_request_b64,response_b64=response_b64,
+                        request_headers=_headers_list(actual_headers),response_headers=response_headers,query=dict(urllib.parse.parse_qsl(request_line.query,keep_blank_values=True)),
+                        response_body_b64=response_body_b64)
                     exid=int(result["exchange_id"]); exchange_ids.append(exid)
                     with core.db_connect(paths) as conn:
                         if result_flow_id is None:
@@ -771,32 +940,37 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
                                 except Exception: pass
                         _postprocess_exchange(conn,exid,int(result["resource_id"]),int(result["host_id"]),domain,runner.get("identity_id"))
                         flow_tools.add_step(conn,result_flow_id,exid,allow_duplicate=True)
-                        # Extract values only from valid application responses.
-                        body_text=resp.text or ""; bucket=extracted.setdefault(int(step["id"]),{})
+                        bucket=extracted.setdefault(int(step["id"]),{})
                         for v in conn.execute("SELECT * FROM runner_variables WHERE source_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall():
                             if str(v["mode"])=="response_key":
-                                val=_extract_json_key(body_text,str(v["source_name"] or ""))
+                                val=_extract_json_key(response_text,str(v["source_name"] or ""))
                                 if val is not None: bucket[str(v["source_name"] or "")]=val
                             elif str(v["mode"])=="response_regex" and v["regex_pattern"]:
                                 try:
-                                    m=re.search(str(v["regex_pattern"]),body_text,re.I|re.S)
+                                    m=re.search(str(v["regex_pattern"]),response_text,re.I|re.S)
                                     if m: bucket[f"regex:{int(v['id'])}"]=m.group(1) if m.groups() else m.group(0)
                                 except re.error: pass
                 else:
-                    if resp is not None:
-                        errors.append(transport_detail.get("reason") or f"HTTP {status} clasificado como {exec_class}")
+                    if status is not None and not error:
+                        error=transport_detail.get("reason") or f"HTTP {status} clasificado como {exec_class}"
+                        errors.append(str(error))
+                    # A multi-step business Flow cannot remain trustworthy after a
+                    # transport failure. Stop instead of producing seven copies of
+                    # the same infrastructure error and pretending later steps ran.
+                    stop_after_transport_error=True
 
+                print(f"[runner-transport] run={run_id} step={step.get('position')} repeat={rep_idx} mode={cfg['mode']} class={exec_class} status={status} elapsed_ms={elapsed} url={url}", flush=True)
                 with core.db_connect(paths) as conn:
                     conn.execute("""INSERT INTO runner_run_requests(
                         run_id,runner_step_id,repeat_index,exchange_id,status_code,elapsed_ms,error,execution_class,
                         method,url,request_b64,response_b64,transport_detail_json,created_at)
                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (run_id,int(step["id"]),rep_idx,exid,status,elapsed,error,exec_class,method,url,req_b64,response_b64,
+                        (run_id,int(step["id"]),rep_idx,exid,status,elapsed,error,exec_class,method,url,canonical_request_b64,response_b64,
                          json.dumps(transport_detail,ensure_ascii=False),now_iso()))
 
         app_count=sum(1 for c in execution_classes if c=="application_response")
         failure_classes=[c for c in execution_classes if c!="application_response"]
-        if request_count and not failure_classes and app_count==request_count:
+        if request_count and not failure_classes and app_count==request_count and request_count==planned:
             run_class="application_response"; counts_as_test=1
         elif failure_classes:
             counts_as_test=0
@@ -812,9 +986,10 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int) -> dict[st
             if exchange_ids:
                 marks=",".join("?" for _ in exchange_ids)
                 sig_count=int(conn.execute(f"SELECT COUNT(*) c FROM signal_occurrences WHERE exchange_id IN ({marks}) AND COALESCE(human_decision,'new')!='dismissed'",tuple(exchange_ids)).fetchone()["c"] or 0)
-            summary={"requests":request_count,"application_responses":app_count,"transport_failures":len(failure_classes),
+            summary={"requests":request_count,"planned_requests":planned,"application_responses":app_count,"transport_failures":len(failure_classes),
                      "statuses":statuses,"errors":len(errors),"signals":sig_count,"exchange_ids":exchange_ids[:100],
-                     "execution_class":run_class,"counts_as_test":bool(counts_as_test),"transport":cfg}
+                     "execution_class":run_class,"counts_as_test":bool(counts_as_test),"transport":cfg,
+                     "stopped_early":bool(stop_after_transport_error and request_count < planned)}
             conn.execute("""UPDATE runner_runs SET status='completed',execution_class=?,counts_as_test=?,summary_json=?,finished_at=?,updated_at=? WHERE id=?""",
                          (run_class,counts_as_test,json.dumps(summary,ensure_ascii=False),now_iso(),now_iso(),run_id))
             conn.execute("UPDATE runners SET status='ready',updated_at=? WHERE id=?",(now_iso(),int(runner_id)))

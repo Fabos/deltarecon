@@ -485,39 +485,108 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   });
 });
 
-// v0.38 — Request Workbench: local search, copy, wrap and focus mode.
+// v0.41 — Request Workbench: readable HTTP, syntax cues, local search, copy and focus mode.
 (() => {
   const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const rebuildHighlights = (pane, query) => {
-    const content = pane?.querySelector('[data-http-content]');
-    const countEl = pane?.querySelector('[data-http-count]');
-    if (!content) return [];
-    if (content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
-    const raw = content.dataset.rawHttp || '';
+  const appendPiece = (parent, text, className, query) => {
+    const value = String(text ?? '');
     const q = String(query || '').trim();
-    content.replaceChildren();
+    const token = document.createElement('span');
+    if (className) token.className = className;
     if (!q) {
-      content.textContent = raw;
-      if (countEl) countEl.textContent = '0 coincidencias';
-      pane.dataset.httpMatchIndex = '0';
-      return [];
+      token.textContent = value;
+      parent.appendChild(token);
+      return;
     }
     const re = new RegExp(escapeRegExp(q), 'gi');
-    let last = 0;
-    let match;
-    let guard = 0;
-    while ((match = re.exec(raw)) && guard < 5000) {
-      if (match.index > last) content.appendChild(document.createTextNode(raw.slice(last, match.index)));
+    let last = 0, match, guard = 0;
+    while ((match = re.exec(value)) && guard < 5000) {
+      if (match.index > last) token.appendChild(document.createTextNode(value.slice(last, match.index)));
       const mark = document.createElement('mark');
       mark.className = 'http-match';
       mark.textContent = match[0];
-      content.appendChild(mark);
+      token.appendChild(mark);
       last = match.index + match[0].length;
       if (!match[0].length) re.lastIndex += 1;
       guard += 1;
     }
-    if (last < raw.length) content.appendChild(document.createTextNode(raw.slice(last)));
+    if (last < value.length) token.appendChild(document.createTextNode(value.slice(last)));
+    parent.appendChild(token);
+  };
+
+  const appendBodySyntax = (parent, line, query) => {
+    // Lightweight lexer: JSON strings/keys, numbers/booleans and form/query keys.
+    const tokenRe = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+(?:\.\d+)?\b)|\b(true|false|null)\b|\b([A-Za-z_][A-Za-z0-9_.-]*)(=)/g;
+    let last = 0, match, guard = 0;
+    while ((match = tokenRe.exec(line)) && guard < 2000) {
+      if (match.index > last) appendPiece(parent, line.slice(last, match.index), '', query);
+      if (match[1] !== undefined) {
+        appendPiece(parent, match[1], match[2] ? 'http-token-key' : 'http-token-string', query);
+        if (match[2]) appendPiece(parent, match[2], 'http-token-punctuation', query);
+      } else if (match[3] !== undefined) {
+        appendPiece(parent, match[3], 'http-token-number', query);
+      } else if (match[4] !== undefined) {
+        appendPiece(parent, match[4], 'http-token-literal', query);
+      } else if (match[5] !== undefined) {
+        appendPiece(parent, match[5], 'http-token-key', query);
+        appendPiece(parent, match[6], 'http-token-punctuation', query);
+      }
+      last = match.index + match[0].length;
+      guard += 1;
+    }
+    if (last < line.length) appendPiece(parent, line.slice(last), '', query);
+  };
+
+  const renderHttp = (pane, query = '') => {
+    const content = pane?.querySelector('[data-http-content]');
+    const countEl = pane?.querySelector('[data-http-count]');
+    if (!content) return [];
+    if (content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+    const raw = String(content.dataset.rawHttp || '').replace(/\r\n/g, '\n');
+    const lines = raw.split('\n');
+    content.replaceChildren();
+    let inHeaders = true;
+
+    lines.forEach((line, index) => {
+      const row = document.createElement('span');
+      row.className = 'http-line';
+      row.dataset.line = String(index + 1);
+      const code = document.createElement('span');
+      code.className = 'http-line-code';
+      row.appendChild(code);
+
+      if (index === 0) {
+        const req = line.match(/^([A-Z]+)\s+(\S+)\s+(HTTP\/\S+)$/);
+        const res = line.match(/^(HTTP\/\S+)\s+(\d{3})(?:\s+(.*))?$/);
+        if (req) {
+          appendPiece(code, req[1], 'http-token-method', query); appendPiece(code, ' ', '', query);
+          appendPiece(code, req[2], 'http-token-target', query); appendPiece(code, ' ', '', query);
+          appendPiece(code, req[3], 'http-token-protocol', query);
+        } else if (res) {
+          const status = Number(res[2]);
+          appendPiece(code, res[1], 'http-token-protocol', query); appendPiece(code, ' ', '', query);
+          appendPiece(code, res[2], status < 300 ? 'http-token-status-ok' : status < 400 ? 'http-token-status-redirect' : 'http-token-status-error', query);
+          if (res[3]) { appendPiece(code, ' ', '', query); appendPiece(code, res[3], 'http-token-status-text', query); }
+        } else appendPiece(code, line, '', query);
+      } else if (inHeaders && line === '') {
+        inHeaders = false;
+        row.classList.add('http-separator-line');
+        appendPiece(code, ' ', '', query);
+      } else if (inHeaders && line.includes(':')) {
+        const pos = line.indexOf(':');
+        const name = line.slice(0, pos);
+        const value = line.slice(pos + 1);
+        const sensitive = /^(authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(name.trim());
+        appendPiece(code, name, sensitive ? 'http-token-header-name http-token-sensitive' : 'http-token-header-name', query);
+        appendPiece(code, ':', 'http-token-punctuation', query);
+        appendPiece(code, value, sensitive ? 'http-token-header-value http-token-sensitive-value' : 'http-token-header-value', query);
+      } else {
+        appendBodySyntax(code, line, query);
+      }
+      content.appendChild(row);
+    });
+
     const marks = [...content.querySelectorAll('.http-match')];
     if (countEl) countEl.textContent = `${marks.length} coincidencia${marks.length === 1 ? '' : 's'}`;
     pane.dataset.httpMatchIndex = '0';
@@ -532,9 +601,10 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const expand = pane.querySelector('[data-http-expand]');
     const content = pane.querySelector('[data-http-content]');
     if (content && content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+    renderHttp(pane, '');
 
     input?.addEventListener('input', () => {
-      const marks = rebuildHighlights(pane, input.value);
+      const marks = renderHttp(pane, input.value);
       if (marks[0]) {
         marks[0].classList.add('current');
         marks[0].scrollIntoView({block:'center'});
@@ -601,8 +671,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
         ${steps||vars?`<div class="runner-draft-preview"><b>Runner sugerido · ${esc(idea.alias||'Borrador')}</b><div>${steps}${vars}</div></div>`:''}
         <details><summary>Por qué / qué falta</summary><div class="grid two"><div><b>Hechos</b><ul>${facts||'<li>Sin hechos adicionales.</li>'}</ul></div><div><b>Incógnitas</b><ul>${unknowns||'<li>Sin incógnitas listadas.</li>'}</ul></div></div>${review?`<div><b>Revisar antes de ejecutar</b><ul>${review}</ul></div>`:''}<p><b>Confirmaría interés si:</b> ${esc(idea.confirm_if||'')}</p><p><b>Descartaría si:</b> ${esc(idea.discard_if||'')}</p></details>
         <div class="flow-idea-actions">
-          ${idea.runner?`<form action="${base}/flows/${flowId}/runners/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="create_hypothesis" value="1"><textarea name="idea_json" hidden>${payload}</textarea><button class="button" type="submit">▶ Convertir en Runner</button></form>`:''}
-          <form action="${base}/flows/${flowId}/hypothesis/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><textarea name="idea_json" hidden>${payload}</textarea><button class="btn-secondary" type="submit">◆ Guardar como Hipótesis</button></form>
+          <form action="${base}/flows/${flowId}/hypothesis/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><textarea name="idea_json" hidden>${payload}</textarea><button class="btn-secondary" type="submit">◆ Convertir en Hipótesis</button></form>
         </div>
       </article>`;
     };
@@ -643,12 +712,12 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   }
 })();
 
-// v0.40 · Runner transport diagnostic (explicit, one HEAD request)
+// v0.41 · Runner transport diagnostic (explicit, one HEAD request)
 (()=>{
   document.querySelectorAll('[data-transport-diagnose]').forEach(btn=>{
     btn.addEventListener('click',async()=>{
       const out=btn.closest('.transport-diagnostic')?.querySelector('[data-transport-result]');
-      btn.disabled=true;if(out)out.textContent='Diagnosticando DNS, TCP, TLS/SNI y transporte HTTP…';
+      btn.disabled=true;if(out)out.textContent='Comprobando transporte del Runner…';
       try{
         const r=await fetch(btn.dataset.url,{headers:{Accept:'application/json'}});
         const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);

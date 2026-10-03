@@ -1,4 +1,21 @@
-# Negro Recon — Metodología v0.40.0
+# Negro Recon — Metodología v0.41.0
+
+
+## v0.41 — Regla → Signal; pregunta elegida → prueba
+
+La semántica queda estricta:
+
+```text
+Regla ──match──> Signal
+
+Idea IA ──decisión humana──┐
+                           ├─> Hipótesis ─> prueba manual / Runner ─> Finding o nada
+Pregunta propia ───────────┘
+```
+
+No existe “Signal manual”. Una observación humana que quieres recordar debe convertirse en **Regla** si deseas que Negro la vigile, o en **Hipótesis** si ya es una pregunta que vas a testear. Descartar una Signal conserva su evidencia y decisión humana.
+
+El transporte recomendado del Runner es Burp Bridge: el replay debe recorrer la misma pila de red de Burp siempre que Burp sea la fuente del tráfico original. Un fallo de DNS/TCP/TLS/proxy/timeout es diagnóstico de ejecución, no comportamiento del aplicativo.
 
 
 ## v0.40 — Evidence → AI Idea → decisión humana → prueba válida

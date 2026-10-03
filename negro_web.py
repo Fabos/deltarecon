@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.40.
+"""Local web workspace for Negro Recon v0.41.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -55,6 +55,7 @@ REPEATER_CLEANUP_INTERVAL_SECONDS = 30.0
 REPEATER_BRIDGE_LOCK = threading.Lock()
 REPEATER_ACTIVE_BRIDGE_ID: str | None = None
 REPEATER_ACTIVE_BRIDGE_LAST_SEEN = 0.0
+REPEATER_ACTIVE_BRIDGE_VERSION: str | None = None
 REPEATER_BRIDGE_LEASE_SECONDS = 5.0
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -497,7 +498,7 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
         hypotheses = conn.execute(
             """SELECT id,resource_id,title,status,review_priority,evidence_json,updated_at
                FROM leads_v2
-               WHERE upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1
+               WHERE (upper(COALESCE(source,'')) IN ('MANUAL','AI_IDEA') OR promoted_investigation_id IS NOT NULL) AND COALESCE(rule_active,1)=1
                  AND status NOT IN ('negative','discarded')
                ORDER BY updated_at DESC,id DESC LIMIT 600"""
         ).fetchall()
@@ -680,7 +681,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
         hunter.init_schema(conn)
         sql = """SELECT l.*, h.hostname, r.url AS resource_url FROM leads_v2 l
                  LEFT JOIN hosts h ON h.id=l.host_id LEFT JOIN resources r ON r.id=l.resource_id
-                 WHERE upper(COALESCE(l.source,''))='AI'"""
+                 WHERE (upper(COALESCE(l.source,'')) IN ('MANUAL','AI_IDEA') OR l.promoted_investigation_id IS NOT NULL)"""
         params: list[Any] = []
         if validity == "current":
             sql += " AND COALESCE(l.rule_active,1)=1"
@@ -691,8 +692,11 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             like=f"%{q.lower()}%"; params += [like,like,like]
         if status:
             sql += " AND l.status=?"; params.append(status)
-        # Hunt hypotheses are AI-only in v0.20.3. `source` remains accepted
-        # for backward-compatible URLs, but ENGINE matches stay Signals.
+        # A Hypothesis is human-owned. It may originate from a manual question or
+        # from an AI Idea the investigator explicitly chose to pursue. Signals are
+        # never promoted automatically into this list.
+        if source:
+            sql += " AND upper(COALESCE(l.source,''))=?"; params.append(str(source).upper())
         if kind:
             sql += " AND l.lead_type=?"; params.append(kind)
         sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, l.updated_at DESC LIMIT 500"
@@ -743,6 +747,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
             resolved_node_ids=list(dict.fromkeys(node_ids+evidence_exchange_nodes))
             item['node_ids']=resolved_node_ids
+            item['flow_ids']=[int(x.split(':',1)[1]) for x in resolved_node_ids if x.startswith('flow:') and x.split(':',1)[1].isdigit()]
             refs=hunter.hypothesis_refs_from_nodes(conn,resolved_node_ids) if resolved_node_ids else {'evidence_refs':[],'resource_id':item.get('resource_id'),'primary_method':None,'primary_exchange_id':None}
             item.update(refs)
             evidence_count=len(item.get('evidence_refs') or [])
@@ -1323,7 +1328,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
         # per-method coverage remains available lower in the HTTP section.
         resource_hypotheses = []
         for l in conn.execute(
-            """SELECT * FROM leads_v2 WHERE resource_id=? AND upper(COALESCE(source,''))='AI' AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')
+            """SELECT * FROM leads_v2 WHERE resource_id=? AND (upper(COALESCE(source,'')) IN ('MANUAL','AI_IDEA') OR promoted_investigation_id IS NOT NULL) AND COALESCE(rule_active,1)=1 AND status NOT IN ('negative','discarded')
                ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'interesting' THEN 1 WHEN 'testing' THEN 2
                                     WHEN 'candidate' THEN 3 WHEN 'postponed' THEN 4 ELSE 5 END,
                         CASE review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
@@ -3137,7 +3142,7 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         validity = validity if validity in {"current","inactive","all"} else "current"
-        rows = _hypothesis_rows(paths, q=q, status=status, source="AI", kind=kind, validity=validity)
+        rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
         signals = _pending_signal_rows(paths, 120)
         investigations = _investigation_rows(paths, 200)
         with _db(paths) as conn:
@@ -3155,7 +3160,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals, investigations=investigations,
                       state_counts=state_counts, learning_backlog=learning_backlog,
                       identities=identities,
-                      q=q, hypothesis_status=status, hypothesis_source="AI", hypothesis_kind=kind,
+                      q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind,
                       hypothesis_kinds=kinds, hypothesis_validity=validity)
 
     @app.post("/t/{target_key}/hypothesis/{lead_id}/update")
@@ -3289,17 +3294,12 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/signal")
-    def exchange_create_signal(target_key: str, exchange_id: int, title: str = Form(...), note: str = Form(""), investigation_id: str = Form(""), csrf: str = Form(...)):
-        import negro_hunter as hunter
-        verify_csrf(csrf); _,_,paths=_target_context(target_key)
-        with _db(paths) as conn:
-            ex=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(exchange_id),)).fetchone()
-            if not ex: raise HTTPException(status_code=404,detail="Request no encontrada")
-            sid=hunter.create_manual_signal(conn,int(exchange_id),title=title,note=note)
-            if str(investigation_id).isdigit(): hunter.link_investigation_entity(conn,int(investigation_id),"signal",sid,"evidence")
-            _refresh_search(conn,resource_id=int(ex["resource_id"]),exchange_id=int(exchange_id))
-            resource_id=int(ex["resource_id"])
-        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={int(exchange_id)}#exchange-{int(exchange_id)}",status_code=303)
+    def exchange_create_signal(target_key: str, exchange_id: int, csrf: str = Form(...)):
+        # v0.41: Signals are machine evidence emitted only by Rules. Keep the old
+        # endpoint as an explicit compatibility guard instead of silently creating
+        # a manual Signal from stale UI/bookmarks.
+        verify_csrf(csrf)
+        raise HTTPException(status_code=410, detail="Las Señales sólo nacen de Reglas. Desde una Request crea una Regla o una Hipótesis.")
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/hypothesis")
     def exchange_create_hypothesis(target_key: str, exchange_id: int, title: str = Form(...), why: str = Form(""), next_test: str = Form(""), investigation_id: str = Form(""), csrf: str = Form(...)):
@@ -3770,8 +3770,21 @@ def create_app(default_domain: str, default_workspace: Path):
             identities = identity_tools.list_identities(conn)
         planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
         active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
+        now_ts=datetime.now(timezone.utc).timestamp()
+        with REPEATER_BRIDGE_LOCK:
+            bridge_id=REPEATER_ACTIVE_BRIDGE_ID
+            bridge_seen=REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+            bridge_version=REPEATER_ACTIVE_BRIDGE_VERSION
+        bridge_active=bool(bridge_id and (now_ts-bridge_seen)<=REPEATER_BRIDGE_LEASE_SECONDS)
+        bridge_status={
+            "active": bridge_active,
+            "instance": str(bridge_id or "")[:8] or None,
+            "version": str(bridge_version or "") or None,
+            "runner_transport_ready": bool(bridge_active and _bridge_supports_execute(str(bridge_version or ""))),
+            "last_seen_seconds_ago": round(max(0.0,now_ts-bridge_seen),2) if bridge_id else None,
+        }
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
-                      planned_requests=planned, active_steps=active_steps, job=job, transport=runner_tools.transport_settings())
+                      planned_requests=planned, active_steps=active_steps, job=job, transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
     @app.post("/t/{target_key}/flows/{flow_id}/investigation")
     def flow_attach_investigation(target_key: str, flow_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
@@ -3826,55 +3839,13 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.post("/t/{target_key}/ai-ideas/{idea_id}/runner")
     def ai_idea_to_runner(target_key: str, idea_id: int, csrf: str = Form(...)):
-        import negro_hunter as hunter
-        import negro_runners as runner_tools
-        verify_csrf(csrf); _,_,paths=_target_context(target_key)
-        with _db(paths) as conn:
-            idea=hunter.get_ai_idea(conn,int(idea_id))
-            if not idea: raise HTTPException(status_code=404,detail="Idea IA no encontrada")
-            # Crear un Runner es una decisión humana de perseguir la idea, por eso materializamos
-            # también la Hipótesis. La IA nunca ejecuta ni promueve por sí sola.
-            hid=int(idea.get("converted_hypothesis_id") or 0)
-            if not hid:
-                hid=runner_tools.create_hypothesis_from_idea(conn,flow_id=int(idea["flow_id"]),idea=idea)
-            inv_id=idea.get("investigation_id")
-            if not inv_id:
-                linked=conn.execute("""SELECT DISTINCT i.id FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
-                                       WHERE l.entity_type='flow' AND l.entity_id=? AND i.status!='closed' ORDER BY i.updated_at DESC LIMIT 2""",(int(idea["flow_id"]),)).fetchall()
-                if len(linked)==1: inv_id=int(linked[0]["id"])
-            draft=idea.get("runner") if isinstance(idea.get("runner"),dict) else {}
-            rid=runner_tools.create_runner_from_flow(conn,int(idea["flow_id"]),alias=str(idea.get("alias") or idea.get("question") or "Runner IA"),
-                description=str(draft.get("description") or idea.get("test_goal") or idea.get("rationale") or ""),hypothesis_id=hid,
-                investigation_id=int(inv_id) if inv_id else None,origin="ai_idea",ai_idea=idea,
-                step_actions=list(draft.get("step_actions") or []),variables=list(draft.get("variables") or []))
-            conn.execute("UPDATE ai_ideas SET converted_hypothesis_id=?,status='investigating',investigation_id=COALESCE(investigation_id,?),updated_at=? WHERE id=?",
-                         (hid,int(inv_id) if inv_id else None,_now(),int(idea_id)))
-            if inv_id:
-                hunter.link_investigation_entity(conn,int(inv_id),"ai_idea",int(idea_id),"origin")
-                hunter.link_investigation_entity(conn,int(inv_id),"hypothesis",hid,"pursuing")
-        return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
+        verify_csrf(csrf)
+        raise HTTPException(status_code=410, detail="Una Idea IA no crea un Runner directamente. Conviértela primero en Hipótesis; el Runner es una forma de probar una Hipótesis humana.")
 
     @app.post("/t/{target_key}/flows/{flow_id}/runners/from-ai")
     def runner_create_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), create_hypothesis: str = Form("1"), csrf: str = Form(...)):
-        import negro_runners as runner_tools
         verify_csrf(csrf)
-        _, _, paths = _target_context(target_key)
-        try:
-            idea = json.loads(idea_json)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Idea IA inválida")
-        if not isinstance(idea, dict):
-            raise HTTPException(status_code=400, detail="Idea IA inválida")
-        with _db(paths) as conn:
-            hypothesis_id = runner_tools.create_hypothesis_from_idea(conn, flow_id=int(flow_id), idea=idea) if str(create_hypothesis) != "0" else None
-            draft = idea.get("runner") if isinstance(idea.get("runner"), dict) else {}
-            runner_id = runner_tools.create_runner_from_flow(
-                conn, int(flow_id), alias=str(idea.get("alias") or idea.get("question") or "Runner IA"),
-                description=str(draft.get("description") or idea.get("test_goal") or idea.get("rationale") or ""),
-                hypothesis_id=hypothesis_id, origin="ai_flow", ai_idea=idea,
-                step_actions=list(draft.get("step_actions") or []), variables=list(draft.get("variables") or []),
-            )
-        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+        raise HTTPException(status_code=410, detail="La IA sólo propone Ideas. Convierte la Idea en Hipótesis antes de crear un Runner.")
 
     @app.post("/t/{target_key}/flows/{flow_id}/hypothesis/from-ai")
     def flow_hypothesis_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), csrf: str = Form(...)):
@@ -3889,13 +3860,30 @@ def create_app(default_domain: str, default_workspace: Path):
             hypothesis_id = runner_tools.create_hypothesis_from_idea(conn, flow_id=int(flow_id), idea=idea)
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hypothesis_id}", status_code=303)
 
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/runner")
+    def hypothesis_create_runner(target_key: str, lead_id: int, flow_id: int = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            h=conn.execute("SELECT * FROM leads_v2 WHERE id=?",(int(lead_id),)).fetchone()
+            if not h: raise HTTPException(status_code=404,detail="Hipótesis no encontrada")
+            flow=conn.execute("SELECT id FROM flows WHERE id=?",(int(flow_id),)).fetchone()
+            if not flow: raise HTTPException(status_code=404,detail="Flujo base no encontrado")
+            inv_id=h["promoted_investigation_id"] if "promoted_investigation_id" in h.keys() else None
+            rid=runner_tools.create_runner_from_flow(
+                conn,int(flow_id),alias=str(h["title"] or f"Hipótesis {lead_id}")[:180],
+                description=str(h["next_test"] or h["why_interesting"] or "Prueba de Hipótesis")[:5000],
+                hypothesis_id=int(lead_id),investigation_id=int(inv_id) if inv_id else None,origin="hypothesis_manual",
+            )
+        return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
+
     @app.post("/t/{target_key}/runners/{runner_id}/transport")
     def runner_transport_update(target_key: str, runner_id: int, mode: str = Form("direct"), proxy_url: str = Form(""), verify_tls: str = Form("1"), ca_bundle: str = Form(""), timeout_seconds: int = Form(20), csrf: str = Form(...)):
         import negro_intel as intel
         verify_csrf(csrf); _,_,paths=_target_context(target_key)
-        if mode not in {"direct","environment","proxy"}: raise HTTPException(status_code=400,detail="Modo de transporte inválido")
+        if mode not in {"burp_bridge","direct","environment","proxy"}: raise HTTPException(status_code=400,detail="Modo de transporte inválido")
         if mode=="proxy" and not str(proxy_url).strip(): raise HTTPException(status_code=400,detail="Indica la URL del proxy explícito (por ejemplo, Burp accesible desde Negro)")
-        intel.save_settings({"runner_transport_mode":mode,"runner_proxy_url":str(proxy_url).strip(),"runner_verify_tls":str(verify_tls)!="0",
+        intel.save_settings({"runner_transport_mode":mode,"runner_transport_generation":2,"runner_proxy_url":str(proxy_url).strip(),"runner_verify_tls":str(verify_tls)!="0",
                              "runner_ca_bundle":str(ca_bundle).strip(),"runner_timeout_seconds":max(3,min(int(timeout_seconds),120))})
         return RedirectResponse(url=f"/t/{target_key}/runners/{int(runner_id)}#transport",status_code=303)
 
@@ -3907,7 +3895,31 @@ def create_app(default_domain: str, default_workspace: Path):
             row=conn.execute("""SELECT r.url FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
                                 JOIN http_exchanges e ON e.id=fs.exchange_id JOIN resource_operations o ON o.id=e.operation_id
                                 JOIN resources r ON r.id=o.resource_id WHERE rs.runner_id=? AND rs.action!='omit' ORDER BY rs.position LIMIT 1""",(int(runner_id),)).fetchone()
+            latest=conn.execute("""SELECT id,status,job_kind,error,response_status,elapsed_ms,created_at,claimed_at,finished_at,bridge_instance_id
+                                   FROM burp_repeater_queue WHERE job_kind='execute' ORDER BY id DESC LIMIT 1""").fetchone()
         if not row: raise HTTPException(status_code=400,detail="El Runner no tiene pasos activos")
+        cfg=runner_tools.transport_settings()
+        if cfg.get("mode") == "burp_bridge":
+            now_ts=datetime.now(timezone.utc).timestamp()
+            with REPEATER_BRIDGE_LOCK:
+                active_id=REPEATER_ACTIVE_BRIDGE_ID
+                last_seen=REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+                version=REPEATER_ACTIVE_BRIDGE_VERSION
+            active=bool(active_id and (now_ts-last_seen)<=REPEATER_BRIDGE_LEASE_SECONDS)
+            ready=bool(active and _bridge_supports_execute(str(version or "")))
+            notes=[]
+            if not active:
+                notes.append("No hay una extensión Negro Burp Bridge activa. Carga/reemplaza el JAR v0.27.0+ y deja Burp abierto.")
+            elif not ready:
+                notes.append(f"Burp Bridge {version or '?'} está conectado, pero Runner requiere v0.27.0 o superior.")
+            else:
+                notes.append("Burp Bridge está listo. El próximo Run se enviará desde Burp usando su propia pila DNS/TCP/TLS/proxy.")
+            return {
+                "mode":"burp_bridge","target_url":str(row["url"]),"ready":ready,
+                "bridge":{"active":active,"instance":str(active_id or "")[:8] or None,"version":version,
+                          "runner_transport_ready":ready,"last_seen_seconds_ago":round(max(0.0,now_ts-last_seen),2) if active_id else None},
+                "latest_execute_job":dict(latest) if latest else None,"notes":notes,
+            }
         try: return runner_tools.diagnose_transport(str(row["url"]))
         except Exception as exc: raise HTTPException(status_code=400,detail=str(exc))
 
@@ -5381,7 +5393,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if now_ts - REPEATER_LAST_CLEANUP_TS < REPEATER_CLEANUP_INTERVAL_SECONDS:
                 return 0
             REPEATER_LAST_CLEANUP_TS = now_ts
-            cutoff = now_ts - 30
+            cutoff = now_ts - 180
             recovered = 0
             for target in core.list_targets():
                 info = _bridge_workspace_paths(target)
@@ -5408,8 +5420,8 @@ def create_app(default_domain: str, default_workspace: Path):
             REPEATER_CLEANUP_LOCK.release()
 
 
-    def _bridge_consumer_allowed(bridge_id: str) -> tuple[bool, str | None]:
-        global REPEATER_ACTIVE_BRIDGE_ID, REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+    def _bridge_consumer_allowed(bridge_id: str, bridge_version: str = "") -> tuple[bool, str | None]:
+        global REPEATER_ACTIVE_BRIDGE_ID, REPEATER_ACTIVE_BRIDGE_LAST_SEEN, REPEATER_ACTIVE_BRIDGE_VERSION
         now_ts = datetime.now(timezone.utc).timestamp()
         with REPEATER_BRIDGE_LOCK:
             active = REPEATER_ACTIVE_BRIDGE_ID
@@ -5417,8 +5429,17 @@ def create_app(default_domain: str, default_workspace: Path):
             if not active or active == bridge_id or stale:
                 REPEATER_ACTIVE_BRIDGE_ID = bridge_id
                 REPEATER_ACTIVE_BRIDGE_LAST_SEEN = now_ts
+                REPEATER_ACTIVE_BRIDGE_VERSION = str(bridge_version or "")
                 return True, None
             return False, active
+
+    def _bridge_supports_execute(version: str) -> bool:
+        try:
+            parts=[int(x) for x in re.findall(r"\d+", str(version or ""))[:3]]
+            while len(parts)<3: parts.append(0)
+            return tuple(parts) >= (0,27,0)
+        except Exception:
+            return False
 
     @app.get("/api/bridge/repeater/status", response_class=JSONResponse)
     def bridge_repeater_status():
@@ -5434,7 +5455,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     for row in conn.execute("SELECT status, COUNT(*) AS n FROM burp_repeater_queue GROUP BY status").fetchall():
                         st = str(row["status"] or "")
                         if st in totals: totals[st] += int(row["n"] or 0)
-                    row = conn.execute("SELECT id,status,method,url,created_at,claimed_at,finished_at,error FROM burp_repeater_queue ORDER BY id DESC LIMIT 1").fetchone()
+                    row = conn.execute("SELECT id,status,job_kind,method,url,created_at,claimed_at,finished_at,error,response_status,elapsed_ms FROM burp_repeater_queue ORDER BY id DESC LIMIT 1").fetchone()
                     if row:
                         latest.append({"target_key": str(target["key"]), "domain": domain, **dict(row)})
             except Exception:
@@ -5444,9 +5465,12 @@ def create_app(default_domain: str, default_workspace: Path):
         with REPEATER_BRIDGE_LOCK:
             active = REPEATER_ACTIVE_BRIDGE_ID
             last_seen = REPEATER_ACTIVE_BRIDGE_LAST_SEEN
+            active_version = REPEATER_ACTIVE_BRIDGE_VERSION
         bridge = {
             "active": bool(active and (now_ts - last_seen) <= REPEATER_BRIDGE_LEASE_SECONDS),
             "instance": str(active or "")[:8] or None,
+            "version": active_version,
+            "runner_transport_ready": bool(active and (now_ts-last_seen)<=REPEATER_BRIDGE_LEASE_SECONDS and _bridge_supports_execute(str(active_version or ""))),
             "last_seen_seconds_ago": round(max(0.0, now_ts - last_seen), 2) if active else None,
         }
         return {"ok": True, "version": core.VERSION, "counts": totals, "bridge": bridge, "latest": latest[:10]}
@@ -5461,7 +5485,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 status_code=428,
                 content={"pending": False, "error": "bridge_id_required", "required_version": "0.20.3"},
             )
-        allowed, active_id = _bridge_consumer_allowed(bridge_id)
+        allowed, active_id = _bridge_consumer_allowed(bridge_id, bridge_version)
         if not allowed:
             return {"pending": False, "busy": True, "active_bridge": str(active_id or "")[:8]}
 
@@ -5501,11 +5525,13 @@ def create_app(default_domain: str, default_workspace: Path):
 
         pending.sort(key=lambda x: (x[0], int(x[4].get("id") or 0)))
         _, target_key, domain, paths, item = pending[0]
+        if str(item.get("job_kind") or "repeater") == "execute" and not _bridge_supports_execute(bridge_version):
+            return {"pending": False, "upgrade_required": True, "required_bridge_version": "0.27.0", "installed_bridge_version": bridge_version or None}
         try:
             with _db(paths) as conn:
                 cur = conn.execute(
-                    "UPDATE burp_repeater_queue SET status='claimed', claimed_at=? WHERE id=? AND status='pending'",
-                    (_now(), item["id"]),
+                    "UPDATE burp_repeater_queue SET status='claimed', claimed_at=?, bridge_instance_id=? WHERE id=? AND status='pending'",
+                    (_now(), bridge_id, item["id"]),
                 )
                 if cur.rowcount != 1:
                     return {"pending": False}
@@ -5533,9 +5559,19 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception:
             payload = {}
         ok = bool(payload.get("ok")) if isinstance(payload, dict) else False
-        error = str(payload.get("error") or "")[:1000] if isinstance(payload, dict) else ""
+        error = str(payload.get("error") or "")[:2000] if isinstance(payload, dict) else ""
         with _db(paths) as conn:
-            conn.execute("UPDATE burp_repeater_queue SET status=?, finished_at=?, error=? WHERE id=?", ("done" if ok else "error", _now(), error or None, queue_id))
+            row=conn.execute("SELECT job_kind,method,url,bridge_instance_id FROM burp_repeater_queue WHERE id=?",(int(queue_id),)).fetchone()
+            conn.execute("""UPDATE burp_repeater_queue SET status=?,finished_at=?,error=?,result_request_b64=?,response_b64=?,response_body_b64=?,
+                            response_headers_json=?,response_status=?,result_url=?,elapsed_ms=? WHERE id=?""",
+                         ("done" if ok else "error",_now(),error or None,
+                          str(payload.get("request_b64") or "") or None,str(payload.get("response_b64") or "") or None,
+                          str(payload.get("response_body_b64") or "") or None,
+                          json.dumps(payload.get("response_headers") or [],ensure_ascii=False) if isinstance(payload.get("response_headers"),list) else None,
+                          int(payload["status_code"]) if payload.get("status_code") is not None else None,
+                          str(payload.get("url") or "") or None,int(payload.get("elapsed_ms") or 0) or None,int(queue_id)))
+        if row and str(row["job_kind"] or "repeater")=="execute":
+            print(f"[runner-bridge] ack queue={queue_id} ok={ok} bridge={str(row['bridge_instance_id'] or '')[:8]} status={payload.get('status_code')} elapsed_ms={payload.get('elapsed_ms')} error={error or '-'}",flush=True)
         return {"ok": True}
 
     @app.get("/api/t/{target_key}/jobs", response_class=JSONResponse)

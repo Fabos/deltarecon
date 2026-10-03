@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Negro Recon v0.40.0
+Negro Recon v0.41.0
 "Olfatea donde otros no miran."
 
 Passive-first Bug Bounty reconnaissance organizer.
@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.40.0"
+VERSION = "0.41.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -470,6 +470,15 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
                 claimed_at TEXT,
                 finished_at TEXT,
                 error TEXT,
+                job_kind TEXT NOT NULL DEFAULT 'repeater',
+                result_request_b64 TEXT,
+                response_b64 TEXT,
+                response_body_b64 TEXT,
+                response_headers_json TEXT,
+                response_status INTEGER,
+                result_url TEXT,
+                elapsed_ms INTEGER,
+                bridge_instance_id TEXT,
                 FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE
             );
 
@@ -632,6 +641,23 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         finding_cols = {row["name"] for row in conn.execute("PRAGMA table_info(findings)")}
         if "source" not in finding_cols:
             conn.execute("ALTER TABLE findings ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+
+        # v0.41: the existing Burp queue is now also the transport bridge for Runner.
+        # Reusing the same queue avoids inventing a second Burp integration path.
+        queue_cols = {row["name"] for row in conn.execute("PRAGMA table_info(burp_repeater_queue)")}
+        for col, ddl in {
+            "job_kind": "TEXT NOT NULL DEFAULT 'repeater'",
+            "result_request_b64": "TEXT",
+            "response_b64": "TEXT",
+            "response_body_b64": "TEXT",
+            "response_headers_json": "TEXT",
+            "response_status": "INTEGER",
+            "result_url": "TEXT",
+            "elapsed_ms": "INTEGER",
+            "bridge_instance_id": "TEXT",
+        }.items():
+            if col not in queue_cols:
+                conn.execute(f"ALTER TABLE burp_repeater_queue ADD COLUMN {col} {ddl}")
 
         js_cols = {row["name"] for row in conn.execute("PRAGMA table_info(js_assets)")}
         if "sourcemap_analysis_json" not in js_cols:

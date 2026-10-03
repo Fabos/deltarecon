@@ -12,6 +12,7 @@ import negro_flows as flows
 import negro_objects as objects
 import negro_runners as runners
 import negro_intel as intel
+import negro_custom_signals as rules
 from negro_web import create_app
 from fastapi.testclient import TestClient
 
@@ -45,7 +46,7 @@ def main():
     old_cfg_dir,old_settings=intel.CONFIG_DIR,intel.SETTINGS_PATH
     try:
       core.TARGETS_PATH=root/'targets.json'; intel.CONFIG_DIR=root/'config'; intel.SETTINGS_PATH=intel.CONFIG_DIR/'settings.json'
-      intel.save_settings({'runner_transport_mode':'direct','runner_verify_tls':True,'runner_timeout_seconds':5})
+      intel.save_settings({'runner_transport_mode':'direct','runner_transport_generation':2,'runner_verify_tls':True,'runner_timeout_seconds':5})
       domain='v040.local'; workspace=root/'workspace'; paths=core.ensure_workspace(workspace,domain)
       ex=capture(paths,domain)
       with core.db_connect(paths) as conn:
@@ -58,7 +59,12 @@ def main():
         obs=conn.execute("SELECT exchange_id FROM business_object_observations WHERE business_object_id=? ORDER BY id DESC LIMIT 1",(int(entity['business_object_id']),)).fetchone()
         assert obs and int(obs['exchange_id'])==int(ex['exchange_id'])
 
-        sid=hunter.create_manual_signal(conn,int(ex['exchange_id']),title='businessKey observada',note='Evidencia para continuar la investigación')
+        rule_id=rules.save_rule(conn,name='businessKey observada',description='Evidencia para continuar la investigación',category='investigation',severity='info',response_terms=['businessKey'],origin_type='request',origin_id=int(ex['exchange_id']),origin_note='Evidencia para continuar la investigación')
+        matched=rules.evaluate_exchange(conn,int(ex['exchange_id']),rule_id=rule_id)
+        assert matched['matched']==1,matched
+        signal_row=conn.execute('SELECT id FROM signal_occurrences WHERE kind=? AND exchange_id=? ORDER BY id DESC LIMIT 1',(f'custom_signal:{rule_id}',int(ex['exchange_id']))).fetchone()
+        assert signal_row
+        sid=int(signal_row['id'])
         before=conn.execute('SELECT COUNT(*) c FROM signal_occurrences WHERE id=?',(sid,)).fetchone()['c']
         hunter.set_signal_decision(conn,sid,decision='dismissed',reason='No aporta con la evidencia actual')
         row=conn.execute('SELECT * FROM signal_occurrences WHERE id=?',(sid,)).fetchone()
@@ -110,8 +116,9 @@ def main():
       client=TestClient(create_app(domain,workspace))
       page=client.get(f'/t/{key}/resource/{int(ex["resource_id"])}?exchange={int(ex["exchange_id"])}')
       assert page.status_code==200,page.text[:500]
-      for label in ('＋ Entity','⚡ Señal','◆ Hypothesis','▶ Runner','Investigation','Finding'):
+      for label in ('＋ Entity','👁 Crear Regla','◆ Hipótesis','▶ Runner','Investigación','Finding'):
         assert label in page.text,label
+      assert 'Crear Señal' not in page.text
       assert 'REQUEST COMPLETA' in page.text and 'RESPONSE COMPLETA' in page.text
       sig=client.get(f'/t/{key}/signals/{sid}'); assert sig.status_code==200 and 'DECISIÓN HUMANA' in sig.text and 'Descartar' in sig.text
       inv=client.get(f'/t/{key}/investigations/{iid}'); assert inv.status_code==200
@@ -122,8 +129,8 @@ def main():
       assert 'Error de transporte' in runner.text and 'No cuenta como prueba' in runner.text and 'Reintentar' in runner.text and 'TRANSPORTE' in runner.text
     finally:
       requests.Session=old_session; core.TARGETS_PATH=old_targets; intel.CONFIG_DIR=old_cfg_dir; intel.SETTINGS_PATH=old_settings
-  print('[OK] Request Workbench exposes Entity/Signal/Hypothesis/Runner/Investigation/Finding actions')
-  print('[OK] Signal discard is preserved as human memory, not deletion')
+  print('[OK] Request Workbench exposes Entity/Rule/Hypothesis/Runner/Investigation/Finding actions without manual Signal creation')
+  print('[OK] Rule-generated Signal discard is preserved as human memory, not deletion')
   print('[OK] Investigation workspace separates known context, pursued hypotheses, tests, AI ideas and Findings')
   print('[OK] AI Ideas persist by generation and dismissed ideas can be explicitly reconsidered after new evidence')
   print('[OK] generic gateway 504 is classified as transport failure, excluded from app evidence/coverage, and remains retryable')
