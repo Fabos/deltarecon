@@ -8,6 +8,7 @@ the same core functions used by the CLI.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import secrets
@@ -1103,7 +1104,9 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
         notes=[dict(x) for x in conn.execute("SELECT * FROM notes WHERE entity_type='investigation' AND entity_id=? ORDER BY created_at DESC,id DESC LIMIT 100",(int(investigation_id),)).fetchall()]
         timeline=_investigation_timeline(conn,int(investigation_id),limit=120)
         context_matches=_investigation_context_matches(conn,int(investigation_id),limit=30)
-        return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_runners":runners,
+        open_hypotheses=[h for h in hypotheses if str(h.get("status") or "candidate") not in {"confirmed","negative","dismissed"}]
+        open_hypotheses.sort(key=lambda h: (0 if h.get("requirements_matched") and not h.get("requirements_pending") else 1 if not h.get("requirements_pending") else 2, str(h.get("updated_at") or "")), reverse=False)
+        return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_open_hypotheses":open_hypotheses,"investigation_runners":runners,
                 "investigation_ai_batches":ai_batches,"investigation_findings":findings,"investigation_notes":notes,
                 "investigation_timeline":timeline,"investigation_context_matches":context_matches}
 
@@ -1960,7 +1963,9 @@ def _investigation_routes(conn, *, host_id: int | None = None, resource_ids: lis
 def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                          identity_id: int | None = None, compare_identity_id: int | None = None,
                          flow_id: int | None = None, object_id: int | None = None,
-                         request_id: int | None = None, finding_id: int | None = None, limit: int = 160) -> dict[str, Any]:
+                         request_id: int | None = None, finding_id: int | None = None,
+                         investigation_id: int | None = None, discovery_query: str = "",
+                         observation_id: int | None = None, limit: int = 160) -> dict[str, Any]:
     """Human-oriented graph projection for identities, flows and business objects.
 
     This is deliberately a projection, not a second source of truth.  Every node
@@ -2162,6 +2167,67 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 if fn:
                     add_edge(fn, resource_node, "flow_endpoint", source="flow", evidence={"request_id": int(exid)})
 
+        def discovery_rows(query: str, obs_id: int | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            """Resolve a key/value pivot without promoting it to a Business Object.
+
+            Exact values are followed by value_hash so aliases survive field-name changes.
+            Exact keys are followed by normalized_name so multiple values can reveal where a
+            concept is used. Fuzzy lookup is only a navigation aid and never becomes evidence
+            by itself.
+            """
+            q = str(query or "").strip()
+            base = None
+            if obs_id:
+                base = conn.execute("SELECT * FROM parameter_observations WHERE id=?", (int(obs_id),)).fetchone()
+                if base:
+                    q = str(base["value_raw"] or base["value_preview"] or base["name"] or "").strip()
+            if not q:
+                return [], {"query":"","mode":"empty","label":"Escribe una key o valor para expandir relaciones"}
+            normalized = re.sub(r"[^a-z0-9_]", "", q.lower().replace("-", "_"))[:160]
+            value_hash = str(base["value_hash"]) if base else ""
+            mode = "value" if base and value_hash else ""
+            if not mode:
+                value_row = conn.execute(
+                    """SELECT value_hash,COUNT(*) n FROM parameter_observations
+                       WHERE value_raw=? OR value_preview=? GROUP BY value_hash ORDER BY n DESC LIMIT 1""",
+                    (q, q),
+                ).fetchone()
+                key_row = conn.execute("SELECT 1 FROM parameter_observations WHERE normalized_name=? LIMIT 1", (normalized,)).fetchone() if normalized else None
+                if value_row:
+                    value_hash = str(value_row["value_hash"]); mode = "value"
+                elif key_row:
+                    mode = "key"
+                else:
+                    mode = "fuzzy"
+            args: list[Any] = []
+            where = ""
+            if mode == "value":
+                where = "p.value_hash=?"; args=[value_hash]
+            elif mode == "key":
+                where = "p.normalized_name=?"; args=[normalized]
+            else:
+                needle=f"%{q.lower()}%"; where="(lower(p.normalized_name) LIKE ? OR lower(p.name) LIKE ? OR lower(COALESCE(p.value_raw,p.value_preview,'')) LIKE ?)"; args=[needle,needle,needle]
+            rows=[dict(r) for r in conn.execute(
+                f"""SELECT p.*,e.status_code,e.first_seen_at exchange_seen_at,o.method,o.resource_id,
+                            r.path,r.host_id,h.hostname,ei.identity_id,i.name identity_name
+                     FROM parameter_observations p
+                     JOIN http_exchanges e ON e.id=p.exchange_id
+                     JOIN resource_operations o ON o.id=p.operation_id
+                     JOIN resources r ON r.id=p.resource_id JOIN hosts h ON h.id=r.host_id
+                     LEFT JOIN exchange_identities ei ON ei.exchange_id=p.exchange_id
+                     LEFT JOIN identities i ON i.id=ei.identity_id
+                     WHERE {where}
+                     ORDER BY e.id,p.id LIMIT ?""",
+                (*args, max(20,min(int(limit),260))),
+            ).fetchall()]
+            names=sorted({str(r.get("normalized_name") or r.get("name") or "") for r in rows if r.get("normalized_name") or r.get("name")})
+            values=sorted({str(r.get("value_raw") or r.get("value_preview") or "") for r in rows if r.get("value_raw") or r.get("value_preview")})
+            label = (f"{names[0]} = {values[0]}" if mode=="value" and len(names)==1 and values else (values[0] if mode=="value" and values else (names[0] if mode=="key" and names else q)))
+            return rows, {"query":q,"mode":mode,"value_hash":value_hash,"normalized_name":normalized,"label":label,"names":names,"values":values}
+
+        insights: list[dict[str, str]] = []
+        pivot: dict[str, Any] = {}
+
         def add_object_states(oid: int) -> None:
             od=object_tools.object_detail(conn,int(oid))
             if not od: return
@@ -2176,7 +2242,141 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 an=add_node(aid,"anomaly",str(anomaly.get("title") or "Diferencia observada"),state="interesting",meta={"kind":anomaly.get("kind") or "pattern","message":anomaly.get("message") or "","baseline":anomaly.get("baseline") or anomaly.get("previous") or "","current":anomaly.get("current") or ""},href=f"objects/{oid}")
                 if objnode: add_edge(objnode,an,"pattern_difference",source="pattern_anomaly")
 
-        if scope in {"identities","identity"}:
+        if scope in {"discovery","discover"}:
+            rows, pivot = discovery_rows(discovery_query, observation_id)
+            insights: list[dict[str, str]] = []
+            if not rows:
+                pivot_node = add_node("discovery:empty", "identifier", pivot.get("label") or "Explorar relaciones", meta={"query": pivot.get("query") or ""})
+                add_edge(target, pivot_node, "attention", source="discovery")
+            else:
+                names=sorted({str(r.get("normalized_name") or r.get("name") or "") for r in rows if r.get("normalized_name") or r.get("name")})
+                values=sorted({str(r.get("value_raw") or r.get("value_preview") or "") for r in rows if r.get("value_raw") or r.get("value_preview")})
+                request_ids=sorted({int(r["exchange_id"]) for r in rows})
+                resource_ids=sorted({int(r["resource_id"]) for r in rows})
+                host_names=sorted({str(r.get("hostname") or "") for r in rows if r.get("hostname")})
+                identity_ids=sorted({int(r["identity_id"]) for r in rows if r.get("identity_id")})
+                directions={object_tools.identifier_direction(str(r.get("location") or "")) for r in rows}
+                pivot_id = f"identifier:{pivot.get('value_hash') or pivot.get('normalized_name') or hashlib.sha256(str(pivot.get('query') or '').encode()).hexdigest()[:16]}"
+                pivot_node=add_node(pivot_id,"identifier",pivot.get("label") or pivot.get("query") or "Identificador",
+                    meta={"query":pivot.get("query") or "","mode":pivot.get("mode") or "","observations":len(rows),"requests":len(request_ids),"endpoints":len(resource_ids),"hosts":len(host_names),"identities":len(identity_ids),"aliases":len(names),"values":len(values)})
+                add_edge(target,pivot_node,"attention",source="discovery")
+
+                by_resource: dict[int, dict[str, Any]] = {}
+                flow_ids: set[int] = set()
+                for row in rows:
+                    exid=int(row["exchange_id"]); rid=int(row["resource_id"])
+                    bucket=by_resource.setdefault(rid,{"request_ids":set(),"keys":set(),"locations":set(),"directions":set(),"statuses":set(),"methods":set(),"identities":set()})
+                    bucket["request_ids"].add(exid); bucket["keys"].add(str(row.get("normalized_name") or row.get("name") or "")); bucket["locations"].add(str(row.get("location") or "")); bucket["directions"].add(object_tools.identifier_direction(str(row.get("location") or ""))); bucket["methods"].add(str(row.get("method") or "").upper())
+                    if row.get("status_code") is not None: bucket["statuses"].add(str(row["status_code"]))
+                    if row.get("identity_id"): bucket["identities"].add(int(row["identity_id"]))
+                    rn=add_request(exid)
+                    resource=add_resource(rid)
+                    if rn and resource: add_edge(resource,rn,"observed_request",source="discovery",evidence={"request_id":exid})
+                    if rn: add_edge(pivot_node,rn,"observed_in",source="parameter_memory",evidence={"observation_id":int(row["id"]),"key":row.get("normalized_name"),"location":row.get("location")})
+                    # Preserve all human context around the occurrence. Request nodes are hidden by
+                    # default in Discovery but remain available as provenance when expanded.
+                    if rn: connect_request_context(exid,rn)
+                    if resource: connect_endpoint_context(exid,resource,include_actor=True)
+                    for fr in conn.execute("SELECT DISTINCT flow_id FROM flow_steps WHERE exchange_id=? AND included=1",(exid,)).fetchall():
+                        fid=int(fr["flow_id"]); flow_ids.add(fid); fn=add_flow(fid)
+                        if fn: add_edge(pivot_node,fn,"seen_in_flow",source="parameter_memory",evidence={"request_id":exid})
+                    # If this exact observation already belongs to a taught Business Object, show it.
+                    for bo in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE parameter_observation_id=?",(int(row["id"]),)).fetchall():
+                        on=add_object(int(bo["business_object_id"]))
+                        if on: add_edge(pivot_node,on,"represented_as_object",source="business_object",evidence={"observation_id":int(row["id"])})
+                for rid,bucket in by_resource.items():
+                    resource=add_resource(rid)
+                    if resource:
+                        add_edge(pivot_node,resource,"appeared_in_endpoint",source="parameter_memory",evidence={
+                            "request_count":len(bucket["request_ids"]),"request_ids":sorted(bucket["request_ids"]),
+                            "keys":sorted(x for x in bucket["keys"] if x),"locations":sorted(x for x in bucket["locations"] if x),
+                            "directions":sorted(bucket["directions"]),"statuses":sorted(bucket["statuses"]),"methods":sorted(bucket["methods"])
+                        })
+                for iid in identity_ids:
+                    inode=add_identity(iid)
+                    if inode: add_edge(pivot_node,inode,"seen_with_identity",source="parameter_memory")
+
+                # Nearby identifiers are not promoted to objects. They are candidate pivots: keys
+                # repeatedly co-observed in the same Requests that may help the hunter open a new branch.
+                if request_ids:
+                    placeholders=','.join('?' for _ in request_ids)
+                    center_names=set(names)
+                    nearby=[dict(r) for r in conn.execute(
+                        f"""SELECT normalized_name,COUNT(*) observations,COUNT(DISTINCT exchange_id) requests,
+                                    COUNT(DISTINCT value_hash) distinct_values,MAX(COALESCE(NULLIF(value_raw,''),value_preview,'')) example
+                             FROM identifier_observation_index
+                             WHERE exchange_id IN ({placeholders})
+                             GROUP BY normalized_name
+                             ORDER BY requests DESC,observations DESC,normalized_name LIMIT 16""",
+                        request_ids,
+                    ).fetchall()]
+                    nearby=[x for x in nearby if str(x.get("normalized_name") or "") not in center_names][:10]
+                    for x in nearby:
+                        key=str(x.get("normalized_name") or "")
+                        pn=add_node(f"parameter:{key}","parameter",key,meta={"requests":int(x.get("requests") or 0),"observations":int(x.get("observations") or 0),"distinct_values":int(x.get("distinct_values") or 0),"example":str(x.get("example") or "")})
+                        add_edge(pivot_node,pn,"co_observed_key",source="identifier_memory",evidence={"requests":int(x.get("requests") or 0)})
+
+                if len(rows): insights.append({"kind":"coverage","title":"Dónde reaparece","detail":f"{len(rows)} observaciones en {len(request_ids)} Requests y {len(resource_ids)} endpoints."})
+                if "input" in directions and "output" in directions:
+                    insights.append({"kind":"bridge","title":"Cruza salida → entrada","detail":"La misma pieza fue observada saliendo de la aplicación y también enviada como entrada. Puede servir para seguir el flujo de un objeto entre APIs."})
+                if len(names)>1:
+                    insights.append({"kind":"alias","title":"Cambió de nombre","detail":f"El mismo valor aparece bajo {len(names)} keys: {', '.join(names[:6])}{'…' if len(names)>6 else ''}."})
+                if len(identity_ids)>1:
+                    labels=[str((conn.execute('SELECT name FROM identities WHERE id=?',(iid,)).fetchone() or {'name':f'#{iid}'})['name']) for iid in identity_ids[:5]]
+                    insights.append({"kind":"identity","title":"Cruza identidades","detail":f"Aparece alrededor de {len(identity_ids)} identidades: {', '.join(labels)}{'…' if len(identity_ids)>5 else ''}. Compara qué operaciones acepta cada una."})
+                if len(flow_ids)>1:
+                    insights.append({"kind":"flow","title":"Conecta Flows","detail":f"La pieza aparece en {len(flow_ids)} Flows distintos. Esa unión puede revelar una ruta que no era visible mirando cada flujo por separado."})
+                if len(host_names)>1:
+                    insights.append({"kind":"host","title":"Cruza hosts","detail":f"Aparece en {len(host_names)} hosts. Revisa si el significado y los controles se conservan entre servicios."})
+
+        elif scope in {"investigation","investigations"} and investigation_id:
+            inv=conn.execute("SELECT * FROM investigations WHERE id=?",(int(investigation_id),)).fetchone()
+            insights=[]
+            if inv:
+                invn=add_node(f"investigation:{int(investigation_id)}","investigation",inv["title"],meta={"id":int(investigation_id),"status":inv["status"],"summary":inv["summary"] or "","updated_at":inv["updated_at"]},href=f"investigations/{int(investigation_id)}")
+                add_edge(target,invn,"contains",source="investigation")
+                links=[dict(r) for r in conn.execute("SELECT * FROM investigation_links WHERE investigation_id=? ORDER BY id",(int(investigation_id),)).fetchall()]
+                hypothesis_ids:set[int]=set()
+                for link in links:
+                    typ=str(link["entity_type"]); eid=int(link["entity_id"]); node=None
+                    if typ=="exchange":
+                        node=add_request(eid)
+                        if node: connect_request_context(eid,node)
+                    elif typ=="resource": node=add_resource(eid)
+                    elif typ=="flow": node=add_flow(eid)
+                    elif typ=="business_object": node=add_object(eid)
+                    elif typ=="identity": node=add_identity(eid)
+                    elif typ=="hypothesis":
+                        h=conn.execute("SELECT * FROM leads_v2 WHERE id=?",(eid,)).fetchone()
+                        if h:
+                            hypothesis_ids.add(eid)
+                            st="finding" if h["status"]=="confirmed" else "interesting" if h["status"] not in ("negative","discarded") else "tested"
+                            node=add_node(f"lead:{eid}","lead",h["title"],state=st,meta={"id":eid,"status":h["status"],"why":h["why_interesting"],"next_test":h["next_test"]},href=f"hypotheses#hypothesis-{eid}")
+                    elif typ=="finding":
+                        f=conn.execute("SELECT * FROM findings WHERE id=?",(eid,)).fetchone()
+                        if f: node=add_node(f"finding:{eid}","finding",f["title"],state="finding",meta={"id":eid,"severity":f["severity"],"status":f["status"]},href=f"finding/{eid}")
+                    elif typ=="signal":
+                        sg=conn.execute("SELECT * FROM signal_occurrences WHERE id=?",(eid,)).fetchone()
+                        if sg and str(sg["source"] or "")!="correlation": node=add_node(f"signal:{eid}","observation",sg["title"],state="interesting",meta={"id":eid,"severity":sg["severity"],"source":sg["source"]},href=f"signals/{eid}")
+                    if node: add_edge(invn,node,str(link["relation"] or "context"),source="investigation_link")
+                # Requirements/context matches explain why a branch is blocked or newly actionable.
+                for hid in hypothesis_ids:
+                    lead_node=f"lead:{hid}"
+                    for req in conn.execute("SELECT * FROM hypothesis_requirements WHERE lead_id=? ORDER BY id",(hid,)).fetchall():
+                        rid=f"requirement:{int(req['id'])}"
+                        label=f"Falta {req['key_pattern']}" if req["status"]!="matched" else f"Encontrado {req['key_pattern']}"
+                        rn=add_node(rid,"requirement",label,state="interesting" if req["status"]=="matched" else "testing",meta={"status":req["status"],"key":req["key_pattern"],"description":req["description"] or ""})
+                        add_edge(lead_node,rn,"requires",source="hypothesis_requirement")
+                        if req["matched_observation_id"]:
+                            ob=conn.execute("SELECT * FROM parameter_observations WHERE id=?",(int(req["matched_observation_id"]),)).fetchone()
+                            if ob:
+                                value=str(ob["value_raw"] or ob["value_preview"] or req["key_pattern"])
+                                mn=add_node(f"match:{int(req['id'])}","identifier",f"{req['key_pattern']} = {value}",state="interesting",meta={"observation_id":int(ob["id"]),"value":value},href=f"parameters/follow/{int(ob['id'])}")
+                                add_edge(mn,rn,"unblocked",source="context_match",evidence={"observation_id":int(ob["id"])})
+                                exn=add_request(int(ob["exchange_id"]))
+                                if exn: add_edge(exn,mn,"provided_context",source="context_match")
+
+        elif scope in {"identities","identity"}:
             selected_ids=[x for x in (identity_id,compare_identity_id) if x]
             if not selected_ids:
                 for row in identity_options:
@@ -2350,17 +2550,21 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         counts: dict[str,int] = {}
         for n in nodes: counts[n["type"]]=counts.get(n["type"],0)+1
         focus_node = None
-        if finding_id: focus_node=f"finding:{int(finding_id)}"
+        if investigation_id: focus_node=f"investigation:{int(investigation_id)}"
+        elif finding_id: focus_node=f"finding:{int(finding_id)}"
         elif request_id: focus_node=f"exchange:{int(request_id)}"
         elif object_id: focus_node=f"object:{int(object_id)}"
         elif flow_id: focus_node=f"flow:{int(flow_id)}"
         elif identity_id: focus_node=f"identity:{int(identity_id)}"
-        labels={"identities":"Identidades · quién hizo qué","identity":"Identidad · contexto visual","flows":"Flows · qué ocurrió y en qué orden","flow":"Flow · contexto visual","objects":"Objetos · qué está relacionado","object":"Objeto · contexto visual","request":"Request · contexto visual","finding":"Finding · evidencia relacionada","intelligence":"Inteligencia · qué merece atención"}
+        elif scope in {"discovery","discover"}:
+            focus_node=next((n["id"] for n in nodes if n["type"]=="identifier"),None)
+        labels={"identities":"Identidades · quién hizo qué","identity":"Identidad · contexto visual","flows":"Flows · qué ocurrió y en qué orden","flow":"Flow · contexto visual","objects":"Objetos · qué está relacionado","object":"Objeto · contexto visual","request":"Request · contexto visual","finding":"Finding · evidencia relacionada","investigation":"Investigation · contexto acumulado","discovery":"Descubrir · dónde reaparece y qué conecta","discover":"Descubrir · dónde reaparece y qué conecta","intelligence":"Inteligencia · qué merece atención"}
         return {
             "target": project_name, "nodes": nodes, "edges": edges, "routes": [], "counts": counts, "generated_at": _now(),
             "meta": {
                 "scope": scope, "scope_label": labels.get(scope,"Mapa de investigación"), "focus_node": focus_node,
-                "identity_id": identity_id, "compare_identity_id": compare_identity_id, "flow_id": flow_id, "object_id": object_id, "request_id": request_id, "finding_id": finding_id,
+                "identity_id": identity_id, "compare_identity_id": compare_identity_id, "flow_id": flow_id, "object_id": object_id, "request_id": request_id, "finding_id": finding_id, "investigation_id": investigation_id,
+                "discovery_query": pivot.get("query") or discovery_query, "discovery_mode": pivot.get("mode") or "", "discovery_insights": insights,
                 "filter_options": {"identities":identity_options,"flows":flow_options,"objects":object_options,"object_types":object_type_options},
             },
         }
@@ -2815,7 +3019,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
-            (r"^/graph", {"anchor":"map","title":"Vistas de investigación","question":"¿Qué pregunta quiero responder sin ver todo el ruido?","when":"Usa Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"En el lab, Flow muestra en timeline GET /admin→403 y luego la variante con X-Original-URL→200; sólo después enfocas Ana/Diego u Order 123 si necesitas contexto.","caution":"Cada vista oculta evidencia secundaria a propósito. Una línea o diferencia observada no demuestra vulnerabilidad por sí sola."}),
+            (r"^/graph", {"anchor":"map","title":"Vistas de investigación","question":"¿Qué relación quiero explorar sin ver todo el ruido?","when":"Usa Descubrir para partir de una key o valor y abrir dónde reaparece; Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"Sigue ORD-1001 aunque reaparezca como orderId, sourceOrderId u orderRef, y observa qué endpoints, identidades, Flows u objetos conecta antes de decidir si merece una Hypothesis.","caution":"El grafo abre preguntas: coincidencia, cercanía o cambio de contexto no demuestran vulnerabilidad por sí solos."}),
             (r"^/$", default),
         ]
         for pattern, meta in rules:
@@ -4602,7 +4806,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "graph.html", target_key, domain, workspace, graph_counts=counts, graph_generated=_now(), settings=intel.load_settings(), secret_status=intel.secret_status())
 
     @app.get("/api/t/{target_key}/graph", response_class=JSONResponse)
-    def graph_api(target_key: str, scope: str = "overview", host_id: int = 0, resource_id: int = 0, focus: str = "", exchanges: int = 100, observations: int = 100, identity_id: int = 0, compare_identity_id: int = 0, flow_id: int = 0, object_id: int = 0, request_id: int = 0, finding_id: int = 0):
+    def graph_api(target_key: str, scope: str = "overview", host_id: int = 0, resource_id: int = 0, focus: str = "", exchanges: int = 100, observations: int = 100, identity_id: int = 0, compare_identity_id: int = 0, flow_id: int = 0, object_id: int = 0, request_id: int = 0, finding_id: int = 0, investigation_id: int = 0, q: str = "", observation_id: int = 0):
         domain, _, paths = _target_context(target_key)
         if focus:
             try:
@@ -4628,8 +4832,9 @@ def create_app(default_domain: str, default_workspace: Path):
                         if rr and rr['resource_id']: resource_id=int(rr['resource_id']); scope='resource'
                         elif rr and rr['host_id']: host_id=int(rr['host_id']); scope='host'
                     elif typ == 'finding': finding_id = entity_id; scope = 'finding'
-        if scope in {'identities','identity','flows','flow','objects','object','request','requests','finding','intelligence'}:
-            return _graph_semantic_data(paths, domain, scope=scope, identity_id=identity_id or None, compare_identity_id=compare_identity_id or None, flow_id=flow_id or None, object_id=object_id or None, request_id=request_id or None, finding_id=finding_id or None, limit=exchanges)
+                    elif typ == 'investigation': investigation_id = entity_id; scope = 'investigation'
+        if scope in {'identities','identity','flows','flow','objects','object','request','requests','finding','investigation','investigations','discovery','discover','intelligence'}:
+            return _graph_semantic_data(paths, domain, scope=scope, identity_id=identity_id or None, compare_identity_id=compare_identity_id or None, flow_id=flow_id or None, object_id=object_id or None, request_id=request_id or None, finding_id=finding_id or None, investigation_id=investigation_id or None, discovery_query=q, observation_id=observation_id or None, limit=exchanges)
         return _graph_data(paths, domain, scope=scope, host_id=host_id or None, resource_id=resource_id or None, exchange_limit=exchanges, observation_limit=observations)
 
     @app.get("/api/t/{target_key}/graph/ideas-estimate", response_class=JSONResponse)

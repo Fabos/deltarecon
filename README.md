@@ -1,5 +1,20 @@
-# Negro Recon 🐕 — v0.41.3
+# Negro Recon 🐕 — v0.41.4
 
+
+
+## v0.41.4 — Discovery Graph + Investigation Context
+
+El grafo deja de ser sólo una fotografía de contexto y gana una lente **Descubrir** orientada a abrir nuevas ramas de hunting. Parte de una key o valor concreto y proyecta, sin duplicar evidencia, dónde reaparece y qué conecta.
+
+- `Descubrir` acepta keys o valores (`orderId`, `ORD-1001`, `returnId`, etc.).
+- Un valor se sigue por hash exacto aunque cambie de nombre entre APIs; una key se sigue por nombre normalizado.
+- La lectura rápida destaca cruces observados: salida→entrada, aliases de key, múltiples identidades, Flows o hosts.
+- Keys identificadoras co-observadas aparecen como **pivotes cercanos**, no como Entities/Hypotheses automáticas.
+- Desde Flow/Object y Follow Value puedes saltar a `Descubrir dónde más aparece`.
+- `Ver en mapa` desde Investigation ahora abre un grafo contextual real de esa rama.
+- Los labs/benchmarks quedan fuera del código base y se distribuyen como artefactos separados.
+
+---
 
 ## v0.41.3 — Context Memory UX
 
@@ -11,7 +26,7 @@ El primer recorrido completo del lab `Order → returnId → refund` validó la 
 - Investigation incorpora notas rápidas, contexto nuevo y timeline.
 - Finding incorpora `Cómo llegamos aquí`.
 
-El lab Vagrant incluido usa `192.168.56.70` como target Host-Only para ser consumido desde Kali/Burp.
+Los labs usados para validar estos flujos se mantienen fuera del repositorio principal de Negro.
 
 ---
 
@@ -334,13 +349,6 @@ Carga `build/libs/negro-burp-bridge-0.27.0.jar` desde **Burp → Extensions → 
 El modo recomendado es **Burp Bridge** porque Burp realiza la conexión al target con su propia ruta DNS/TCP/TLS/upstream proxy. Los modos Python Directo/Entorno/Proxy explícito quedan como fallback.
 
 Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.
-## Context Compound Lab
+## Labs y benchmarks
 
-Desde v0.41.1 el repositorio incluye un laboratorio local deliberadamente vulnerable para validar el flujo Investigation/Hypothesis/Runner de Negro:
-
-```bash
-cd labs/context-compound
-vagrant up
-```
-
-Luego abre `http://127.0.0.1:8088` a través de Burp. Consulta `labs/context-compound/README.md` para reset y detalles.
+Los laboratorios Vagrant **no forman parte del código base de Negro**. Cuando se necesite un benchmark guiado, se distribuye como proyecto/ZIP separado para evitar mezclar targets vulnerables con la herramienta.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression: separated Hypothesis/Investigation UX + Context Compound lab."""
+"""Regression: separated Hypothesis/Investigation UX; labs stay outside Negro core."""
 from pathlib import Path
 import base64
 import importlib.util
@@ -26,7 +26,7 @@ def capture(paths, domain):
 
 
 def main():
-    assert core.VERSION == "0.41.3"
+    assert core.VERSION == "0.41.4"
     with tempfile.TemporaryDirectory(prefix="negro-ux-lab-") as td:
         paths=core.ensure_workspace(Path(td)/"workspace","app.local")
         ex=capture(paths,"app.local")
@@ -62,20 +62,14 @@ def main():
     assert '@app.get("/t/{target_key}/investigations"' in web
     assert '@app.post("/t/{target_key}/hypothesis/{lead_id}/investigation")' in web
 
-    # Lab is dependency-free and Vagrant exposes only loopback on the host.
-    lab=ROOT/'labs/context-compound'
-    assert (lab/'lab/app.py').exists() and (lab/'Vagrantfile').exists() and (lab/'provision/setup.sh').exists()
-    vagrant=(lab/'Vagrantfile').read_text()
-    assert 'private_network' in vagrant and '192.168.56.70' in vagrant and 'host_ip' not in vagrant
-    app=(lab/'lab/app.py').read_text()
-    for endpoint in ['/api/orders', '/change-address', '/cancel', '/api/returns', '/api/refunds']:
-        assert endpoint in app
-    assert '"returnId"' in app and 'ownership_denied' in app and "status='REFUNDED'" in app
+    # Labs are external benchmark artifacts and must never ship inside Negro core.
+    assert not (ROOT/'labs').exists()
+    assert not any(ROOT.glob('LAB_*'))
 
     print('[OK] Hipótesis e Investigaciones tienen navegación separada')
     print('[OK] una Hypothesis muestra asociaciones many-to-many y permite adjuntar otra Investigation')
     print('[OK] una Hypothesis manual puede originar una Investigation sin usar un flujo AI-only')
-    print('[OK] Context Compound Lab incluye Order → returnId → refund como target Host-Only externo a Kali')
+    print('[OK] Negro core no incluye labs; los benchmarks se distribuyen por separado')
 
 
 if __name__ == '__main__':

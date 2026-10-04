@@ -11,7 +11,7 @@ def b64(x:bytes)->str:
     return base64.b64encode(x).decode()
 
 def main():
-    assert core.VERSION == "0.41.3"
+    assert core.VERSION == "0.41.4"
     with tempfile.TemporaryDirectory(prefix="negro-v044-") as td:
         paths=core.ensure_workspace(Path(td)/"workspace","shop.negro.lab")
         req=b"POST /api/refunds HTTP/1.1\r\nHost: shop.negro.lab\r\nContent-Length: 2\r\n\r\n{}"

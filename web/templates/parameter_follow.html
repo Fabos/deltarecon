@@ -3,7 +3,7 @@
 {% block content %}
 <section class="hero compact-hero">
   <div><p class="eyebrow">FOLLOW VALUE</p><h1><code>{{ follow.base.name }}</code> = <code>{{ follow.base.value_raw or follow.base.value_preview or '(vacío)' }}</code></h1><p class="muted">Sigue el mismo valor exacto aunque cambie de nombre, superficie, endpoint o host. Negro conserva también el hash para correlación.</p></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#follow-value">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/parameters/{{ follow.base.normalized_name }}">← Parámetro</a></div>
+  <div class="page-actions"><a class="button" href="{{ target_base }}/graph?observation={{ follow.base.id }}">Abrir relaciones en grafo</a><a class="button ghost" href="{{ target_base }}/guide#follow-value">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/parameters/{{ follow.base.normalized_name }}">← Parámetro</a></div>
 </section>
 <section class="panel object-track-strip">
   <div><p class="eyebrow">BUSINESS OBJECT</p><h2>¿Este valor identifica un objeto?</h2><p class="muted small">Enséñale a Negro el tipo una sola vez. Después correlacionará el mismo tipo + valor aunque aparezca bajo este campo en otros hosts.</p></div>

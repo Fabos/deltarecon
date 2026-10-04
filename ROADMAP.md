@@ -3,16 +3,27 @@
 > **El contexto genera interés compuesto.** Negro no debe pensar por el hunter; debe evitar que pierda el contexto de lo que ya pensó.
 
 1. **Fase 1 — Auditoría + relaciones canónicas ✅**: `investigation_links` se formaliza como grafo many-to-many; backfill compatible desde Hypothesis/Runner/Finding/AI Idea; Identity Context asociable; navegación corregida.
-2. **Fase 2 — Investigation Workspace + asociaciones + Notes + Timeline**: reutilizar `notes`, `events` y el workspace actual.
+2. **Fase 2 — Investigation Workspace + asociaciones + Notes + Timeline ✅ (base funcional)**: contexto nuevo, notas rápidas, timeline y grafo contextual de Investigation sobre relaciones existentes.
 3. **Fase 3 — Hypothesis bloqueadas + dependencias + Watches + Context Match**: evolucionar `hypothesis_requirements` + correlation memory existente desde v0.36.
-4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation**: persistir exploraciones/comparaciones sin duplicar Requests.
+4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation**: la expansión visual de Follow Value ya inicia en v0.41.4; falta persistir exploraciones/comparaciones dentro de Investigation sin duplicar Requests.
 5. **Fase 5 — Runner como experimento**: conservar Flow Runner y añadir intención/trayectoria Investigation → Hypothesis → Run.
 6. **Fase 6 — Burp ↔ Negro contextual**: extender el bridge existente con acciones de Investigation/Hypothesis/Entity/Follow Value/Watch/Note.
 7. **Fase 7 — Dashboard de memoria + IA contextual + trayectoria de Findings + UX final**.
 
-Ver `CONTEXT_COMPOUND_AUDIT.md` y `LAB_CONTEXT_COMPOUND_DESIGN.md`.
+Ver `CONTEXT_COMPOUND_AUDIT.md`. Los labs/benchmarks se distribuyen fuera del repositorio principal.
 
 ---
+
+
+## Discovery Graph · v0.41.4 ✅
+
+El grafo se desarrolla como herramienta de descubrimiento incremental, no como visualización final del conocimiento ya confirmado:
+
+- desde una key/valor puede responder **dónde más aparece**;
+- un Flow puede abrir relaciones globales de un identificador observado en uno de sus pasos;
+- el mismo valor puede conectar APIs aunque cambie de nombre;
+- identidades, Flows, hosts y keys cercanas actúan como pistas para nuevas ramas;
+- cada relación conserva provenance a evidencia HTTP y no crea conclusiones automáticas.
 
 ## Benchmark Context Compound · Loop UX #1 ✅ v0.41.3
 

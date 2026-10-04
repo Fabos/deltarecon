@@ -137,8 +137,16 @@ Superficie → ¿qué existe y dónde?           → mapa/árbol; métodos opcio
 Identidad  → ¿qué endpoints tocó cada actor? → grafo Identity ↔ Endpoint
 Flow       → ¿qué ocurrió y en qué orden?    → grafo o timeline
 Objeto     → ¿dónde apareció este valor?     → grafo Object → Endpoint
+Descubrir  → ¿dónde más reaparece esta pieza? → key/valor → endpoints → identidades/Flows/objetos
 Atención   → ¿qué merece volver a mirar?     → bandeja corta
 ```
+
+
+### Grafo de descubrimiento
+
+Desde v0.41.4 el grafo también puede empezar por una **pieza**, no sólo por una entidad ya entendida. `Descubrir` acepta una key o valor observado y expande únicamente relaciones respaldadas por evidencia persistida. Si un valor sale bajo `orderId` y más tarde entra como `sourceOrderId`, Negro puede mostrar ese puente sin asumir causalidad ni vulnerabilidad. Keys identificadoras vistas cerca se ofrecen como pivotes para abrir otra rama, pero nunca se convierten automáticamente en Entity, Hypothesis o Finding.
+
+La regla visual es: **el grafo debe abrir preguntas, no cerrarlas**. Un nodo seleccionado es una puerta a `dónde más aparece`, `con qué identidades`, `en qué Flows`, `bajo qué aliases` y `qué otros identificadores aparecen alrededor`.
 
 Los Identity Contexts son dinámicos: el mapa usa los nombres reales definidos en el proyecto. No existe lógica fija para Buyer A/B, seller o admin.
 

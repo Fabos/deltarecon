@@ -1,3 +1,15 @@
+# v0.41.4 — Discovery Graph + Investigation Context
+
+- Nueva lente **Descubrir**: parte de una key o valor y abre endpoints, Requests, identidades, Flows, objetos y keys cercanas observadas.
+- Valores exactos se correlacionan por `value_hash`, por lo que pueden seguirse aunque cambie el nombre del campo entre APIs.
+- Keys exactas se expanden por `normalized_name` para entender dónde se usa el mismo concepto con distintos valores.
+- Lectura rápida determinista: cruces salida→entrada, aliases de key, múltiples identidades/Flows/hosts. No declara vulnerabilidades.
+- Keys identificadoras co-observadas se muestran como posibles pivotes sin crear Entity, Signal o Hypothesis automáticamente.
+- Flow y Object ofrecen `Descubrir dónde más aparece`; Follow Value puede abrir directamente el grafo de relaciones.
+- `focus=investigation:<id>` ahora produce una proyección contextual real de Investigation, incluyendo Hypotheses, dependencias y Context Matches cuando existen.
+- Los labs se retiran del repositorio/ZIP principal; los benchmarks se entregan por separado.
+- Nueva regresión `v046_discovery_graph_test.py`.
+
 # v0.41.3 — Context Memory UX
 
 Primer ajuste de UX guiado por el recorrido real del Context Compound Lab. No añade otro sistema: proyecta mejor la memoria que Negro ya conserva.

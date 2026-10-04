@@ -79,6 +79,13 @@
         {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
 
         {% if s.identifier_values %}
+        <div class="flow-discovery-pivots" aria-label="Pivotes para descubrir relaciones">
+          <span>Descubrir:</span>
+          {% for v in s.identifier_values[:5] %}
+            <a class="discovery-pivot-chip" href="{{ target_base }}/graph?observation={{ v.id }}" title="Abrir dónde más aparece este valor, aunque cambie de key">{{ v.normalized_name }}=<code>{{ v.value }}</code></a>
+          {% endfor %}
+          {% if s.identifier_values|length > 5 %}<small>+{{ s.identifier_values|length - 5 }} más</small>{% endif %}
+        </div>
         <details class="flow-step-edit state-track-editor"><summary>Seguir identificador como Objeto de negocio</summary>
           <form class="stack-form" action="{{ target_base }}/objects/track" method="post">
             <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="{{ request.url.path }}">

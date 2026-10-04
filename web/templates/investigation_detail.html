@@ -28,6 +28,27 @@
   <div class="hypothesis-workspace-grid">{% for h in investigation_hypotheses %}<a class="workspace-hypothesis-card display-{{ h.display_state }}" href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><span class="hyp-state state-{{ h.display_state }}">{{ h.display_state_label }}</span><b>{{ h.title }}</b><p>{{ h.next_test or h.why_interesting or 'Abrir Hipótesis' }}</p>{% if h.requirements_pending %}<small>Falta {{ h.requirements_pending }} pieza{% if h.requirements_pending != 1 %}s{% endif %}</small>{% elif h.requirements_matched and h.status not in ['confirmed','negative'] %}<small>Nueva evidencia disponible</small>{% endif %}</a>{% else %}<div class="empty-state compact"><strong>Sin Hipótesis todavía.</strong><span>La Investigation puede empezar sólo con contexto y luego decidir qué pregunta perseguir.</span></div>{% endfor %}</div>
 </section>
 
+{% if investigation_open_hypotheses %}
+<section class="investigation-next-branches" id="proximas-ramas">
+  <div class="workspace-section-head"><div><p class="eyebrow">PRÓXIMAS RAMAS</p><h2>Qué puedes retomar ahora</h2><p>Sale de tus propias Hypotheses y de la evidencia disponible. Negro no concluye por ti; sólo recuerda qué ramas siguen abiertas.</p></div><span>{{ investigation_open_hypotheses|length }}</span></div>
+  <div class="next-branch-grid">
+    {% for h in investigation_open_hypotheses[:6] %}
+    <a class="next-branch-card state-{{ h.display_state }}" href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}">
+      <span class="hyp-state state-{{ h.display_state }}">{{ h.display_state_label }}</span>
+      <b>{{ h.title }}</b>
+      {% if h.requirements_matched and not h.requirements_pending %}
+        <p>Nueva evidencia disponible. Esta rama ya puede retomarse.</p>
+      {% elif h.requirements_pending %}
+        <p>Bloqueada por {{ h.requirements_pending }} pieza{% if h.requirements_pending != 1 %}s{% endif %} pendiente{% if h.requirements_pending != 1 %}s{% endif %}.</p>
+      {% else %}
+        <p>{{ h.next_test or 'Revisar evidencia y decidir el siguiente experimento.' }}</p>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="investigation-workspace-section known-context" id="contexto-conocido">
   <div class="workspace-section-head"><div><p class="eyebrow">02 · EVIDENCIA RELACIONADA</p><h2>Contexto conocido</h2><p>Requests, Flows, Identities, Entities y Signals de reglas que ya relacionaste con esta rama.</p></div><span>{{ context_known|length }}</span></div>
   <div class="context-card-grid">{% for x in context_known %}<a class="context-card context-{{ x.type }}" {% if x.href %}href="{{ target_base }}/{{ x.href }}"{% endif %}><span class="context-kind">{{ {'exchange':'Request','resource':'Endpoint','signal':'Señal','context_match':'Context Match','business_object':'Entity','identity':'Identity','identity_context':'Contexto Identity','flow':'Flujo'}.get(x.type,x.type) }}</span><b>{{ x.label }}</b>{% if x.meta %}<small>{{ x.meta }}</small>{% endif %}<em>{{ x.relation }}</em></a>{% else %}<div class="empty-state compact"><strong>Todavía no hay contexto adjunto.</strong><span>Adjunta Requests, Flows o Entities desde sus vistas.</span></div>{% endfor %}</div>

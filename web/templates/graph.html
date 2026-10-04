@@ -21,6 +21,7 @@
     <button class="investigation-lens" data-graph-preset="identity"><b>Identidad</b><span>¿Quién hizo qué?</span></button>
     <button class="investigation-lens" data-graph-preset="flow"><b>Flujo</b><span>¿Qué ocurrió?</span></button>
     <button class="investigation-lens" data-graph-preset="objects"><b>Objeto</b><span>¿Qué sabemos de esta cosa?</span></button>
+    <button class="investigation-lens" data-graph-preset="discovery"><b>Descubrir</b><span>¿Dónde más aparece esta pieza?</span></button>
     <button class="investigation-lens" data-graph-preset="intelligence"><b>Atención</b><span>¿Qué merece mirar?</span></button>
   </div>
 
@@ -56,6 +57,11 @@
       <label><span>Seguir objeto</span><select data-graph-object-select><option value="">Elige un objeto</option></select></label>
       <small>El objeto queda como foco y los endpoints donde apareció tienen el protagonismo. Identidades y Flujos aparecen como contexto lateral.</small>
     </div>
+    <form data-graph-discovery-controls hidden class="graph-discovery-form">
+      <label class="grow"><span>Expandir una key o valor</span><input data-graph-discovery-query type="search" placeholder="orderId, ORD-1001, returnId…" autocomplete="off"></label>
+      <button class="button" type="submit">Abrir relaciones</button>
+      <small>Negro no concluye vulnerabilidades: conecta dónde reaparece la pieza, bajo qué nombres, identidades y Flows.</small>
+    </form>
   </div>
 
   <div class="graph-workspace investigation-workspace">
@@ -111,6 +117,7 @@
         <div class="graph-route-list" data-graph-routes><p class="empty">Cargando…</p></div>
       </section>
 
+      <div class="graph-discovery-insights" data-graph-discovery-insights hidden></div>
       <div class="investigation-narrative" data-graph-narrative hidden></div>
 
       <div class="graph-canvas-shell" data-graph-canvas-shell>
