@@ -1,3 +1,19 @@
+# v0.41.5 — Identity-aware Discovery Graph
+
+- Una asignación humana de Identity aprende auth material/resolvers y ejecuta **backfill histórico automático**; el tráfico futuro continúa resolviéndose durante ingest.
+- Al resolver historial se refresca también `identifier_observation_index`, por lo que Graph/Follow Value reciben el actor sin un rebuild separado.
+- Identity detail resume Requests, endpoints, Flows, objetos, acciones observadas y pivotes reutilizables.
+- Identity graph proyecta auth material como nodo de **sesión/contexto**, separado de la persona/cuenta.
+- Discovery agrega relaciones tipadas y con provenance: `owns_observed`, `read_denied`, `read_allowed`, `write_allowed`, `write_denied`, `changed_address`, `cancelled_object`, `created_return`, `refunded_object` y `deleted_object`.
+- `owner observado` sólo se deriva cuando un campo owner-like puede mapearse de forma única a una Identity conocida/resolver; no se infiere ownership por proximidad.
+- Nuevo insight determinista **Lectura denegada / escritura aceptada** cuando ambas observaciones existen sobre el mismo pivote e Identity; no crea Signal, Hypothesis ni Finding.
+- Nuevo bloque **Ramas todavía no comparadas** para mutaciones relacionadas que aún no fueron observadas bajo una Identity con lectura denegada. Es pasivo: no ejecuta Requests.
+- El panel lateral de endpoints conserva las Requests exactas que sustentan la relación y permite pivotar por key o value.
+- Ruta de exploración/breadcrumb entre pivotes y aviso de evidencia nueva desde la última visita.
+- Fixes visuales: labels estables durante zoom, más margen para endpoints largos y respeto correcto de `hidden` en el estado vacío.
+- Nueva regresión `v047_identity_discovery_graph_test.py`.
+- El ZIP principal permanece libre de labs.
+
 # v0.41.4 — Discovery Graph + Investigation Context
 
 - Nueva lente **Descubrir**: parte de una key o valor y abre endpoints, Requests, identidades, Flows, objetos y keys cercanas observadas.

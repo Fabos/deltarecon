@@ -381,7 +381,24 @@ def assign_exchange(conn, exchange_id: int, identity_id: int, *, context_id: int
             continue
         add_parameter_resolver(conn, int(observation_id), int(identity_id), context_id=context_id, source="manual_assignment")
         parameter_resolvers += 1
-    return {"exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id, "materials": len(materials), "jwt_resolvers": resolvers, "parameter_resolvers": parameter_resolvers}
+
+    # v0.41.5: a human assignment should teach Negro once, not create a new
+    # administrative step.  As soon as we learn auth material or a stable resolver,
+    # resolve compatible historical traffic automatically.  Future Burp traffic was
+    # already resolved incrementally in ingest; this closes the retrospective gap.
+    history = {"exchanges": 0, "resolved": 0, "newly_resolved": 0}
+    if learn_auth or parameter_resolvers or resolvers:
+        try:
+            history = resolve_all(conn)
+        except Exception:
+            # Identity assignment itself must never fail because a retrospective
+            # convenience pass could not complete.
+            history = {"exchanges": 0, "resolved": 0, "newly_resolved": 0}
+    return {
+        "exchange_id": int(exchange_id), "identity_id": int(identity_id), "context_id": context_id,
+        "materials": len(materials), "jwt_resolvers": resolvers, "parameter_resolvers": parameter_resolvers,
+        "history_resolved": int(history.get("newly_resolved") or 0),
+    }
 
 
 
@@ -653,11 +670,26 @@ def resolve_exchange(conn, exchange_id: int, *, force: bool = False) -> dict[str
 def resolve_all(conn, *, limit: int = 100000) -> dict[str, int]:
     init_schema(conn)
     ids = [int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges ORDER BY id DESC LIMIT ?", (max(1, int(limit)),)).fetchall()]
+    before = {int(r["exchange_id"]) for r in conn.execute("SELECT exchange_id FROM exchange_identities").fetchall()}
     resolved = 0
+    newly_resolved: list[int] = []
     for exchange_id in ids:
         if resolve_exchange(conn, exchange_id):
             resolved += 1
-    return {"exchanges": len(ids), "resolved": resolved}
+            if exchange_id not in before:
+                newly_resolved.append(exchange_id)
+    # Identity is part of identifier memory. Historical resolution therefore needs
+    # to refresh the lightweight identifier projection so Graph/Follow Value sees
+    # the actor immediately without a separate rebuild button.
+    if newly_resolved:
+        try:
+            import negro_objects as object_tools
+            object_tools.init_schema(conn)
+            for exchange_id in newly_resolved:
+                object_tools.index_exchange_identifiers(conn, int(exchange_id))
+        except Exception:
+            pass
+    return {"exchanges": len(ids), "resolved": resolved, "newly_resolved": len(newly_resolved)}
 
 
 def list_identities(conn) -> list[dict[str, Any]]:
@@ -713,6 +745,11 @@ def _backfill_raw_identity_values(conn, identity_id: int) -> None:
 
 def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
     init_schema(conn)
+    try:
+        import negro_objects as object_tools
+        object_tools.init_schema(conn)
+    except Exception:
+        pass
     identity = conn.execute("SELECT * FROM identities WHERE id=?", (int(identity_id),)).fetchone()
     if not identity:
         return None
@@ -729,9 +766,43 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
            FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
            LEFT JOIN identity_contexts c ON c.id=ei.context_id
-           WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 100""", (int(identity_id),)
+           WHERE ei.identity_id=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 160""", (int(identity_id),)
     ).fetchall()]
-    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "exchanges": exchanges}
+    request_count = int(conn.execute(
+        "SELECT COUNT(*) c FROM exchange_identities WHERE identity_id=?", (int(identity_id),)
+    ).fetchone()["c"] or 0)
+    endpoint_count = int(conn.execute(
+        """SELECT COUNT(DISTINCT o.resource_id) c FROM exchange_identities ei
+           JOIN http_exchanges e ON e.id=ei.exchange_id JOIN resource_operations o ON o.id=e.operation_id
+           WHERE ei.identity_id=?""", (int(identity_id),)
+    ).fetchone()["c"] or 0)
+    flow_count = int(conn.execute(
+        """SELECT COUNT(DISTINCT fs.flow_id) c FROM exchange_identities ei
+           JOIN flow_steps fs ON fs.exchange_id=ei.exchange_id AND fs.included=1 WHERE ei.identity_id=?""", (int(identity_id),)
+    ).fetchone()["c"] or 0)
+    object_count = int(conn.execute(
+        """SELECT COUNT(DISTINCT boo.business_object_id) c FROM exchange_identities ei
+           JOIN business_object_observations boo ON boo.exchange_id=ei.exchange_id WHERE ei.identity_id=?""", (int(identity_id),)
+    ).fetchone()["c"] or 0)
+    actions = [dict(r) for r in conn.execute(
+        """SELECT o.method,r.path,COUNT(*) requests,GROUP_CONCAT(DISTINCT COALESCE(e.status_code,'—')) statuses
+           FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
+           JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+           WHERE ei.identity_id=? GROUP BY o.method,r.path ORDER BY requests DESC,r.path LIMIT 24""", (int(identity_id),)
+    ).fetchall()]
+    pivots = [dict(r) for r in conn.execute(
+        """SELECT im.value_hash,MAX(COALESCE(NULLIF(im.value_raw,''),im.value_preview,'')) value,
+                  GROUP_CONCAT(DISTINCT im.normalized_name) keys,COUNT(DISTINCT im.exchange_id) requests,
+                  COUNT(DISTINCT im.resource_id) endpoints
+           FROM identifier_observation_index im WHERE im.identity_id=?
+           GROUP BY im.value_hash HAVING TRIM(MAX(COALESCE(NULLIF(im.value_raw,''),im.value_preview,'')))<>''
+           ORDER BY requests DESC,endpoints DESC LIMIT 24""", (int(identity_id),)
+    ).fetchall()]
+    activity = {
+        "requests": request_count, "endpoints": endpoint_count, "flows": flow_count, "objects": object_count,
+        "actions": actions, "pivots": pivots,
+    }
+    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "exchanges": exchanges, "activity": activity}
 
 
 def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:

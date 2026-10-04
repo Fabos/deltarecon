@@ -18,7 +18,7 @@ def capture(paths,path,method,status,request_body='',response_body='{}'):
     return core.upsert_http_observation(paths,'shop.negro.lab',url=f'http://shop.negro.lab{path}',method=method,source='burp_proxy',status_code=status,authenticated=True,tool='PROXY',response_content_type='application/json',request_b64=b64(req),response_b64=b64(resp))
 
 def main():
-    assert core.VERSION=='0.41.4'
+    assert core.VERSION=='0.41.5'
     with tempfile.TemporaryDirectory(prefix='negro-v045-') as td:
         paths=core.ensure_workspace(Path(td)/'workspace','shop.negro.lab')
         missing=capture(paths,'/api/refunds','POST',400,'{"orderId":"ORD-1001"}','{"error":"missing_field","field":"returnId"}')

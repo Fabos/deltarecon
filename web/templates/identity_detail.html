@@ -9,7 +9,7 @@
 
 
 {% if assigned_exchange %}
-<div class="callout success"><b>Asignación guardada:</b> Request #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers estables. Revisa la Request exacta abajo en “Tráfico asociado”.</div>
+<div class="callout success"><b>Asignación guardada:</b> Request #{{ assigned_exchange }} quedó asociado a <b>{{ i.name }}</b>. Negro aprendió {{ learned_materials or 0 }} auth materials y {{ learned_resolvers or 0 }} resolvers estables.{% if history_resolved %} Además resolvió automáticamente {{ history_resolved }} Request(s) históricas compatibles.{% endif %} Revisa abajo qué actividad quedó atribuida y por qué fuente.</div>
 {% endif %}
 {% if resolver_observation %}
 <div class="callout success"><b>Resolver guardado:</b> la observación #{{ resolver_observation }} ahora puede ayudar a reconocer <b>{{ i.name }}</b> en tráfico futuro.</div>
@@ -47,6 +47,32 @@
   <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplos válidos: <code>jwt:sub=101</code>, <code>/me.id=101</code> o <code>/me.email=ana@…</code>. Un <code>ownerId</code> describe propiedad del objeto y no identifica necesariamente al actor.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
   <div class="identity-resolver-list">
     {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna una Request de identidad propia (por ejemplo <code>/me</code>) o usa Buscar sobre un identificador estable confirmado.</p>{% endfor %}
+  </div>
+</section>
+
+
+<section class="panel identity-activity-panel">
+  <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD CONOCIDA</p><h2>Todo lo que Negro relaciona con {{ i.name }}</h2><p class="muted">La atribución puede venir de una decisión manual o de cookies/tokens/resolvers que tú enseñaste. Negro conserva la fuente en cada Request.</p></div><a class="button ghost small-button" href="{{ target_base }}/graph?focus=identity:{{ i.id }}">Ver comportamiento en grafo</a></div>
+  <div class="identity-activity-metrics">
+    <div><b>{{ identity_detail.activity.requests }}</b><span>Requests</span></div>
+    <div><b>{{ identity_detail.activity.endpoints }}</b><span>endpoints</span></div>
+    <div><b>{{ identity_detail.activity.flows }}</b><span>Flows</span></div>
+    <div><b>{{ identity_detail.activity.objects }}</b><span>Entities</span></div>
+  </div>
+  <div class="identity-activity-grid">
+    <div>
+      <p class="eyebrow">ACCIONES / ENDPOINTS</p>
+      <div class="identity-action-list">
+        {% for a in identity_detail.activity.actions %}<div><code>{{ a.method }} {{ a.path }}</code><span>{{ a.requests }} Request{% if a.requests != 1 %}s{% endif %} · HTTP {{ a.statuses or '—' }}</span></div>{% else %}<p class="muted">Aún no hay actividad atribuida.</p>{% endfor %}
+      </div>
+    </div>
+    <div>
+      <p class="eyebrow">PIVOTES OBSERVADOS</p>
+      <p class="muted compact-copy">No son Entities automáticamente. Son identificadores que puedes seguir para descubrir qué más conecta esta identidad.</p>
+      <div class="identity-pivot-list">
+        {% for p in identity_detail.activity.pivots %}<a href="{{ target_base }}/graph?discover={{ p.value|urlencode }}"><code>{{ p.value }}</code><span>{{ p.keys }} · {{ p.requests }} Requests · {{ p.endpoints }} endpoints</span></a>{% else %}<p class="muted">Sin identificadores indexados todavía.</p>{% endfor %}
+      </div>
+    </div>
   </div>
 </section>
 

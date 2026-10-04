@@ -2001,6 +2001,12 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         nodes.append({"id": nid, "type": typ, "label": str(label), "state": state, "meta": meta or {}, "href": href})
         return nid
 
+    def merge_node_meta(nid: str, **updates: Any) -> None:
+        for node in nodes:
+            if node.get("id") == nid:
+                node.setdefault("meta", {}).update(updates)
+                return
+
     def add_edge(a: str, b: str, relation: str, *, source: str = "observed", evidence: Any = None) -> None:
         key = (a, b, relation)
         if a == b or a not in seen_nodes or b not in seen_nodes or key in seen_edges:
@@ -2245,6 +2251,8 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
         if scope in {"discovery","discover"}:
             rows, pivot = discovery_rows(discovery_query, observation_id)
             insights: list[dict[str, str]] = []
+            discovery_branches: list[dict[str, Any]] = []
+            discovery_contrasts: list[dict[str, Any]] = []
             if not rows:
                 pivot_node = add_node("discovery:empty", "identifier", pivot.get("label") or "Explorar relaciones", meta={"query": pivot.get("query") or ""})
                 add_edge(target, pivot_node, "attention", source="discovery")
@@ -2263,8 +2271,17 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
 
                 by_resource: dict[int, dict[str, Any]] = {}
                 flow_ids: set[int] = set()
+                request_map: dict[int, dict[str, Any]] = {}
+                pivot_directions_by_request: dict[int, set[str]] = {}
                 for row in rows:
                     exid=int(row["exchange_id"]); rid=int(row["resource_id"])
+                    pivot_directions_by_request.setdefault(exid,set()).add(object_tools.identifier_direction(str(row.get("location") or "")))
+                    request_map.setdefault(exid,{
+                        "id":exid,"resource_id":rid,"method":str(row.get("method") or "").upper(),"path":str(row.get("path") or ""),
+                        "status":int(row["status_code"]) if row.get("status_code") is not None else None,
+                        "identity_id":int(row["identity_id"]) if row.get("identity_id") else None,"identity_name":str(row.get("identity_name") or ""),
+                        "seen_at":str(row.get("exchange_seen_at") or ""),
+                    })
                     bucket=by_resource.setdefault(rid,{"request_ids":set(),"keys":set(),"locations":set(),"directions":set(),"statuses":set(),"methods":set(),"identities":set()})
                     bucket["request_ids"].add(exid); bucket["keys"].add(str(row.get("normalized_name") or row.get("name") or "")); bucket["locations"].add(str(row.get("location") or "")); bucket["directions"].add(object_tools.identifier_direction(str(row.get("location") or ""))); bucket["methods"].add(str(row.get("method") or "").upper())
                     if row.get("status_code") is not None: bucket["statuses"].add(str(row["status_code"]))
@@ -2273,31 +2290,150 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     resource=add_resource(rid)
                     if rn and resource: add_edge(resource,rn,"observed_request",source="discovery",evidence={"request_id":exid})
                     if rn: add_edge(pivot_node,rn,"observed_in",source="parameter_memory",evidence={"observation_id":int(row["id"]),"key":row.get("normalized_name"),"location":row.get("location")})
-                    # Preserve all human context around the occurrence. Request nodes are hidden by
-                    # default in Discovery but remain available as provenance when expanded.
                     if rn: connect_request_context(exid,rn)
                     if resource: connect_endpoint_context(exid,resource,include_actor=True)
                     for fr in conn.execute("SELECT DISTINCT flow_id FROM flow_steps WHERE exchange_id=? AND included=1",(exid,)).fetchall():
                         fid=int(fr["flow_id"]); flow_ids.add(fid); fn=add_flow(fid)
                         if fn: add_edge(pivot_node,fn,"seen_in_flow",source="parameter_memory",evidence={"request_id":exid})
-                    # If this exact observation already belongs to a taught Business Object, show it.
                     for bo in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE parameter_observation_id=?",(int(row["id"]),)).fetchall():
                         on=add_object(int(bo["business_object_id"]))
                         if on: add_edge(pivot_node,on,"represented_as_object",source="business_object",evidence={"observation_id":int(row["id"])})
+
+                # Endpoint evidence is deliberately bounded and structured. It lets the
+                # side panel explain exactly why an endpoint is connected and lets the
+                # hunter pivot on either the key (concept) or the value (same object).
                 for rid,bucket in by_resource.items():
                     resource=add_resource(rid)
+                    req_ids=sorted(bucket["request_ids"])
+                    req_details=[request_map[x] | {"directions":sorted(pivot_directions_by_request.get(x,set()))} for x in req_ids if x in request_map]
+                    identifiers: list[dict[str, Any]]=[]
+                    if req_ids:
+                        marks=','.join('?' for _ in req_ids)
+                        id_rows=[dict(x) for x in conn.execute(
+                            f"""SELECT im.exchange_id,im.normalized_name,COALESCE(NULLIF(im.value_raw,''),im.value_preview,'') value,
+                                       im.direction,im.source_location
+                                FROM identifier_observation_index im WHERE im.exchange_id IN ({marks})
+                                ORDER BY im.exchange_id,im.normalized_name,im.id LIMIT 120""", req_ids
+                        ).fetchall()]
+                        grouped: dict[tuple[str,str], dict[str, Any]]={}
+                        for item in id_rows:
+                            key=str(item.get('normalized_name') or ''); value=str(item.get('value') or '')
+                            if not key or not value: continue
+                            slot=grouped.setdefault((key,value),{"key":key,"value":value,"request_ids":set(),"directions":set(),"locations":set()})
+                            slot["request_ids"].add(int(item["exchange_id"])); slot["directions"].add(str(item.get("direction") or "")); slot["locations"].add(str(item.get("source_location") or ""))
+                        for slot in list(grouped.values())[:36]:
+                            identifiers.append({"key":slot["key"],"value":slot["value"],"request_ids":sorted(slot["request_ids"]),"directions":sorted(x for x in slot["directions"] if x),"locations":sorted(x for x in slot["locations"] if x)[:4]})
                     if resource:
+                        merge_node_meta(resource, discovery_evidence={
+                            "pivot":pivot.get("query") or "","mode":pivot.get("mode") or "","requests":req_details,
+                            "identifiers":identifiers,"pivot_keys":sorted(x for x in bucket["keys"] if x),
+                            "pivot_locations":sorted(x for x in bucket["locations"] if x),"pivot_directions":sorted(bucket["directions"]),
+                        })
                         add_edge(pivot_node,resource,"appeared_in_endpoint",source="parameter_memory",evidence={
-                            "request_count":len(bucket["request_ids"]),"request_ids":sorted(bucket["request_ids"]),
+                            "request_count":len(bucket["request_ids"]),"request_ids":req_ids,
                             "keys":sorted(x for x in bucket["keys"] if x),"locations":sorted(x for x in bucket["locations"] if x),
                             "directions":sorted(bucket["directions"]),"statuses":sorted(bucket["statuses"]),"methods":sorted(bucket["methods"])
                         })
+
+                # Build typed actor → pivot relations from evidence already captured.
+                # These edges describe observations, not authorization conclusions.
+                def action_relation(method: str, path: str, status: int | None) -> tuple[str,str]:
+                    m=str(method or '').upper(); low=str(path or '').lower(); ok=status is not None and 200 <= int(status) < 300
+                    if m in {'GET','HEAD'}:
+                        return ('read_denied','lectura denegada') if int(status or 0) in {401,403} else (('read_allowed','lectura aceptada') if ok else ('read_observed','lectura observada'))
+                    if not ok:
+                        return ('write_denied','escritura rechazada')
+                    if 'change-address' in low or ('address' in low and m in {'POST','PUT','PATCH'}): return ('changed_address','cambió dirección')
+                    if 'cancel' in low: return ('cancelled_object','canceló')
+                    if 'return' in low: return ('created_return','creó devolución')
+                    if 'refund' in low: return ('refunded_object','ejecutó refund')
+                    if m == 'DELETE': return ('deleted_object','eliminó')
+                    return ('write_allowed','escritura aceptada')
+
+                actor_edges: dict[tuple[int,str], dict[str, Any]]={}
+                for exid, req in request_map.items():
+                    iid=req.get('identity_id')
+                    if not iid: continue
+                    relation, action=action_relation(req.get('method') or '',req.get('path') or '',req.get('status'))
+                    slot=actor_edges.setdefault((int(iid),relation),{"action":action,"request_ids":[],"endpoints":set(),"statuses":set()})
+                    slot["request_ids"].append(exid); slot["endpoints"].add(str(req.get('path') or '')); slot["statuses"].add(str(req.get('status') if req.get('status') is not None else '—'))
+                for (iid,relation), info in actor_edges.items():
+                    inode=add_identity(iid)
+                    if inode:
+                        add_edge(inode,pivot_node,relation,source="observed_http",evidence={"action":info["action"],"request_ids":sorted(info["request_ids"]),"endpoints":sorted(info["endpoints"]),"statuses":sorted(info["statuses"])})
+
+                # Owner-like fields can connect the pivot to an Identity when their
+                # observed value uniquely matches a human-taught identity name or a
+                # stable resolver.  The relation remains explicitly “observed owner”.
+                def token(value: Any) -> str:
+                    return re.sub(r'[^a-z0-9]+','',str(value or '').lower())
+                alias_to_ids: dict[str,set[int]]={}
+                for ident in conn.execute("SELECT id,name FROM identities").fetchall():
+                    t=token(ident['name'])
+                    if len(t)>=3: alias_to_ids.setdefault(t,set()).add(int(ident['id']))
+                for rr in conn.execute("SELECT identity_id,value_raw,value_preview FROM identity_resolvers WHERE enabled=1").fetchall():
+                    t=token(rr['value_raw'] or rr['value_preview'])
+                    if len(t)>=3: alias_to_ids.setdefault(t,set()).add(int(rr['identity_id']))
+                owner_matches: dict[int,dict[str,Any]]={}
+                if request_ids:
+                    marks=','.join('?' for _ in request_ids)
+                    owner_rows=[dict(x) for x in conn.execute(
+                        f"""SELECT exchange_id,normalized_name,COALESCE(NULLIF(value_raw,''),value_preview,'') value
+                             FROM identifier_observation_index
+                             WHERE exchange_id IN ({marks}) AND lower(normalized_name) LIKE '%owner%'
+                             ORDER BY exchange_id,id LIMIT 80""", request_ids
+                    ).fetchall()]
+                    for item in owner_rows:
+                        t=token(item.get('value'))
+                        matched=alias_to_ids.get(t,set())
+                        if len(matched)!=1: continue
+                        iid=next(iter(matched)); slot=owner_matches.setdefault(iid,{"fields":set(),"values":set(),"request_ids":set()})
+                        slot["fields"].add(str(item.get('normalized_name') or 'owner')); slot["values"].add(str(item.get('value') or '')); slot["request_ids"].add(int(item['exchange_id']))
+                for iid, info in owner_matches.items():
+                    inode=add_identity(iid)
+                    if inode:
+                        add_edge(inode,pivot_node,"owns_observed",source="owner_field",evidence={"fields":sorted(info["fields"]),"values":sorted(info["values"]),"request_ids":sorted(info["request_ids"]),"confidence":"observed_field_match"})
+
+                # Authorization contrast and untested branches are questions generated
+                # from coverage, never active requests.  A denied read under one Identity
+                # plus a successful write under that same Identity is an observed contrast;
+                # writes seen elsewhere but never under that Identity are merely branches.
+                mutating={'POST','PUT','PATCH','DELETE'}
+                by_identity_requests: dict[int,list[dict[str,Any]]]={}
+                for req in request_map.values():
+                    if req.get('identity_id'): by_identity_requests.setdefault(int(req['identity_id']),[]).append(req)
+                write_resources: dict[int,dict[str,Any]]={}
+                for req in request_map.values():
+                    exid=int(req['id'])
+                    if str(req.get('method') or '').upper() in mutating and 'input' in pivot_directions_by_request.get(exid,set()):
+                        write_resources[int(req['resource_id'])]=req
+                for iid, reqs in by_identity_requests.items():
+                    ident_name=str((conn.execute("SELECT name FROM identities WHERE id=?",(iid,)).fetchone() or {"name":f"#{iid}"})["name"])
+                    denied=[r for r in reqs if str(r.get('method') or '').upper() in {'GET','HEAD'} and int(r.get('status') or 0) in {401,403}]
+                    accepted_writes=[r for r in reqs if str(r.get('method') or '').upper() in mutating and 200 <= int(r.get('status') or 0) < 300 and 'input' in pivot_directions_by_request.get(int(r['id']),set())]
+                    if denied and accepted_writes:
+                        detail=f"{ident_name} recibió {denied[0].get('status')} al leer la pieza, pero se observaron {len(accepted_writes)} escritura(s) aceptada(s) sobre la misma pieza bajo esa identidad. Es un contraste observado, no una conclusión de vulnerabilidad."
+                        insights.append({"kind":"authorization_contrast","title":"Lectura denegada / escritura aceptada","detail":detail})
+                        discovery_contrasts.append({"identity_id":iid,"identity_name":ident_name,"read_request_ids":[int(x['id']) for x in denied],"write_request_ids":[int(x['id']) for x in accepted_writes]})
+                    if denied and write_resources:
+                        tested={int(r['resource_id']) for r in reqs if str(r.get('method') or '').upper() in mutating and 'input' in pivot_directions_by_request.get(int(r['id']),set())}
+                        for rid, sample in write_resources.items():
+                            if rid in tested: continue
+                            other_names=sorted({str(r.get('identity_name') or '') for r in request_map.values() if int(r.get('resource_id') or 0)==rid and r.get('identity_name')})
+                            discovery_branches.append({"identity_id":iid,"identity_name":ident_name,"resource_id":rid,"method":sample.get('method') or '',"path":sample.get('path') or '',"reason":"La lectura de esta pieza fue denegada bajo esta identidad, pero esta operación de escritura existe y todavía no fue observada con la misma identidad.","observed_under":other_names})
+                if discovery_branches:
+                    insights.append({"kind":"untested","title":"Ramas de autorización no comparadas","detail":f"Hay {len(discovery_branches)} operación(es) de escritura sobre esta pieza que aún no fueron observadas bajo una identidad donde la lectura fue denegada."})
+                if owner_matches:
+                    labels=[str((conn.execute("SELECT name FROM identities WHERE id=?",(iid,)).fetchone() or {"name":f"#{iid}"})["name"]) for iid in owner_matches]
+                    insights.append({"kind":"ownership","title":"Owner observado","detail":f"Campos de ownership alrededor de esta pieza apuntan a: {', '.join(labels[:4])}. La relación se muestra como evidencia observada, no como política de autorización asumida."})
+
+                typed_identity_ids={iid for (iid,_rel) in actor_edges.keys()} | set(owner_matches.keys())
                 for iid in identity_ids:
+                    if iid in typed_identity_ids:
+                        continue
                     inode=add_identity(iid)
                     if inode: add_edge(pivot_node,inode,"seen_with_identity",source="parameter_memory")
 
-                # Nearby identifiers are not promoted to objects. They are candidate pivots: keys
-                # repeatedly co-observed in the same Requests that may help the hunter open a new branch.
                 if request_ids:
                     placeholders=','.join('?' for _ in request_ids)
                     center_names=set(names)
@@ -2313,10 +2449,10 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     nearby=[x for x in nearby if str(x.get("normalized_name") or "") not in center_names][:10]
                     for x in nearby:
                         key=str(x.get("normalized_name") or "")
-                        pn=add_node(f"parameter:{key}","parameter",key,meta={"requests":int(x.get("requests") or 0),"observations":int(x.get("observations") or 0),"distinct_values":int(x.get("distinct_values") or 0),"example":str(x.get("example") or "")})
+                        pn=add_node(f"parameter:{key}","parameter",key,meta={"requests":int(x.get("requests") or 0),"observations":int(x.get("observations") or 0),"distinct_values":int(x.get("distinct_values") or 0),"example":str(x.get("example") or ""),"discovery_kind":"nearby_key"})
                         add_edge(pivot_node,pn,"co_observed_key",source="identifier_memory",evidence={"requests":int(x.get("requests") or 0)})
 
-                if len(rows): insights.append({"kind":"coverage","title":"Dónde reaparece","detail":f"{len(rows)} observaciones en {len(request_ids)} Requests y {len(resource_ids)} endpoints."})
+                if len(rows): insights.insert(0,{"kind":"coverage","title":"Dónde reaparece","detail":f"{len(rows)} observaciones en {len(request_ids)} Requests y {len(resource_ids)} endpoints."})
                 if "input" in directions and "output" in directions:
                     insights.append({"kind":"bridge","title":"Cruza salida → entrada","detail":"La misma pieza fue observada saliendo de la aplicación y también enviada como entrada. Puede servir para seguir el flujo de un objeto entre APIs."})
                 if len(names)>1:
@@ -2328,6 +2464,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     insights.append({"kind":"flow","title":"Conecta Flows","detail":f"La pieza aparece en {len(flow_ids)} Flows distintos. Esa unión puede revelar una ruta que no era visible mirando cada flujo por separado."})
                 if len(host_names)>1:
                     insights.append({"kind":"host","title":"Cruza hosts","detail":f"Aparece en {len(host_names)} hosts. Revisa si el significado y los controles se conservan entre servicios."})
+                merge_node_meta(pivot_node, owner_identity_ids=sorted(owner_matches), authorization_contrasts=len(discovery_contrasts), untested_branches=len(discovery_branches))
 
         elif scope in {"investigation","investigations"} and investigation_id:
             inv=conn.execute("SELECT * FROM investigations WHERE id=?",(int(investigation_id),)).fetchone()
@@ -2386,6 +2523,19 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 for iid in selected_ids:
                     inode=add_identity(int(iid))
                     if inode: add_edge(target,inode,"contains",source="identity_focus")
+                    # Auth material is context of the Identity, not a second user.
+                    # Keep it bounded and masked so the graph can explain sessions/tokens
+                    # without turning credentials into the primary topology.
+                    for material in conn.execute(
+                        """SELECT id,material_type,material_name,masked_preview,source,first_seen_at,last_seen_at,active
+                           FROM auth_materials WHERE identity_id=? ORDER BY active DESC,last_seen_at DESC,id DESC LIMIT 8""",
+                        (int(iid),),
+                    ).fetchall():
+                        sid=f"session:{int(material['id'])}"
+                        preview=str(material['masked_preview'] or '')
+                        label=f"{material['material_type']} · {material['material_name']}" + (f" · {preview}" if preview else '')
+                        sn=add_node(sid,"session",label,meta={"id":int(material['id']),"material_type":material['material_type'],"material_name":material['material_name'],"source":material['source'],"first_seen_at":material['first_seen_at'],"last_seen_at":material['last_seen_at'],"active":bool(material['active'])})
+                        if inode and sn: add_edge(inode,sn,"uses_session",source="identity_material")
                     rows=conn.execute(
                         """SELECT e.id,o.resource_id,o.method,e.status_code,e.last_seen_at
                            FROM exchange_identities ei
@@ -2565,6 +2715,8 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 "scope": scope, "scope_label": labels.get(scope,"Mapa de investigación"), "focus_node": focus_node,
                 "identity_id": identity_id, "compare_identity_id": compare_identity_id, "flow_id": flow_id, "object_id": object_id, "request_id": request_id, "finding_id": finding_id, "investigation_id": investigation_id,
                 "discovery_query": pivot.get("query") or discovery_query, "discovery_mode": pivot.get("mode") or "", "discovery_insights": insights,
+                "discovery_branches": discovery_branches if scope in {"discovery","discover"} else [],
+                "discovery_contrasts": discovery_contrasts if scope in {"discovery","discover"} else [],
                 "filter_options": {"identities":identity_options,"flows":flow_options,"objects":object_options,"object_types":object_type_options},
             },
         }
@@ -4589,14 +4741,14 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
 
     @app.get("/t/{target_key}/identities/view/{identity_id}", response_class=HTMLResponse)
-    def identity_detail_page(request: Request, target_key: str, identity_id: int, assigned_exchange: int | None = None, learned_materials: int | None = None, learned_resolvers: int | None = None, resolver_observation: int | None = None):
+    def identity_detail_page(request: Request, target_key: str, identity_id: int, assigned_exchange: int | None = None, learned_materials: int | None = None, learned_resolvers: int | None = None, history_resolved: int | None = None, resolver_observation: int | None = None):
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
             detail = identity_tools.identity_detail(conn, identity_id)
             if not detail:
                 raise HTTPException(status_code=404, detail="Identidad no encontrada")
-        return render(request, "identity_detail.html", target_key, domain, workspace, identity_detail=detail, assigned_exchange=assigned_exchange, learned_materials=learned_materials, learned_resolvers=learned_resolvers, resolver_observation=resolver_observation)
+        return render(request, "identity_detail.html", target_key, domain, workspace, identity_detail=detail, assigned_exchange=assigned_exchange, learned_materials=learned_materials, learned_resolvers=learned_resolvers, history_resolved=history_resolved, resolver_observation=resolver_observation)
 
     @app.post("/t/{target_key}/identities/view/{identity_id}/context")
     def identity_context_create(request: Request, target_key: str, identity_id: int, label: str = Form(...), role: str = Form(""), tenant: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
@@ -4633,7 +4785,7 @@ def create_app(default_domain: str, default_workspace: Path):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         learned_resolvers = int(learned.get("jwt_resolvers", 0)) + int(learned.get("parameter_resolvers", 0))
-        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?assigned_exchange={exchange_id}&learned_materials={int(learned.get('materials',0))}&learned_resolvers={learned_resolvers}#traffic", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}?assigned_exchange={exchange_id}&learned_materials={int(learned.get('materials',0))}&learned_resolvers={learned_resolvers}&history_resolved={int(learned.get('history_resolved',0))}#traffic", status_code=303)
 
     @app.get("/t/{target_key}/identities/resolver", response_class=HTMLResponse)
     def identity_resolver_page(request: Request, target_key: str, observation_id: int):

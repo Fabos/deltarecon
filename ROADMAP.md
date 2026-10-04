@@ -15,6 +15,20 @@ Ver `CONTEXT_COMPOUND_AUDIT.md`. Los labs/benchmarks se distribuyen fuera del re
 ---
 
 
+## Identity-aware Discovery · v0.41.5 ✅
+
+Discovery deja de limitarse a “dónde aparece” y empieza a exponer **contrastes y huecos de prueba** usando sólo evidencia observada:
+
+- Identity se aprende una vez y el historial compatible se atribuye automáticamente.
+- owner observado y actor son relaciones distintas; auth material/sesión no se confunde con Identity.
+- lectura denegada + escritura aceptada se presenta como contraste observado, nunca como verdict de vulnerabilidad.
+- mutaciones relacionadas aún no observadas bajo una Identity se muestran como ramas no comparadas.
+- endpoint → Requests → key/value se navega sin salir del grafo.
+- la navegación por pivotes conserva trayectoria y puede destacar contexto aparecido desde la última visita.
+
+Siguiente evolución del grafo: enriquecer transiciones de estado/objetos, relaciones entre Flows y filtros de cruces de identidad, manteniendo provenance y expansión bajo demanda.
+
+
 ## Discovery Graph · v0.41.4 ✅
 
 El grafo se desarrolla como herramienta de descubrimiento incremental, no como visualización final del conocimiento ya confirmado:

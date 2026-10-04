@@ -6,12 +6,12 @@
   <div>
     <p class="eyebrow">IDENTITY CONTEXTS</p>
     <h1>Quién hizo cada Request</h1>
-    <p class="muted">La identidad es la cuenta estable. Cookie, Bearer o sesión pueden cambiar sin crear otra persona/cuenta.</p>
+    <p class="muted">La identidad es la cuenta estable. Cuando enseñas una cookie/token/resolver, Negro atribuye automáticamente tráfico histórico compatible y nuevas Requests; “Recalcular” queda sólo como respaldo manual.</p>
   </div>
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#identities">¿Cómo funciona?</a><a class="button" href="{{ target_base }}/identities/matrix">Authorization Matrix</a>
     <form action="{{ target_base }}/identities/resolve-history" method="post" data-job-form data-job-label="Resolviendo identidades históricas">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <button class="button secondary" type="submit">↻ Resolver historial</button>
+      <button class="button secondary" type="submit">↻ Recalcular atribución</button>
     </form>
   </div>
 </section>
@@ -60,6 +60,8 @@
     </form>
   </aside>
 </section>
+
+<div class="callout info"><b>Atribución automática:</b> asigna una Request fiable una sola vez y deja marcado el aprendizaje de autenticación. Negro intentará reconocer retrospectivamente el historial compatible y también el tráfico nuevo. Lo ambiguo permanece sin identidad.</div>
 
 <section class="panel identity-unknown-panel">
   <div class="panel-head"><div><p class="eyebrow">SIN RESOLVER</p><h2>Requests recientes sin identidad</h2><p class="muted">Asignar uno enseña a Negro los auth materials de esa sesión. Si el Bearer es JWT, también aprende claims estables como <code>sub</code>.</p></div><span>{{ recent_unknown|length }}</span></div>

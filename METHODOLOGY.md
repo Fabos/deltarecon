@@ -1,5 +1,30 @@
-# Negro Recon — Metodología v0.41.0
+# Negro Recon — Metodología v0.41.5
 
+
+## v0.41.5 — El grafo abre preguntas, no cierra conclusiones
+
+Discovery diferencia tres niveles que no deben mezclarse:
+
+```text
+Observado       = existe evidencia HTTP concreta.
+Contraste       = dos observaciones del mismo contexto difieren de forma relevante.
+Rama no probada = existe una operación relacionada, pero aún no fue observada bajo ese actor/contexto.
+```
+
+Ejemplo: si Buyer B recibió `403` leyendo una Order de Buyer A y también existe `change-address`, Negro puede recordar que esa escritura todavía no fue comparada bajo B. Sólo cuando haya evidencia real de una mutación 2xx puede mostrar el contraste `lectura denegada / escritura aceptada`. Ninguno de los dos casos crea una vulnerabilidad automáticamente.
+
+La relación **owner observado** exige provenance explícita: un campo owner-like co-observado y una correspondencia única con una Identity/resolver conocido. `Actor` significa quién originó una Request según auth material/resolver aprendido; no implica ownership.
+
+Una Identity se enseña una vez con evidencia confiable. Cookies/tokens/resolvers compatibles deben resolver automáticamente tráfico histórico y futuro para evitar trabajo administrativo; el usuario conserva una acción de recalcular como fallback.
+
+En Discovery, **key** y **value** responden preguntas diferentes:
+
+- seguir una `key` pregunta dónde se usa ese concepto, con cualquier valor;
+- seguir un `value` pregunta dónde reaparece la misma pieza, aunque cambie el nombre del campo.
+
+El panel lateral debe conservar siempre provenance a las Requests que justifican cada relación.
+
+---
 
 ## v0.41 — Regla → Signal; pregunta elegida → prueba
 

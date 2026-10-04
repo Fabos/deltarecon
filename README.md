@@ -1,6 +1,22 @@
-# Negro Recon 🐕 — v0.41.4
+# Negro Recon 🐕 — v0.41.5
 
 
+
+## v0.41.5 — Identity-aware Discovery Graph
+
+El grafo de descubrimiento empieza a responder preguntas de autorización sin ejecutar pruebas por su cuenta. Negro aprende una Identity una vez, resuelve automáticamente tráfico histórico y futuro compatible, y proyecta relaciones observadas entre actor, objeto, endpoints y auth material.
+
+- Asignar una Request a una Identity con aprendizaje de cookie/token dispara **atribución histórica automática**; `Recalcular atribución` queda como fallback manual.
+- Discovery diferencia relaciones observadas como **owner observado**, **lectura denegada**, **lectura permitida**, **escritura aceptada** y acciones concretas (`change-address`, `cancel`, `return`, `refund`).
+- Si una misma Identity tiene lectura 401/403 y una mutación 2xx sobre el mismo pivote, Negro muestra un **contraste observado** sin declararlo vulnerabilidad.
+- Si existe una mutación relacionada pero todavía no fue observada bajo esa Identity, aparece como **rama aún no comparada**; Negro no envía tráfico para comprobarla.
+- El panel lateral de un endpoint muestra las Requests que justifican la relación y sus keys/values. Una **key** explora el concepto; un **value** sigue la misma pieza aunque cambie de nombre.
+- La ruta de exploración conserva breadcrumbs entre pivotes y destaca evidencia nueva desde la última visita.
+- La vista de Identity resume actividad, endpoints, Flows, objetos y pivotes, y el grafo puede mostrar auth material/sesiones sin confundirlas con la Identity.
+- Se corrigen labels que desaparecían al hacer zoom, clipping lateral y el falso `No hay evidencia para esta vista.`
+- El core continúa **sin labs**; los benchmarks Vagrant se distribuyen aparte.
+
+---
 
 ## v0.41.4 — Discovery Graph + Investigation Context
 
