@@ -845,7 +845,7 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
                FROM investigations i LEFT JOIN leads_v2 h ON h.id=i.source_hypothesis_id WHERE i.id=?""",(int(investigation_id),)
         ).fetchone()
         if not inv: return None
-        links=[dict(x) for x in conn.execute("SELECT * FROM investigation_links WHERE investigation_id=? ORDER BY id",(int(investigation_id),)).fetchall()]
+        links=hunter.list_investigation_links(conn, int(investigation_id))
         context=[]; hypothesis_ids=set(); runner_ids=set(); finding_ids=set()
         if inv["source_hypothesis_id"]: hypothesis_ids.add(int(inv["source_hypothesis_id"]))
         for link in links:
@@ -864,7 +864,13 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
                 if r: item.update(label=f"{r['object_type']} · {r['identifier_preview'] or eid}",href=f"objects/{eid}")
             elif typ=="identity":
                 r=conn.execute("SELECT name FROM identities WHERE id=?",(eid,)).fetchone()
-                if r: item.update(label=f"Identity · {r['name']}",href=f"identities/{eid}")
+                if r: item.update(label=f"Identity · {r['name']}",href=f"identities/view/{eid}")
+            elif typ=="identity_context":
+                r=conn.execute(
+                    """SELECT c.label,c.identity_id,i.name identity_name FROM identity_contexts c
+                       JOIN identities i ON i.id=c.identity_id WHERE c.id=?""",(eid,)
+                ).fetchone()
+                if r: item.update(label=f"Contexto · {r['label']}",meta=f"Identity · {r['identity_name']}",href=f"identities/view/{int(r['identity_id'])}")
             elif typ=="flow":
                 r=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
                 if r: item.update(label=f"Flujo · {r['name']}",href=f"flows/{eid}")
@@ -3595,7 +3601,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 elif typ=="resource": item["href"]=f"/t/{target_key}/resource/{int(item['entity_id'])}"
                 elif typ=="host": item["href"]=f"/t/{target_key}/host/{int(item['entity_id'])}"
                 elif typ=="hypothesis": item["href"]=f"/t/{target_key}/hypotheses#hypothesis-{int(item['entity_id'])}"
-                elif typ=="investigation": item["href"]=f"/t/{target_key}/hypotheses#investigation-{int(item['entity_id'])}"
+                elif typ=="investigation": item["href"]=f"/t/{target_key}/investigations/{int(item['entity_id'])}"
                 elif typ=="finding": item["href"]=f"/t/{target_key}/finding/{int(item['entity_id'])}"
                 elif typ=="identity": item["href"]=f"/t/{target_key}/identities/view/{int(item['entity_id'])}"
                 else: item["href"]=f"/t/{target_key}/hosts"

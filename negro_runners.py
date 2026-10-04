@@ -130,6 +130,16 @@ def init_schema(conn) -> None:
         if name not in req_cols:
             conn.execute(f"ALTER TABLE runner_run_requests ADD COLUMN {name} {ddl}")
 
+    # Contexto compuesto · Fase 1: older v0.40 workspaces may already have
+    # runners.investigation_id values. Mirror them once into investigation_links
+    # so the generic many-to-many graph becomes authoritative without dropping
+    # the legacy/origin pointer.
+    try:
+        import negro_hunter as hunter
+        hunter.backfill_investigation_links(conn)
+    except Exception:
+        pass
+
 
 def _load_json(value: Any, default: Any) -> Any:
     try:

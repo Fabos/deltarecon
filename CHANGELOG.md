@@ -1,3 +1,16 @@
+# Contexto compuesto · Fase 1 — auditoría + relaciones canónicas
+
+- `investigation_links` pasa a ser el grafo canónico many-to-many para asociar contexto a Investigation sin copiar entidades.
+- Backfill aditivo desde `source_hypothesis_id`, `promoted_investigation_id`, `runners.investigation_id`, `finding_entities` y `ai_ideas.investigation_id`; los punteros legacy se conservan.
+- La migración ignora referencias huérfanas y separa el stamp de Runner para workspaces cuyo schema se inicializa más tarde.
+- `Identity Context` queda soportado como contexto first-class de Investigation.
+- `link_investigation_entity` valida ambos extremos; `unlink_investigation_entity` elimina sólo la relación, nunca la evidencia fuente.
+- Investigation reutiliza el helper canónico de links y corrige navegación a Identity; Search abre Investigation directamente.
+- Nueva regresión `v042_context_compound_phase1_test.py`.
+- Se documentan la auditoría incremental y el diseño del lab Vagrant de Contexto Compuesto.
+
+---
+
 # v0.41.0 — Signal desde Regla + Burp-native Runner + HTTP Workbench
 
 ## Modelo corregido

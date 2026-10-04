@@ -647,6 +647,7 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_parameter_observations_value ON parameter_observations(value_hash, resource_id);
         CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_investigation_links_entity ON investigation_links(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS idx_investigation_links_investigation ON investigation_links(investigation_id, entity_type, entity_id);
         CREATE INDEX IF NOT EXISTS idx_ai_idea_batches_flow ON ai_idea_batches(flow_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_ai_idea_batches_investigation ON ai_idea_batches(investigation_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_ai_ideas_flow ON ai_ideas(flow_id, status, updated_at);
@@ -698,12 +699,128 @@ def init_schema(conn) -> None:
     if not row:
         conn.execute("INSERT INTO meta(key,value) VALUES('policy_profile',?)", (DEFAULT_POLICY,))
 
+    # Contexto compuesto · Fase 1. Keep the generic Investigation relation graph
+    # synchronized with older one-to-one/origin fields without deleting them.
+    # The backfill is stamped and additive, so existing workspaces stay compatible.
+    backfill_investigation_links(conn)
+
 
 def relationship(conn, src_type: str, src_id: int | None, relation: str, dst_type: str, dst_value: str, source: str, evidence: Any = None) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO relationships(src_type,src_id,relation,dst_type,dst_value,source,evidence_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
         (src_type, src_id, relation, dst_type, dst_value, source, json.dumps(evidence, ensure_ascii=False) if evidence is not None else None, now_iso()),
     )
+
+
+# Canonical many-to-many context graph for Investigation.  Historical fields such
+# as leads_v2.promoted_investigation_id and runners.investigation_id remain as
+# compatibility/origin pointers, but membership is represented by investigation_links.
+INVESTIGATION_ENTITY_TABLES: dict[str, tuple[str, str]] = {
+    "exchange": ("http_exchanges", "Request"),
+    "resource": ("resources", "Endpoint"),
+    "signal": ("signal_occurrences", "Signal"),
+    "hypothesis": ("leads_v2", "Hipótesis"),
+    "flow": ("flows", "Flujo"),
+    "business_object": ("business_objects", "Entity"),
+    "identity": ("identities", "Identity"),
+    "identity_context": ("identity_contexts", "Contexto de Identity"),
+    "runner": ("runners", "Runner"),
+    "ai_idea": ("ai_ideas", "Idea IA"),
+    "finding": ("findings", "Finding"),
+}
+
+
+def _table_exists(conn, table: str) -> bool:
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (str(table),)).fetchone())
+
+
+def backfill_investigation_links(conn) -> dict[str, int]:
+    """Migrate historical Investigation pointers into the generic relation graph.
+
+    This is intentionally additive: no legacy column/table is removed.  Separate
+    stamps let optional schemas (notably Runner) be migrated the first time they
+    actually exist, even if hunter.init_schema() ran earlier in the workspace.
+    """
+    now = now_iso()
+    counts = {"base": 0, "runner": 0}
+
+    base_stamp = conn.execute("SELECT value FROM meta WHERE key='context_compound_phase1_links_base'").fetchone()
+    if not base_stamp:
+        before = int(conn.execute("SELECT COUNT(*) c FROM investigation_links").fetchone()["c"] or 0)
+        # Investigation created/promoted from a hypothesis.
+        conn.execute(
+            """INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at)
+               SELECT i.id,'hypothesis',i.source_hypothesis_id,'pursuing',COALESCE(i.created_at,?)
+               FROM investigations i JOIN leads_v2 h ON h.id=i.source_hypothesis_id
+               WHERE i.source_hypothesis_id IS NOT NULL""",
+            (now,),
+        )
+        # Compatibility pointer on Hypothesis -> its primary/promoted Investigation.
+        conn.execute(
+            """INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at)
+               SELECT h.promoted_investigation_id,'hypothesis',h.id,'pursuing',COALESCE(h.updated_at,h.created_at,?)
+               FROM leads_v2 h JOIN investigations i ON i.id=h.promoted_investigation_id
+               WHERE h.promoted_investigation_id IS NOT NULL""",
+            (now,),
+        )
+        # Finding already uses its own many-entity model; mirror Investigation edges
+        # so the Investigation workspace has one canonical membership graph.
+        if _table_exists(conn, "finding_entities"):
+            conn.execute(
+                """INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at)
+                   SELECT fe.entity_id,'finding',fe.finding_id,'decision',COALESCE(fe.created_at,?)
+                   FROM finding_entities fe
+                   JOIN investigations i ON i.id=fe.entity_id
+                   JOIN findings f ON f.id=fe.finding_id
+                   WHERE fe.entity_type='investigation'""",
+                (now,),
+            )
+        # AI Ideas may carry an origin Investigation directly.  Preserve that origin
+        # as context without changing the AI idea lifecycle.
+        if _table_exists(conn, "ai_ideas"):
+            conn.execute(
+                """INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at)
+                   SELECT a.investigation_id,'ai_idea',a.id,'context',COALESCE(a.created_at,?)
+                   FROM ai_ideas a JOIN investigations i ON i.id=a.investigation_id
+                   WHERE a.investigation_id IS NOT NULL""",
+                (now,),
+            )
+        after = int(conn.execute("SELECT COUNT(*) c FROM investigation_links").fetchone()["c"] or 0)
+        counts["base"] = max(0, after - before)
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('context_compound_phase1_links_base',?)", (now,))
+
+    # runners is an optional schema and may be initialized after hunter.init_schema.
+    # Do not stamp it until the table actually exists.
+    if _table_exists(conn, "runners"):
+        runner_stamp = conn.execute("SELECT value FROM meta WHERE key='context_compound_phase1_links_runner'").fetchone()
+        if not runner_stamp:
+            before = int(conn.execute("SELECT COUNT(*) c FROM investigation_links").fetchone()["c"] or 0)
+            cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(runners)").fetchall()}
+            if "investigation_id" in cols:
+                conn.execute(
+                    """INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at)
+                       SELECT r.investigation_id,'runner',r.id,'test',COALESCE(r.created_at,?)
+                       FROM runners r JOIN investigations i ON i.id=r.investigation_id
+                       WHERE r.investigation_id IS NOT NULL""",
+                    (now,),
+                )
+            after = int(conn.execute("SELECT COUNT(*) c FROM investigation_links").fetchone()["c"] or 0)
+            counts["runner"] = max(0, after - before)
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('context_compound_phase1_links_runner',?)", (now,))
+    return counts
+
+
+def _assert_investigation_entity(conn, entity_type: str, entity_id: int) -> tuple[str, str]:
+    et = str(entity_type or "").strip().lower()
+    spec = INVESTIGATION_ENTITY_TABLES.get(et)
+    if not spec:
+        raise ValueError("Tipo de contexto no soportado")
+    table, label = spec
+    if not _table_exists(conn, table):
+        raise ValueError(f"{label} no disponible en este workspace")
+    if int(entity_id) <= 0 or not conn.execute(f"SELECT id FROM {table} WHERE id=?", (int(entity_id),)).fetchone():
+        raise ValueError(f"{label} no encontrado")
+    return et, label
 
 
 def list_hypothesis_requirements(conn, lead_id: int) -> list[dict[str, Any]]:
@@ -4131,9 +4248,9 @@ def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]
     refs = hypothesis_refs_from_nodes(conn, list(dict.fromkeys(node_ids))) if node_ids else {"evidence_refs": []}
     for ref in refs.get("evidence_refs") or []:
         if ref.get("exchange_id"):
-            conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "exchange", int(ref["exchange_id"]), "evidence", now))
+            link_investigation_entity(conn, investigation_id, "exchange", int(ref["exchange_id"]), "evidence")
         if ref.get("resource_id"):
-            conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "resource", int(ref["resource_id"]), "surface", now))
+            link_investigation_entity(conn, investigation_id, "resource", int(ref["resource_id"]), "surface")
     # Attach Signals that directly support the referenced exchanges/resources.
     exchange_ids = {int(r["exchange_id"]) for r in (refs.get("evidence_refs") or []) if r.get("exchange_id")}
     resource_ids = {int(r["resource_id"]) for r in (refs.get("evidence_refs") or []) if r.get("resource_id")}
@@ -4145,7 +4262,7 @@ def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]
         q = ",".join("?" for _ in resource_ids)
         signal_rows.extend(conn.execute(f"SELECT id FROM signal_occurrences WHERE resource_id IN ({q}) LIMIT 80", tuple(resource_ids)).fetchall())
     for sr in signal_rows:
-        conn.execute("INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)", (investigation_id, "signal", int(sr["id"]), "supports", now))
+        link_investigation_entity(conn, investigation_id, "signal", int(sr["id"]), "supports")
     conn.execute("UPDATE leads_v2 SET promoted_investigation_id=?,updated_at=? WHERE id=?", (investigation_id, now, int(lead_id)))
     out = conn.execute("SELECT * FROM investigations WHERE id=?", (investigation_id,)).fetchone()
     return dict(out)
@@ -4255,19 +4372,65 @@ def create_investigation(conn, *, title: str, category: str = "other", summary: 
     return iid
 
 
-def link_investigation_entity(conn, investigation_id: int, entity_type: str, entity_id: int, relation: str = "context") -> None:
+def link_investigation_entity(conn, investigation_id: int, entity_type: str, entity_id: int, relation: str = "context") -> int:
+    """Attach an existing first-class entity to an Investigation.
+
+    `investigation_links` is the canonical many-to-many membership graph. Legacy
+    single-Investigation pointers are intentionally not removed; callers that need
+    one primary/origin Investigation can keep writing them for compatibility.
+    """
     init_schema(conn)
-    if not conn.execute("SELECT id FROM investigations WHERE id=?", (int(investigation_id),)).fetchone():
+    iid = int(investigation_id)
+    if not conn.execute("SELECT id FROM investigations WHERE id=?", (iid,)).fetchone():
         raise ValueError("Investigación no encontrada")
-    allowed = {"exchange","resource","signal","hypothesis","flow","business_object","identity","runner","ai_idea","finding"}
-    et = str(entity_type or "").strip().lower()
-    if et not in allowed:
-        raise ValueError("Tipo de contexto no soportado")
+    et, _ = _assert_investigation_entity(conn, entity_type, int(entity_id))
+    rel = str(relation or "context").strip()[:80] or "context"
+    now = now_iso()
     conn.execute(
         "INSERT OR IGNORE INTO investigation_links(investigation_id,entity_type,entity_id,relation,created_at) VALUES(?,?,?,?,?)",
-        (int(investigation_id), et, int(entity_id), str(relation or "context")[:80], now_iso()),
+        (iid, et, int(entity_id), rel, now),
     )
-    conn.execute("UPDATE investigations SET updated_at=? WHERE id=?", (now_iso(), int(investigation_id)))
+    row = conn.execute(
+        "SELECT id FROM investigation_links WHERE investigation_id=? AND entity_type=? AND entity_id=? AND relation=?",
+        (iid, et, int(entity_id), rel),
+    ).fetchone()
+    conn.execute("UPDATE investigations SET updated_at=? WHERE id=?", (now, iid))
+    return int(row["id"]) if row else 0
+
+
+def unlink_investigation_entity(conn, investigation_id: int, entity_type: str, entity_id: int, relation: str | None = None) -> int:
+    """Remove only the Investigation membership edge; never delete source evidence."""
+    init_schema(conn)
+    iid = int(investigation_id)
+    if not conn.execute("SELECT id FROM investigations WHERE id=?", (iid,)).fetchone():
+        raise ValueError("Investigación no encontrada")
+    et = str(entity_type or "").strip().lower()
+    if et not in INVESTIGATION_ENTITY_TABLES:
+        raise ValueError("Tipo de contexto no soportado")
+    params: list[Any] = [iid, et, int(entity_id)]
+    sql = "DELETE FROM investigation_links WHERE investigation_id=? AND entity_type=? AND entity_id=?"
+    if relation is not None:
+        sql += " AND relation=?"
+        params.append(str(relation).strip()[:80])
+    cur = conn.execute(sql, tuple(params))
+    if cur.rowcount:
+        conn.execute("UPDATE investigations SET updated_at=? WHERE id=?", (now_iso(), iid))
+    return int(cur.rowcount or 0)
+
+
+def list_investigation_links(conn, investigation_id: int, *, entity_type: str | None = None) -> list[dict[str, Any]]:
+    """Return canonical Investigation edges without copying the linked entities."""
+    init_schema(conn)
+    params: list[Any] = [int(investigation_id)]
+    sql = "SELECT * FROM investigation_links WHERE investigation_id=?"
+    if entity_type:
+        et = str(entity_type).strip().lower()
+        if et not in INVESTIGATION_ENTITY_TABLES:
+            raise ValueError("Tipo de contexto no soportado")
+        sql += " AND entity_type=?"
+        params.append(et)
+    sql += " ORDER BY id"
+    return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
 
 
 def _ai_idea_dict_from_row(row) -> dict[str, Any]:
