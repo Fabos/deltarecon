@@ -122,7 +122,7 @@ def main():
       assert 'REQUEST COMPLETA' in page.text and 'RESPONSE COMPLETA' in page.text
       sig=client.get(f'/t/{key}/signals/{sid}'); assert sig.status_code==200 and 'DECISIÓN HUMANA' in sig.text and 'Descartar' in sig.text
       inv=client.get(f'/t/{key}/investigations/{iid}'); assert inv.status_code==200
-      for heading in ('CONTEXTO CONOCIDO','QUÉ ESTOY INVESTIGANDO','PRUEBAS REALIZADAS','IDEAS DE LA IA','DECISIONES FINALES'):
+      for heading in ('EVIDENCIA RELACIONADA','QUÉ ESTOY INVESTIGANDO','EXPERIMENTOS','Ideas IA relacionadas','FINDINGS'):
         assert heading in inv.text,heading
       flow=client.get(f'/t/{key}/flows/{fid}'); assert flow.status_code==200 and 'HISTORIAL PERSISTENTE' in flow.text and 'Exploración IA #' in flow.text
       runner=client.get(f'/t/{key}/runners/{rid}'); assert runner.status_code==200

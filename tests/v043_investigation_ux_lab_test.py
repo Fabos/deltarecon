@@ -26,7 +26,7 @@ def capture(paths, domain):
 
 
 def main():
-    assert core.VERSION == "0.41.2"
+    assert core.VERSION == "0.41.3"
     with tempfile.TemporaryDirectory(prefix="negro-ux-lab-") as td:
         paths=core.ensure_workspace(Path(td)/"workspace","app.local")
         ex=capture(paths,"app.local")
@@ -57,17 +57,17 @@ def main():
     web=(ROOT/'negro_web.py').read_text()
     assert '>Hipótesis</a>' in base and '>Investigaciones</a>' in base
     assert 'Convertir en Investigación' not in hyp
-    assert 'Adjuntar a otra Investigación' in hyp
+    assert 'Adjuntar a Investigación' in hyp
     assert 'INVESTIGACIONES · WORKSPACES' in inv
     assert '@app.get("/t/{target_key}/investigations"' in web
     assert '@app.post("/t/{target_key}/hypothesis/{lead_id}/investigation")' in web
 
     # Lab is dependency-free and Vagrant exposes only loopback on the host.
     lab=ROOT/'labs/context-compound'
-    assert (lab/'app.py').exists() and (lab/'Vagrantfile').exists() and (lab/'provision.sh').exists()
+    assert (lab/'lab/app.py').exists() and (lab/'Vagrantfile').exists() and (lab/'provision/setup.sh').exists()
     vagrant=(lab/'Vagrantfile').read_text()
-    assert 'host_ip: "127.0.0.1"' in vagrant
-    app=(lab/'app.py').read_text()
+    assert 'private_network' in vagrant and '192.168.56.70' in vagrant and 'host_ip' not in vagrant
+    app=(lab/'lab/app.py').read_text()
     for endpoint in ['/api/orders', '/change-address', '/cancel', '/api/returns', '/api/refunds']:
         assert endpoint in app
     assert '"returnId"' in app and 'ownership_denied' in app and "status='REFUNDED'" in app
@@ -75,7 +75,7 @@ def main():
     print('[OK] Hipótesis e Investigaciones tienen navegación separada')
     print('[OK] una Hypothesis muestra asociaciones many-to-many y permite adjuntar otra Investigation')
     print('[OK] una Hypothesis manual puede originar una Investigation sin usar un flujo AI-only')
-    print('[OK] Context Compound Lab incluye Order → returnId → refund y queda limitado a loopback del host')
+    print('[OK] Context Compound Lab incluye Order → returnId → refund como target Host-Only externo a Kali')
 
 
 if __name__ == '__main__':

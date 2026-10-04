@@ -1,3 +1,18 @@
+# v0.41.3 — Context Memory UX
+
+Primer ajuste de UX guiado por el recorrido real del Context Compound Lab. No añade otro sistema: proyecta mejor la memoria que Negro ya conserva.
+
+- **Hypothesis limpia**: elimina de la vista principal los bloques ruidosos `HECHOS / INFERENCIA / LO QUE AÚN NO SABEMOS` cuando no ayudan a la siguiente decisión.
+- Estado operativo derivado: **Abierta → Bloqueada → Lista para probar → Demostrada/Refutada** según decisión humana y piezas pendientes.
+- Una pieza encontrada se presenta como **Context Match**, no como Signal. El registro de correlación histórico se conserva internamente por compatibilidad/provenance.
+- Las Signals visibles y sus contadores excluyen registros de correlación; Signal vuelve a significar evidencia nacida de una Regla.
+- Request Workbench muestra memoria compacta por Request: `INV`, `HYP`, `FIND` y `CTX`, más enlaces directos a las entidades relacionadas.
+- Investigation añade **Contexto nuevo**, **Notas rápidas** y **Timeline** derivada de relaciones/piezas/provenance existentes; no obliga a registrar pasos manualmente.
+- Finding añade **Cómo llegamos aquí**, reconstruido desde la Investigation, Requests asociadas, dependencias, Context Matches, decisión de Hypothesis y creación del Finding.
+- El lab incluido pasa a la topología real Host-Only usada en la práctica: Kali `192.168.56.101` → target `192.168.56.70:80`; no usa forward a localhost.
+- Nueva regresión `v045_context_memory_ux_test.py` reproduce `returnId → Context Match → refund → verificación → Finding`.
+- Regresiones v0.39–v0.45 pasan; los 9 fallos legacy históricos de v0.41.2 permanecen sin cambios.
+
 # v0.41.2 — Hotfix Hypothesis manual
 
 - Corrige guardado de `Decisión` y `Nota` para Hypotheses creadas manualmente desde Request.

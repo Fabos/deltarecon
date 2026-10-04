@@ -778,6 +778,7 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['requirements']=hunter.list_hypothesis_requirements(conn,int(item['id']))
             item['requirements_pending']=sum(1 for x in item['requirements'] if x.get('status')=='pending')
             item['requirements_matched']=sum(1 for x in item['requirements'] if x.get('status')=='matched')
+            item['display_state'],item['display_state_label']=_hypothesis_display_state(item)
             if item.get('resource_id') and not item.get('resource_url'):
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
             out.append(item)
@@ -802,6 +803,182 @@ def _investigation_rows(paths: dict[str, Path], limit: int = 200) -> list[dict[s
         return [dict(r) for r in rows]
 
 
+
+def _hypothesis_display_state(item: dict[str, Any]) -> tuple[str, str]:
+    """Return a hunter-facing state derived from the stored decision + missing context."""
+    status = str(item.get("status") or "candidate")
+    pending = int(item.get("requirements_pending") or 0)
+    matched = int(item.get("requirements_matched") or 0)
+    if status == "confirmed":
+        return "demonstrated", "Demostrada"
+    if status in {"negative", "discarded"}:
+        return "refuted", "Refutada" if status == "negative" else "Descartada"
+    if status == "postponed":
+        return "paused", "En pausa"
+    if pending > 0:
+        return "blocked", "Bloqueada"
+    if matched > 0:
+        return "ready", "Lista para probar"
+    return "open", "Abierta"
+
+
+def _exchange_context_memberships(conn, exchange_id: int) -> dict[str, Any]:
+    """Project the context already attached to one Request without copying evidence."""
+    exid = int(exchange_id)
+    investigations = [dict(x) for x in conn.execute(
+        """SELECT i.id,i.title,i.status,l.relation FROM investigations i
+           JOIN investigation_links l ON l.investigation_id=i.id
+           WHERE l.entity_type='exchange' AND l.entity_id=? ORDER BY i.updated_at DESC""",
+        (exid,),
+    ).fetchall()]
+    findings = [dict(x) for x in conn.execute(
+        """SELECT f.id,f.title,f.status,f.severity,fe.relation FROM findings f
+           JOIN finding_entities fe ON fe.finding_id=f.id
+           WHERE fe.entity_type='exchange' AND fe.entity_id=? ORDER BY f.updated_at DESC""",
+        (exid,),
+    ).fetchall()]
+
+    hypotheses: dict[int, dict[str, Any]] = {}
+    # Manual/accepted hypotheses keep their initial evidence as JSON. Parse only the
+    # bounded human-visible set; this avoids a second relation store.
+    ex_resource=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(exid,)).fetchone()
+    rows = conn.execute(
+        """SELECT id,title,status,evidence_json FROM leads_v2
+           WHERE resource_id=? AND (upper(COALESCE(source,'')) IN ('MANUAL','AI_IDEA') OR promoted_investigation_id IS NOT NULL)
+             AND COALESCE(rule_active,1)=1 AND status NOT IN ('discarded')
+           ORDER BY updated_at DESC LIMIT 120""",
+        (int(ex_resource['resource_id']) if ex_resource else -1,),
+    ).fetchall()
+    for row in rows:
+        try:
+            evidence = json.loads(row["evidence_json"] or "[]")
+        except Exception:
+            evidence = []
+        hit = False
+        for ev in evidence if isinstance(evidence, list) else []:
+            if isinstance(ev, dict) and str(ev.get("exchange_id") or "").isdigit() and int(ev["exchange_id"]) == exid:
+                hit = True; break
+            for node in (ev.get("node_ids") or []) if isinstance(ev, dict) else []:
+                if str(node) == f"exchange:{exid}": hit = True; break
+            if hit: break
+        if hit:
+            hypotheses[int(row["id"])] = {"id":int(row["id"]),"title":str(row["title"]),"status":str(row["status"])}
+
+    # A Request that satisfied a missing piece is also explicit evidence for that Hypothesis.
+    for row in conn.execute(
+        """SELECT DISTINCT l.id,l.title,l.status FROM hypothesis_requirements hr
+           JOIN parameter_observations p ON p.id=hr.matched_observation_id
+           JOIN leads_v2 l ON l.id=hr.lead_id
+           WHERE p.exchange_id=? AND hr.status='matched'""", (exid,)
+    ).fetchall():
+        hypotheses[int(row["id"])] = {"id":int(row["id"]),"title":str(row["title"]),"status":str(row["status"])}
+
+    context_matches=[]
+    for row in conn.execute(
+        """SELECT id,title,why_json,evidence_json,last_seen_at FROM signal_occurrences
+           WHERE exchange_id=? AND COALESCE(signal_level,'local')='correlation'
+           ORDER BY last_seen_at DESC,id DESC LIMIT 20""", (exid,)
+    ).fetchall():
+        d=dict(row)
+        try: d["why"]=json.loads(d.pop("why_json") or "{}")
+        except Exception: d["why"]={}
+        try: d["evidence"]=json.loads(d.pop("evidence_json") or "{}")
+        except Exception: d["evidence"]={}
+        context_matches.append(d)
+    return {"investigations":investigations,"hypotheses":list(hypotheses.values()),"findings":findings,"context_matches":context_matches}
+
+
+def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) -> list[dict[str, Any]]:
+    """Build a read-only chronology from canonical relations and requirement provenance."""
+    iid=int(investigation_id); items=[]
+    inv=conn.execute("SELECT id,title,created_at,updated_at,status FROM investigations WHERE id=?",(iid,)).fetchone()
+    if not inv: return []
+    items.append({"at":inv["created_at"],"kind":"investigation","title":"Investigación creada","detail":str(inv["title"]),"href":None})
+
+    links=conn.execute("SELECT * FROM investigation_links WHERE investigation_id=? ORDER BY created_at,id",(iid,)).fetchall()
+    hyp_ids=set()
+    for link in links:
+        typ=str(link["entity_type"]); eid=int(link["entity_id"]); at=str(link["created_at"]); rel=str(link["relation"])
+        if typ=="exchange":
+            r=conn.execute("""SELECT e.status_code,o.method,r.path,r.id resource_id FROM http_exchanges e
+                              JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+                              WHERE e.id=?""",(eid,)).fetchone()
+            if r: items.append({"at":at,"kind":"request","title":f"Request #{eid} asociada","detail":f"{r['method']} {r['path']} · HTTP {r['status_code'] if r['status_code'] is not None else '—'}","href":f"resource/{int(r['resource_id'])}?exchange={eid}#exchange-{eid}","relation":rel})
+        elif typ=="hypothesis":
+            hyp_ids.add(eid)
+            h=conn.execute("SELECT title,status FROM leads_v2 WHERE id=?",(eid,)).fetchone()
+            if h: items.append({"at":at,"kind":"hypothesis","title":"Hipótesis asociada","detail":str(h["title"]),"href":f"hypotheses#hypothesis-{eid}","relation":rel})
+        elif typ=="finding":
+            f=conn.execute("SELECT title,status FROM findings WHERE id=?",(eid,)).fetchone()
+            if f: items.append({"at":at,"kind":"finding","title":"Finding asociado","detail":str(f["title"]),"href":f"finding/{eid}","relation":rel})
+        elif typ=="runner":
+            r=conn.execute("SELECT alias,description FROM runners WHERE id=?",(eid,)).fetchone()
+            if r: items.append({"at":at,"kind":"runner","title":f"Runner · {r['alias']}","detail":str(r["description"] or "Experimento"),"href":f"runners/{eid}","relation":rel})
+        elif typ=="flow":
+            f=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
+            if f: items.append({"at":at,"kind":"flow","title":"Flujo asociado","detail":str(f["name"]),"href":f"flows/{eid}","relation":rel})
+
+    src=conn.execute("SELECT source_hypothesis_id FROM investigations WHERE id=?",(iid,)).fetchone()
+    if src and src["source_hypothesis_id"]: hyp_ids.add(int(src["source_hypothesis_id"]))
+    if hyp_ids:
+        marks=','.join('?' for _ in hyp_ids)
+        for req in conn.execute(
+            f"""SELECT hr.*,l.title hypothesis_title,p.exchange_id,p.value_raw,p.value_preview,p.name matched_name,
+                       o.method,r.path,r.id resource_id
+                FROM hypothesis_requirements hr JOIN leads_v2 l ON l.id=hr.lead_id
+                LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
+                LEFT JOIN http_exchanges e ON e.id=p.exchange_id
+                LEFT JOIN resource_operations o ON o.id=e.operation_id
+                LEFT JOIN resources r ON r.id=o.resource_id
+                WHERE hr.lead_id IN ({marks}) ORDER BY hr.created_at,hr.id""", tuple(hyp_ids)
+        ).fetchall():
+            items.append({"at":req["created_at"],"kind":"dependency","title":f"Pieza pendiente · {req['key_pattern']}","detail":str(req["description"] or req["hypothesis_title"]),"href":f"hypotheses#hypothesis-{int(req['lead_id'])}"})
+            if str(req["status"])=="matched":
+                value=str(req["value_raw"] or req["value_preview"] or "")
+                detail=f"{req['matched_name'] or req['key_pattern']}={value}" if value else str(req["key_pattern"])
+                if req["method"] and req["path"]: detail += f" · {req['method']} {req['path']}"
+                href=f"resource/{int(req['resource_id'])}?exchange={int(req['exchange_id'])}#exchange-{int(req['exchange_id'])}" if req["resource_id"] and req["exchange_id"] else f"hypotheses#hypothesis-{int(req['lead_id'])}"
+                items.append({"at":req["updated_at"],"kind":"context_match","title":"Context Match · nueva pieza disponible","detail":detail,"href":href})
+        for h in conn.execute(f"SELECT id,title,status,result_notes,updated_at FROM leads_v2 WHERE id IN ({marks})",tuple(hyp_ids)).fetchall():
+            if str(h["status"]) in {"confirmed","negative","discarded","postponed"}:
+                labels={"confirmed":"Hipótesis demostrada","negative":"Hipótesis refutada","discarded":"Hipótesis descartada","postponed":"Hipótesis pausada"}
+                items.append({"at":h["updated_at"],"kind":"hypothesis_decision","title":labels.get(str(h["status"]),"Decisión de hipótesis"),"detail":str(h["result_notes"] or h["title"]),"href":f"hypotheses#hypothesis-{int(h['id'])}"})
+
+    for n in conn.execute("SELECT * FROM notes WHERE entity_type='investigation' AND entity_id=? ORDER BY created_at,id",(iid,)).fetchall():
+        items.append({"at":n["created_at"],"kind":"note","title":"Nota","detail":str(n["body"]),"href":None})
+
+    # Legacy/direct finding relation is authoritative too.
+    for f in conn.execute("""SELECT f.id,f.title,f.status,f.created_at FROM findings f JOIN finding_entities fe ON fe.finding_id=f.id
+                             WHERE fe.entity_type='investigation' AND fe.entity_id=?""",(iid,)).fetchall():
+        items.append({"at":f["created_at"],"kind":"finding","title":"Finding creado","detail":str(f["title"]),"href":f"finding/{int(f['id'])}"})
+
+    # ISO timestamps used by Negro sort lexicographically.
+    items.sort(key=lambda x:(str(x.get("at") or ""),str(x.get("kind") or "")))
+    # Deduplicate same semantic event produced by both canonical and legacy pointers.
+    out=[]; seen=set()
+    for item in items:
+        key=(item.get("at"),item.get("kind"),item.get("title"),item.get("href"))
+        if key in seen: continue
+        seen.add(key); out.append(item)
+    return out[-max(1,min(int(limit),300)):]
+
+
+def _investigation_context_matches(conn, investigation_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Latest matched dependencies for hypotheses attached to an Investigation."""
+    rows=conn.execute(
+        """SELECT hr.id,hr.lead_id,hr.key_pattern,hr.description,hr.updated_at,l.title hypothesis_title,
+                  p.name matched_name,p.value_raw,p.value_preview,p.exchange_id,o.method,r.path,r.id resource_id
+           FROM hypothesis_requirements hr JOIN leads_v2 l ON l.id=hr.lead_id
+           JOIN investigation_links il ON il.entity_type='hypothesis' AND il.entity_id=l.id AND il.investigation_id=?
+           LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
+           LEFT JOIN http_exchanges e ON e.id=p.exchange_id
+           LEFT JOIN resource_operations o ON o.id=e.operation_id
+           LEFT JOIN resources r ON r.id=o.resource_id
+           WHERE hr.status='matched' ORDER BY hr.updated_at DESC LIMIT ?""",
+        (int(investigation_id),max(1,min(int(limit),100))),
+    ).fetchall()
+    return [dict(x) for x in rows]
+
 def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[str, Any]]:
     """Latest machine-observed facts that still need a human decision."""
     with _db(paths) as conn:
@@ -811,7 +988,7 @@ def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[
                LEFT JOIN resources r ON r.id=s.resource_id
                LEFT JOIN resource_operations o ON o.id=s.operation_id
                LEFT JOIN http_exchanges e ON e.id=s.exchange_id
-               WHERE COALESCE(s.human_decision,'new')='new'
+               WHERE COALESCE(s.human_decision,'new')='new' AND COALESCE(s.signal_level,'local')!='correlation'
                ORDER BY CASE s.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
                         s.last_seen_at DESC, s.id DESC
                LIMIT ?""",
@@ -876,8 +1053,12 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
                 r=conn.execute("SELECT r.path,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?",(eid,)).fetchone()
                 if r: item.update(label=str(r["path"]),meta=str(r["hostname"]),href=f"resource/{eid}")
             elif typ=="signal":
-                r=conn.execute("SELECT title,human_decision FROM signal_occurrences WHERE id=?",(eid,)).fetchone()
-                if r: item.update(label=f"⚡ {r['title']}",meta=str(r["human_decision"] or "new"),href=f"signals/{eid}")
+                r=conn.execute("SELECT title,human_decision,signal_level,evidence_json FROM signal_occurrences WHERE id=?",(eid,)).fetchone()
+                if r and str(r["signal_level"] or "local")=="correlation":
+                    item["type"]="context_match"
+                    item.update(label=f"Context Match · {r['title']}",meta="Nueva evidencia relacionada",href=None)
+                elif r:
+                    item.update(label=f"⚡ {r['title']}",meta=str(r["human_decision"] or "new"),href=f"signals/{eid}")
             elif typ=="business_object":
                 r=conn.execute("""SELECT bo.identifier_preview,bt.name object_type FROM business_objects bo JOIN business_object_types bt ON bt.id=bo.object_type_id WHERE bo.id=?""",(eid,)).fetchone()
                 if r: item.update(label=f"{r['object_type']} · {r['identifier_preview'] or eid}",href=f"objects/{eid}")
@@ -902,6 +1083,11 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
         if hypothesis_ids:
             marks=','.join('?' for _ in hypothesis_ids)
             hypotheses=[dict(x) for x in conn.execute(f"SELECT * FROM leads_v2 WHERE id IN ({marks}) ORDER BY updated_at DESC",tuple(hypothesis_ids)).fetchall()]
+            for h in hypotheses:
+                reqs=hunter.list_hypothesis_requirements(conn,int(h['id']))
+                h['requirements_pending']=sum(1 for x in reqs if x.get('status')=='pending')
+                h['requirements_matched']=sum(1 for x in reqs if x.get('status')=='matched')
+                h['display_state'],h['display_state_label']=_hypothesis_display_state(h)
         # Runners can be linked explicitly or carry investigation_id directly.
         for r in conn.execute("SELECT id FROM runners WHERE investigation_id=?",(int(investigation_id),)).fetchall(): runner_ids.add(int(r["id"]))
         runners=[]
@@ -914,8 +1100,12 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
         if finding_ids:
             marks=','.join('?' for _ in finding_ids)
             findings=[dict(x) for x in conn.execute(f"SELECT * FROM findings WHERE id IN ({marks}) ORDER BY updated_at DESC",tuple(finding_ids)).fetchall()]
+        notes=[dict(x) for x in conn.execute("SELECT * FROM notes WHERE entity_type='investigation' AND entity_id=? ORDER BY created_at DESC,id DESC LIMIT 100",(int(investigation_id),)).fetchall()]
+        timeline=_investigation_timeline(conn,int(investigation_id),limit=120)
+        context_matches=_investigation_context_matches(conn,int(investigation_id),limit=30)
         return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_runners":runners,
-                "investigation_ai_batches":ai_batches,"investigation_findings":findings}
+                "investigation_ai_batches":ai_batches,"investigation_findings":findings,"investigation_notes":notes,
+                "investigation_timeline":timeline,"investigation_context_matches":context_matches}
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
@@ -1293,6 +1483,8 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["response_truncated"] = False
                 exd["human_state"] = core.get_human_state(conn, "exchange", int(ex["id"]))
                 exd["unreviewed_signal_count"] = core.unreviewed_signal_count(conn, exchange_id=int(ex["id"]))
+                exd["context"] = _exchange_context_memberships(conn, int(ex["id"]))
+                exd["context_match_count"] = len(exd["context"].get("context_matches") or [])
                 exd["snapshots"] = [dict(x) for x in conn.execute(
                     "SELECT id,human_state,request_hash,response_hash,observed_at,created_at FROM evidence_snapshots WHERE exchange_id=? ORDER BY id DESC",
                     (int(ex["id"]),),
@@ -1302,7 +1494,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                     """SELECT DISTINCT f.id,f.name FROM flows f JOIN flow_steps fs ON fs.flow_id=f.id
                        WHERE fs.exchange_id=? ORDER BY f.updated_at DESC LIMIT 40""", (int(ex["id"]),)).fetchall()]
                 exd["signals"] = []
-                for sx in conn.execute("SELECT * FROM signal_occurrences WHERE exchange_id=? ORDER BY last_seen_at DESC,id DESC LIMIT 30", (int(ex["id"]),)).fetchall():
+                for sx in conn.execute("SELECT * FROM signal_occurrences WHERE exchange_id=? AND COALESCE(signal_level,'local')!='correlation' ORDER BY last_seen_at DESC,id DESC LIMIT 30", (int(ex["id"]),)).fetchall():
                     si=dict(sx)
                     try: si["why"]=json.loads(si.get("why_json") or "{}")
                     except Exception: si["why"]={}
@@ -1382,7 +1574,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
         resource_human_state = core.get_human_state(conn, "resource", resource_id)
         resource_signals = []
         for sr in conn.execute(
-            """SELECT * FROM signal_occurrences WHERE resource_id=?
+            """SELECT * FROM signal_occurrences WHERE resource_id=? AND COALESCE(signal_level,'local')!='correlation'
                ORDER BY CASE COALESCE(human_decision,'new') WHEN 'new' THEN 0 WHEN 'investigating' THEN 1 WHEN 'interesting' THEN 2 ELSE 3 END,last_seen_at DESC LIMIT 60""",
             (resource_id,),
         ).fetchall():
@@ -1466,7 +1658,25 @@ def _finding_detail(paths: dict[str, Path], finding_id: int) -> dict[str, Any] |
             retests.append(rd)
         evidence = conn.execute("SELECT * FROM evidence_attachments WHERE entity_type='finding' AND entity_id=? ORDER BY id DESC", (finding_id,)).fetchall()
         notes = _notes(conn, "finding", finding_id)
-        return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes}
+        investigation_ids=set()
+        for link in conn.execute("SELECT entity_id FROM finding_entities WHERE finding_id=? AND entity_type='investigation'",(int(finding_id),)).fetchall():
+            investigation_ids.add(int(link['entity_id']))
+        for link in conn.execute("SELECT investigation_id FROM investigation_links WHERE entity_type='finding' AND entity_id=?",(int(finding_id),)).fetchall():
+            investigation_ids.add(int(link['investigation_id']))
+        trajectory=[]
+        for iid in sorted(investigation_ids):
+            trajectory.extend(_investigation_timeline(conn,iid,limit=180))
+        # Keep the story up to the Finding creation and add the terminal event explicitly.
+        created_at=str(finding['created_at'] or '')
+        trajectory=[x for x in trajectory if not created_at or str(x.get('at') or '') <= created_at]
+        trajectory.append({"at":finding['created_at'],"kind":"finding","title":"Finding confirmado" if str(finding['status'])=='confirmed' else "Finding creado","detail":str(finding['title']),"href":None})
+        trajectory.sort(key=lambda x:(str(x.get('at') or ''),str(x.get('kind') or '')))
+        dedup=[]; seen=set()
+        for x in trajectory:
+            key=(x.get('at'),x.get('kind'),x.get('title'),x.get('detail'))
+            if key in seen: continue
+            seen.add(key); dedup.append(x)
+        return {"finding": finding, "finding_links": links, "retests": retests, "finding_evidence": evidence, "finding_notes": notes, "finding_trajectory":dedup}
 
 
 def _graph_data_full(paths: dict[str, Path], domain: str, *, exchange_limit: int = 120, observation_limit: int = 120) -> dict[str, Any]:
@@ -3271,6 +3481,20 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/investigations/{investigation_id}", status_code=303)
+
+    @app.post("/t/{target_key}/investigation/{investigation_id}/note")
+    def investigation_note(request: Request, target_key: str, investigation_id: int, body: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        body=str(body or "").strip()
+        if body:
+            with _db(paths) as conn:
+                exists=conn.execute("SELECT id FROM investigations WHERE id=?",(int(investigation_id),)).fetchone()
+                if not exists: raise HTTPException(status_code=404,detail="Investigación no encontrada")
+                conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('investigation',?,?,?)",(int(investigation_id),body[:4000],_now()))
+                conn.execute("UPDATE investigations SET updated_at=? WHERE id=?",(_now(),int(investigation_id)))
+                _refresh_search(conn,knowledge=True)
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}#notas",status_code=303)
 
     @app.get("/t/{target_key}/investigations", response_class=HTMLResponse)
     def investigations_page(request: Request, target_key: str):

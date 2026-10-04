@@ -828,7 +828,7 @@ def list_hypothesis_requirements(conn, lead_id: int) -> list[dict[str, Any]]:
     init_schema(conn)
     rows = conn.execute(
         """SELECT hr.*,i.name identity_name,p.name matched_name,p.value_preview matched_value_preview,
-                  p.value_raw matched_value_raw,p.exchange_id matched_exchange_id,p.location matched_location
+                  p.value_raw matched_value_raw,p.exchange_id matched_exchange_id,p.resource_id matched_resource_id,p.location matched_location
            FROM hypothesis_requirements hr
            LEFT JOIN identities i ON i.id=hr.identity_id
            LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id

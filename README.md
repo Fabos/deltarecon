@@ -1,5 +1,19 @@
-# Negro Recon 🐕 — v0.41.0
+# Negro Recon 🐕 — v0.41.3
 
+
+## v0.41.3 — Context Memory UX
+
+El primer recorrido completo del lab `Order → returnId → refund` validó la idea principal de Negro: una Hypothesis bloqueada puede recuperar valor cuando una pieza aparece más tarde. Esta versión limpia la UX alrededor de ese comportamiento.
+
+- Hypothesis muestra el estado operativo real (`Bloqueada`, `Lista para probar`, `Demostrada`, `Refutada`).
+- `Context Match` deja de presentarse como Signal.
+- Cada Request muestra a simple vista si participa en Investigations, Hypotheses, Findings o Context Matches.
+- Investigation incorpora notas rápidas, contexto nuevo y timeline.
+- Finding incorpora `Cómo llegamos aquí`.
+
+El lab Vagrant incluido usa `192.168.56.70` como target Host-Only para ser consumido desde Kali/Burp.
+
+---
 
 ## v0.41.0 — Signal desde Regla + Burp-native Runner + HTTP Workbench
 

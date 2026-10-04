@@ -99,9 +99,9 @@ Una Regla puede crearse desde una Request, desde una Hipótesis o desde el catá
 
 ## v0.36 — Memoria de investigación y correlación
 
-Negro diferencia tres cosas: **memoria** (hechos indexados que no generan alertas por sí solos), **Signal** (algo que merece revisión) e **Hypothesis** (una pregunta de investigación). Los identificadores observados se recuerdan por key + valor + Request + host + Identity + Flow y se marcan como `input` u `output` según su ubicación real.
+Negro diferencia cuatro cosas: **memoria** (hechos indexados que no generan alertas por sí solos), **Signal** (una Regla coincidió), **Context Match** (apareció información relacionada con algo pendiente) e **Hypothesis** (una pregunta de investigación). Los identificadores observados se recuerdan por key + valor + Request + host + Identity + Flow y se marcan como `input` u `output` según su ubicación real.
 
-Una Hypothesis puede declarar una pieza pendiente. Si esa pieza aparece más adelante o ya existía en evidencia histórica, Negro emite un **Correlation Signal** y enlaza la evidencia; no afirma que exista una vulnerabilidad. La correlación se procesa incrementalmente y con índices, evitando comparaciones globales O(n²).
+Una Hypothesis puede declarar una pieza pendiente. Si esa pieza aparece más adelante o ya existía en evidencia histórica, Negro crea un **Context Match** y enlaza la evidencia; no afirma que exista una vulnerabilidad. Por compatibilidad histórica, el registro técnico puede reutilizar `signal_occurrences`, pero la UX no lo presenta como Signal. La correlación se procesa incrementalmente y con índices, evitando comparaciones globales O(n²).
 
 
 ## Modelo mental

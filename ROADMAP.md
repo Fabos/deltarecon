@@ -14,6 +14,19 @@ Ver `CONTEXT_COMPOUND_AUDIT.md` y `LAB_CONTEXT_COMPOUND_DESIGN.md`.
 
 ---
 
+## Benchmark Context Compound · Loop UX #1 ✅ v0.41.3
+
+El recorrido manual Buyer A/B validó `Hypothesis bloqueada → returnId aparece después → Context Match → refund → verificación → Finding`. Del benchmark salieron y quedaron implementados:
+
+- Hypothesis compacta con estado operativo claro.
+- Context Match separado visualmente de Signals.
+- memoria `INV/HYP/FIND/CTX` en Request Workbench.
+- notas rápidas + timeline en Investigation.
+- trayectoria `Cómo llegamos aquí` en Finding.
+
+Siguiente: repetir el mismo benchmark con esta UX y después avanzar a Runner como experimento ligado a Hypothesis/Investigation.
+
+
 ## v0.41 — Signal desde Regla + Burp-native Runner + HTTP Workbench ✅
 
 - Signal sólo desde Regla.

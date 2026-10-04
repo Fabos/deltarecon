@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.41.2"
+VERSION = "0.41.3"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -840,7 +840,7 @@ def set_human_state(conn: sqlite3.Connection, entity_type: str, entity_id: int, 
 
 
 def unreviewed_signal_count(conn: sqlite3.Connection, *, resource_id: int | None = None, exchange_id: int | None = None) -> int:
-    sql = "SELECT COUNT(*) c FROM signal_occurrences WHERE reviewed_at IS NULL AND dismissed_at IS NULL"
+    sql = "SELECT COUNT(*) c FROM signal_occurrences WHERE reviewed_at IS NULL AND dismissed_at IS NULL AND COALESCE(signal_level,'local')!='correlation'"
     params: list[object] = []
     if resource_id is not None:
         sql += " AND resource_id=?"
