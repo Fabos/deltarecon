@@ -543,3 +543,31 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 @media (max-width:900px){.identity-activity-grid{grid-template-columns:1fr}.identity-activity-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.discovery-branch{align-items:flex-start;flex-direction:column}}
 .graph-node.type-session circle{fill:#171d22;stroke:#806f98;stroke-dasharray:2.5 2.5}.graph-node.label-session{fill:#a99cbc}
 .discovery-new-context{display:grid;gap:3px;padding:10px 12px;border:1px solid rgba(168,243,93,.28);border-radius:10px;background:rgba(168,243,93,.045)}.discovery-new-context b{font-size:11px;color:#d8ffc0}.discovery-new-context span{font-size:10px;color:#83908a;line-height:1.4}
+
+/* v0.41.6 · focused Discovery graph */
+.graph-canvas-shell{position:relative;display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0;height:100%}
+.graph-discovery-trailbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--border);background:#0a0f12;min-height:34px}
+.graph-discovery-trailbar[hidden]{display:none!important}.graph-discovery-trailbar>span{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#738087}.graph-discovery-trailbar>div{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.graph-discovery-trailbar .muted{font-size:10px;text-transform:none;letter-spacing:0}
+.graph-insights-toggle span{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:4px;padding:0 5px;border-radius:999px;background:#1a2328;color:#c6d0d5;font-size:9px}
+.graph-discovery-insights{position:absolute;z-index:18;top:86px;right:12px;width:min(430px,calc(100% - 24px));max-height:calc(100% - 102px);overflow:auto;margin:0;border:1px solid #2b363c;background:rgba(10,15,18,.98);box-shadow:0 18px 50px rgba(0,0,0,.42);border-radius:12px;padding:14px}
+.graph-discovery-insights[hidden]{display:none!important}.graph-insights-close{position:sticky;top:0;float:right;z-index:2;border:1px solid #334047;background:#10171b;color:#abb7bd;border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1}.graph-insights-close:hover{border-color:var(--accent);color:var(--text)}
+.discovery-insight-grid{grid-template-columns:1fr}.discovery-insight{padding:9px 10px}.discovery-branches{border-top:1px solid #222c31;padding-top:10px}
+.discovery-pivot-line{display:grid!important;grid-template-columns:42px minmax(0,1fr) auto;gap:7px!important;align-items:center}.discovery-pivot-line code{font-size:10px;overflow-wrap:anywhere;white-space:normal}.discovery-pivot-kind{font-size:8px;color:#6e7c83;letter-spacing:.08em}.discovery-pivot-line .mini-action{font-size:9px;padding:4px 7px;white-space:nowrap}
+.discovery-identifier-row{gap:6px;padding:9px 0}.discovery-auth-mix{display:grid;gap:5px}.discovery-auth-mix>div{display:flex;justify-content:space-between;gap:10px;padding:7px 8px;border:1px solid #222d33;border-radius:8px;background:#090e11}.discovery-auth-mix span{font-size:10px;color:#aab5ba}.discovery-auth-mix b{font-size:10px;color:#d6e0e4}.discovery-auth-mix>div.untested{border-style:dashed}.discovery-auth-mix>div.untested b{color:#8d999f;font-weight:500}
+.node-endpoint-status.untested{fill:#8d999f;font-style:italic}
+.graph-quick-layers label[data-layer-wrap="identity"] span{font-weight:650}
+
+/* Fullscreen is the work surface only: graph + optional detail panel. */
+.graph-workspace:fullscreen{box-sizing:border-box;width:100vw;height:100vh;max-height:none;min-height:0;margin:0;border:0;border-radius:0;background:#070b0d;grid-template-columns:minmax(0,1fr) 360px;overflow:hidden}
+.graph-workspace:fullscreen .graph-controls{display:none!important}
+.graph-workspace:fullscreen .graph-stage{min-height:0;height:100vh;grid-template-rows:minmax(0,1fr)}
+.graph-workspace:fullscreen .graph-route-panel,.graph-workspace:fullscreen .investigation-narrative{display:none!important}
+.graph-workspace:fullscreen .graph-canvas-shell{height:100vh;min-height:0}
+.graph-workspace:fullscreen .graph-canvas-wrap{height:100%;min-height:0}
+.graph-workspace:fullscreen .graph-canvas{height:100%;min-height:0}
+.graph-workspace:fullscreen .graph-detail{position:relative;inset:auto;width:auto;min-height:0;height:100vh;overflow:auto;border-left:1px solid var(--border);box-shadow:none}
+.graph-workspace:fullscreen .graph-discovery-insights{top:86px;max-height:calc(100vh - 100px)}
+@media(max-width:900px){.graph-workspace:fullscreen{grid-template-columns:1fr}.graph-workspace:fullscreen .graph-detail{position:absolute;right:10px;top:52px;bottom:10px;width:min(350px,90vw);height:auto;border:1px solid var(--border);z-index:30}.discovery-pivot-line{grid-template-columns:36px minmax(0,1fr)}.discovery-pivot-line .mini-action{grid-column:2;justify-self:start}}
+.graph-node .discovery-owner-card{stroke:#7fb7ea}.node-identity-role{font-size:7px!important;letter-spacing:.08em;stroke-width:2px!important}.node-identity-role.owner{fill:#9ecaf0!important}
+.discovery-cross-filter{margin-top:7px;padding-top:8px;border-top:1px solid #263139}.discovery-cross-filter span{color:#b9c4c9}
+.node-endpoint-status.cross{fill:#bca3e2}.discovery-auth-mix>div.cross{border-color:#594a70}.discovery-auth-mix>div.cross span{color:#c5afe8}

@@ -1,3 +1,17 @@
+# v0.41.6 — Focused Discovery Graph
+
+- Discovery abre por defecto con sólo **pivote + endpoints**; las demás dimensiones son capas opt-in.
+- Nuevas capas: Identidades/Authorization Mix, Flows, Objects/Entities, Piezas cercanas, Contexto de investigación y Requests.
+- Authorization Mix dentro de Discovery muestra estados observados y marca `no observado` para ramas aún no comparadas.
+- Nuevo filtro `Sólo cruces / no observados` para reducir ruido en superficies grandes.
+- Los badges `S/C/H` sobre endpoints se preservan en todas las composiciones.
+- Breadcrumb siempre visible; Insights pasan a drawer opcional para no robar espacio al canvas.
+- Panel de endpoint renovado: Requests de evidencia + acciones explícitas `Seguir key` / `Seguir valor`.
+- Fullscreen se aplica al workspace del mapa, no a toda la página.
+- Layout Discovery especializado para evitar spaghetti al activar identidades.
+- Nueva regresión `v048_focused_discovery_graph_test.py`.
+- El ZIP principal sigue libre de labs.
+
 # v0.41.5 — Identity-aware Discovery Graph
 
 - Una asignación humana de Identity aprende auth material/resolvers y ejecuta **backfill histórico automático**; el tráfico futuro continúa resolviéndose durante ingest.

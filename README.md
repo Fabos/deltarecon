@@ -1,20 +1,20 @@
-# Negro Recon 🐕 — v0.41.5
+# Negro Recon 🐕 — v0.41.6
 
 
 
-## v0.41.5 — Identity-aware Discovery Graph
+## v0.41.6 — Focused Discovery Graph
 
-El grafo de descubrimiento empieza a responder preguntas de autorización sin ejecutar pruebas por su cuenta. Negro aprende una Identity una vez, resuelve automáticamente tráfico histórico y futuro compatible, y proyecta relaciones observadas entre actor, objeto, endpoints y auth material.
+Discovery deja de intentar enseñar todo al mismo tiempo. La vista inicial responde una sola pregunta: **¿en qué endpoints reaparece esta key/valor?** El resto del contexto se activa bajo demanda.
 
-- Asignar una Request a una Identity con aprendizaje de cookie/token dispara **atribución histórica automática**; `Recalcular atribución` queda como fallback manual.
-- Discovery diferencia relaciones observadas como **owner observado**, **lectura denegada**, **lectura permitida**, **escritura aceptada** y acciones concretas (`change-address`, `cancel`, `return`, `refund`).
-- Si una misma Identity tiene lectura 401/403 y una mutación 2xx sobre el mismo pivote, Negro muestra un **contraste observado** sin declararlo vulnerabilidad.
-- Si existe una mutación relacionada pero todavía no fue observada bajo esa Identity, aparece como **rama aún no comparada**; Negro no envía tráfico para comprobarla.
-- El panel lateral de un endpoint muestra las Requests que justifican la relación y sus keys/values. Una **key** explora el concepto; un **value** sigue la misma pieza aunque cambie de nombre.
-- La ruta de exploración conserva breadcrumbs entre pivotes y destaca evidencia nueva desde la última visita.
-- La vista de Identity resume actividad, endpoints, Flows, objetos y pivotes, y el grafo puede mostrar auth material/sesiones sin confundirlas con la Identity.
-- Se corrigen labels que desaparecían al hacer zoom, clipping lateral y el falso `No hay evidencia para esta vista.`
-- El core continúa **sin labs**; los benchmarks Vagrant se distribuyen aparte.
+- Default limpio: **pivote → endpoints**. Identidades, Flows, Objects/Entities, keys cercanas, Requests y contexto de Investigation son capas opcionales.
+- Los badges compactos sobre endpoints (`S`, `C`, `H`) se conservan aunque el grafo esté simplificado.
+- Activar **Identidades / Authorization Mix** cambia el layout: endpoints al centro, actores/owners a los lados y estados HTTP observados sobre cada endpoint.
+- `○ no observado` distingue combinaciones de identidad/operación que Negro aún no ha visto; no significa permitido ni denegado.
+- Filtro **Sólo cruces / no observados** reduce el mapa a endpoints con actor distinto del owner, múltiples identidades o ramas pendientes de comparación.
+- Los Insights deterministas pasan a un drawer opcional; el breadcrumb de exploración permanece siempre visible.
+- El panel derecho de un endpoint muestra Requests concretas y permite **Seguir key** o **Seguir valor** como pivotes distintos.
+- Fullscreen aplica sólo al workspace del mapa; oculta el chrome de la página y deja canvas + panel de detalle.
+- El core continúa **sin labs**; los benchmarks se distribuyen por separado.
 
 ---
 

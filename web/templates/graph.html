@@ -75,10 +75,14 @@
 
       <div class="graph-quick-layers" data-graph-layer-controls>
         <div class="graph-filter-title">Capas visuales</div>
+        <label data-layer-wrap="identity"><input type="checkbox" data-graph-layer="identity"> <span>Identidades / Authorization Mix</span></label>
         <label data-layer-wrap="flow"><input type="checkbox" data-graph-layer="flow"> <span>Flujos</span></label>
-        <label data-layer-wrap="object"><input type="checkbox" data-graph-layer="object"> <span>Objetos</span></label>
+        <label data-layer-wrap="object"><input type="checkbox" data-graph-layer="object"> <span>Objetos / Entities</span></label>
+        <label data-layer-wrap="parameter"><input type="checkbox" data-graph-layer="parameter"> <span>Piezas cercanas (keys)</span></label>
+        <label data-layer-wrap="context"><input type="checkbox" data-graph-layer="context"> <span>Contexto de investigación</span></label>
         <label data-layer-wrap="request"><input type="checkbox" data-graph-layer="request"> <span>Requests individuales</span></label>
         <label data-layer-wrap="operation"><input type="checkbox" data-graph-layer="operation"> <span>Métodos HTTP</span></label>
+        <label class="discovery-cross-filter" data-discovery-cross-wrap hidden><input type="checkbox" data-discovery-cross-only> <span>Sólo cruces / no observados</span></label>
         <div class="graph-intelligence-filter">
           <div class="graph-filter-title">Inteligencia</div>
           <label class="intel-only-toggle"><input type="checkbox" data-graph-intelligence-only> <span>Sólo con inteligencia</span></label>
@@ -117,18 +121,20 @@
         <div class="graph-route-list" data-graph-routes><p class="empty">Cargando…</p></div>
       </section>
 
-      <div class="graph-discovery-insights" data-graph-discovery-insights hidden></div>
       <div class="investigation-narrative" data-graph-narrative hidden></div>
 
       <div class="graph-canvas-shell" data-graph-canvas-shell>
+        <div class="graph-discovery-trailbar" data-graph-discovery-trail hidden></div>
         <div class="graph-canvas-actions">
           <button type="button" class="btn-secondary" data-graph-fit>Centrar</button>
           <button type="button" class="btn-secondary" data-graph-neighborhood>1 salto</button>
           <button type="button" class="btn-secondary" data-graph-two-hop>2 saltos</button>
           <button type="button" class="btn-secondary" data-graph-path-clear hidden>Limpiar camino</button>
+          <button type="button" class="btn-secondary graph-insights-toggle" data-discovery-insights-toggle hidden>Insights <span data-discovery-insights-count>0</span></button>
           <button type="button" class="btn-secondary" data-graph-fullscreen>⛶ Pantalla completa</button>
         </div>
-        <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Vista visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay evidencia para esta vista.</div><div class="graph-hint"><b>Clic</b> detalle · <b>doble clic</b> foco · expande sólo cuando necesites contexto</div></div>
+        <div class="graph-canvas-wrap"><svg class="graph-canvas" data-graph-canvas aria-label="Vista visual de investigación"></svg><div class="graph-empty" data-graph-empty hidden>No hay evidencia para esta vista.</div><div class="graph-hint"><b>Clic</b> detalle · <b>doble clic</b> foco · activa capas sólo cuando necesites contexto</div></div>
+        <aside class="graph-discovery-insights" data-graph-discovery-insights hidden><button type="button" class="graph-insights-close" data-discovery-insights-close aria-label="Cerrar insights">×</button></aside>
       </div>
     </div>
 
