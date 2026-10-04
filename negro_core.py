@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.41.1"
+VERSION = "0.41.2"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -2819,7 +2819,7 @@ def update_lead_status(paths: dict[str, Path], lead_id: int, status: str) -> dic
     if status not in allowed:
         raise ValueError("Estado de hipótesis inválido")
     with db_connect(paths) as conn:
-        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=? AND upper(COALESCE(source,''))='AI'", (lead_id,)).fetchone()
+        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()
         if not row:
             raise ValueError("Hipótesis no encontrada")
         conn.execute("UPDATE leads_v2 SET status=?,updated_at=? WHERE id=?", (status, now_iso(), lead_id))
@@ -2830,7 +2830,7 @@ def update_hypothesis(paths: dict[str, Path], lead_id: int, *, status: str | Non
     allowed = {"candidate","testing","interesting","negative","postponed","confirmed","discarded"}
     with db_connect(paths) as conn:
         hunter.init_schema(conn)
-        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=? AND upper(COALESCE(source,''))='AI'", (lead_id,)).fetchone()
+        row = conn.execute("SELECT id,title,status FROM leads_v2 WHERE id=?", (lead_id,)).fetchone()
         if not row:
             raise ValueError("Hipótesis no encontrada")
         next_status = status or row["status"]

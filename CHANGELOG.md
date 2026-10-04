@@ -1,3 +1,10 @@
+# v0.41.2 — Hotfix Hypothesis manual
+
+- Corrige guardado de `Decisión` y `Nota` para Hypotheses creadas manualmente desde Request.
+- El backend deja de asumir `source=AI` al actualizar una Hypothesis existente.
+- La UI expone `Demostrada` y `Refutada`, estados que ya existían en el modelo.
+- Añade regresión `v044_manual_hypothesis_decision_test.py`.
+
 # Contexto compuesto · Fase 1 — auditoría + relaciones canónicas
 
 - `investigation_links` pasa a ser el grafo canónico many-to-many para asociar contexto a Investigation sin copiar entidades.
