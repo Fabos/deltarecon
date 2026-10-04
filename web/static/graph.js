@@ -486,12 +486,15 @@
   function configureLayerControls(){
     restoreLayerPrefs();
     const relevance={
-      surface:new Set(['operation']),
-      identity:new Set(['flow','object','request','operation']),
-      flow:new Set(['object']),
-      objects:new Set(['flow','object','request','operation']),
-      discovery:new Set(['identity','flow','object','parameter','context','request']),
-      context:new Set(['flow','object','request','operation']),
+      // Keep the same vocabulary of layers across views.  Each perspective has
+      // a different default, but the hunter should not have to learn a different
+      // filter system every time they change lens.
+      surface:new Set(['identity','flow','object','parameter','context','request','operation']),
+      identity:new Set(['flow','object','parameter','context','request','operation']),
+      flow:new Set(['identity','object','parameter','context','request','operation']),
+      objects:new Set(['identity','flow','parameter','context','request','operation']),
+      discovery:new Set(['identity','flow','object','parameter','context','request','operation']),
+      context:new Set(['identity','flow','object','parameter','context','request','operation']),
       intelligence:new Set([])
     }[preset]||new Set();
     if(layerControls)layerControls.hidden=relevance.size===0;
@@ -516,27 +519,50 @@
   }
 
   function nodeLayerPasses(n){
-    if(preset==='surface')return n.type!=='operation'||layerEnabled('operation');
+    const isContextType=['investigation','lead','requirement','finding','observation','anomaly'].includes(n.type);
+    if(preset==='surface'){
+      if(['target','host','resource','javascript','source','cluster'].includes(n.type))return true;
+      if(n.type==='operation')return layerEnabled('operation');
+      if(n.type==='identity')return layerEnabled('identity');
+      if(n.type==='flow')return layerEnabled('flow');
+      if(n.type==='object')return layerEnabled('object');
+      if(n.type==='parameter')return layerEnabled('parameter');
+      if(n.type==='request')return layerEnabled('request');
+      if(isContextType)return layerEnabled('context');
+      return false;
+    }
     if(preset==='identity'){
       if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
       if(n.type==='resource'||n.type==='identity')return identityEndpointPass(n);
-      if(['flow','object','request','operation'].includes(n.type))return layerEnabled(n.type);
+      if(n.type==='flow')return layerEnabled('flow');
+      if(n.type==='object')return layerEnabled('object');
+      if(n.type==='parameter')return layerEnabled('parameter');
+      if(n.type==='request')return layerEnabled('request');
+      if(n.type==='operation')return layerEnabled('operation');
+      if(isContextType)return layerEnabled('context');
       return true;
     }
     if(preset==='flow'){
-      if(n.type==='target'||n.type==='host'||n.type==='resource'||n.type==='operation'||n.type==='state'||n.type==='anomaly')return false;
-      if(n.type==='flow'||n.type==='identity'||n.type==='request')return true;
+      if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
+      if(n.type==='flow')return true;
+      if(n.type==='identity')return layerEnabled('identity');
+      if(n.type==='request')return layerEnabled('request');
       if(n.type==='object')return layerEnabled('object');
-      return true;
+      if(n.type==='parameter')return layerEnabled('parameter');
+      if(n.type==='operation')return layerEnabled('operation');
+      if(isContextType)return layerEnabled('context');
+      return n.type!=='resource';
     }
     if(preset==='objects'){
       if(n.type==='target'||n.type==='host'||n.type==='state'||n.type==='anomaly')return false;
-      if(n.type==='resource'||n.type==='identity')return true;
+      if(n.type==='resource')return true;
+      if(n.type==='identity')return layerEnabled('identity');
       if(n.type==='flow')return layerEnabled('flow');
-      if(n.type==='request'||n.type==='operation')return layerEnabled(n.type);
+      if(n.type==='request'||n.type==='operation'||n.type==='parameter')return layerEnabled(n.type);
       if(n.type==='object'){
         const focus=`object:${Number(graph.meta?.object_id||0)}`;return n.id===focus||layerEnabled('object');
       }
+      if(isContextType)return layerEnabled('context');
       return true;
     }
     if(preset==='discovery'){
@@ -680,6 +706,9 @@
   function openDiscoveryPivot(query,{push=true}={}){
     const q=String(query||'').trim();
     if(!q)return Promise.resolve();
+    const discoveryBtn=root.querySelector('[data-graph-preset="discovery"]');
+    root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x===discoveryBtn));
+    preset='discovery';
     try{discoveryPreviousSeen=localStorage.getItem(`negro.graph.discovery.seen:${targetKey}:${q}`)||'';}catch(_){discoveryPreviousSeen='';}
     if(push){
       if(!discoveryTrail.length && String(graph.meta?.discovery_query||'').trim()) discoveryTrail=[String(graph.meta.discovery_query).trim()];
@@ -698,7 +727,7 @@
     if(discoveryInsightsToggle)discoveryInsightsToggle.hidden=!active;
     if(!active){
       discoveryInsights.hidden=true;discoveryInsights.innerHTML='';
-      if(discoveryTrailBar)discoveryTrailBar.innerHTML='';
+      renderGenericTrail();
       return;
     }
     const query=String(graph.meta?.discovery_query||'').trim();
@@ -736,6 +765,27 @@
       const id=Number(btn.dataset.discoverBranchResource||0);const n=graph.nodes.find(x=>x.id===`resource:${id}`);if(n){selected=n.id;showNode(n);render();focusNeighborhood(n.id,1);}
     }));
     if(maxSeen){try{localStorage.setItem(`negro.graph.discovery.seen:${targetKey}:${query}`,maxSeen);}catch(_){}}
+  }
+
+  function renderGenericTrail(){
+    if(!discoveryTrailBar || preset==='discovery')return;
+    const m=graph.meta||{};
+    const labels={surface:'Superficie',identity:'Identidad',flow:'Flujo',objects:'Objeto',context:'Investigation',intelligence:'Atención',untested:'Pendientes',interesting:'Interesante',burp:'Burp',attack:'Qué probar',all:'Vista técnica'};
+    const crumbs=[labels[preset]||valueLabel(preset)];
+    const opts=m.filter_options||{};
+    if(preset==='identity'&&Number(m.identity_id||0)){
+      const a=(opts.identities||[]).find(x=>Number(x.id)===Number(m.identity_id)); if(a)crumbs.push(a.name);
+      if(Number(m.compare_identity_id||0)){const b=(opts.identities||[]).find(x=>Number(x.id)===Number(m.compare_identity_id));if(b)crumbs.push(`vs ${b.name}`);}
+    }
+    if(preset==='flow'&&Number(m.flow_id||0)){const f=(opts.flows||[]).find(x=>Number(x.id)===Number(m.flow_id));if(f)crumbs.push(f.name);}
+    if(preset==='objects'&&Number(m.object_id||0)){const o=(opts.objects||[]).find(x=>Number(x.id)===Number(m.object_id));if(o)crumbs.push(`${o.object_type||'Objeto'} ${o.identifier||''}`.trim());}
+    if(['surface','untested','interesting','all','burp','attack'].includes(preset)){
+      if(m.host_label||m.hostname)crumbs.push(m.host_label||m.hostname);
+      if(m.resource_label||m.path)crumbs.push(m.resource_label||m.path);
+    }
+    if(selected){const n=sceneNodes.find(x=>x.id===selected)||graph.nodes.find(x=>x.id===selected);if(n&&!crumbs.includes(n.label))crumbs.push(n.label);}
+    discoveryTrailBar.hidden=false;
+    discoveryTrailBar.innerHTML=`<span>Ruta</span><div>${crumbs.map((x,i)=>`<span class="discovery-crumb ${i===crumbs.length-1?'active':''}">${esc(x)}</span>`).join('<span>→</span>')}</div>`;
   }
 
   function renderExperience(){
@@ -1377,6 +1427,24 @@
     return `<div class="graph-detail-section discovery-endpoint-evidence"><h3>Explorar este endpoint</h3><p>La pieza <code>${esc(ev.pivot||'')}</code> fue observada aquí como ${esc((ev.pivot_keys||[]).join(', ')||'identificador')}. Desde este panel puedes abrir el HTTP o cambiar de pivote sin perder la ruta de exploración.</p>${identityHtml}<div class="discovery-panel-group"><b>Requests que justifican la relación</b>${reqHtml}</div><div class="discovery-panel-group"><b>Keys y valores observados</b><p class="muted"><b>Seguir key</b> busca el mismo concepto con cualquier valor. <b>Seguir valor</b> busca esta pieza aunque cambie de nombre.</p>${idsHtml}</div></div>`;
   }
 
+  async function hydrateGenericResourceEvidence(n){
+    if(n?.type!=='resource' || n.meta?.discovery_evidence)return;
+    const rid=Number(n.meta?.id||0); if(!rid)return;
+    const host=detail.querySelector(`[data-resource-evidence="${rid}"]`); if(!host)return;
+    try{
+      const r=await fetch(`${api}/resource-evidence/${rid}`,{headers:{Accept:'application/json'}});
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      const d=await r.json();
+      const reqs=Array.isArray(d.requests)?d.requests:[];
+      const ids=Array.isArray(d.identifiers)?d.identifiers:[];
+      const reqHtml=reqs.length?reqs.map(x=>`<a class="discovery-request-row" href="${base}/resource/${rid}?exchange=${Number(x.id||0)}#exchange-${Number(x.id||0)}"><span><b>${esc(x.method||'REQUEST')}</b> <code>${esc(x.path||'')}</code></span><small>#${Number(x.id||0)} · HTTP ${esc(x.status??'—')}${x.identity_name?` · ${esc(x.identity_name)}`:''}</small></a>`).join(''):'<small>No hay Requests observadas.</small>';
+      const idHtml=ids.length?ids.map(x=>`<article class="discovery-pivot-card"><div class="discovery-pivot-line"><span class="discovery-pivot-kind">KEY</span><code>${esc(x.key||'')}</code><button type="button" class="mini-action" data-discover-key="${esc(x.key||'')}">Seguir key</button></div><div class="discovery-pivot-line"><span class="discovery-pivot-kind">VALOR</span><code>${esc(x.value||'')}</code><button type="button" class="mini-action" data-discover-value="${esc(x.value||'')}">Seguir valor</button></div><small>${Number((x.request_ids||[]).length)} Request${Number((x.request_ids||[]).length)===1?'':'s'}</small></article>`).join(''):'<small>No hay keys/valores indexados en estas Requests.</small>';
+      host.innerHTML=`<h3>Requests, keys y valores</h3><p class="muted">Disponible en cualquier lente. Sigue una key para explorar el concepto o un valor para seguir la misma pieza aunque cambie de nombre.</p><div class="discovery-panel-group"><b>Requests observadas</b>${reqHtml}</div><div class="discovery-panel-group"><b>Pivotes disponibles</b>${idHtml}</div>`;
+      host.querySelectorAll('[data-discover-key]').forEach(btn=>btn.addEventListener('click',()=>{discoveryTrail=[btn.dataset.discoverKey||''];openDiscoveryPivot(btn.dataset.discoverKey||'',{push:false});}));
+      host.querySelectorAll('[data-discover-value]').forEach(btn=>btn.addEventListener('click',()=>{discoveryTrail=[btn.dataset.discoverValue||''];openDiscoveryPivot(btn.dataset.discoverValue||'',{push:false});}));
+    }catch(err){host.innerHTML=`<h3>Requests, keys y valores</h3><p class="muted">No se pudo cargar esta evidencia: ${esc(err.message)}</p>`;}
+  }
+
   function showNode(n){
     const rels=(n.virtual?sceneEdges:graph.edges).filter(e=>e.source===n.id||e.target===n.id);
     const meta=n.meta||{};
@@ -1404,7 +1472,10 @@
     const pathAction=!pathStart?`<button type="button" class="btn-secondary" data-path-start>Camino · empezar aquí</button>`:(pathStart===n.id?`<button type="button" class="btn-secondary" data-path-clear-local>Cancelar inicio de camino</button>`:`<button type="button" class="button" data-path-to>Ver camino desde ${esc((sceneNodes.find(x=>x.id===pathStart)||graph.nodes.find(x=>x.id===pathStart))?.label||'inicio')}</button><button type="button" class="btn-secondary" data-path-start>Cambiar inicio</button>`);
     const hypothesisHtml=n.type==='lead'?`<div class="graph-detail-section graph-hypothesis-editor"><h3>Trabajo de hipótesis</h3>${meta.why?`<p><b>Por qué:</b> ${esc(meta.why)}</p>`:''}${meta.next_test?`<p><b>Siguiente prueba:</b> ${esc(meta.next_test)}</p>`:''}<label>Estado<select data-lead-edit-status>${['candidate','testing','interesting','negative','postponed','confirmed','discarded'].map(s=>`<option value="${s}" ${String(meta.status||'candidate')===s?'selected':''}>${esc(valueLabel(s))}</option>`).join('')}</select></label><label>Resultado / qué pasó<textarea data-lead-edit-notes placeholder="Qué probaste, por qué falló o qué evidencia confirmó la hipótesis…">${esc(meta.result_notes||'')}</textarea></label><button type="button" class="button" data-lead-edit-save>Guardar en la misma hipótesis</button><small data-lead-edit-feedback></small></div>`:'';
     const discoveryEndpointHtml=discoveryEndpointEvidenceHtml(n);
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}${discoveryAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Ideas con IA</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${discoveryEndpointHtml}${intelligenceHtml}${hypothesisHtml}${clusterHtml}${relationHtml}`;
+    const genericEndpointHtml=(n.type==='resource' && !discoveryEndpointHtml)?`<div class="graph-detail-section discovery-endpoint-evidence" data-resource-evidence="${Number(meta.id||0)}"><h3>Requests, keys y valores</h3><p class="muted">Cargando evidencia observada de este endpoint…</p></div>`:'';
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">${esc(typeLabel[n.type]||n.type)}</span><h2>${esc(n.label)}</h2>${statusHtml}</div>${summaryHtml}${methodHtml}<div class="graph-detail-actions">${exploreAction}${discoveryAction}<button type="button" class="btn-secondary" data-focus-one>Enfocar 1 salto</button><button type="button" class="btn-secondary" data-focus-two>2 saltos</button>${pathAction}${n.href?`<a class="btn" href="${base}/${esc(n.href)}">Abrir detalle →</a>`:''}<button type="button" class="btn-secondary" data-ai-selected>🧠 Ideas con IA</button></div><div class="graph-detail-meta">${metaRows||'<small>Sin datos adicionales.</small>'}</div>${discoveryEndpointHtml}${genericEndpointHtml}${intelligenceHtml}${hypothesisHtml}${clusterHtml}${relationHtml}`;
+    renderGenericTrail();
+    hydrateGenericResourceEvidence(n);
     detail.querySelector('[data-explore-scope]')?.addEventListener('click',()=>navigateScope(n));
         detail.querySelectorAll('[data-discover-value]').forEach(btn=>btn.addEventListener('click',()=>openDiscoveryPivot(btn.dataset.discoverValue||'')));
     detail.querySelectorAll('[data-discover-key]').forEach(btn=>btn.addEventListener('click',()=>openDiscoveryPivot(btn.dataset.discoverKey||'')));
@@ -1483,9 +1554,15 @@
   function fit(){
     if(!visibleNodes.length)return;
     const box=svg.getBoundingClientRect();
-    const sidePad=preset==='discovery'?230:70, rightPad=preset==='discovery'?460:200;
-    const minX=Math.min(...visibleNodes.map(n=>n.x))-sidePad,maxX=Math.max(...visibleNodes.map(n=>n.x))+rightPad,minY=Math.min(...visibleNodes.map(n=>n.y))-75,maxY=Math.max(...visibleNodes.map(n=>n.y))+75;
-    const w=Math.max(220,maxX-minX),h=Math.max(180,maxY-minY);const k=Math.max(.24,Math.min(1.25,Math.min(box.width/w,box.height/h)));
+    const fullscreen=document.fullscreenElement===graphWorkspace;
+    // Fullscreen must use the extra canvas instead of keeping the same tiny
+    // scale that was comfortable inside the normal three-column page.
+    const sidePad=preset==='discovery'?(fullscreen?80:190):(fullscreen?45:70);
+    const rightPad=preset==='discovery'?(fullscreen?130:340):(fullscreen?70:160);
+    const minX=Math.min(...visibleNodes.map(n=>n.x))-sidePad,maxX=Math.max(...visibleNodes.map(n=>n.x))+rightPad,minY=Math.min(...visibleNodes.map(n=>n.y))-(fullscreen?45:75),maxY=Math.max(...visibleNodes.map(n=>n.y))+(fullscreen?45:75);
+    const w=Math.max(220,maxX-minX),h=Math.max(180,maxY-minY);
+    const maxK=fullscreen?2.15:1.35;
+    const k=Math.max(.24,Math.min(maxK,Math.min(box.width/w,box.height/h)));
     view.k=k;view.x=box.width/2-(minX+w/2)*k;view.y=box.height/2-(minY+h/2)*k;render();
   }
 

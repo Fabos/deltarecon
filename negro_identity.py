@@ -882,6 +882,29 @@ def authorization_matrix(conn, identity_ids: list[int] | None = None, *, limit_r
            JOIN hosts h ON h.id=r.host_id
            ORDER BY e.id"""
     ).fetchall()
+    # Identifier memory lets the matrix distinguish a true cross-identity
+    # observation of the same object/value from two identities merely visiting
+    # the same generic route such as /api/me.
+    exchange_ids = [int(r["exchange_id"]) for r in rows]
+    values_by_exchange: dict[int, set[str]] = {}
+    if exchange_ids:
+        marks = ','.join('?' for _ in exchange_ids)
+        try:
+            for iv in conn.execute(
+                f"""SELECT exchange_id,COALESCE(NULLIF(value_raw,''),value_preview,'') value
+                     FROM identifier_observation_index
+                     WHERE exchange_id IN ({marks})""",
+                exchange_ids,
+            ).fetchall():
+                value = str(iv["value"] or "").strip()
+                # Ignore tiny/common scalar values; they are poor evidence of
+                # two accounts touching the same business object.
+                if len(value) < 4 or value.lower() in {"true","false","null","none","200","201","400","401","403","404"}:
+                    continue
+                values_by_exchange.setdefault(int(iv["exchange_id"]), set()).add(value)
+        except Exception:
+            values_by_exchange = {}
+
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for r in rows:
         iid = int(r["identity_id"])
@@ -891,8 +914,9 @@ def authorization_matrix(conn, identity_ids: list[int] | None = None, *, limit_r
         key = (str(r["hostname"]), str(r["method"]), shape)
         item = grouped.setdefault(key, {"host": key[0], "method": key[1], "shape": key[2], "cells": {}, "objects": set()})
         item["objects"].add(str(r["path"] or "/"))
-        cell = item["cells"].setdefault(iid, {"count": 0, "statuses": {}, "examples": [], "contexts": set()})
+        cell = item["cells"].setdefault(iid, {"count": 0, "statuses": {}, "examples": [], "contexts": set(), "pivot_values": set()})
         cell["count"] += 1
+        cell["pivot_values"].update(values_by_exchange.get(int(r["exchange_id"]), set()))
         status = str(r["status_code"] if r["status_code"] is not None else "—")
         cell["statuses"][status] = int(cell["statuses"].get(status, 0)) + 1
         if len(cell["examples"]) < 4:
@@ -905,10 +929,20 @@ def authorization_matrix(conn, identity_ids: list[int] | None = None, *, limit_r
         for iid in selected:
             raw = item["cells"].get(iid)
             if not raw:
-                cells[iid] = {"observed": False, "count": 0, "statuses": {}, "examples": [], "contexts": []}
+                cells[iid] = {"observed": False, "count": 0, "statuses": {}, "examples": [], "contexts": [], "pivot_values": []}
             else:
-                cells[iid] = {**raw, "observed": True, "contexts": sorted(raw["contexts"])}
-        out.append({**item, "objects": sorted(item["objects"]), "cells": cells})
+                cells[iid] = {**raw, "observed": True, "contexts": sorted(raw["contexts"]), "pivot_values": sorted(raw.get("pivot_values", set()))}
+        shared_values: list[str] = []
+        if len(selected) == 2 and cells[selected[0]]["observed"] and cells[selected[1]]["observed"]:
+            shared_values = sorted(set(cells[selected[0]].get("pivot_values", [])) & set(cells[selected[1]].get("pivot_values", [])))[:6]
+            if shared_values:
+                cells[selected[0]]["cross_observed"] = True
+                cells[selected[1]]["cross_observed"] = True
+        observed_count = sum(1 for iid in selected if cells[iid]["observed"])
+        has_identifier_context = any(cells[iid].get("pivot_values") for iid in selected)
+        out.append({**item, "objects": sorted(item["objects"]), "cells": cells, "shared_values": shared_values,
+                    "cross_observed": bool(shared_values), "comparison_gap": len(selected) == 2 and observed_count == 1,
+                    "has_identifier_context": bool(has_identifier_context)})
     out.sort(key=lambda x: (x["host"], x["shape"], x["method"]))
     identities_by_id = {int(x["id"]): x for x in all_identities if int(x["id"]) in selected_set}
     return {"identities": [identities_by_id[i] for i in selected if i in identities_by_id], "rows": out[: max(1, min(int(limit_routes), 2000))]}

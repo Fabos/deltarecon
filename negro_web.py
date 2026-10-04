@@ -4989,6 +4989,80 @@ def create_app(default_domain: str, default_workspace: Path):
             return _graph_semantic_data(paths, domain, scope=scope, identity_id=identity_id or None, compare_identity_id=compare_identity_id or None, flow_id=flow_id or None, object_id=object_id or None, request_id=request_id or None, finding_id=finding_id or None, investigation_id=investigation_id or None, discovery_query=q, observation_id=observation_id or None, limit=exchanges)
         return _graph_data(paths, domain, scope=scope, host_id=host_id or None, resource_id=resource_id or None, exchange_limit=exchanges, observation_limit=observations)
 
+    @app.get("/api/t/{target_key}/graph/resource-evidence/{resource_id}", response_class=JSONResponse)
+    def graph_resource_evidence(target_key: str, resource_id: int):
+        """Small evidence projection used by the graph side panel in every lens.
+
+        It is intentionally read-only and bounded: the graph can expose the real
+        Requests plus key/value pivots without forcing the user to switch to the
+        Discovery lens first.
+        """
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            resource = conn.execute(
+                """SELECT r.id,r.path,r.url,h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?""",
+                (int(resource_id),),
+            ).fetchone()
+            if not resource:
+                raise HTTPException(status_code=404, detail="Endpoint no encontrado")
+            rows = [dict(x) for x in conn.execute(
+                """SELECT e.id,o.method,r.path,e.status_code,e.source,e.tool,e.last_seen_at,
+                          ei.identity_id,i.name identity_name
+                   FROM http_exchanges e
+                   JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id
+                   LEFT JOIN exchange_identities ei ON ei.exchange_id=e.id
+                   LEFT JOIN identities i ON i.id=ei.identity_id
+                   WHERE o.resource_id=?
+                   ORDER BY e.id DESC LIMIT 40""",
+                (int(resource_id),),
+            ).fetchall()]
+            # De-duplicate a request if a legacy workspace contains more than one
+            # attribution row; keep the first human-readable identity.
+            request_map: dict[int, dict[str, Any]] = {}
+            for row in rows:
+                exid = int(row["id"])
+                slot = request_map.setdefault(exid, {
+                    "id": exid, "method": row.get("method") or "REQUEST",
+                    "path": row.get("path") or resource["path"],
+                    "status": row.get("status_code"), "source": row.get("source") or "",
+                    "tool": row.get("tool") or "", "seen_at": row.get("last_seen_at") or "",
+                    "identity_id": row.get("identity_id"), "identity_name": row.get("identity_name") or "",
+                })
+                if not slot.get("identity_name") and row.get("identity_name"):
+                    slot["identity_id"] = row.get("identity_id"); slot["identity_name"] = row.get("identity_name") or ""
+            request_ids = sorted(request_map, reverse=True)
+            identifiers: list[dict[str, Any]] = []
+            if request_ids:
+                marks = ','.join('?' for _ in request_ids)
+                id_rows = [dict(x) for x in conn.execute(
+                    f"""SELECT exchange_id,normalized_name,COALESCE(NULLIF(value_raw,''),value_preview,'') value,
+                               direction,source_location
+                        FROM identifier_observation_index
+                        WHERE exchange_id IN ({marks})
+                        ORDER BY exchange_id DESC,id DESC LIMIT 240""",
+                    request_ids,
+                ).fetchall()]
+                grouped: dict[tuple[str,str], dict[str, Any]] = {}
+                for item in id_rows:
+                    key = str(item.get("normalized_name") or "").strip(); value = str(item.get("value") or "").strip()
+                    if not key or not value:
+                        continue
+                    slot = grouped.setdefault((key,value), {"key":key,"value":value,"request_ids":set(),"directions":set(),"locations":set()})
+                    slot["request_ids"].add(int(item["exchange_id"])); slot["directions"].add(str(item.get("direction") or "")); slot["locations"].add(str(item.get("source_location") or ""))
+                for slot in list(grouped.values())[:60]:
+                    identifiers.append({
+                        "key":slot["key"], "value":slot["value"],
+                        "request_ids":sorted(slot["request_ids"]),
+                        "directions":sorted(x for x in slot["directions"] if x),
+                        "locations":sorted(x for x in slot["locations"] if x)[:5],
+                    })
+            return {
+                "resource":{"id":int(resource["id"]),"path":resource["path"],"url":resource["url"],"host":resource["hostname"]},
+                "requests":[request_map[x] for x in request_ids],
+                "identifiers":identifiers,
+            }
+
     @app.get("/api/t/{target_key}/graph/ideas-estimate", response_class=JSONResponse)
     def graph_ideas_estimate(target_key: str, model: str = "", selected_node_id: str = ""):
         domain, _, paths = _target_context(target_key)

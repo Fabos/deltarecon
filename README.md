@@ -1,8 +1,8 @@
-# Negro Recon 🐕 — v0.41.6
+# Negro Recon 🐕 — v0.41.7
 
 
 
-## v0.41.6 — Focused Discovery Graph
+## v0.41.7 — Graph UX Closure
 
 Discovery deja de intentar enseñar todo al mismo tiempo. La vista inicial responde una sola pregunta: **¿en qué endpoints reaparece esta key/valor?** El resto del contexto se activa bajo demanda.
 
@@ -11,10 +11,12 @@ Discovery deja de intentar enseñar todo al mismo tiempo. La vista inicial respo
 - Activar **Identidades / Authorization Mix** cambia el layout: endpoints al centro, actores/owners a los lados y estados HTTP observados sobre cada endpoint.
 - `○ no observado` distingue combinaciones de identidad/operación que Negro aún no ha visto; no significa permitido ni denegado.
 - Filtro **Sólo cruces / no observados** reduce el mapa a endpoints con actor distinto del owner, múltiples identidades o ramas pendientes de comparación.
-- Los Insights deterministas pasan a un drawer opcional; el breadcrumb de exploración permanece siempre visible.
-- El panel derecho de un endpoint muestra Requests concretas y permite **Seguir key** o **Seguir valor** como pivotes distintos.
-- Fullscreen aplica sólo al workspace del mapa; oculta el chrome de la página y deja canvas + panel de detalle.
+- Los Insights deterministas pasan a un drawer opcional; la **miga de pan permanece en todas las lentes**, no sólo en Descubrir.
+- El panel derecho de **cualquier endpoint en cualquier lente** muestra Requests concretas y permite **Seguir key** o **Seguir valor** como pivotes distintos.
+- Fullscreen usa todo el workspace con **filtros visibles + canvas + detalle**, y recalcula el zoom para aprovechar el viewport.
+- Authorization Matrix resalta **cruces observados** del mismo valor entre identidades y **ramas sin comparar**.
 - El core continúa **sin labs**; los benchmarks se distribuyen por separado.
+- Con este cierre, el foco vuelve al roadmap de Context Compound: **Fase 3 — Watches/Context Match formal**.
 
 ---
 

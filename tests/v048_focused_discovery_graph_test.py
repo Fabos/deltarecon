@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression v0.41.6: Discovery defaults to pivot→endpoints and layers are explicit."""
+"""Regression v0.41.7: Discovery defaults to pivot→endpoints and layers are explicit."""
 from pathlib import Path
 import sys
 ROOT=Path(__file__).resolve().parents[1]
@@ -8,7 +8,7 @@ import negro_core as core
 
 
 def main():
-    assert core.VERSION=='0.41.6'
+    assert core.VERSION=='0.41.7'
     html=(ROOT/'web/templates/graph.html').read_text()
     js=(ROOT/'web/static/graph.js').read_text()
     css=(ROOT/'web/static/style.css').read_text()

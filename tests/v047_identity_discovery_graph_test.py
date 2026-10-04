@@ -24,7 +24,7 @@ def capture(paths,path,method,status,*,cookie='',body='',response='{}'):
     return item
 
 def main():
-    assert core.VERSION=='0.41.6'
+    assert core.VERSION=='0.41.7'
     with tempfile.TemporaryDirectory(prefix='negro-v047-') as td:
         paths=core.ensure_workspace(Path(td)/'workspace','shop.negro.lab')
         with core.db_connect(paths) as conn:

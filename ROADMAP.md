@@ -4,7 +4,7 @@
 
 1. **Fase 1 — Auditoría + relaciones canónicas ✅**: `investigation_links` se formaliza como grafo many-to-many; backfill compatible desde Hypothesis/Runner/Finding/AI Idea; Identity Context asociable; navegación corregida.
 2. **Fase 2 — Investigation Workspace + asociaciones + Notes + Timeline ✅ (base funcional)**: contexto nuevo, notas rápidas, timeline y grafo contextual de Investigation sobre relaciones existentes.
-3. **Fase 3 — Hypothesis bloqueadas + dependencias + Watches + Context Match**: evolucionar `hypothesis_requirements` + correlation memory existente desde v0.36.
+3. **Fase 3 — Hypothesis bloqueadas + dependencias + Watches + Context Match ⏭ siguiente**: formalizar el lifecycle sobre `hypothesis_requirements` + correlation memory existente desde v0.36, sin volver a invertir ciclos en el grafo salvo bugs.
 4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation**: la expansión visual de Follow Value ya inicia en v0.41.4; falta persistir exploraciones/comparaciones dentro de Investigation sin duplicar Requests.
 5. **Fase 5 — Runner como experimento**: conservar Flow Runner y añadir intención/trayectoria Investigation → Hypothesis → Run.
 6. **Fase 6 — Burp ↔ Negro contextual**: extender el bridge existente con acciones de Investigation/Hypothesis/Entity/Follow Value/Watch/Note.
@@ -26,7 +26,7 @@ Discovery deja de limitarse a “dónde aparece” y empieza a exponer **contras
 - endpoint → Requests → key/value se navega sin salir del grafo.
 - la navegación por pivotes conserva trayectoria y puede destacar contexto aparecido desde la última visita.
 
-Siguiente evolución del grafo: enriquecer transiciones de estado/objetos, relaciones entre Flows y filtros de cruces de identidad, manteniendo provenance y expansión bajo demanda.
+v0.41.7 cierra el ciclo actual del grafo con fullscreen/filtros/breadcrumb/pivotes universales y resaltado de cruces. Próximo foco: Fase 3 de Context Compound; el grafo sólo recibirá mejoras justificadas por uso real.
 
 
 ## Discovery Graph · v0.41.4 ✅

@@ -1,3 +1,12 @@
+# v0.41.7 — Graph UX Closure
+
+- Fullscreen usa todo el workspace: filtros visibles a la izquierda, canvas central y detalle a la derecha; al entrar/salir recalcula el fit con una escala adecuada.
+- La miga de pan se mantiene en Superficie, Identidad, Flujo, Objeto, Descubrir y vistas técnicas; Discovery conserva además su historial key/value navegable.
+- Las mismas capas/filtros quedan disponibles de forma coherente entre las lentes principales; cada vista conserva defaults distintos para evitar ruido.
+- El panel de cualquier Endpoint, no sólo Descubrir, carga Requests reales, identidad/HTTP status y pivotes `Seguir key` / `Seguir valor`.
+- Authorization Matrix resalta cruces cuando dos identidades observaron el mismo valor identificador y marca ramas con contexto de identificador todavía no observadas en la otra identidad.
+- Esta versión cierra el ciclo de UX del grafo; nuevos cambios de mapa se priorizarán sólo por bugs/uso real mientras el roadmap vuelve a Context Compound.
+
 # v0.41.6 — Focused Discovery Graph
 
 - Discovery abre por defecto con sólo **pivote + endpoints**; las demás dimensiones son capas opt-in.
