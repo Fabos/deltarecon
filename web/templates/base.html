@@ -21,7 +21,8 @@
       <a class="{% if '/objects' in request.url.path %}active{% endif %}" href="{{ target_base }}/objects">Objetos</a>
       <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
       <span class="nav-divider" aria-hidden="true"></span>
-      <a class="{% if '/hypotheses' in request.url.path or '/signals/custom' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Investigación</a>
+      <a class="{% if '/hypotheses' in request.url.path or '/signals/custom' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
+      <a class="{% if '/investigations' in request.url.path %}active{% endif %}" href="{{ target_base }}/investigations">Investigaciones</a>
       <a class="{% if '/finding' in request.url.path %}active{% endif %}" href="{{ target_base }}/findings">Hallazgos</a>
       <a class="nav-utility {% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence" title="Recon e inteligencia">Recon</a>
       <a class="nav-utility {% if '/guide' in request.url.path %}active{% endif %}" href="{{ target_base }}/guide" title="Guía de Negro">Guía</a>

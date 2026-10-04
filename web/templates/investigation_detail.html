@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ investigation.title }} · Investigation · Negro{% endblock %}
 {% block content %}
-<nav class="breadcrumbs"><a href="{{ target_base }}/hypotheses">Hunt</a><span>›</span><strong>Investigation #{{ investigation.id }}</strong></nav>
+<nav class="breadcrumbs"><a href="{{ target_base }}/investigations">Investigaciones</a><span>›</span><strong>Investigation #{{ investigation.id }}</strong></nav>
 <section class="hero compact-hero investigation-page-hero">
   <div><p class="eyebrow">INVESTIGATION #{{ investigation.id }}</p><h1>{{ investigation.title }}</h1><p class="muted">{{ investigation.summary or 'Workspace humano para reunir contexto, preguntas, pruebas y decisiones.' }}</p><div class="hero-meta"><span class="badge">{{ ui_label(investigation.status) }}</span><span class="badge">{{ investigation.category or 'other' }}</span>{% if investigation.source_hypothesis_id %}<a class="badge" href="{{ target_base }}/hypotheses#hypothesis-{{ investigation.source_hypothesis_id }}">Origen · Hypothesis #{{ investigation.source_hypothesis_id }}</a>{% endif %}</div></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/hypotheses">← Hunt</a><a class="button ghost" href="{{ target_base }}/graph?focus=investigation:{{ investigation.id }}">Ver en mapa</a></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/investigations">← Investigaciones</a><a class="button ghost" href="{{ target_base }}/hypotheses">Hipótesis</a><a class="button ghost" href="{{ target_base }}/graph?focus=investigation:{{ investigation.id }}">Ver en mapa</a></div>
 </section>
 
 <section class="panel investigation-control-bar"><form action="{{ target_base }}/investigation/{{ investigation.id }}/update" method="post" class="investigation-header-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Estado<select name="status"><option value="active" {% if investigation.status=='active' %}selected{% endif %}>Activa</option><option value="paused" {% if investigation.status=='paused' %}selected{% endif %}>Pausada</option><option value="closed" {% if investigation.status=='closed' %}selected{% endif %}>Cerrada</option></select></label><label class="grow">Notas de trabajo<textarea name="notes" rows="2" placeholder="Decisiones, próximos pasos o contexto humano…">{{ investigation.notes or '' }}</textarea></label><button class="button secondary" type="submit">Guardar</button></form></section>

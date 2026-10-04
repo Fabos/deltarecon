@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ signal.title }} · Señal · Negro{% endblock %}
 {% block content %}
-<nav class="breadcrumbs"><a href="{{ target_base }}/hypotheses">Hunt</a><span>›</span><strong>Señal #{{ signal.id }}</strong></nav>
+<nav class="breadcrumbs"><a href="{{ target_base }}/hypotheses">Hipótesis</a><span>›</span><strong>Señal #{{ signal.id }}</strong></nav>
 <section class="hero compact-hero signal-detail-hero">
   <div><p class="eyebrow">SEÑAL · EVIDENCIA OBSERVABLE</p><h1>{{ signal.title }}</h1><p class="muted">{{ signal.why.message or 'Una Regla coincidió con evidencia observada.' }}</p><div class="hero-meta"><span class="badge">{{ ui_label(signal.source) }}</span><span class="badge">{{ ui_label(signal.category or signal.kind) }}</span><span class="badge signal-decision-{{ signal.human_decision or 'new' }}">{{ {'new':'Sin decisión','interesting':'Interesante','investigating':'Investigar','dismissed':'Descartada'}.get(signal.human_decision or 'new', signal.human_decision or 'new') }}</span>{% if signal.occurrences>1 %}<span class="badge">{{ signal.occurrences }} observaciones</span>{% endif %}</div></div>
-  <div class="page-actions">{% if signal.resource_id %}<a class="button ghost" href="{{ target_base }}/resource/{{ signal.resource_id }}{% if signal.exchange_id %}?exchange={{ signal.exchange_id }}#exchange-{{ signal.exchange_id }}{% endif %}">Abrir Request</a>{% endif %}<a class="button ghost" href="{{ target_base }}/hypotheses">← Hunt</a></div>
+  <div class="page-actions">{% if signal.resource_id %}<a class="button ghost" href="{{ target_base }}/resource/{{ signal.resource_id }}{% if signal.exchange_id %}?exchange={{ signal.exchange_id }}#exchange-{{ signal.exchange_id }}{% endif %}">Abrir Request</a>{% endif %}<a class="button ghost" href="{{ target_base }}/hypotheses">← Hipótesis</a></div>
 </section>
 
 {% if signal.needs_reconsideration or signal.reconsideration_needed %}<section class="panel callout warning"><b>Nueva evidencia después del descarte</b><p>Esta Señal fue descartada con la evidencia disponible en ese momento, pero volvió a observarse. El descarte se conserva; Negro sólo te pide reconsiderarla.</p></section>{% endif %}

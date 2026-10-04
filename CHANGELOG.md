@@ -1641,3 +1641,12 @@ Al ejecutar `negro web`, el proceso debe usar el Python de `.venv`.
 La migración de SQLite es conservadora: añade campos de análisis de Source Map sin borrar hosts, resources, estados, notas ni análisis previos.
 
 Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecutar IA. Para mostrar todas las métricas nuevas en la tarjeta Source Map, también puedes pulsar **Reprocesar Source Map**.
+
+## v0.41.1 · UX Hypothesis/Investigation + Context Compound Lab
+
+- Separa **Hipótesis** e **Investigaciones** en la navegación principal.
+- Añade una pantalla dedicada `/investigations` para workspaces humanos.
+- Una Hypothesis muestra ahora todas sus Investigations asociadas y permite adjuntarse a otra sin copiar evidencia.
+- Retira el texto engañoso “Convertir en Investigación”; crear una Investigation desde una Hypothesis es una acción explícita y no una transformación de concepto.
+- Corrige compatibilidad para que una Hypothesis manual también pueda ser origen de una nueva Investigation.
+- Añade `labs/context-compound`: lab Vagrant local, sin dependencias Python externas, para validar Buyer A/B → Order → change-address → cancel → refund bloqueado → returnId → refund cross-account → estado final.

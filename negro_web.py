@@ -701,6 +701,22 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             sql += " AND l.lead_type=?"; params.append(kind)
         sql += " ORDER BY CASE l.status WHEN 'testing' THEN 0 WHEN 'interesting' THEN 1 WHEN 'candidate' THEN 2 WHEN 'confirmed' THEN 3 WHEN 'negative' THEN 4 ELSE 5 END, CASE l.review_priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, l.updated_at DESC LIMIT 500"
         rows=conn.execute(sql,params).fetchall()
+        hypothesis_ids=[int(r["id"]) for r in rows]
+        linked_investigations: dict[int,list[dict[str,Any]]] = {}
+        if hypothesis_ids:
+            marks=",".join("?" for _ in hypothesis_ids)
+            link_rows=conn.execute(
+                f"""SELECT l.entity_id hypothesis_id,l.relation,i.id,i.title,i.status,i.updated_at
+                       FROM investigation_links l JOIN investigations i ON i.id=l.investigation_id
+                       WHERE l.entity_type='hypothesis' AND l.entity_id IN ({marks})
+                       ORDER BY CASE i.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,i.updated_at DESC""",
+                tuple(hypothesis_ids),
+            ).fetchall()
+            for x in link_rows:
+                linked_investigations.setdefault(int(x["hypothesis_id"]),[]).append(dict(x))
+        active_investigations=[dict(x) for x in conn.execute(
+            "SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200"
+        ).fetchall()]
         out=[]
         for r in rows:
             item=dict(r)
@@ -744,6 +760,9 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['unknowns']=[str(x) for x in (ai_meta.get('unknowns') or [])][:8]
             item['context_sources']=[str(x) for x in (ai_meta.get('context_sources') or [])][:8]
             item['promoted_investigation_id']=item.get('promoted_investigation_id')
+            item['investigations']=linked_investigations.get(int(item['id']),[])
+            linked_ids={int(x['id']) for x in item['investigations']}
+            item['available_investigations']=[x for x in active_investigations if int(x['id']) not in linked_ids]
             node_ids=[str(x) for x in (ai_meta.get('node_ids') or []) if isinstance(x,str)]
             resolved_node_ids=list(dict.fromkeys(node_ids+evidence_exchange_nodes))
             item['node_ids']=resolved_node_ids
@@ -2568,7 +2587,8 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/notifications", {"anchor":"signals","title":"Notificaciones","question":"¿Qué observación nueva merece mi atención?","when":"Revisa señales recientes que Negro detectó mientras navegabas o analizabas tráfico.","example":"Diego recibe 200 en un endpoint relacionado con un Order donde otros casos daban 403; Negro lo puede elevar como señal para revisar.","caution":"Una notificación es una pista priorizada, no una vulnerabilidad confirmada."}),
             (r"^/intelligence", {"anchor":"intelligence","title":"Inteligencia","question":"¿Qué señales determinísticas encontró Negro?","when":"Úsala para revisar patrones detectados en HTTP, JS, recon y configuraciones.","example":"En el lab, una request sensible con X-Original-URL o un ownerId puede alimentar una hipótesis de Access Control para prueba manual.","caution":"Señal ≠ hipótesis ≠ finding."}),
             (r"^/signals/custom", {"anchor":"custom-signals","title":"Reglas personalizadas","question":"¿Qué patrón propio quiero que Negro recuerde mientras navego?","when":"Crea una Regla cuando quieras que Negro recuerde una key, un valor, una condición o una combinación que merezca atención en este proyecto.","example":"Vigila businessKey, un valor exacto o una combinación ownerId + Identidad; cuando aparezca, Negro crea una Señal con el contexto exacto.","caution":"Una Regla produce Señales determinísticas; no crea hallazgos ni reemplaza la validación manual."}),
-            (r"^/hypotheses", {"anchor":"hunt","title":"Investigación / Hipótesis","question":"¿Qué vale la pena probar manualmente?","when":"Convierte evidencia correlacionada en una pregunta comprobable con pasos concretos.","example":"Hipótesis: verificar si /api/orders/123/invoice valida ownership comparando Ana, Diego y Anonymous.","caution":"No marques una hipótesis como finding hasta demostrar impacto y reproducibilidad."}),
+            (r"^/hypotheses", {"anchor":"hunt","title":"Hipótesis","question":"¿Qué pregunta decidí probar?","when":"Úsala para conservar preguntas concretas, su evidencia y las piezas que todavía faltan.","example":"Hipótesis: ¿puede Buyer B cancelar una Order de Buyer A?","caution":"Una Hipótesis no es una Investigación ni un Finding; puede morir rápido sin abrir un workspace."}),
+            (r"^/investigations", {"anchor":"hunt","title":"Investigaciones","question":"¿Qué rama quiero retomar sin perder el contexto?","when":"Abre un workspace cuando una rama merece profundidad y necesita reunir preguntas, evidencia, pruebas y decisiones.","example":"Autorización de órdenes reúne change-address, cancel, refund y sus Hypotheses relacionadas.","caution":"No abras una Investigación para cada duda pequeña; las Hypotheses pueden existir solas."}),
             (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas las Requests, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
             (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
             (r"^/host/", {"anchor":"enumeration","title":"Herramientas del host","question":"¿Qué nueva superficie puedo descubrir de forma controlada?","when":"Ejecuta sólo la herramienta que responde a una pregunta: DNS/TLS, robots/well-known, enlaces, JS, SAN, DNS pasivo, CORS o VHost.","example":"En el lab, Recon web descubre /.well-known/openid-configuration; eso amplía la superficie sin convertirlo en hallazgo.","caution":"No ejecutes módulos a ciegas: cada acción debe tener un objetivo y respetar el scope."}),
@@ -3150,7 +3170,6 @@ def create_app(default_domain: str, default_workspace: Path):
         validity = validity if validity in {"current","inactive","all"} else "current"
         rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
         signals = _pending_signal_rows(paths, 120)
-        investigations = _investigation_rows(paths, 200)
         with _db(paths) as conn:
             state_counts = {str(r["state"]): int(r["c"] or 0) for r in conn.execute(
                 "SELECT state,COUNT(*) c FROM entity_states GROUP BY state"
@@ -3163,7 +3182,7 @@ def create_app(default_domain: str, default_workspace: Path):
             ).fetchall()]
             identities = identity_tools.list_identities(conn)
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
-        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals, investigations=investigations,
+        return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals,
                       state_counts=state_counts, learning_backlog=learning_backlog,
                       identities=identities,
                       q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind,
@@ -3176,6 +3195,19 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             core.update_hypothesis(paths, lead_id, status=status, result_notes=result_notes.strip())
             with _db(paths) as conn:
+                _refresh_search(conn, knowledge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
+
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/investigation")
+    def hypothesis_attach_investigation(request: Request, target_key: str, lead_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                hunter.link_investigation_entity(conn, int(investigation_id), "hypothesis", int(lead_id), "pursuing")
                 _refresh_search(conn, knowledge=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -3239,6 +3271,12 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/investigations/{investigation_id}", status_code=303)
+
+    @app.get("/t/{target_key}/investigations", response_class=HTMLResponse)
+    def investigations_page(request: Request, target_key: str):
+        domain, workspace, paths = _target_context(target_key)
+        investigations = _investigation_rows(paths, 300)
+        return render(request, "investigations.html", target_key, domain, workspace, investigations=investigations)
 
     @app.get("/t/{target_key}/investigations/{investigation_id}", response_class=HTMLResponse)
     def investigation_detail_page(request: Request, target_key: str, investigation_id: int):

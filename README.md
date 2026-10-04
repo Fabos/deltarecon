@@ -320,3 +320,13 @@ Carga `build/libs/negro-burp-bridge-0.27.0.jar` desde **Burp → Extensions → 
 El modo recomendado es **Burp Bridge** porque Burp realiza la conexión al target con su propia ruta DNS/TCP/TLS/upstream proxy. Los modos Python Directo/Entorno/Proxy explícito quedan como fallback.
 
 Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.
+## Context Compound Lab
+
+Desde v0.41.1 el repositorio incluye un laboratorio local deliberadamente vulnerable para validar el flujo Investigation/Hypothesis/Runner de Negro:
+
+```bash
+cd labs/context-compound
+vagrant up
+```
+
+Luego abre `http://127.0.0.1:8088` a través de Burp. Consulta `labs/context-compound/README.md` para reset y detalles.

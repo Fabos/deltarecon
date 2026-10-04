@@ -4222,11 +4222,16 @@ def persist_graph_ai_hypotheses(conn, result: dict[str, Any], *, evidence_hash: 
     return persisted
 
 def promote_ai_hypothesis_to_investigation(conn, lead_id: int) -> dict[str, Any]:
-    """Turn an AI hypothesis into a human-owned investigation. Never automatic."""
+    """Create a human-owned Investigation from an existing Hypothesis. Never automatic.
+
+    The historical function name is kept for compatibility, but manual Hypotheses
+    are valid origins too. Investigation is a workspace around a question, not a
+    different state that an AI-only Hypothesis is converted into.
+    """
     init_schema(conn)
-    row = conn.execute("SELECT * FROM leads_v2 WHERE id=? AND upper(COALESCE(source,''))='AI'", (int(lead_id),)).fetchone()
+    row = conn.execute("SELECT * FROM leads_v2 WHERE id=?", (int(lead_id),)).fetchone()
     if not row:
-        raise ValueError("Hipótesis IA no encontrada")
+        raise ValueError("Hipótesis no encontrada")
     existing = conn.execute("SELECT * FROM investigations WHERE source_hypothesis_id=?", (int(lead_id),)).fetchone()
     if existing:
         return dict(existing)
