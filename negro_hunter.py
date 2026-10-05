@@ -591,6 +591,52 @@ def init_schema(conn) -> None:
             FOREIGN KEY(matched_observation_id) REFERENCES parameter_observations(id) ON DELETE SET NULL,
             FOREIGN KEY(matched_signal_id) REFERENCES signal_occurrences(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS context_watches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            investigation_id INTEGER,
+            requirement_id INTEGER,
+            watch_type TEXT NOT NULL DEFAULT 'key',
+            pattern TEXT NOT NULL,
+            description TEXT,
+            identity_mode TEXT NOT NULL DEFAULT 'any',
+            identity_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(lead_id) REFERENCES leads_v2(id) ON DELETE CASCADE,
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+            FOREIGN KEY(requirement_id) REFERENCES hypothesis_requirements(id) ON DELETE CASCADE,
+            FOREIGN KEY(identity_id) REFERENCES identities(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS context_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            watch_id INTEGER NOT NULL,
+            lead_id INTEGER,
+            investigation_id INTEGER,
+            requirement_id INTEGER,
+            exchange_id INTEGER NOT NULL,
+            operation_id INTEGER,
+            resource_id INTEGER,
+            parameter_observation_id INTEGER,
+            match_kind TEXT NOT NULL,
+            matched_key TEXT,
+            matched_value_preview TEXT,
+            matched_value_raw TEXT,
+            evidence_json TEXT,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            FOREIGN KEY(watch_id) REFERENCES context_watches(id) ON DELETE CASCADE,
+            FOREIGN KEY(lead_id) REFERENCES leads_v2(id) ON DELETE CASCADE,
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+            FOREIGN KEY(requirement_id) REFERENCES hypothesis_requirements(id) ON DELETE CASCADE,
+            FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE,
+            FOREIGN KEY(operation_id) REFERENCES resource_operations(id) ON DELETE SET NULL,
+            FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE SET NULL,
+            FOREIGN KEY(parameter_observation_id) REFERENCES parameter_observations(id) ON DELETE SET NULL
+        );
         CREATE TABLE IF NOT EXISTS operation_test_coverage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             operation_id INTEGER NOT NULL,
@@ -654,6 +700,12 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_ai_ideas_investigation ON ai_ideas(investigation_id, status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_open ON hypothesis_requirements(status,key_pattern,lead_id);
         CREATE INDEX IF NOT EXISTS idx_hypothesis_requirements_lead ON hypothesis_requirements(lead_id,status,id);
+        CREATE INDEX IF NOT EXISTS idx_context_watches_lead ON context_watches(lead_id,status,watch_type);
+        CREATE INDEX IF NOT EXISTS idx_context_watches_investigation ON context_watches(investigation_id,status,watch_type);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_context_watches_requirement_unique ON context_watches(requirement_id) WHERE requirement_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_context_matches_watch ON context_matches(watch_id,status,created_at);
+        CREATE INDEX IF NOT EXISTS idx_context_matches_requirement ON context_matches(requirement_id,status,created_at);
+        CREATE INDEX IF NOT EXISTS idx_context_matches_exchange ON context_matches(exchange_id,status,created_at);
         """
     )
     # v0.12.2: leads_v2 also acts as the persistent hypothesis store.
@@ -703,6 +755,7 @@ def init_schema(conn) -> None:
     # synchronized with older one-to-one/origin fields without deleting them.
     # The backfill is stamped and additive, so existing workspaces stay compatible.
     backfill_investigation_links(conn)
+    backfill_context_watches(conn)
 
 
 def relationship(conn, src_type: str, src_id: int | None, relation: str, dst_type: str, dst_value: str, source: str, evidence: Any = None) -> None:
@@ -823,38 +876,418 @@ def _assert_investigation_entity(conn, entity_type: str, entity_id: int) -> tupl
     return et, label
 
 
-def list_hypothesis_requirements(conn, lead_id: int) -> list[dict[str, Any]]:
-    """Return the explicit pieces still needed by one human-visible hypothesis."""
+
+def _normalize_watch_type(value: str | None) -> str:
+    raw = str(value or "key").strip().lower().replace("-", "_")
+    aliases = {"identifier": "key", "parameter": "key", "json": "json_key", "entity": "entity_type", "path": "endpoint"}
+    raw = aliases.get(raw, raw)
+    return raw if raw in {"key", "json_key", "value", "endpoint", "entity_type", "regex"} else "key"
+
+
+def _normalize_watch_pattern(watch_type: str, pattern: str) -> str:
+    raw = str(pattern or "").strip()
+    if not raw:
+        raise ValueError("Indica qué debe buscar el Watch")
+    wt = _normalize_watch_type(watch_type)
+    if wt in {"key", "json_key", "entity_type"}:
+        raw = raw.lower().replace("-", "_")
+        raw = re.sub(r"[^a-z0-9_*?\[\]-]", "", raw)
+    elif wt == "endpoint":
+        raw = raw[:400]
+    elif wt == "regex":
+        if len(raw) > 500:
+            raise ValueError("La regex es demasiado larga")
+        try:
+            re.compile(raw, re.I)
+        except re.error as exc:
+            raise ValueError(f"Regex inválida: {exc}") from exc
+    else:
+        raw = raw[:500]
+    if not raw:
+        raise ValueError("El patrón del Watch quedó vacío después de normalizarlo")
+    return raw
+
+
+def backfill_context_watches(conn) -> dict[str, int]:
+    """Additive migration from legacy hypothesis_requirements/correlation matches.
+
+    Dependencies remain the human statement of what is missing.  A Watch is the
+    machine rule that observes future/local evidence, and Context Match is the
+    reviewable evidence candidate.  Legacy matched dependencies are migrated as
+    accepted matches so old workspaces keep their state.
+    """
+    now = now_iso(); created = 0; migrated = 0
+    if not _table_exists(conn, "context_watches"):
+        return {"watches": 0, "matches": 0}
+    rows = conn.execute("SELECT * FROM hypothesis_requirements ORDER BY id").fetchall()
+    for req in rows:
+        existing = conn.execute("SELECT id FROM context_watches WHERE requirement_id=?", (int(req["id"]),)).fetchone()
+        if existing:
+            wid = int(existing["id"])
+        else:
+            wt = _normalize_watch_type(str(req["requirement_type"] or "identifier"))
+            cur = conn.execute(
+                """INSERT INTO context_watches(lead_id,requirement_id,watch_type,pattern,description,identity_mode,identity_id,status,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (int(req["lead_id"]), int(req["id"]), wt, str(req["key_pattern"] or ""), str(req["description"] or ""),
+                 str(req["identity_mode"] or "any"), req["identity_id"], "active" if str(req["status"]) != "dismissed" else "paused", now, now),
+            )
+            wid = int(cur.lastrowid); created += 1
+        if str(req["status"]) == "matched" and req["matched_observation_id"]:
+            obs = conn.execute(
+                """SELECT p.*,o.id operation_id,o.resource_id FROM parameter_observations p
+                   JOIN http_exchanges e ON e.id=p.exchange_id JOIN resource_operations o ON o.id=e.operation_id
+                   WHERE p.id=?""", (int(req["matched_observation_id"]),)
+            ).fetchone()
+            if obs:
+                exists = conn.execute(
+                    "SELECT id FROM context_matches WHERE watch_id=? AND exchange_id=? AND COALESCE(parameter_observation_id,0)=? AND status='accepted'",
+                    (wid, int(obs["exchange_id"]), int(obs["id"])),
+                ).fetchone()
+                if not exists:
+                    conn.execute(
+                        """INSERT INTO context_matches(watch_id,lead_id,requirement_id,exchange_id,operation_id,resource_id,parameter_observation_id,
+                               match_kind,matched_key,matched_value_preview,matched_value_raw,evidence_json,status,created_at,updated_at,reviewed_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'accepted',?,?,?)""",
+                        (wid, int(req["lead_id"]), int(req["id"]), int(obs["exchange_id"]), int(obs["operation_id"]), int(obs["resource_id"]), int(obs["id"]),
+                         "legacy_requirement", str(obs["normalized_name"] or obs["name"] or req["key_pattern"]), str(obs["value_preview"] or ""), str(obs["value_raw"] or ""),
+                         json.dumps({"source": "legacy_requirement_match"}, ensure_ascii=False), str(req["updated_at"] or now), now, now),
+                    ); migrated += 1
+        # Legacy requirement matches were stored as Correlation Signals. Once the
+        # equivalent accepted Context Match exists, remove only that obsolete
+        # projection so the graph does not count the same event twice.
+        if req["matched_signal_id"]:
+            sig=conn.execute("SELECT id,evidence_json,source FROM signal_occurrences WHERE id=?",(int(req["matched_signal_id"]),)).fetchone()
+            if sig and str(sig["source"] or '')=='correlation':
+                try: ev=json.loads(sig["evidence_json"] or '{}')
+                except Exception: ev={}
+                if ev.get('correlation_type')=='hypothesis_requirement_match':
+                    conn.execute("DELETE FROM signal_occurrences WHERE id=?",(int(sig["id"]),))
+    return {"watches": created, "matches": migrated}
+
+
+def add_context_watch(conn, *, watch_type: str, pattern: str, description: str = "", lead_id: int | None = None,
+                      investigation_id: int | None = None, requirement_id: int | None = None,
+                      identity_mode: str = "any", identity_id: int | None = None, scan_history: bool = True) -> int:
     init_schema(conn)
+    if not lead_id and not investigation_id:
+        raise ValueError("El Watch debe pertenecer a una Hypothesis o Investigation")
+    if lead_id and not conn.execute("SELECT id FROM leads_v2 WHERE id=?", (int(lead_id),)).fetchone():
+        raise ValueError("Hipótesis no encontrada")
+    if investigation_id and not conn.execute("SELECT id FROM investigations WHERE id=?", (int(investigation_id),)).fetchone():
+        raise ValueError("Investigation no encontrada")
+    wt = _normalize_watch_type(watch_type); pat = _normalize_watch_pattern(wt, pattern)
+    mode = str(identity_mode or "any").strip().lower()
+    if mode not in {"any", "specific", "different"}: mode = "any"
+    iid = int(identity_id) if identity_id else None
+    if mode in {"specific", "different"} and not iid:
+        raise ValueError("Selecciona una identidad para ese Watch")
+    if requirement_id:
+        row = conn.execute("SELECT id FROM context_watches WHERE requirement_id=?", (int(requirement_id),)).fetchone()
+        if row:
+            wid=int(row["id"])
+            if scan_history:
+                try: match_watch_history(conn,wid)
+                except Exception: pass
+            return wid
+    now = now_iso()
+    cur = conn.execute(
+        """INSERT INTO context_watches(lead_id,investigation_id,requirement_id,watch_type,pattern,description,identity_mode,identity_id,status,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?, 'active',?,?)""",
+        (int(lead_id) if lead_id else None, int(investigation_id) if investigation_id else None, int(requirement_id) if requirement_id else None,
+         wt, pat, str(description or "").strip()[:500], mode, iid, now, now),
+    )
+    wid = int(cur.lastrowid)
+    if scan_history:
+        try: match_watch_history(conn, wid)
+        except Exception: pass
+    return wid
+
+
+def list_context_watches(conn, *, lead_id: int | None = None, investigation_id: int | None = None, include_paused: bool = True) -> list[dict[str, Any]]:
+    init_schema(conn)
+    where=[]; args=[]
+    if lead_id is not None: where.append("w.lead_id=?"); args.append(int(lead_id))
+    if investigation_id is not None: where.append("w.investigation_id=?"); args.append(int(investigation_id))
+    if not include_paused: where.append("w.status='active'")
+    if not where: return []
     rows = conn.execute(
-        """SELECT hr.*,i.name identity_name,p.name matched_name,p.value_preview matched_value_preview,
-                  p.value_raw matched_value_raw,p.exchange_id matched_exchange_id,p.resource_id matched_resource_id,p.location matched_location
-           FROM hypothesis_requirements hr
-           LEFT JOIN identities i ON i.id=hr.identity_id
-           LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
-           WHERE hr.lead_id=? ORDER BY CASE hr.status WHEN 'pending' THEN 0 WHEN 'matched' THEN 1 ELSE 2 END,hr.id""",
-        (int(lead_id),),
+        f"""SELECT w.*,i.name identity_name,
+                    SUM(CASE WHEN cm.status='candidate' THEN 1 ELSE 0 END) candidate_count,
+                    SUM(CASE WHEN cm.status='accepted' THEN 1 ELSE 0 END) accepted_count
+             FROM context_watches w LEFT JOIN identities i ON i.id=w.identity_id
+             LEFT JOIN context_matches cm ON cm.watch_id=w.id
+             WHERE {' AND '.join(where)} GROUP BY w.id ORDER BY CASE w.status WHEN 'active' THEN 0 ELSE 1 END,w.id""", tuple(args)
     ).fetchall()
     return [dict(r) for r in rows]
 
 
+def list_context_matches(conn, *, watch_id: int | None = None, requirement_id: int | None = None, lead_id: int | None = None,
+                         investigation_id: int | None = None, statuses: tuple[str, ...] = ("candidate", "accepted"), limit: int = 100) -> list[dict[str, Any]]:
+    init_schema(conn)
+    where=[]; args=[]
+    if watch_id is not None: where.append("cm.watch_id=?"); args.append(int(watch_id))
+    if requirement_id is not None: where.append("cm.requirement_id=?"); args.append(int(requirement_id))
+    if lead_id is not None: where.append("cm.lead_id=?"); args.append(int(lead_id))
+    if investigation_id is not None: where.append("cm.investigation_id=?"); args.append(int(investigation_id))
+    if statuses:
+        where.append("cm.status IN (%s)" % ",".join("?" for _ in statuses)); args.extend(statuses)
+    if not where: return []
+    args.append(max(1, min(int(limit), 500)))
+    rows = conn.execute(
+        f"""SELECT cm.*,w.watch_type,w.pattern,w.description watch_description,w.identity_mode,w.identity_id,i.name identity_name,
+                    o.method,r.path,h.hostname,e.status_code
+             FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+             JOIN http_exchanges e ON e.id=cm.exchange_id LEFT JOIN resource_operations o ON o.id=cm.operation_id
+             LEFT JOIN resources r ON r.id=cm.resource_id LEFT JOIN hosts h ON h.id=r.host_id LEFT JOIN identities i ON i.id=w.identity_id
+             WHERE {' AND '.join(where)} ORDER BY cm.created_at DESC,cm.id DESC LIMIT ?""", tuple(args)
+    ).fetchall()
+    out=[]
+    for r in rows:
+        d=dict(r)
+        try: d["evidence"] = json.loads(d.get("evidence_json") or "{}")
+        except Exception: d["evidence"] = {}
+        out.append(d)
+    return out
+
+
+def _exchange_identity_id(conn, exchange_id: int) -> int | None:
+    if not _table_exists(conn, "exchange_identities"): return None
+    row = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exchange_id),)).fetchone()
+    return int(row["identity_id"]) if row and row["identity_id"] else None
+
+
+def _watch_identity_allows(conn, watch: dict[str, Any], exchange_id: int) -> bool:
+    mode=str(watch.get("identity_mode") or "any"); expected=int(watch["identity_id"]) if watch.get("identity_id") else None
+    if mode == "any": return True
+    actual=_exchange_identity_id(conn, int(exchange_id))
+    if mode == "specific": return actual == expected
+    if mode == "different": return actual is not None and actual != expected
+    return True
+
+
+def _raw_exchange_text(row) -> str:
+    parts=[]
+    for key in ("request_b64", "response_b64"):
+        raw=row[key] if key in row.keys() else None
+        if raw:
+            try: parts.append(base64.b64decode(raw, validate=False).decode("utf-8", errors="replace")[:262144])
+            except Exception: pass
+    return "\n\n".join(parts)
+
+
+def _watch_evidence_for_exchange(conn, watch: dict[str, Any], exchange_id: int) -> list[dict[str, Any]]:
+    """Return explainable evidence candidates for one Watch on one stored exchange."""
+    if str(watch.get("status") or "active") != "active" or not _watch_identity_allows(conn, watch, exchange_id): return []
+    wt=_normalize_watch_type(str(watch.get("watch_type") or "key")); pattern=str(watch.get("pattern") or "")
+    ex=conn.execute(
+        """SELECT e.*,o.id operation_id,o.resource_id,o.method,r.path,r.url,h.hostname
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+           JOIN hosts h ON h.id=r.host_id WHERE e.id=?""", (int(exchange_id),)
+    ).fetchone()
+    if not ex: return []
+    evidence=[]
+    params=[dict(r) for r in conn.execute("SELECT * FROM parameter_observations WHERE exchange_id=? ORDER BY id", (int(exchange_id),)).fetchall()]
+    if wt in {"key", "json_key"}:
+        for obs in params:
+            if wt == "json_key" and "json" not in str(obs.get("location") or "").lower(): continue
+            if _identifier_pattern_matches(pattern, str(obs.get("normalized_name") or obs.get("name") or "")):
+                evidence.append({"parameter_observation_id":int(obs["id"]),"match_kind":wt,"matched_key":str(obs.get("normalized_name") or obs.get("name") or pattern),"matched_value_preview":str(obs.get("value_preview") or ""),"matched_value_raw":str(obs.get("value_raw") or "")})
+    elif wt == "value":
+        target=pattern
+        for obs in params:
+            raw=str(obs.get("value_raw") or obs.get("value_preview") or "")
+            if raw == target:
+                evidence.append({"parameter_observation_id":int(obs["id"]),"match_kind":"value","matched_key":str(obs.get("normalized_name") or obs.get("name") or "value"),"matched_value_preview":str(obs.get("value_preview") or raw),"matched_value_raw":raw})
+    elif wt == "endpoint":
+        p=str(ex["path"] or "")
+        hit=fnmatch.fnmatch(p.lower(),pattern.lower()) if any(c in pattern for c in "*?[") else pattern.lower() in p.lower()
+        if hit: evidence.append({"parameter_observation_id":None,"match_kind":"endpoint","matched_key":"endpoint","matched_value_preview":p,"matched_value_raw":p})
+    elif wt == "regex":
+        text=_raw_exchange_text(ex)
+        m=re.search(pattern,text,re.I|re.M)
+        if m:
+            sample=(m.group(0) or "")[:240]
+            evidence.append({"parameter_observation_id":None,"match_kind":"regex","matched_key":"regex","matched_value_preview":sample,"matched_value_raw":sample})
+    elif wt == "entity_type":
+        try:
+            import negro_objects as object_tools
+            object_tools.init_schema(conn)
+            rows=conn.execute(
+                """SELECT bo.id,bot.name,bot.name_key,bo.identifier_raw,bo.identifier_preview
+                   FROM business_object_observations boo JOIN business_objects bo ON bo.id=boo.business_object_id
+                   JOIN business_object_types bot ON bot.id=bo.object_type_id WHERE boo.exchange_id=?""", (int(exchange_id),)
+            ).fetchall()
+            for obj in rows:
+                if _identifier_pattern_matches(pattern, str(obj["name_key"] or obj["name"] or "")):
+                    evidence.append({"parameter_observation_id":None,"match_kind":"entity_type","matched_key":str(obj["name"]),"matched_value_preview":str(obj["identifier_preview"] or ""),"matched_value_raw":str(obj["identifier_raw"] or ""),"business_object_id":int(obj["id"])})
+        except Exception: pass
+    base={"exchange_id":int(exchange_id),"operation_id":int(ex["operation_id"]),"resource_id":int(ex["resource_id"]),"host":str(ex["hostname"]),"method":str(ex["method"]),"path":str(ex["path"]),"status_code":ex["status_code"],"identity_id":_exchange_identity_id(conn,int(exchange_id))}
+    for ev in evidence: ev.update(base)
+    return evidence
+
+
+def _insert_context_match(conn, watch: dict[str, Any], ev: dict[str, Any]) -> tuple[int, bool]:
+    pid=int(ev["parameter_observation_id"]) if ev.get("parameter_observation_id") else 0
+    raw=str(ev.get("matched_value_raw") or ""); key=str(ev.get("matched_key") or "")
+    row=conn.execute(
+        """SELECT id,status FROM context_matches WHERE watch_id=? AND exchange_id=? AND COALESCE(parameter_observation_id,0)=?
+           AND match_kind=? AND COALESCE(matched_key,'')=? AND COALESCE(matched_value_raw,'')=? ORDER BY id LIMIT 1""",
+        (int(watch["id"]),int(ev["exchange_id"]),pid,str(ev.get("match_kind") or "match"),key,raw),
+    ).fetchone()
+    if row: return int(row["id"]),False
+    now=now_iso()
+    payload={k:v for k,v in ev.items() if k not in {"matched_value_raw"}}
+    cur=conn.execute(
+        """INSERT INTO context_matches(watch_id,lead_id,investigation_id,requirement_id,exchange_id,operation_id,resource_id,parameter_observation_id,
+               match_kind,matched_key,matched_value_preview,matched_value_raw,evidence_json,status,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)""",
+        (int(watch["id"]),watch.get("lead_id"),watch.get("investigation_id"),watch.get("requirement_id"),int(ev["exchange_id"]),ev.get("operation_id"),ev.get("resource_id"),
+         int(ev["parameter_observation_id"]) if ev.get("parameter_observation_id") else None,str(ev.get("match_kind") or "match"),key[:240],str(ev.get("matched_value_preview") or "")[:240],raw[:2000],json.dumps(payload,ensure_ascii=False),now,now),
+    )
+    return int(cur.lastrowid),True
+
+
+def _upsert_context_notification(conn, match_id: int, watch: dict[str, Any], ev: dict[str, Any]) -> None:
+    if not _table_exists(conn,"notifications"): return
+    dedupe=f"context_match:{int(match_id)}"; now=now_iso(); title="Nuevo contexto disponible"
+    label=str(watch.get("description") or watch.get("pattern") or "Watch")
+    message=f"Apareció evidencia que coincide con el Watch ‘{label}’. Revísala antes de considerar satisfecha la dependencia."
+    href=(f"hypotheses#hypothesis-{int(watch['lead_id'])}" if watch.get('lead_id') else (f"investigations/{int(watch['investigation_id'])}#contexto-nuevo" if watch.get('investigation_id') else None))
+    payload=json.dumps({"context_match_id":int(match_id),"watch_id":int(watch["id"]),"lead_id":watch.get("lead_id"),"investigation_id":watch.get("investigation_id"),"pattern":watch.get("pattern"),"href":href},ensure_ascii=False)
+    row=conn.execute("SELECT id FROM notifications WHERE dedupe_key=?",(dedupe,)).fetchone()
+    if row:
+        conn.execute("UPDATE notifications SET last_seen_at=?,occurrences=occurrences+1,message=?,data_json=? WHERE id=?",(now,message,payload,int(row["id"])))
+    else:
+        conn.execute(
+            """INSERT INTO notifications(dedupe_key,kind,severity,title,message,source,entity_type,entity_id,resource_id,operation_id,exchange_id,data_json,occurrences,first_seen_at,last_seen_at)
+               VALUES(?,?,?,?,?,'context_watch','context_match',?,?,?,?,?,1,?,?)""",
+            (dedupe,"context_match","info",title,message,int(match_id),ev.get("resource_id"),ev.get("operation_id"),ev.get("exchange_id"),payload,now,now),
+        )
+
+
+def evaluate_context_watches(conn, exchange_id: int, *, watch_ids: list[int] | None = None, emit_notifications: bool = True) -> dict[str, Any]:
+    init_schema(conn)
+    where="status='active'"; args=[]
+    if watch_ids:
+        marks=','.join('?' for _ in watch_ids); where+=f" AND id IN ({marks})"; args.extend(int(x) for x in watch_ids)
+    watches=[dict(r) for r in conn.execute(f"SELECT * FROM context_watches WHERE {where} ORDER BY id LIMIT 1200",tuple(args)).fetchall()]
+    created=[]
+    for watch in watches:
+        for ev in _watch_evidence_for_exchange(conn,watch,int(exchange_id)):
+            mid,is_new=_insert_context_match(conn,watch,ev)
+            if is_new:
+                created.append(mid)
+                if emit_notifications: _upsert_context_notification(conn,mid,watch,ev)
+    return {"exchange_id":int(exchange_id),"matches_created":len(created),"match_ids":created}
+
+
+def match_watch_history(conn, watch_id: int, *, max_requests: int = 500) -> dict[str, Any]:
+    init_schema(conn)
+    watch=conn.execute("SELECT * FROM context_watches WHERE id=?",(int(watch_id),)).fetchone()
+    if not watch or str(watch["status"])!='active': return {"watch_id":int(watch_id),"checked":0,"matches_created":0}
+    wt=_normalize_watch_type(str(watch["watch_type"])); pattern=str(watch["pattern"] or "")
+    exids=[]
+    if wt in {"key","json_key"}:
+        rows=conn.execute("SELECT DISTINCT exchange_id,normalized_name,location FROM parameter_observations ORDER BY id DESC LIMIT 8000").fetchall()
+        exids=[int(r["exchange_id"]) for r in rows if _identifier_pattern_matches(pattern,str(r["normalized_name"])) and (wt!='json_key' or 'json' in str(r["location"]).lower())]
+    elif wt == "value":
+        rows=conn.execute("SELECT DISTINCT exchange_id FROM parameter_observations WHERE value_raw=? OR value_preview=? ORDER BY id DESC LIMIT ?",(pattern,pattern,max_requests)).fetchall(); exids=[int(r["exchange_id"]) for r in rows]
+    elif wt == "endpoint":
+        rows=conn.execute("SELECT e.id exchange_id,r.path FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id ORDER BY e.id DESC LIMIT ?",(max_requests,)).fetchall(); exids=[int(r["exchange_id"]) for r in rows if (fnmatch.fnmatch(str(r["path"]).lower(),pattern.lower()) if any(c in pattern for c in '*?[') else pattern.lower() in str(r["path"]).lower())]
+    else:
+        rows=conn.execute("SELECT id exchange_id FROM http_exchanges ORDER BY id DESC LIMIT ?",(max_requests,)).fetchall(); exids=[int(r["exchange_id"]) for r in rows]
+    seen=[]; created=0
+    for exid in exids:
+        if exid in seen: continue
+        seen.append(exid)
+        result=evaluate_context_watches(conn,exid,watch_ids=[int(watch_id)],emit_notifications=False); created+=int(result.get('matches_created') or 0)
+        if len(seen)>=max_requests: break
+    return {"watch_id":int(watch_id),"checked":len(seen),"matches_created":created}
+
+
+def review_context_match(conn, match_id: int, *, decision: str) -> dict[str, Any]:
+    init_schema(conn)
+    state=str(decision or '').strip().lower()
+    if state not in {'accepted','dismissed'}: raise ValueError('Decisión de Context Match inválida')
+    row=conn.execute("SELECT * FROM context_matches WHERE id=?",(int(match_id),)).fetchone()
+    if not row: raise ValueError('Context Match no encontrado')
+    now=now_iso()
+    conn.execute("UPDATE context_matches SET status=?,reviewed_at=?,updated_at=? WHERE id=?",(state,now,now,int(match_id)))
+    if row['requirement_id']:
+        if state=='accepted':
+            conn.execute(
+                """UPDATE hypothesis_requirements SET status='matched',matched_observation_id=?,matched_signal_id=NULL,updated_at=? WHERE id=?""",
+                (row['parameter_observation_id'],now,int(row['requirement_id'])),
+            )
+        else:
+            # A rejected candidate must not unblock the dependency. If an older accepted
+            # match already exists, keep the requirement matched to that accepted proof.
+            accepted=conn.execute("SELECT * FROM context_matches WHERE requirement_id=? AND status='accepted' AND id<>? ORDER BY reviewed_at DESC,id DESC LIMIT 1",(int(row['requirement_id']),int(match_id))).fetchone()
+            if accepted:
+                conn.execute("UPDATE hypothesis_requirements SET status='matched',matched_observation_id=?,matched_signal_id=NULL,updated_at=? WHERE id=?",(accepted['parameter_observation_id'],now,int(row['requirement_id'])))
+            else:
+                conn.execute("UPDATE hypothesis_requirements SET status='pending',matched_observation_id=NULL,matched_signal_id=NULL,updated_at=? WHERE id=?",(now,int(row['requirement_id'])))
+    out=conn.execute("SELECT * FROM context_matches WHERE id=?",(int(match_id),)).fetchone(); return dict(out)
+
+
+def update_context_watch(conn, watch_id: int, *, status: str) -> dict[str, Any]:
+    init_schema(conn); state=str(status or 'active').lower()
+    if state not in {'active','paused'}: raise ValueError('Estado de Watch inválido')
+    if not conn.execute("SELECT id FROM context_watches WHERE id=?",(int(watch_id),)).fetchone(): raise ValueError('Watch no encontrado')
+    conn.execute("UPDATE context_watches SET status=?,updated_at=? WHERE id=?",(state,now_iso(),int(watch_id)))
+    return dict(conn.execute("SELECT * FROM context_watches WHERE id=?",(int(watch_id),)).fetchone())
+
+def list_hypothesis_requirements(conn, lead_id: int) -> list[dict[str, Any]]:
+    """Return human dependencies plus the Watch/Context Match state behind them."""
+    init_schema(conn)
+    rows = conn.execute(
+        """SELECT hr.*,i.name identity_name,p.name matched_name,p.value_preview matched_value_preview,
+                  p.value_raw matched_value_raw,p.exchange_id matched_exchange_id,p.resource_id matched_resource_id,p.location matched_location,
+                  w.id watch_id,w.watch_type,w.pattern watch_pattern,w.status watch_status
+           FROM hypothesis_requirements hr
+           LEFT JOIN identities i ON i.id=hr.identity_id
+           LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
+           LEFT JOIN context_watches w ON w.requirement_id=hr.id
+           WHERE hr.lead_id=? ORDER BY CASE hr.status WHEN 'pending' THEN 0 WHEN 'matched' THEN 1 ELSE 2 END,hr.id""",
+        (int(lead_id),),
+    ).fetchall()
+    out=[]
+    for row in rows:
+        item=dict(row)
+        matches=list_context_matches(conn,requirement_id=int(item['id']),statuses=('candidate','accepted'),limit=20)
+        item['context_matches']=matches
+        item['candidate_matches']=[x for x in matches if x.get('status')=='candidate']
+        item['accepted_matches']=[x for x in matches if x.get('status')=='accepted']
+        item['candidate_match_count']=len(item['candidate_matches'])
+        item['accepted_match_count']=len(item['accepted_matches'])
+        if item.get('status')=='matched' and item['accepted_matches'] and not item.get('matched_exchange_id'):
+            accepted=item['accepted_matches'][0]
+            item['matched_name']=accepted.get('matched_key') or item.get('key_pattern')
+            item['matched_value_preview']=accepted.get('matched_value_preview')
+            item['matched_value_raw']=accepted.get('matched_value_raw')
+            item['matched_exchange_id']=accepted.get('exchange_id')
+            item['matched_resource_id']=accepted.get('resource_id')
+            item['matched_location']=accepted.get('match_kind')
+        out.append(item)
+    return out
+
+
 def add_hypothesis_requirement(conn, lead_id: int, *, key_pattern: str, description: str = "",
                                identity_mode: str = "any", identity_id: int | None = None,
-                               requirement_type: str = "identifier") -> int:
-    """Persist one missing piece for a hypothesis.
+                               requirement_type: str = "key") -> int:
+    """Persist one missing dependency and automatically create its active Watch.
 
-    Requirements are intentionally small and explainable.  They are not a DSL;
-    the first useful primitive is an identifier key (exact or glob pattern) plus
-    optional identity context.
+    The dependency is human intent (what is missing). The Watch is the machine
+    observer. A Watch match does *not* satisfy the dependency until the hunter
+    accepts the Context Match.
     """
     init_schema(conn)
     lead = conn.execute("SELECT id FROM leads_v2 WHERE id=?", (int(lead_id),)).fetchone()
     if not lead:
         raise ValueError("Hipótesis no encontrada")
-    key = str(key_pattern or "").strip().lower().replace("-", "_")[:160]
-    key = re.sub(r"[^a-z0-9_*?\[\]-]", "", key)
-    if not key:
-        raise ValueError("Indica la key/identificador que falta, por ejemplo order_id o cardId")
+    wt = _normalize_watch_type(requirement_type)
+    pattern = _normalize_watch_pattern(wt, key_pattern)
     mode = str(identity_mode or "any").strip().lower()
     if mode not in {"any", "specific", "different"}:
         mode = "any"
@@ -862,29 +1295,26 @@ def add_hypothesis_requirement(conn, lead_id: int, *, key_pattern: str, descript
     if mode in {"specific", "different"} and not iid:
         raise ValueError("Selecciona una identidad para ese requisito")
     now = now_iso()
-    # Avoid duplicate pending requirements when AI/manual input describes the same need.
     existing = conn.execute(
         """SELECT id FROM hypothesis_requirements
-           WHERE lead_id=? AND lower(key_pattern)=lower(?) AND identity_mode=? AND COALESCE(identity_id,0)=COALESCE(?,0)
+           WHERE lead_id=? AND lower(key_pattern)=lower(?) AND lower(requirement_type)=lower(?)
+             AND identity_mode=? AND COALESCE(identity_id,0)=COALESCE(?,0)
              AND status IN ('pending','matched') ORDER BY id LIMIT 1""",
-        (int(lead_id), key, mode, iid),
+        (int(lead_id), pattern, wt, mode, iid),
     ).fetchone()
     if existing:
-        return int(existing["id"])
+        rid=int(existing["id"])
+        add_context_watch(conn,watch_type=wt,pattern=pattern,description=description,lead_id=int(lead_id),requirement_id=rid,
+                          identity_mode=mode,identity_id=iid,scan_history=True)
+        return rid
     cur = conn.execute(
         """INSERT INTO hypothesis_requirements(lead_id,requirement_type,key_pattern,description,identity_mode,identity_id,status,created_at,updated_at)
            VALUES(?,?,?,?,?,?,'pending',?,?)""",
-        (int(lead_id), str(requirement_type or "identifier")[:40], key,
-         str(description or "").strip()[:500], mode, iid, now, now),
+        (int(lead_id), wt, pattern, str(description or "").strip()[:500], mode, iid, now, now),
     )
     requirement_id = int(cur.lastrowid)
-    # The missing piece may already exist in stored evidence.  Check the local
-    # identifier index immediately so a newly articulated hypothesis can benefit
-    # from memory accumulated hours/days earlier without touching the target.
-    try:
-        match_requirement_history(conn, requirement_id)
-    except Exception:
-        pass
+    add_context_watch(conn,watch_type=wt,pattern=pattern,description=description,lead_id=int(lead_id),requirement_id=requirement_id,
+                      identity_mode=mode,identity_id=iid,scan_history=True)
     return requirement_id
 
 
@@ -896,13 +1326,21 @@ def update_hypothesis_requirement(conn, lead_id: int, requirement_id: int, *, st
     row = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=? AND lead_id=?", (int(requirement_id), int(lead_id))).fetchone()
     if not row:
         raise ValueError("Pieza pendiente no encontrada")
+    now=now_iso()
     conn.execute(
         """UPDATE hypothesis_requirements SET status=?,
              matched_observation_id=CASE WHEN ?='pending' THEN NULL ELSE matched_observation_id END,
              matched_signal_id=CASE WHEN ?='pending' THEN NULL ELSE matched_signal_id END,
              updated_at=? WHERE id=?""",
-        (state, state, state, now_iso(), int(requirement_id)),
+        (state, state, state, now, int(requirement_id)),
     )
+    watch=conn.execute("SELECT id FROM context_watches WHERE requirement_id=?",(int(requirement_id),)).fetchone()
+    if watch:
+        conn.execute("UPDATE context_watches SET status=?,updated_at=? WHERE id=?",('paused' if state=='dismissed' else 'active',now,int(watch['id'])))
+    if state=='pending':
+        # Re-open means prior accepted evidence remains in the audit trail but no
+        # longer satisfies this dependency. New evidence must be reviewed again.
+        conn.execute("UPDATE context_matches SET status='dismissed',reviewed_at=COALESCE(reviewed_at,?),updated_at=? WHERE requirement_id=? AND status='accepted'",(now,now,int(requirement_id)))
     out = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
     return dict(out)
 
@@ -954,6 +1392,9 @@ def evaluate_correlation_memory(conn, exchange_id: int) -> dict[str, Any]:
     init_schema(conn)
     object_tools.init_schema(conn)
     object_tools.index_exchange_identifiers(conn, int(exchange_id))
+    # Watches are broader than identifier memory (endpoint/regex/entity/value), so
+    # evaluate them even when this Request contains no identifier-like parameter.
+    watch_result = evaluate_context_watches(conn, int(exchange_id))
     current = [dict(r) for r in conn.execute(
         """SELECT im.*,o.method,r.path,h.hostname,e.status_code,i.name identity_name
            FROM identifier_observation_index im JOIN resource_operations o ON o.id=im.operation_id
@@ -962,57 +1403,14 @@ def evaluate_correlation_memory(conn, exchange_id: int) -> dict[str, Any]:
            WHERE im.exchange_id=? ORDER BY im.id""", (int(exchange_id),)
     ).fetchall()]
     if not current:
-        return {"exchange_id": int(exchange_id), "identifier_observations": 0, "signals": 0, "requirements_matched": 0}
+        return {"exchange_id": int(exchange_id), "identifier_observations": 0, "signals": 0, "requirements_matched": int(watch_result.get("matches_created") or 0), "context_matches": int(watch_result.get("matches_created") or 0)}
 
-    pending = [dict(r) for r in conn.execute(
-        """SELECT hr.*,l.title hypothesis_title FROM hypothesis_requirements hr
-           JOIN leads_v2 l ON l.id=hr.lead_id
-           WHERE hr.status='pending' AND COALESCE(l.rule_active,1)=1 AND l.status NOT IN ('negative','discarded')
-           ORDER BY hr.id LIMIT 800"""
-    ).fetchall()]
-    emitted: set[int] = set(); matched_requirements = 0
+    # Phase 3: dependency Watches create reviewable Context Matches. They do not
+    # satisfy a Hypothesis automatically and they are not persisted as Signals.
+    emitted: set[int] = set()
+    matched_requirements = int(watch_result.get("matches_created") or 0)
 
-    # 1) A value appears that can fill a piece explicitly missing from an open hypothesis.
-    for obs in current:
-        iid = int(obs["identity_id"]) if obs.get("identity_id") else None
-        for req in pending:
-            if not _identifier_pattern_matches(str(req["key_pattern"]), str(obs["normalized_name"])):
-                continue
-            mode = str(req.get("identity_mode") or "any")
-            expected_iid = int(req["identity_id"]) if req.get("identity_id") else None
-            if mode == "specific" and iid != expected_iid:
-                continue
-            if mode == "different" and (iid is None or iid == expected_iid):
-                continue
-            value = str(obs.get("value_raw") or obs.get("value_preview") or "")
-            identity_text = str(obs.get("identity_name") or (f"Identity #{iid}" if iid else "sin Identity"))
-            title = f"Pieza pendiente encontrada: {obs['normalized_name']}"
-            why = {
-                "message": f"{obs['normalized_name']} apareció en una nueva Request y puede completar una pieza pendiente de ‘{req['hypothesis_title']}’. Esto es una correlación, no una vulnerabilidad.",
-                "hypothesis_id": int(req["lead_id"]), "requirement_id": int(req["id"]),
-            }
-            evidence = {
-                "source": "correlation_memory", "correlation_type": "hypothesis_requirement_match",
-                "hypothesis_id": int(req["lead_id"]), "requirement_id": int(req["id"]),
-                "identifier": str(obs["normalized_name"]), "value": value[:240], "value_hash": str(obs["value_hash"]),
-                "direction": str(obs["direction"]), "location": str(obs["source_location"]),
-                "identity_id": iid, "identity_name": identity_text,
-                "host": str(obs["hostname"]), "method": str(obs["method"]), "path": str(obs["path"]),
-                "node_ids": [f"exchange:{int(exchange_id)}", f"resource:{int(obs['resource_id'])}"] + ([f"identity:{iid}"] if iid else []) + [f"lead:{int(req['lead_id'])}"],
-            }
-            signal_id = _persist_correlation_signal(
-                conn, dedupe_key=f"correlation:req:{int(req['id'])}:value:{obs['value_hash']}:identity:{iid or 0}",
-                exchange_id=int(exchange_id), operation_id=int(obs["operation_id"]), resource_id=int(obs["resource_id"]),
-                title=title, why=why, evidence=evidence, severity="low",
-            )
-            conn.execute(
-                """UPDATE hypothesis_requirements SET status='matched',matched_observation_id=?,matched_signal_id=?,updated_at=?
-                   WHERE id=? AND status='pending'""",
-                (int(obs["parameter_observation_id"]), int(signal_id), now_iso(), int(req["id"])),
-            )
-            matched_requirements += 1; emitted.add(signal_id)
-
-    # 2) Same exact identifier value observed as output elsewhere and as input to
+    # Same exact identifier value observed as output elsewhere and as input to
     # a state-changing/sensitive operation.  Group by producer/consumer endpoints
     # instead of emitting one signal for every UUID/ID.
     sensitive_terms = ("cancel", "delete", "remove", "update", "edit", "transfer", "refund", "pay", "payment", "card", "role", "admin", "approve", "redeem")
@@ -1060,39 +1458,25 @@ def evaluate_correlation_memory(conn, exchange_id: int) -> dict[str, Any]:
             )
             emitted.add(signal_id)
 
-    return {"exchange_id": int(exchange_id), "identifier_observations": len(current), "signals": len(emitted), "requirements_matched": matched_requirements}
+    return {"exchange_id": int(exchange_id), "identifier_observations": len(current), "signals": len(emitted), "requirements_matched": matched_requirements, "context_matches": int(watch_result.get("matches_created") or 0)}
 
 
 def match_requirement_history(conn, requirement_id: int, *, max_requests: int = 120) -> dict[str, Any]:
-    """Try to satisfy one new requirement using evidence Negro already remembers."""
-    import negro_objects as object_tools
+    """Compatibility wrapper: search history through the requirement's Watch.
 
-    init_schema(conn); object_tools.init_schema(conn)
-    req = conn.execute("SELECT * FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
-    if not req or str(req["status"]) != "pending":
-        return {"requirement_id": int(requirement_id), "checked": 0, "matched": False}
-    pattern = str(req["key_pattern"] or "")
-    rows = conn.execute(
-        """SELECT DISTINCT normalized_name FROM identifier_observation_index
-           ORDER BY normalized_name LIMIT 3000"""
-    ).fetchall()
-    names = [str(r["normalized_name"]) for r in rows if _identifier_pattern_matches(pattern, str(r["normalized_name"]))]
-    if not names:
-        return {"requirement_id": int(requirement_id), "checked": 0, "matched": False}
-    marks = ",".join("?" for _ in names)
-    exrows = conn.execute(
-        f"""SELECT DISTINCT exchange_id FROM identifier_observation_index
-            WHERE normalized_name IN ({marks}) ORDER BY observed_at DESC LIMIT ?""",
-        (*names, max(1, min(int(max_requests), 500))),
-    ).fetchall()
-    checked = 0
-    for row in exrows:
-        checked += 1
-        evaluate_correlation_memory(conn, int(row["exchange_id"]))
-        state = conn.execute("SELECT status FROM hypothesis_requirements WHERE id=?", (int(requirement_id),)).fetchone()
-        if state and str(state["status"]) == "matched":
-            return {"requirement_id": int(requirement_id), "checked": checked, "matched": True}
-    return {"requirement_id": int(requirement_id), "checked": checked, "matched": False}
+    Phase 3 no longer auto-satisfies the dependency. `matched` means at least one
+    reviewable Context Match exists; the requirement stays pending until accepted.
+    """
+    init_schema(conn)
+    req=conn.execute("SELECT * FROM hypothesis_requirements WHERE id=?",(int(requirement_id),)).fetchone()
+    if not req: return {"requirement_id":int(requirement_id),"checked":0,"matched":False}
+    watch=conn.execute("SELECT id FROM context_watches WHERE requirement_id=?",(int(requirement_id),)).fetchone()
+    if not watch:
+        wid=add_context_watch(conn,watch_type=str(req['requirement_type'] or 'key'),pattern=str(req['key_pattern'] or ''),description=str(req['description'] or ''),lead_id=int(req['lead_id']),requirement_id=int(requirement_id),identity_mode=str(req['identity_mode'] or 'any'),identity_id=req['identity_id'],scan_history=False)
+    else: wid=int(watch['id'])
+    result=match_watch_history(conn,wid,max_requests=max_requests)
+    c=int(conn.execute("SELECT COUNT(*) c FROM context_matches WHERE requirement_id=? AND status IN ('candidate','accepted')",(int(requirement_id),)).fetchone()['c'] or 0)
+    return {"requirement_id":int(requirement_id),"checked":int(result.get('checked') or 0),"matched":c>0,"matches_created":int(result.get('matches_created') or 0)}
 
 
 def _resolve_records(hostname: str, rtype: str, timeout: float = 4.0) -> list[str]:
@@ -3066,13 +3450,8 @@ def recalculate_intelligence(conn, domain: str) -> dict[str, Any]:
     try:
         import negro_objects as object_tools
         object_tools.rebuild_identifier_index(conn)
-        corr_ids = [int(r["id"]) for r in conn.execute("SELECT id FROM signal_occurrences WHERE source='correlation'").fetchall()]
-        if corr_ids:
-            marks = ",".join("?" for _ in corr_ids)
-            conn.execute(
-                f"""UPDATE hypothesis_requirements SET status='pending',matched_observation_id=NULL,matched_signal_id=NULL,updated_at=?
-                    WHERE matched_signal_id IN ({marks})""", (started, *corr_ids)
-            )
+        # Generic correlation projections may be recalculated, but accepted Context
+        # Matches are human decisions and must never be invalidated by a rules rebuild.
         conn.execute("DELETE FROM signal_occurrences WHERE source='correlation'")
         for ex in conn.execute("SELECT id FROM http_exchanges ORDER BY id").fetchall():
             r = evaluate_correlation_memory(conn, int(ex["id"]))

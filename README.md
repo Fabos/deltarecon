@@ -1,8 +1,8 @@
-# Negro Recon 🐕 — v0.41.7
+# Negro Recon 🐕 — v0.41.8
 
 
 
-## v0.41.7 — Graph UX Closure
+## v0.41.8 — Context Watches + fullscreen reflow
 
 Discovery deja de intentar enseñar todo al mismo tiempo. La vista inicial responde una sola pregunta: **¿en qué endpoints reaparece esta key/valor?** El resto del contexto se activa bajo demanda.
 

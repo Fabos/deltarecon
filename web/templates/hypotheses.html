@@ -55,29 +55,46 @@
   {% if h.requirements or h.status not in ['confirmed','negative','discarded'] %}
   <section class="hypothesis-needed-pieces clean-needed-pieces">
     <div class="needed-pieces-head">
-      <div><span class="eyebrow">CONTEXTO PENDIENTE</span><h3>{% if h.requirements_pending %}Bloqueada por {{ h.requirements_pending }} pieza{% if h.requirements_pending != 1 %}s{% endif %}{% elif h.requirements_matched %}Nueva evidencia disponible{% else %}Sin bloqueos declarados{% endif %}</h3></div>
-      <div class="badges">{% if h.requirements_pending %}<span class="badge">{{ h.requirements_pending }} pendiente{% if h.requirements_pending != 1 %}s{% endif %}</span>{% endif %}{% if h.requirements_matched %}<span class="badge class-interesting">{{ h.requirements_matched }} encontrada{% if h.requirements_matched != 1 %}s{% endif %}</span>{% endif %}</div>
+      <div><span class="eyebrow">DEPENDENCIAS + WATCHES</span><h3>{% if h.requirements_candidates %}Contexto por revisar{% elif h.requirements_pending %}Bloqueada por {{ h.requirements_pending }} pieza{% if h.requirements_pending != 1 %}s{% endif %}{% elif h.requirements_matched %}Lista para continuar{% else %}Sin bloqueos declarados{% endif %}</h3><p>La dependencia expresa qué te falta. El Watch observa el tráfico. Una coincidencia no desbloquea nada hasta que tú la aceptas.</p></div>
+      <div class="badges">{% if h.requirements_candidates %}<span class="badge class-interesting">{{ h.requirements_candidates }} por revisar</span>{% endif %}{% if h.requirements_pending %}<span class="badge">{{ h.requirements_pending }} pendiente{% if h.requirements_pending != 1 %}s{% endif %}</span>{% endif %}{% if h.requirements_matched %}<span class="badge state-tested">{{ h.requirements_matched }} satisfecha{% if h.requirements_matched != 1 %}s{% endif %}</span>{% endif %}</div>
     </div>
     {% if h.requirements %}<div class="needed-piece-list clean-piece-list">
       {% for piece in h.requirements %}
       <article class="needed-piece clean-piece status-{{ piece.status }}">
         <div class="piece-main">
-          <div class="piece-key"><code>{{ piece.key_pattern }}</code><span>{% if piece.identity_mode=='specific' %}{{ piece.identity_name or ('Identidad #' ~ piece.identity_id) }}{% elif piece.identity_mode=='different' %}otra identidad distinta de {{ piece.identity_name or ('Identidad #' ~ piece.identity_id) }}{% else %}cualquier contexto{% endif %}</span></div>
+          <div class="piece-key"><code>{{ piece.key_pattern }}</code><span>{{ {'key':'key','json_key':'JSON key','value':'valor exacto','endpoint':'endpoint','entity_type':'tipo de Entity','regex':'regex','identifier':'key'}.get(piece.requirement_type,piece.requirement_type) }} · {% if piece.identity_mode=='specific' %}{{ piece.identity_name or ('Identidad #' ~ piece.identity_id) }}{% elif piece.identity_mode=='different' %}otra identidad distinta de {{ piece.identity_name or ('Identidad #' ~ piece.identity_id) }}{% else %}cualquier contexto{% endif %}</span></div>
           {% if piece.description %}<p>{{ piece.description }}</p>{% endif %}
+          {% if piece.watch_id %}<small class="watch-inline-state">WATCH #{{ piece.watch_id }} · {{ piece.watch_type or piece.requirement_type }} · {{ 'activo' if piece.watch_status=='active' else 'pausado' }}</small>{% endif %}
         </div>
+        {% if piece.candidate_matches %}
+        <div class="context-candidate-list">
+          {% for match in piece.candidate_matches %}
+          <div class="context-match-card candidate">
+            <span class="context-match-label">POSIBLE CONTEXT MATCH</span>
+            <b>{{ match.matched_key or piece.key_pattern }}{% if match.matched_value_raw or match.matched_value_preview %}=<code>{{ match.matched_value_raw or match.matched_value_preview }}</code>{% endif %}</b>
+            <small>{{ match.method }} {{ match.path }} · HTTP {{ match.status_code if match.status_code is not none else '—' }} · Request #{{ match.exchange_id }}</small>
+            <div class="row-actions">
+              <a class="btn-secondary" href="{{ target_base }}/resource/{{ match.resource_id }}?exchange={{ match.exchange_id }}#exchange-{{ match.exchange_id }}">Ver evidencia</a>
+              <form action="{{ target_base }}/context-matches/{{ match.id }}/review" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="decision" value="accepted"><button class="button secondary" type="submit">Aceptar contexto</button></form>
+              <form action="{{ target_base }}/context-matches/{{ match.id }}/review" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="decision" value="dismissed"><button class="btn-secondary" type="submit">Descartar coincidencia</button></form>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
         {% if piece.status=='matched' %}
-        <div class="context-match-card">
-          <span class="context-match-label">CONTEXT MATCH</span>
-          <b>Nueva pieza disponible</b>
+        <div class="context-match-card accepted">
+          <span class="context-match-label">CONTEXTO ACEPTADO</span>
+          <b>Dependencia satisfecha</b>
           {% if piece.matched_value_raw or piece.matched_value_preview %}<code>{{ piece.matched_name or piece.key_pattern }}={{ piece.matched_value_raw or piece.matched_value_preview }}</code>{% endif %}
           {% if piece.matched_exchange_id %}<a class="btn-secondary" href="{{ target_base }}/resource/{{ piece.matched_resource_id or h.resource_id }}?exchange={{ piece.matched_exchange_id }}#exchange-{{ piece.matched_exchange_id }}">Ver Request #{{ piece.matched_exchange_id }}</a>{% endif %}
         </div>
         {% endif %}
-        <form action="{{ target_base }}/hypothesis/{{ h.id }}/requirements/{{ piece.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">{% if piece.status=='pending' %}<input type="hidden" name="status" value="dismissed"><button class="icon-button" type="submit" title="Ya no necesito esta pieza">×</button>{% else %}<input type="hidden" name="status" value="pending"><button class="btn-secondary" type="submit">Volver a buscar</button>{% endif %}</form>
+        <form action="{{ target_base }}/hypothesis/{{ h.id }}/requirements/{{ piece.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">{% if piece.status=='pending' %}<input type="hidden" name="status" value="dismissed"><button class="icon-button" type="submit" title="Ya no necesito esta dependencia">×</button>{% else %}<input type="hidden" name="status" value="pending"><button class="btn-secondary" type="submit">Volver a buscar</button>{% endif %}</form>
       </article>
       {% endfor %}
     </div>{% endif %}
-    {% if h.status not in ['confirmed','negative','discarded'] %}<details class="needed-piece-add compact-add"><summary>+ Recordar una pieza que falta</summary><form action="{{ target_base }}/hypothesis/{{ h.id }}/requirements/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Key / identificador<input name="key_pattern" placeholder="returnId · order_id · *_id" required></label><label>Contexto<select name="identity_mode"><option value="any">Cualquier identidad</option><option value="specific">Una identidad concreta</option><option value="different">Una identidad distinta de…</option></select></label><label>Identidad<select name="identity_id"><option value="">— sólo si aplica —</option>{% for ident in identities %}<option value="{{ ident.id }}">{{ ident.name }}</option>{% endfor %}</select></label><label class="grow">Qué necesitas<input name="description" placeholder="Ej. returnId válido asociado a la Order"></label><button class="button" type="submit">Recordar</button></form></details>{% endif %}
+    {% if h.status not in ['confirmed','negative','discarded'] %}<details class="needed-piece-add compact-add"><summary>+ Añadir dependencia / Watch</summary><form action="{{ target_base }}/hypothesis/{{ h.id }}/requirements/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Qué observar<select name="requirement_type"><option value="key">Key / parámetro</option><option value="json_key">JSON key</option><option value="value">Valor exacto</option><option value="endpoint">Endpoint contiene</option><option value="entity_type">Tipo de Entity</option><option value="regex">Regex</option></select></label><label>Patrón<input name="key_pattern" placeholder="returnId · /refund · ORD-1001 · Payment" required></label><label>Contexto<select name="identity_mode"><option value="any">Cualquier identidad</option><option value="specific">Una identidad concreta</option><option value="different">Una identidad distinta de…</option></select></label><label>Identidad<select name="identity_id"><option value="">— sólo si aplica —</option>{% for ident in identities %}<option value="{{ ident.id }}">{{ ident.name }}</option>{% endfor %}</select></label><label class="grow">Qué necesitas<input name="description" placeholder="Ej. returnId válido asociado a la Order"></label><button class="button" type="submit">Recordar y vigilar</button></form></details>{% endif %}
   </section>
   {% endif %}
 

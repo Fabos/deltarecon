@@ -441,6 +441,7 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
     out: dict[str, dict[int, list[dict[str, Any]]]] = {
         "resource_signals": {}, "request_signals": {},
         "resource_hypotheses": {}, "request_hypotheses": {},
+        "resource_context_matches": {}, "request_context_matches": {},
     }
 
     def push(bucket: str, key: Any, item: dict[str, Any]) -> None:
@@ -494,6 +495,26 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
                     push("resource_signals", int(text.split(":",1)[1]), item)
             except Exception:
                 continue
+
+    # Phase 3 Context Matches are a separate concept from Signals, but the Map
+    # keeps the compact C badge because it is useful context on an endpoint.
+    try:
+        matches = conn.execute(
+            """SELECT cm.id,cm.exchange_id,cm.resource_id,cm.status,cm.matched_key,cm.matched_value_preview,
+                      w.pattern,w.lead_id,w.investigation_id,l.title hypothesis_title
+               FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+               LEFT JOIN leads_v2 l ON l.id=w.lead_id
+               WHERE cm.status IN ('candidate','accepted') ORDER BY cm.created_at DESC,cm.id DESC LIMIT 1200"""
+        ).fetchall()
+    except Exception:
+        matches=[]
+    for row in matches:
+        mid=int(row['id']); exid=int(row['exchange_id']) if row['exchange_id'] else None; rid=int(row['resource_id']) if row['resource_id'] else None
+        label=str(row['matched_key'] or row['pattern'] or 'Context Match')
+        href=f"hypotheses#hypothesis-{int(row['lead_id'])}" if row['lead_id'] else (f"investigations/{int(row['investigation_id'])}#contexto-nuevo" if row['investigation_id'] else 'hypotheses')
+        item={"kind":"context_match","id":mid,"title":f"Context Match · {label}","status":str(row['status']),"source":"watch","signal_level":"context_match","href":href}
+        if rid: push('resource_context_matches',rid,item)
+        if exid: push('request_context_matches',exid,item)
 
     try:
         hypotheses = conn.execute(
@@ -559,12 +580,15 @@ def _graph_intelligence_index(conn) -> dict[str, dict[int, list[dict[str, Any]]]
 def _graph_intelligence_meta(index: dict[str, dict[int, list[dict[str, Any]]]], *, resource_id: int | None = None, request_id: int | None = None) -> dict[str, Any]:
     signals: list[dict[str, Any]] = []
     hypotheses: list[dict[str, Any]] = []
+    context_matches: list[dict[str, Any]] = []
     if resource_id:
         signals.extend(index.get("resource_signals", {}).get(int(resource_id), []))
         hypotheses.extend(index.get("resource_hypotheses", {}).get(int(resource_id), []))
+        context_matches.extend(index.get("resource_context_matches", {}).get(int(resource_id), []))
     if request_id:
         signals.extend(index.get("request_signals", {}).get(int(request_id), []))
         hypotheses.extend(index.get("request_hypotheses", {}).get(int(request_id), []))
+        context_matches.extend(index.get("request_context_matches", {}).get(int(request_id), []))
 
     def unique(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: set[tuple[Any, Any]] = set(); out: list[dict[str, Any]] = []
@@ -573,12 +597,12 @@ def _graph_intelligence_meta(index: dict[str, dict[int, list[dict[str, Any]]]], 
             if marker in seen: continue
             seen.add(marker); out.append(row)
         return out
-    signals = unique(signals); hypotheses = unique(hypotheses)
-    correlation_count = sum(1 for s in signals if str(s.get("signal_level") or "local") == "correlation")
+    signals = unique(signals); hypotheses = unique(hypotheses); context_matches=unique(context_matches)
+    correlation_count = sum(1 for s in signals if str(s.get("signal_level") or "local") == "correlation") + len(context_matches)
     return {
         "signal_count": len(signals), "hypothesis_count": len(hypotheses),
         "correlation_count": correlation_count,
-        "intelligence": (signals + hypotheses)[:12],
+        "intelligence": (context_matches + signals + hypotheses)[:12],
     }
 
 
@@ -779,6 +803,8 @@ def _hypothesis_rows(paths: dict[str, Path], q: str = "", status: str = "", sour
             item['requirements']=hunter.list_hypothesis_requirements(conn,int(item['id']))
             item['requirements_pending']=sum(1 for x in item['requirements'] if x.get('status')=='pending')
             item['requirements_matched']=sum(1 for x in item['requirements'] if x.get('status')=='matched')
+            item['requirements_candidates']=sum(int(x.get('candidate_match_count') or 0) for x in item['requirements'])
+            item['watches']=hunter.list_context_watches(conn,lead_id=int(item['id']))
             item['display_state'],item['display_state_label']=_hypothesis_display_state(item)
             if item.get('resource_id') and not item.get('resource_url'):
                 rr=conn.execute('SELECT url FROM resources WHERE id=?',(item['resource_id'],)).fetchone(); item['resource_url']=rr['url'] if rr else None
@@ -816,6 +842,9 @@ def _hypothesis_display_state(item: dict[str, Any]) -> tuple[str, str]:
         return "refuted", "Refutada" if status == "negative" else "Descartada"
     if status == "postponed":
         return "paused", "En pausa"
+    candidates = int(item.get("requirements_candidates") or 0)
+    if candidates > 0:
+        return "review", "Contexto por revisar"
     if pending > 0:
         return "blocked", "Bloqueada"
     if matched > 0:
@@ -874,18 +903,25 @@ def _exchange_context_memberships(conn, exchange_id: int) -> dict[str, Any]:
     ).fetchall():
         hypotheses[int(row["id"])] = {"id":int(row["id"]),"title":str(row["title"]),"status":str(row["status"])}
 
+    # Candidate Context Matches are already explicitly tied to a Hypothesis, even
+    # before the hunter accepts them as satisfying the dependency.
+    for row in conn.execute(
+        """SELECT DISTINCT l.id,l.title,l.status FROM context_matches cm
+           JOIN leads_v2 l ON l.id=cm.lead_id
+           WHERE cm.exchange_id=? AND cm.status IN ('candidate','accepted') AND cm.lead_id IS NOT NULL""",(exid,)
+    ).fetchall():
+        hypotheses[int(row["id"])]={"id":int(row["id"]),"title":str(row["title"]),"status":str(row["status"])}
+
     context_matches=[]
     for row in conn.execute(
-        """SELECT id,title,why_json,evidence_json,last_seen_at FROM signal_occurrences
-           WHERE exchange_id=? AND COALESCE(signal_level,'local')='correlation'
-           ORDER BY last_seen_at DESC,id DESC LIMIT 20""", (exid,)
+            """SELECT cm.id,cm.status,cm.match_kind,cm.matched_key,cm.matched_value_preview,cm.matched_value_raw,cm.created_at,cm.updated_at,
+                      w.watch_type,w.pattern,w.lead_id,w.investigation_id,l.title hypothesis_title
+               FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+               LEFT JOIN leads_v2 l ON l.id=w.lead_id
+               WHERE cm.exchange_id=? AND cm.status IN ('candidate','accepted')
+               ORDER BY CASE cm.status WHEN 'candidate' THEN 0 ELSE 1 END,cm.created_at DESC,cm.id DESC LIMIT 20""", (exid,)
     ).fetchall():
-        d=dict(row)
-        try: d["why"]=json.loads(d.pop("why_json") or "{}")
-        except Exception: d["why"]={}
-        try: d["evidence"]=json.loads(d.pop("evidence_json") or "{}")
-        except Exception: d["evidence"]={}
-        context_matches.append(d)
+        context_matches.append(dict(row))
     return {"investigations":investigations,"hypotheses":list(hypotheses.values()),"findings":findings,"context_matches":context_matches}
 
 
@@ -939,7 +975,19 @@ def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) ->
                 detail=f"{req['matched_name'] or req['key_pattern']}={value}" if value else str(req["key_pattern"])
                 if req["method"] and req["path"]: detail += f" · {req['method']} {req['path']}"
                 href=f"resource/{int(req['resource_id'])}?exchange={int(req['exchange_id'])}#exchange-{int(req['exchange_id'])}" if req["resource_id"] and req["exchange_id"] else f"hypotheses#hypothesis-{int(req['lead_id'])}"
-                items.append({"at":req["updated_at"],"kind":"context_match","title":"Context Match · nueva pieza disponible","detail":detail,"href":href})
+                items.append({"at":req["updated_at"],"kind":"context_match","title":"Context Match · contexto aceptado","detail":detail,"href":href})
+        for cm in conn.execute(
+            f"""SELECT cm.*,w.pattern,w.watch_type,o.method,r.path,r.id resource_id
+                 FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+                 LEFT JOIN resource_operations o ON o.id=cm.operation_id LEFT JOIN resources r ON r.id=cm.resource_id
+                 WHERE cm.lead_id IN ({marks}) AND cm.status IN ('candidate','accepted') ORDER BY cm.created_at,cm.id""",tuple(hyp_ids)).fetchall():
+            value=str(cm['matched_value_raw'] or cm['matched_value_preview'] or cm['matched_key'] or cm['pattern'])
+            detail=f"{cm['matched_key'] or cm['pattern']}={value}" if value else str(cm['pattern'])
+            if cm['method'] and cm['path']: detail += f" · {cm['method']} {cm['path']}"
+            href=f"resource/{int(cm['resource_id'])}?exchange={int(cm['exchange_id'])}#exchange-{int(cm['exchange_id'])}" if cm['resource_id'] and cm['exchange_id'] else None
+            title='Context Match · pendiente de revisión' if str(cm['status'])=='candidate' else 'Context Match · aceptado'
+            at=cm['created_at'] if str(cm['status'])=='candidate' else (cm['reviewed_at'] or cm['updated_at'])
+            items.append({"at":at,"kind":"context_match","title":title,"detail":detail,"href":href})
         for h in conn.execute(f"SELECT id,title,status,result_notes,updated_at FROM leads_v2 WHERE id IN ({marks})",tuple(hyp_ids)).fetchall():
             if str(h["status"]) in {"confirmed","negative","discarded","postponed"}:
                 labels={"confirmed":"Hipótesis demostrada","negative":"Hipótesis refutada","discarded":"Hipótesis descartada","postponed":"Hipótesis pausada"}
@@ -964,21 +1012,24 @@ def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) ->
     return out[-max(1,min(int(limit),300)):]
 
 
-def _investigation_context_matches(conn, investigation_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
-    """Latest matched dependencies for hypotheses attached to an Investigation."""
+def _investigation_context_matches(conn, investigation_id: int, *, limit: int = 40) -> list[dict[str, Any]]:
+    """Reviewable/accepted Context Matches for direct and Hypothesis Watches in an Investigation."""
+    iid=int(investigation_id)
     rows=conn.execute(
-        """SELECT hr.id,hr.lead_id,hr.key_pattern,hr.description,hr.updated_at,l.title hypothesis_title,
-                  p.name matched_name,p.value_raw,p.value_preview,p.exchange_id,o.method,r.path,r.id resource_id
-           FROM hypothesis_requirements hr JOIN leads_v2 l ON l.id=hr.lead_id
-           JOIN investigation_links il ON il.entity_type='hypothesis' AND il.entity_id=l.id AND il.investigation_id=?
-           LEFT JOIN parameter_observations p ON p.id=hr.matched_observation_id
-           LEFT JOIN http_exchanges e ON e.id=p.exchange_id
-           LEFT JOIN resource_operations o ON o.id=e.operation_id
-           LEFT JOIN resources r ON r.id=o.resource_id
-           WHERE hr.status='matched' ORDER BY hr.updated_at DESC LIMIT ?""",
-        (int(investigation_id),max(1,min(int(limit),100))),
+        """SELECT DISTINCT cm.*,w.watch_type,w.pattern,w.description watch_description,w.lead_id,w.investigation_id,
+                  l.title hypothesis_title,o.method,r.path,r.id resource_id,h.hostname,e.status_code
+           FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+           JOIN http_exchanges e ON e.id=cm.exchange_id LEFT JOIN resource_operations o ON o.id=cm.operation_id
+           LEFT JOIN resources r ON r.id=cm.resource_id LEFT JOIN hosts h ON h.id=r.host_id LEFT JOIN leads_v2 l ON l.id=w.lead_id
+           WHERE cm.status IN ('candidate','accepted') AND (
+             w.investigation_id=? OR w.lead_id IN (
+               SELECT entity_id FROM investigation_links WHERE investigation_id=? AND entity_type='hypothesis'
+             ) OR w.lead_id=(SELECT source_hypothesis_id FROM investigations WHERE id=?))
+           ORDER BY CASE cm.status WHEN 'candidate' THEN 0 ELSE 1 END,cm.created_at DESC LIMIT ?""",
+        (iid,iid,iid,max(1,min(int(limit),100))),
     ).fetchall()
     return [dict(x) for x in rows]
+
 
 def _pending_signal_rows(paths: dict[str, Path], limit: int = 120) -> list[dict[str, Any]]:
     """Latest machine-observed facts that still need a human decision."""
@@ -1088,6 +1139,7 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
                 reqs=hunter.list_hypothesis_requirements(conn,int(h['id']))
                 h['requirements_pending']=sum(1 for x in reqs if x.get('status')=='pending')
                 h['requirements_matched']=sum(1 for x in reqs if x.get('status')=='matched')
+                h['requirements_candidates']=sum(int(x.get('candidate_match_count') or 0) for x in reqs)
                 h['display_state'],h['display_state_label']=_hypothesis_display_state(h)
         # Runners can be linked explicitly or carry investigation_id directly.
         for r in conn.execute("SELECT id FROM runners WHERE investigation_id=?",(int(investigation_id),)).fetchall(): runner_ids.add(int(r["id"]))
@@ -1105,10 +1157,12 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
         timeline=_investigation_timeline(conn,int(investigation_id),limit=120)
         context_matches=_investigation_context_matches(conn,int(investigation_id),limit=30)
         open_hypotheses=[h for h in hypotheses if str(h.get("status") or "candidate") not in {"confirmed","negative","dismissed"}]
-        open_hypotheses.sort(key=lambda h: (0 if h.get("requirements_matched") and not h.get("requirements_pending") else 1 if not h.get("requirements_pending") else 2, str(h.get("updated_at") or "")), reverse=False)
+        open_hypotheses.sort(key=lambda h: (0 if h.get("requirements_candidates") else 1 if h.get("requirements_matched") and not h.get("requirements_pending") else 2 if not h.get("requirements_pending") else 3, str(h.get("updated_at") or "")), reverse=False)
+        direct_watches=hunter.list_context_watches(conn,investigation_id=int(investigation_id))
+        identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
         return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_open_hypotheses":open_hypotheses,"investigation_runners":runners,
                 "investigation_ai_batches":ai_batches,"investigation_findings":findings,"investigation_notes":notes,
-                "investigation_timeline":timeline,"investigation_context_matches":context_matches}
+                "investigation_timeline":timeline,"investigation_context_matches":context_matches,"investigation_watches":direct_watches,"identities":identities}
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
@@ -3795,7 +3849,7 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.post("/t/{target_key}/hypothesis/{lead_id}/requirements/add")
     def hypothesis_requirement_add(request: Request, target_key: str, lead_id: int,
                                    key_pattern: str = Form(...), description: str = Form(""),
-                                   identity_mode: str = Form("any"), identity_id: str = Form(""),
+                                   requirement_type: str = Form("key"), identity_mode: str = Form("any"), identity_id: str = Form(""),
                                    csrf: str = Form(...)):
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
@@ -3804,7 +3858,7 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             with _db(paths) as conn:
                 hunter.add_hypothesis_requirement(conn, int(lead_id), key_pattern=key_pattern,
-                                                  description=description, identity_mode=identity_mode,
+                                                  description=description, requirement_type=requirement_type, identity_mode=identity_mode,
                                                   identity_id=iid)
                 _refresh_search(conn, knowledge=True)
         except Exception as exc:
@@ -3824,6 +3878,52 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}", status_code=303)
+
+    @app.post("/t/{target_key}/context-matches/{match_id}/review")
+    def context_match_review(request: Request, target_key: str, match_id: int, decision: str = Form(...), return_to: str = Form("hypotheses"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                row=hunter.review_context_match(conn,int(match_id),decision=decision)
+                _refresh_search(conn, knowledge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if return_to.startswith("investigation:"):
+            iid=return_to.split(":",1)[1]
+            if iid.isdigit(): return RedirectResponse(url=f"/t/{target_key}/investigations/{iid}#contexto-nuevo",status_code=303)
+        lead_id=int(row.get("lead_id") or 0) if isinstance(row,dict) else 0
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}" if lead_id else f"/t/{target_key}/hypotheses",status_code=303)
+
+    @app.post("/t/{target_key}/investigation/{investigation_id}/watches/add")
+    def investigation_watch_add(request: Request, target_key: str, investigation_id: int, watch_type: str = Form("key"), pattern: str = Form(...), description: str = Form(""), identity_mode: str = Form("any"), identity_id: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        iid=int(identity_id) if str(identity_id).strip().isdigit() else None
+        try:
+            with _db(paths) as conn:
+                hunter.add_context_watch(conn,watch_type=watch_type,pattern=pattern,description=description,investigation_id=int(investigation_id),identity_mode=identity_mode,identity_id=iid,scan_history=True)
+                _refresh_search(conn, knowledge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{investigation_id}#watches",status_code=303)
+
+    @app.post("/t/{target_key}/watches/{watch_id}/update")
+    def context_watch_update(request: Request, target_key: str, watch_id: int, status: str = Form(...), return_to: str = Form("hypotheses"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        import negro_hunter as hunter
+        try:
+            with _db(paths) as conn:
+                hunter.update_context_watch(conn,int(watch_id),status=status)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if return_to.startswith("investigation:"):
+            iid=return_to.split(":",1)[1]
+            if iid.isdigit(): return RedirectResponse(url=f"/t/{target_key}/investigations/{iid}#watches",status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses",status_code=303)
 
     @app.post("/t/{target_key}/investigation/{investigation_id}/update")
     def investigation_update(request: Request, target_key: str, investigation_id: int, status: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):

@@ -18,7 +18,7 @@ def capture(paths,path,method,status,request_body='',response_body='{}'):
     return core.upsert_http_observation(paths,'shop.negro.lab',url=f'http://shop.negro.lab{path}',method=method,source='burp_proxy',status_code=status,authenticated=True,tool='PROXY',response_content_type='application/json',request_b64=b64(req),response_b64=b64(resp))
 
 def main():
-    assert core.VERSION=='0.41.7'
+    assert core.VERSION=='0.41.8'
     with tempfile.TemporaryDirectory(prefix='negro-v045-') as td:
         paths=core.ensure_workspace(Path(td)/'workspace','shop.negro.lab')
         missing=capture(paths,'/api/refunds','POST',400,'{"orderId":"ORD-1001"}','{"error":"missing_field","field":"returnId"}')
@@ -35,17 +35,23 @@ def main():
         with core.db_connect(paths) as conn:
             hunter.analyze_http_exchange(conn,int(ret['exchange_id']),'shop.negro.lab',emit_notifications=False)
             corr=hunter.evaluate_correlation_memory(conn,int(ret['exchange_id']))
-            assert corr['requirements_matched']>=1,corr
+            assert corr['context_matches']>=1,corr
             req=dict(conn.execute('SELECT * FROM hypothesis_requirements WHERE id=?',(reqid,)).fetchone())
-            assert req['status']=='matched' and req['matched_observation_id'] and req['matched_signal_id'],req
+            assert req['status']=='pending' and not req['matched_observation_id'],req
+            candidate=conn.execute("SELECT * FROM context_matches WHERE requirement_id=? AND status='candidate' ORDER BY id DESC LIMIT 1",(reqid,)).fetchone()
+            assert candidate,corr
+            assert not conn.execute("SELECT id FROM signal_occurrences WHERE exchange_id=? AND source='correlation' AND title LIKE 'Pieza pendiente encontrada:%'",(int(ret['exchange_id']),)).fetchone()
+
+        review=next(x for x in _hypothesis_rows(paths) if int(x['id'])==hid)
+        assert review['display_state']=='review' and review['display_state_label']=='Contexto por revisar',review
+        with core.db_connect(paths) as conn:
+            ctx=_exchange_context_memberships(conn,int(ret['exchange_id']))
+            assert any(int(h['id'])==hid for h in ctx['hypotheses']) is False or ctx['context_matches'],ctx
+            assert ctx['context_matches'] and ctx['context_matches'][0]['status']=='candidate',ctx
+            hunter.review_context_match(conn,int(candidate['id']),decision='accepted')
 
         ready=next(x for x in _hypothesis_rows(paths) if int(x['id'])==hid)
         assert ready['display_state']=='ready' and ready['display_state_label']=='Lista para probar',ready
-        with core.db_connect(paths) as conn:
-            ctx=_exchange_context_memberships(conn,int(ret['exchange_id']))
-            assert any(int(h['id'])==hid for h in ctx['hypotheses']),ctx
-            assert ctx['context_matches'],ctx
-            assert not any(str(x.get('signal_level') or '')=='correlation' for x in conn.execute("SELECT * FROM signal_occurrences WHERE exchange_id=? AND COALESCE(signal_level,'local')!='correlation'",(int(ret['exchange_id']),)).fetchall())
 
         success=capture(paths,'/api/refunds','POST',201,'{"orderId":"ORD-1001","returnId":"RET-5001"}','{"refundId":"RFD-9001","orderId":"ORD-1001","returnId":"RET-5001","status":"REFUNDED","performedBy":"buyer-b","orderOwnerId":"buyer-a"}')
         verify=capture(paths,'/api/orders/ORD-1001','GET',200,'','{"orderId":"ORD-1001","ownerId":"buyer-a","status":"REFUNDED"}')
@@ -93,12 +99,12 @@ def main():
     invtpl=(ROOT/'web/templates/investigation_detail.html').read_text()
     findtpl=(ROOT/'web/templates/finding.html').read_text()
     assert 'HECHOS' not in hyp and 'Hipótesis histórica' not in hyp
-    assert 'CONTEXT MATCH' in hyp and 'Lista para probar' in hyp
+    assert 'POSIBLE CONTEXT MATCH' in hyp and 'Aceptar contexto' in hyp
     assert 'request-memory-strip' in res and 'INV {{ ex.context.investigations|length }}' in res
     assert 'Context Match' in res and 'no es una Signal' in res
     assert 'CONTEXTO NUEVO' in invtpl and 'TIMELINE' in invtpl and '+ Nota' in invtpl
     assert 'CÓMO LLEGAMOS AQUÍ' in findtpl and 'Trayectoria del Finding' in findtpl
-    print('[OK] Hypothesis deriva Bloqueada/Lista para probar/Demostrada desde decisión + piezas pendientes')
+    print('[OK] Hypothesis deriva Bloqueada/Contexto por revisar/Lista para probar/Demostrada con revisión humana')
     print('[OK] Context Match se presenta separado de Signals y conserva provenance a la Request')
     print('[OK] Request muestra memoria INV/HYP/FIND/CTX sin duplicar evidencia')
     print('[OK] Investigation agrega notas rápidas, contexto nuevo y timeline derivada')

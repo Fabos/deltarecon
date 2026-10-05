@@ -583,3 +583,19 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .authorization-matrix .matrix-cell.cross{outline:1px solid #315f73;border-radius:8px;padding:7px;background:#08151b}
 .authorization-matrix .matrix-not-observed.emphasis{display:inline-flex;padding:4px 7px;border:1px dashed #6b5a35;border-radius:999px;color:#d8bd78}
 .graph-workspace:fullscreen .graph-quick-layers{display:grid!important}
+/* v0.41.8 · fullscreen reflow + Context Compound Phase 3 */
+.graph-workspace:fullscreen:has(.graph-detail > .graph-detail-empty){grid-template-columns:240px minmax(0,1fr)}
+.graph-workspace:fullscreen:has(.graph-detail > .graph-detail-empty) .graph-detail{display:none}
+.graph-workspace:fullscreen .graph-canvas-shell{min-width:0}
+.graph-workspace:fullscreen .graph-canvas-wrap{min-width:0}
+.watch-inline-state{display:inline-flex;margin-top:5px;color:#8fa0a8;font-size:9px;letter-spacing:.04em;text-transform:uppercase}
+.context-candidate-list{display:grid;gap:8px;margin-top:10px}
+.context-match-card.candidate{border-color:#6a5832;background:#131109}
+.context-match-card.accepted{border-color:#375d45;background:#0d1510}
+.context-match-workspace-card.status-candidate{border-color:#6a5832}
+.context-match-workspace-card.status-accepted{border-color:#375d45}
+.watch-list{display:grid;gap:8px;margin:10px 0 12px}
+.watch-card{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:#090f12}
+.watch-card>div{display:grid;gap:5px;min-width:0}.watch-card p{margin:0;color:var(--muted);font-size:11px}.watch-card small{color:#718087;font-size:9px}
+.hyp-state.state-review{border-color:#6a5832;color:#e1be77;background:#171208}
+.workspace-hypothesis-card.display-review,.next-branch-card.state-review{border-color:#6a5832;background:#111009}

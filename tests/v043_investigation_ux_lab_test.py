@@ -26,7 +26,7 @@ def capture(paths, domain):
 
 
 def main():
-    assert core.VERSION == "0.41.7"
+    assert core.VERSION == "0.41.8"
     with tempfile.TemporaryDirectory(prefix="negro-ux-lab-") as td:
         paths=core.ensure_workspace(Path(td)/"workspace","app.local")
         ex=capture(paths,"app.local")

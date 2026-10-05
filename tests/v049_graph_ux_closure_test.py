@@ -1,12 +1,14 @@
-"""Regression v0.41.7: close the graph UX loop before returning to Context Compound."""
+"""Regression v0.41.8: close the graph UX loop before returning to Context Compound."""
 from pathlib import Path
+import sys
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
 import negro_core as core
 import negro_identity as identity
 
-ROOT=Path(__file__).resolve().parents[1]
 
 def main():
-    assert core.VERSION == "0.41.7"
+    assert core.VERSION == "0.41.8"
     js=(ROOT/'web/static/graph.js').read_text()
     css=(ROOT/'web/static/style.css').read_text()
     html=(ROOT/'web/templates/identity_matrix.html').read_text()

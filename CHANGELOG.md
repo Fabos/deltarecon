@@ -1,11 +1,16 @@
-# v0.41.7 — Graph UX Closure
+# v0.41.8 — Context Watches + fullscreen reflow
 
-- Fullscreen usa todo el workspace: filtros visibles a la izquierda, canvas central y detalle a la derecha; al entrar/salir recalcula el fit con una escala adecuada.
-- La miga de pan se mantiene en Superficie, Identidad, Flujo, Objeto, Descubrir y vistas técnicas; Discovery conserva además su historial key/value navegable.
-- Las mismas capas/filtros quedan disponibles de forma coherente entre las lentes principales; cada vista conserva defaults distintos para evitar ruido.
-- El panel de cualquier Endpoint, no sólo Descubrir, carga Requests reales, identidad/HTTP status y pivotes `Seguir key` / `Seguir valor`.
-- Authorization Matrix resalta cruces cuando dos identidades observaron el mismo valor identificador y marca ramas con contexto de identificador todavía no observadas en la otra identidad.
-- Esta versión cierra el ciclo de UX del grafo; nuevos cambios de mapa se priorizarán sólo por bugs/uso real mientras el roadmap vuelve a Context Compound.
+- Corrige el fullscreen del mapa: al entrar/salir recalcula layout y zoom con las dimensiones reales del workspace; si no hay detalle seleccionado, oculta el panel derecho vacío para aprovechar el ancho.
+- **Fase 3 / primer incremento funcional**: formaliza `Dependencia → Watch → Context Match candidato → decisión humana → Lista para probar`.
+- `hypothesis_requirements` sigue siendo la declaración humana de lo que falta; no se duplica el modelo.
+- Nuevo `context_watches`: tipos `key`, `JSON key`, `value`, `endpoint`, `entity type` y `regex`, con filtro opcional por Identity.
+- Los Watches pueden pertenecer a una Hypothesis o directamente a una Investigation.
+- Cada coincidencia nueva se guarda como `Context Match` **candidato**. No desbloquea una Hypothesis hasta que el hunter pulse `Aceptar contexto`; `Descartar coincidencia` conserva la dependencia pendiente.
+- Los matches de Watches ya no se proyectan como Signals: Signal sigue reservado a coincidencias de Reglas.
+- Backfill aditivo desde `hypothesis_requirements` legacy: las dependencias existentes reciben Watch sin romper workspaces anteriores; matches ya aceptados conservan su estado/provenance.
+- Investigation añade Watches directos y una bandeja de `Contexto nuevo` revisable.
+- Hypothesis muestra `Bloqueada`, `Contexto por revisar` y `Lista para continuar` según lifecycle real.
+- Nueva regresión `v050_context_watches_phase3_test.py`.
 
 # v0.41.6 — Focused Discovery Graph
 

@@ -100,6 +100,7 @@
   let discoveryPreviousSeen = '';
   let discoveryInsightsOpen = false;
   let discoveryCrossOnly = false;
+  let fullscreenReflow = false;
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const slugState = s => ['finding','interesting','tested','testing','untested'].includes(s) ? s : 'normal';
@@ -1209,6 +1210,11 @@
   }
 
   function applySavedLayout(){
+    if(fullscreenReflow || document.fullscreenElement===graphWorkspace){
+      sceneNodes.forEach(n=>{ n.manual=false; });
+      setLayoutStatus('Layout adaptado a pantalla completa');
+      return;
+    }
     const saved=readSavedLayout();
     sceneNodes.forEach(n=>{ if(saved[n.id] && Number.isFinite(saved[n.id].x) && Number.isFinite(saved[n.id].y)){ n.x=saved[n.id].x;n.y=saved[n.id].y;n.manual=true; } });
     setLayoutStatus(Object.keys(saved).length ? 'Disposición personalizada guardada' : 'Layout automático');
@@ -1460,7 +1466,7 @@
     const pendingTests=Number(testSummary.pending||0)+Number(testSummary.testing||0);
     const summaryHtml=['resource','operation'].includes(n.type)?`<div class="graph-coverage"><div><b>${summary.methods||((n.type==='operation')?1:0)}</b><span>Métodos</span></div><div><b>${summary.requests}</b><span>Solicitudes</span></div><div><b>${n.type==='operation'&&trackedTests?trackedTests:summary.tests}</b><span>Pruebas</span></div><div class="${summary.interesting||Number(testSummary.interesting||0)||Number(testSummary.confirmed||0)?'is-interesting':''}"><b>${n.type==='operation'&&trackedTests?pendingTests:summary.interesting}</b><span>${n.type==='operation'&&trackedTests?'Pendientes':'Señales'}</span></div></div>`:'';
     const intelligenceRows=Array.isArray(meta.intelligence)?meta.intelligence:[];
-    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Señal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'◆':item.signal_level==='correlation'?'↔':'⚡'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:item.signal_level==='correlation'?`Correlación · ${esc(item.source||'memory')}`:`Señal · ${esc(item.source||'motor')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
+    const intelligenceHtml=intelligenceRows.length?`<div class="graph-detail-section graph-intelligence-section"><div class="graph-intelligence-title"><h3>Inteligencia asociada · ${intelligenceRows.length}</h3><small>Señal = coincidencia observada · Hipótesis = pregunta generada para investigar</small></div>${intelligenceRows.map(item=>`<a class="graph-intelligence-link kind-${esc(item.kind||'signal')}" href="${base}/${esc(item.href||'hypotheses')}"><span>${item.kind==='hypothesis'?'◆':item.kind==='context_match'?'↔':item.signal_level==='correlation'?'↔':'⚡'}</span><div><b>${esc(item.title||'Inteligencia')}</b><small>${item.kind==='hypothesis'?`Hipótesis · ${esc(valueLabel(item.status||'candidate'))}`:item.kind==='context_match'?`Context Match · ${esc(item.status||'candidate')}`:item.signal_level==='correlation'?`Correlación · ${esc(item.source||'memory')}`:`Señal · ${esc(item.source||'motor')}`}</small></div><em>Abrir →</em></a>`).join('')}</div>`:'';
     const clusterHtml=n.type==='cluster'?`<div class="graph-detail-section"><h3>${esc(n.label)}</h3><p>${esc(n.meta?.note || (n.meta?.interesting?`Incluye ${n.meta.interesting} señal(es) interesante(s).`:'Agrupado para mantener el mapa legible.'))}</p>${Array.isArray(n.childIds)?`<button type="button" class="btn-secondary" data-expand-cluster>${expandedClusters.has(n.id)?'Contraer':'Expandir'} elementos</button>`:''}${n.href?`<a class="btn-secondary" href="${base}/${esc(n.href)}">Abrir inventario →</a>`:''}</div>`:'';
     const semanticNeutral=['identity','flow','object','request','state','target','host','resource','identifier','parameter','investigation','requirement'].includes(n.type) && slugState(n.state)==='normal';
     const statusHtml=(meta.coverage||meta.signal)
@@ -1830,9 +1836,15 @@
     root.classList.toggle('is-fullscreen',active);
     graphWorkspace?.classList.toggle('is-fullscreen',active);
     if(fullscreenBtn) fullscreenBtn.textContent=active?'⤢ Salir de pantalla completa':'⛶ Pantalla completa';
-    // Fullscreen belongs to the work surface, not the whole page: no header,
-    // lens selector or permanent insight cards stealing canvas space.
-    window.setTimeout(()=>{ try{fit();}catch(_){} },150);
+    // Reflow against the *new* canvas dimensions. Reusing normal-mode or dragged
+    // coordinates is what made a small graph look microscopic in fullscreen.
+    fullscreenReflow=active;
+    window.setTimeout(()=>{
+      try{
+        if(sceneNodes.length){ autoLayout(); render(); fit(); }
+      }catch(_){}
+      finally{ fullscreenReflow=false; }
+    },220);
   }
   fullscreenBtn?.addEventListener('click',async()=>{
     try{

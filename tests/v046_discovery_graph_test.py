@@ -27,7 +27,7 @@ def analyze(paths, item, identity_id=None):
         objects.index_exchange_identifiers(conn,int(item['exchange_id']))
 
 def main():
-    assert core.VERSION=='0.41.7'
+    assert core.VERSION=='0.41.8'
     with tempfile.TemporaryDirectory(prefix='negro-v046-') as td:
         paths=core.ensure_workspace(Path(td)/'workspace','shop.negro.lab')
         with core.db_connect(paths) as conn:
