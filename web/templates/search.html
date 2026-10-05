@@ -20,7 +20,7 @@
   <form class="search-main-form" method="get">
     <label>
       <span>Consulta</span>
-      <input name="q" value="{{ q }}" placeholder='Ej. 4101 · ownerId · AIza · host:api.example.com method:POST' autofocus autocomplete="off">
+      <input name="q" value="{{ q }}" placeholder='Ej. ownerId · env:QA · host:api.example.com method:POST' autofocus autocomplete="off">
     </label>
     <button class="button" type="submit">Buscar</button>
   </form>
@@ -39,7 +39,7 @@
     <h2>Cómo buscar</h2>
     <p class="muted small">El texto libre busca fragmentos. <code>1223</code> puede encontrar <code>3001112233</code>; <code>AIza</code> puede encontrar una key más larga que contenga ese fragmento.</p>
     <div class="search-syntax">
-      <code>host:</code><span>host</span>
+      <code>host:</code><span>host</span><code>env:</code><span>ambiente</span>
       <code>method:</code><span>método HTTP</span>
       <code>status:</code><span>código HTTP</span>
       <code>state:</code><span>estado humano</span>
@@ -52,7 +52,7 @@
       <code>path:</code><span>URL/path</span>
       <code>type:</code><span>tipo de entidad</span>
     </div>
-    <p class="muted small">Puedes combinar filtros: <code>host:api.example.com method:GET ownerId</code>.</p>
+    <p class="muted small">Puedes combinar filtros: <code>env:QA host:api.example.com method:GET ownerId</code>.</p>
   </aside>
 
   <div class="search-results-area">

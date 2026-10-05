@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 import negro_core as core
 import negro_rules as rulebook
+import negro_environment as environment_tools
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1642,6 +1643,9 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["human_state"] = core.get_human_state(conn, "exchange", int(ex["id"]))
                 exd["unreviewed_signal_count"] = core.unreviewed_signal_count(conn, exchange_id=int(ex["id"]))
                 exd["context"] = _exchange_context_memberships(conn, int(ex["id"]))
+                exd["environment"] = str(exd.get("environment") or "UNKNOWN")
+                exd["environment_source"] = str(exd.get("environment_source") or "auto")
+                exd["environment_counterparts"] = environment_tools.counterpart_candidates(conn, int(ex["id"]), limit=6)
                 exd["context_match_count"] = len(exd["context"].get("context_matches") or [])
                 exd["snapshots"] = [dict(x) for x in conn.execute(
                     "SELECT id,human_state,request_hash,response_hash,observed_at,created_at FROM evidence_snapshots WHERE exchange_id=? ORDER BY id DESC",
@@ -5576,6 +5580,35 @@ def create_app(default_domain: str, default_workspace: Path):
             core.set_human_state(conn, "resource", resource_id, state, category=category, note=note, source="web")
             _refresh_search(conn, resource_id=resource_id)
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}", status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/environment")
+    def exchange_environment(target_key: str, exchange_id: int, environment: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("""SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""", (exchange_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Request no encontrada")
+            try:
+                environment_tools.set_exchange_environment(conn, exchange_id, environment, source="manual")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            resource_id = int(row["resource_id"])
+            _refresh_search(conn, exchange_id=exchange_id, resource_id=resource_id)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={exchange_id}#exchange-{exchange_id}", status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/environment/redetect")
+    def exchange_environment_redetect(target_key: str, exchange_id: int, csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            row = conn.execute("""SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?""", (exchange_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Request no encontrada")
+            environment_tools.redetect_exchange(conn, exchange_id)
+            resource_id = int(row["resource_id"])
+            _refresh_search(conn, exchange_id=exchange_id, resource_id=resource_id)
+        return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}?exchange={exchange_id}#exchange-{exchange_id}", status_code=303)
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/human-state")
     def exchange_human_state(target_key: str, exchange_id: int, state: str = Form(...), category: str = Form(""), note: str = Form(""), csrf: str = Form(...)):

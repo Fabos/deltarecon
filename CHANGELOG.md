@@ -1,3 +1,14 @@
+# v0.44.1 — Environment Context
+
+- Environment pasa a ser contexto de primera clase de cada Request, no un target separado.
+- Autodetección QA/STAGING/DEV/PROD por hostname y override manual persistente.
+- Buscar acepta `env:` y `environment:`.
+- Request Workbench propone contrapartes cross-environment por método + path normalizado.
+- Smart Compare incluye Environment dentro del diff HTTP y destaca comparaciones QA↔PROD.
+- Nueva regresión `tests/v054_environment_context_test.py`.
+
+---
+
 # v0.44.0 — Replay as Identity + Phase 7 closure
 
 ## Replay as Identity

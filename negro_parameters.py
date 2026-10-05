@@ -635,6 +635,7 @@ def _exchange_model(conn, exchange_id: int) -> dict[str, Any] | None:
     return {
         "id": int(row["id"]), "resource_id": int(row["resource_id"]), "host": str(row["hostname"]),
         "path": str(row["path"]), "method": str(row["method"]), "status": str(row["status_code"] or ""),
+        "environment": str(row["environment"] or "UNKNOWN") if "environment" in row.keys() else "UNKNOWN",
         "seen_at": str(row["first_seen_at"] or ""), "query": query,
         "request_headers": req_headers, "response_headers": resp_headers,
         "request_json": req_json, "response_json": resp_json,
@@ -665,8 +666,8 @@ def smart_diff(conn, exchange_a: int, exchange_b: int) -> dict[str, Any] | None:
     if not a or not b:
         return None
     changes: list[dict[str, Any]] = []
-    top_a = {"method": a["method"], "host": a["host"], "path": a["path"], "status": a["status"]}
-    top_b = {"method": b["method"], "host": b["host"], "path": b["path"], "status": b["status"]}
+    top_a = {"environment": a.get("environment", "UNKNOWN"), "method": a["method"], "host": a["host"], "path": a["path"], "status": a["status"]}
+    top_b = {"environment": b.get("environment", "UNKNOWN"), "method": b["method"], "host": b["host"], "path": b["path"], "status": b["status"]}
     changes += _diff_mapping("HTTP", top_a, top_b)
     changes += _diff_mapping("query", a["query"], b["query"])
     changes += _diff_mapping("request JSON", a["request_json"], b["request_json"])

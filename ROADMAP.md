@@ -1,4 +1,4 @@
-## Estado v0.44.0 — Contexto compuesto funcionalmente cerrado
+## Estado v0.44.1 — Contexto compuesto + Environment Context
 
 Las Fases 1–7 tienen ya una base funcional integrada. A partir de esta versión Negro entra en **dogfooding / bounty real**: la prioridad deja de ser añadir módulos por anticipación y pasa a ser corregir fricción observada, reforzar estabilidad y añadir reglas/Signals sólo cuando representen patrones repetibles y defendibles.
 

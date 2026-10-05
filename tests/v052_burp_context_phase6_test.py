@@ -21,7 +21,7 @@ def payload(key,result,action,**extra):
     return {'target_key':key,'action':action,'resource_id':int(result['resource_id']),'operation_id':int(result['operation_id']),'exchange_id':int(result['exchange_id']),**extra}
 
 def main():
-    assert core.VERSION=='0.44.0'
+    assert core.VERSION=='0.44.1'
     with tempfile.TemporaryDirectory(prefix='negro-v052-') as td:
         root=Path(td); ws=root/'workspace'; paths=core.ensure_workspace(ws,'shop.negro.lab')
         result=capture(paths)

@@ -25,7 +25,7 @@ def capture(paths,path,method,status,*,token='',body='',response='{}'):
     return item
 
 def main():
-    assert core.VERSION=='0.44.0',core.VERSION
+    assert core.VERSION=='0.44.1',core.VERSION
     with tempfile.TemporaryDirectory(prefix='negro-v053-') as td:
         root=Path(td); ws=root/'workspace'; paths=core.ensure_workspace(ws,'shop.test')
         original=capture(paths,'/api/orders/123','GET',200,token='TOKEN_A',response='{"orderId":"123","ownerId":"user-a","status":"PAID"}')

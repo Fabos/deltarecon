@@ -1,6 +1,18 @@
-# Negro Recon 🐕 — v0.44.0
+# Negro Recon 🐕 — v0.44.1
 
 
+
+
+## v0.44.1 — Environment Context (QA ↔ PROD)
+
+- cada Request conserva `environment`: `PROD`, `QA`, `STAGING`, `DEV` o `UNKNOWN`;
+- detección automática por hostname, con fallback a PROD cuando no hay marcador no-productivo;
+- override manual por Request y opción para volver a autodetección;
+- `env:QA` / `environment:PROD` en Buscar;
+- Request Workbench muestra badges de ambiente y contrapartes observadas de la misma operación en otro ambiente;
+- las contrapartes normalizan IDs en paths (`/orders/123` ↔ `/orders/987`);
+- Smart Compare muestra explícitamente comparaciones cross-environment sin convertir diferencias en vulnerabilidades;
+- migración SQLite aditiva y compatible con workspaces existentes.
 
 ## v0.44.0 — Replay as Identity + Memory Home
 

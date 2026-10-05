@@ -33,6 +33,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             status TEXT,
             human_state TEXT,
             signal_kind TEXT,
+            environment TEXT,
             preview TEXT,
             updated_at TEXT NOT NULL
         );
@@ -41,6 +42,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_search_documents_resource ON search_documents(resource_id);
         CREATE INDEX IF NOT EXISTS idx_search_documents_host ON search_documents(host_id, host);
         CREATE INDEX IF NOT EXISTS idx_search_documents_structured ON search_documents(method, status, human_state, signal_kind);
+        CREATE INDEX IF NOT EXISTS idx_search_documents_environment ON search_documents(environment);
 
         CREATE TABLE IF NOT EXISTS saved_searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +54,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    cols = {row['name'] for row in conn.execute('PRAGMA table_info(search_documents)')}
+    if 'environment' not in cols:
+        conn.execute("ALTER TABLE search_documents ADD COLUMN environment TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_search_documents_environment ON search_documents(environment)")
+
     # Contentless FTS keeps the searchable token index without duplicating the raw
     # HTTP bodies as a second retrievable copy in search_documents.
     conn.execute(
@@ -161,23 +168,23 @@ def _replace_doc(conn: sqlite3.Connection, meta: dict[str, Any], fields: dict[st
     if existing:
         doc_id = int(existing["id"])
         conn.execute(
-            """UPDATE search_documents SET entity_type=?,entity_id=?,exchange_id=?,resource_id=?,host_id=?,host=?,path=?,method=?,status=?,human_state=?,signal_kind=?,preview=?,updated_at=? WHERE id=?""",
+            """UPDATE search_documents SET entity_type=?,entity_id=?,exchange_id=?,resource_id=?,host_id=?,host=?,path=?,method=?,status=?,human_state=?,signal_kind=?,environment=?,preview=?,updated_at=? WHERE id=?""",
             (
                 meta["entity_type"], int(meta["entity_id"]), meta.get("exchange_id"), meta.get("resource_id"), meta.get("host_id"),
                 meta.get("host"), meta.get("path"), meta.get("method"), meta.get("status"), meta.get("human_state"),
-                meta.get("signal_kind"), meta.get("preview"), meta.get("updated_at") or now_iso(), doc_id,
+                meta.get("signal_kind"), meta.get("environment"), meta.get("preview"), meta.get("updated_at") or now_iso(), doc_id,
             ),
         )
         conn.execute("DELETE FROM search_fts WHERE rowid=?", (doc_id,))
         conn.execute("DELETE FROM search_trigram WHERE rowid=?", (doc_id,))
     else:
         cur = conn.execute(
-            """INSERT INTO search_documents(doc_key,entity_type,entity_id,exchange_id,resource_id,host_id,host,path,method,status,human_state,signal_kind,preview,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO search_documents(doc_key,entity_type,entity_id,exchange_id,resource_id,host_id,host,path,method,status,human_state,signal_kind,environment,preview,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 meta["doc_key"], meta["entity_type"], int(meta["entity_id"]), meta.get("exchange_id"), meta.get("resource_id"), meta.get("host_id"),
                 meta.get("host"), meta.get("path"), meta.get("method"), meta.get("status"), meta.get("human_state"),
-                meta.get("signal_kind"), meta.get("preview"), meta.get("updated_at") or now_iso(),
+                meta.get("signal_kind"), meta.get("environment"), meta.get("preview"), meta.get("updated_at") or now_iso(),
             ),
         )
         doc_id = int(cur.lastrowid)
@@ -241,7 +248,8 @@ def index_exchange(conn: sqlite3.Connection, exchange_id: int) -> int | None:
         (int(row["resource_id"]), int(exchange_id)),
     ).fetchall()]
     state = _state_for(conn, "exchange", int(exchange_id), int(row["resource_id"]))
-    url_text = f"{row['hostname']} {row['url']} {row['path']} {row['method']} {row['status_code'] or ''}"
+    environment = str(row["environment"] or "UNKNOWN") if "environment" in row.keys() else "UNKNOWN"
+    url_text = f"{row['hostname']} {row['url']} {row['path']} {row['method']} {row['status_code'] or ''} {environment}"
     all_text = "\n".join([
         url_text, headers_text, cookies_text, params_text, req_body, resp_body, signal_text, "\n".join(notes), state,
     ])
@@ -252,7 +260,7 @@ def index_exchange(conn: sqlite3.Connection, exchange_id: int) -> int | None:
         {
             "doc_key": f"exchange:{exchange_id}", "entity_type": "exchange", "entity_id": int(exchange_id), "exchange_id": int(exchange_id),
             "resource_id": int(row["resource_id"]), "host_id": int(row["host_id"]), "host": str(row["hostname"]), "path": str(row["path"] or "/"),
-            "method": str(row["method"] or ""), "status": str(row["status_code"] or ""), "human_state": state,
+            "method": str(row["method"] or ""), "status": str(row["status_code"] or ""), "human_state": state, "environment": environment,
             "signal_kind": ",".join(kinds), "preview": _safe_preview(preview_source), "updated_at": str(row["last_seen_at"] or now_iso()),
         },
         {
@@ -387,7 +395,7 @@ def search_stats(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 FILTER_ALIASES = {
-    "host": "host", "method": "method", "status": "status", "state": "state", "type": "type",
+    "host": "host", "method": "method", "status": "status", "state": "state", "type": "type", "environment": "environment", "env": "environment",
     "signal": "signal", "param": "param", "cookie": "cookie", "header": "header", "body": "body",
     "request": "request", "response": "response", "contains": "contains", "path": "path",
 }
@@ -421,7 +429,7 @@ def parse_query(query: str) -> ParsedQuery:
                 if not value:
                     errors.append(f"{key}: requiere un valor")
                     continue
-                if key in {"host", "method", "status", "state", "type"}:
+                if key in {"host", "method", "status", "state", "type", "environment", "env"}:
                     filters.setdefault(key, []).append(value)
                 else:
                     terms.append((key, value))
@@ -506,6 +514,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 100) -> dict[str, 
                 clauses.append("lower(COALESCE(d.human_state,'')) = ?"); params.append(value.lower())
             elif key == "type":
                 clauses.append("lower(COALESCE(d.entity_type,'')) = ?"); params.append(value.lower())
+            elif key in {"environment", "env"}:
+                clauses.append("upper(COALESCE(d.environment,'UNKNOWN')) = ?"); params.append(value.upper())
         if clauses:
             where.append("(" + " OR ".join(clauses) + ")")
 
