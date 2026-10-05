@@ -20,6 +20,37 @@
   <section class="panel"><div class="panel-head"><div><p class="eyebrow">IA</p><h2>Modelo y estimación</h2></div></div><form class="state-form" action="{{ target_base }}/settings" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Modelo<select name="ai_model"><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · económico</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol · profundo</option></select></label><label>Máximo de salida<input type="number" name="ai_output_tokens" min="500" max="12000" value="{{ settings.ai_output_tokens }}"></label><label>USD → COP<input type="number" step="0.01" name="usd_cop_rate" value="{{ settings.usd_cop_rate }}"></label><button class="button" type="submit">Guardar ajustes</button></form><p class="muted small">Tasa guardada: {{ settings.usd_cop_rate }} COP/USD · {{ settings.usd_cop_rate_date }}.</p></section>
 </div>
 
+<section class="panel" id="environments">
+  <div class="panel-head">
+    <div>
+      <p class="eyebrow">AMBIENTES</p>
+      <h2>Reglas QA / PROD / STAGING / DEV</h2>
+      <p class="muted">Define cómo reconocer cada ambiente por hostname. Al guardar, Negro reclasifica inmediatamente toda la evidencia histórica sin override manual y aplica las mismas reglas a cada Request nueva.</p>
+    </div>
+    <span class="badge class-informational">automático</span>
+  </div>
+  {% if request.query_params.get('environments') == 'saved' %}
+    <div class="callout"><strong>Reglas aplicadas.</strong> Se revisaron {{ request.query_params.get('scanned','0') }} Requests y cambiaron {{ request.query_params.get('changed','0') }}. Los overrides manuales se conservaron.</div>
+  {% endif %}
+  <form class="state-form" action="{{ target_base }}/settings/environments" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Reglas por hostname <small>una por línea · se evalúan de arriba hacia abajo</small>
+      <textarea name="environment_rules" rows="8" spellcheck="false" placeholder="*.qa.empresa.com = QA&#10;qa-*.empresa.com = QA&#10;*.preprod.empresa.com = STAGING&#10;dev-*.empresa.com = DEV&#10;*.empresa.com = PROD">{{ environment_rules_text }}</textarea>
+    </label>
+    <label>Ambiente por defecto <small>se usa cuando ninguna regla ni heurística coincide</small>
+      <select name="environment_default">
+        {% for env in ['PROD','QA','STAGING','DEV','UNKNOWN'] %}<option value="{{ env }}" {% if environment_default==env %}selected{% endif %}>{{ env }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="callout"><strong>Ejemplos:</strong> <code>*.qa.empresa.com = QA</code>, <code>qa-*.empresa.com = QA</code>, <code>*.empresa.com = PROD</code>. Puedes usar <code>*</code> como comodín. La primera regla que coincida gana.</div>
+    <div class="integration-status">
+      {% for env in ['PROD','QA','STAGING','DEV','UNKNOWN'] %}<span>{{ env }} <b>{{ environment_counts.get(env,0) }}</b></span>{% endfor %}
+    </div>
+    <button class="button" type="submit">Guardar y aplicar reglas</button>
+  </form>
+  <p class="muted small">Prioridad: override manual de Request → regla del proyecto → heurística integrada → ambiente por defecto.</p>
+</section>
+
 <section class="panel recalc-panel">
   <div class="panel-head"><div><p class="eyebrow">REINTERPRETAR EVIDENCIA</p><h2>Recalcular inteligencia sin repetir enumeración</h2><p class="muted">Después de cambiar reglas, Negro puede volver a pasar todos sus motores locales sobre Requests de Burp, recursos, análisis JavaScript, crawls e inspecciones ya guardadas. No hace nuevas peticiones al objetivo y no consume IA.</p></div><span class="badge class-informational">sólo local</span></div>
   <div class="recalc-explainer"><span><b>Puede agregar</b> hipótesis que ahora coinciden.</span><span><b>Puede retirar</b> hipótesis que dejaron de cumplir tus reglas.</span><span><b>No borra</b> tus estados, notas ni hallazgos.</span></div>

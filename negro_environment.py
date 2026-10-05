@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import re
 import sqlite3
 from typing import Any
@@ -45,6 +46,27 @@ def normalize_environment(value: str | None) -> str:
     return value if value in ENVIRONMENTS else "UNKNOWN"
 
 
+def _rule_matches(pattern: str, hostname: str) -> bool:
+    """Project rules are friendly hostname globs. Prefix with re: for regex."""
+    pattern = str(pattern or "").strip().lower().rstrip(".")
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not pattern or not host:
+        return False
+    if pattern.startswith("re:"):
+        try:
+            return bool(re.search(pattern[3:], host, re.I))
+        except re.error:
+            return False
+    return fnmatch.fnmatchcase(host, pattern)
+
+
+def get_default_environment(conn: sqlite3.Connection | None) -> str:
+    if conn is None:
+        return "PROD"
+    row = conn.execute("SELECT value FROM meta WHERE key='environment_default'").fetchone()
+    return normalize_environment(row["value"] if row else "PROD")
+
+
 def infer_environment(hostname: str, conn: sqlite3.Connection | None = None) -> tuple[str, str]:
     host = str(hostname or "").strip().lower().rstrip(".")
     if not host:
@@ -55,15 +77,90 @@ def infer_environment(hostname: str, conn: sqlite3.Connection | None = None) -> 
             "SELECT pattern,environment FROM environment_rules WHERE enabled=1 ORDER BY priority,id"
         ).fetchall()
         for row in rows:
-            try:
-                if re.search(str(row["pattern"]), host, re.I):
-                    return normalize_environment(row["environment"]), "rule"
-            except re.error:
-                continue
+            if _rule_matches(str(row["pattern"]), host):
+                return normalize_environment(row["environment"]), "rule"
     for pattern, env, _priority in DEFAULT_RULES:
         if re.search(pattern, host, re.I):
             return env, "auto"
-    return "PROD", "auto"
+    return get_default_environment(conn), "auto"
+
+
+def list_environment_rules(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    init_schema(conn)
+    return [dict(r) for r in conn.execute(
+        "SELECT id,pattern,environment,priority,enabled,created_at,updated_at FROM environment_rules ORDER BY priority,id"
+    ).fetchall()]
+
+
+def rules_as_text(conn: sqlite3.Connection) -> str:
+    lines=[]
+    for row in list_environment_rules(conn):
+        if int(row.get("enabled") or 0) != 1:
+            continue
+        lines.append(f"{row['pattern']} = {normalize_environment(row['environment'])}")
+    return "\n".join(lines)
+
+
+def parse_rules_text(text: str) -> list[tuple[str, str]]:
+    out=[]
+    for lineno, raw in enumerate(str(text or "").splitlines(), start=1):
+        line=raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"Regla inválida en línea {lineno}: usa patrón = AMBIENTE")
+        pattern, env = [x.strip() for x in line.split("=", 1)]
+        env=normalize_environment(env)
+        if not pattern:
+            raise ValueError(f"Regla inválida en línea {lineno}: falta hostname/patrón")
+        if env == "UNKNOWN" and line.split("=",1)[1].strip().upper() != "UNKNOWN":
+            raise ValueError(f"Ambiente inválido en línea {lineno}")
+        out.append((pattern.lower().rstrip("."), env))
+    return out
+
+
+def reclassify_non_manual(conn: sqlite3.Connection) -> dict[str, int]:
+    init_schema(conn)
+    rows=conn.execute(
+        """SELECT e.id,h.hostname FROM http_exchanges e
+           JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+           WHERE COALESCE(e.environment_source,'auto')<>'manual'"""
+    ).fetchall()
+    changed=0
+    for row in rows:
+        env, source=infer_environment(str(row["hostname"]), conn)
+        current=conn.execute("SELECT environment,environment_source FROM http_exchanges WHERE id=?",(int(row["id"]),)).fetchone()
+        if not current or current["environment"] != env or current["environment_source"] != source:
+            exchange_id=int(row["id"])
+            conn.execute("UPDATE http_exchanges SET environment=?,environment_source=? WHERE id=?",(env,source,exchange_id))
+            # Keep structured/free-text Search consistent with the new classification.
+            try:
+                import negro_search as search_tools
+                search_tools.index_exchange(conn, exchange_id)
+            except Exception:
+                # Search can be rebuilt independently; classification itself must not fail.
+                pass
+            changed += 1
+    return {"scanned": len(rows), "changed": changed}
+
+
+def replace_project_rules(conn: sqlite3.Connection, text: str, default_environment: str, *, now: str) -> dict[str, Any]:
+    init_schema(conn)
+    rules=parse_rules_text(text)
+    default_env=normalize_environment(default_environment)
+    conn.execute("DELETE FROM environment_rules")
+    for priority,(pattern,env) in enumerate(rules, start=1):
+        conn.execute(
+            "INSERT INTO environment_rules(pattern,environment,priority,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (pattern,env,priority,1,now,now),
+        )
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES('environment_default',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (default_env,),
+    )
+    stats=reclassify_non_manual(conn)
+    return {"rules": len(rules), "default_environment": default_env, **stats}
 
 
 def _normalized_path(path: str) -> str:

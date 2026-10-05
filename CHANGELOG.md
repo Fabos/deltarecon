@@ -1,3 +1,14 @@
+# v0.44.2 — Project Environment Rules
+
+- añade **Ajustes → Ambientes** con reglas globales por proyecto y wildcard de hostname;
+- evalúa reglas de arriba hacia abajo (`*.qa.empresa.com = QA` antes de `*.empresa.com = PROD`);
+- guardar reglas reclasifica inmediatamente toda la evidencia histórica no marcada manualmente;
+- las Requests nuevas heredarán las mismas reglas automáticamente durante la ingesta de Burp;
+- los overrides manuales por Request tienen prioridad y nunca son sobrescritos por una regla global;
+- cambiar o eliminar reglas vuelve a clasificar el histórico automáticamente, sin botón de reproceso;
+- añade ambiente por defecto configurable y sincroniza el índice de búsqueda al reclasificar;
+- agrega `tests/v055_environment_rules_test.py` para histórico, precedencia, overrides, Search y tráfico nuevo.
+
 # v0.44.1 — Environment Context
 
 - Environment pasa a ser contexto de primera clase de cada Request, no un target separado.

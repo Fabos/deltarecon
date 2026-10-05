@@ -1,7 +1,11 @@
-# Negro Recon 🐕 — v0.44.1
+# Negro Recon 🐕 — v0.44.2
 
 
 
+
+## v0.44.2 — Project Environment Rules
+
+Environment Context now supports project-wide hostname rules from **Ajustes → Ambientes**. Rules use simple wildcards and are evaluated top-to-bottom, for example `*.qa.empresa.com = QA` and `*.empresa.com = PROD`. Saving the configuration immediately reclassifies all historical Requests that do not have a manual override, keeps Search in sync, and applies the same rules automatically to new Burp traffic. A configurable default environment handles hosts that match neither a project rule nor Negro's built-in heuristics. Manual per-Request overrides always win.
 
 ## v0.44.1 — Environment Context (QA ↔ PROD)
 

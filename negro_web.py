@@ -3533,6 +3533,10 @@ def create_app(default_domain: str, default_workspace: Path):
         }
         personal_library=settings.get("detector_rule_library") if isinstance(settings.get("detector_rule_library"),dict) else {}
         with _db(paths) as conn:
+            environment_tools.init_schema(conn)
+            environment_rules_text = environment_tools.rules_as_text(conn)
+            environment_default = environment_tools.get_default_environment(conn)
+            environment_counts = {str(r["environment"]): int(r["c"] or 0) for r in conn.execute("SELECT environment,COUNT(*) c FROM http_exchanges GROUP BY environment").fetchall()}
             row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
             try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
             except Exception: project_rules={}
@@ -3556,7 +3560,19 @@ def create_app(default_domain: str, default_workspace: Path):
                     "enabled":bool(effective.get("enabled",True)), "rule_count":list_count+condition_count,
                     "personal_count":personal_count, "project_count":project_count,
                 })
-        return render(request, "settings.html", target_key, domain, workspace, settings=settings, detector_rows=detector_rows, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH))
+        return render(request, "settings.html", target_key, domain, workspace, settings=settings, detector_rows=detector_rows, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH), environment_rules_text=environment_rules_text, environment_default=environment_default, environment_counts=environment_counts)
+
+    @app.post("/t/{target_key}/settings/environments")
+    def environment_settings_save(request: Request, target_key: str, environment_rules: str = Form(""), environment_default: str = Form("PROD"), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            try:
+                stats = environment_tools.replace_project_rules(conn, environment_rules, environment_default, now=_now())
+                conn.commit()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/settings?environments=saved&changed={stats['changed']}&scanned={stats['scanned']}#environments", status_code=303)
 
     @app.post("/t/{target_key}/settings")
     def settings_save(request: Request, target_key: str, ai_model: str = Form(...), ai_output_tokens: int = Form(...), usd_cop_rate: float = Form(...), csrf: str = Form(...)):
