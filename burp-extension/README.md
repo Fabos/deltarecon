@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.27.0
+# Negro Burp Bridge v0.28.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.27.0.jar
+build/libs/negro-burp-bridge-0.28.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,7 +42,7 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.27.0.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.28.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
@@ -54,15 +54,41 @@ Desde v0.27 la misma extensión también puede ejecutar trabajos del **Runner**.
 
 Esto evita que el Runner dependa de una segunda ruta de red desde Python/container. Mantén Burp abierto y la extensión cargada mientras ejecutas Runners. En Negro puedes verificarlo desde **Runner → Transporte → Diagnosticar transporte**.
 
-## Menú contextual v0.27
+## Menú contextual v0.28
 
-Haz click derecho sobre una o varias request/response en Burp y abre **Negro**:
+Haz clic derecho sobre una Request/Response en Burp y abre **Negro**.
 
-- `Flow → Start Flow from here / Add to current Flow / End Flow here / Create Flow from selected exchanges`
-- `Identity → Assign / Create from this request / Update auth material / Send as Identity`
-- `State → Pending Learning / Review Later / Interesting / Correlate / Finding / Discarded / Normal`
-- `Open in Negro`, notas, Findings y Retest.
+### Contexto
+
+- `Abrir en Negro`
+- `Contexto → Añadir a Investigation…`
+- `Contexto → Crear Investigation desde esta Request…`
+- `Contexto → Crear Hypothesis…`
+- `Contexto → Adjuntar a Hypothesis…`
+- `Contexto → Crear Entity desde key/valor…`
+- `Contexto → Seguir key / valor…`
+- `Contexto → Watch de key / valor…`
+- `Contexto → Agregar nota…`
+
+Cuando hay texto seleccionado en el editor Request/Response, Entity / Follow Value / Watch pueden partir de esa selección exacta. Cuando no hay selección, la extensión usa las keys/values estructuradas que Negro extrajo del exchange.
+
+### Acciones existentes
+
+- `Flow` → iniciar, añadir, terminar o crear Flow desde una selección.
+- `Identidad` → asignar, crear, actualizar auth material y reenviar como Identity.
+- `Estado` → estados humanos de revisión.
+- `Finding` → crear, adjuntar evidencia y registrar Retest.
 
 `Send as Identity` usa el Repeater existente: conserva método/path/query/body y cambia únicamente material de autenticación conocido por Negro. `Anonymous` remueve esa auth conocida.
 
-Los **Signals automáticos** no son estados humanos. Una response con signals nuevos puede quedar resaltada en cyan; al elegir un estado humano el highlight cambia al color correspondiente y Negro añade una nota legible. La acción sincroniza primero la evidencia con Negro para obtener su `Resource → Operation → Exchange`.
+### Contexto visible en Burp
+
+Los **Signals automáticos** continúan separados de los estados humanos y pueden resaltar una response en cyan. Además, cuando una Request ya participa en memoria persistente, la extensión añade una nota compacta como:
+
+```text
+NEGRO · CONTEXTO · INV 1 · HYP 1 · CTX 1 · FIND 0
+```
+
+Las acciones contextuales añaden notas `INV`, `HYP`, `ENTITY`, `WATCH`, `FIND` o `RETEST`. No se cambia el highlight sólo por pertenecer a una Investigation/Hypothesis, evitando llenar Burp de colores.
+
+> Las acciones contextuales v0.28 requieren Bridge v0.28.0. El transporte del Runner mantiene compatibilidad con v0.27+.

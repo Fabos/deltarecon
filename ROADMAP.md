@@ -1,6 +1,5 @@
-
-## Estado v0.42.0
-Fases 4 y 5 quedan funcionales en su primer incremento: exploraciones persistentes dentro de Investigation y Runner como experimento contextual. Próximo bloque: Fase 6, integración contextual Burp ↔ Negro; después Fase 7 (dashboard de memoria, IA contextual y trayectoria final). El grafo queda en mantenimiento salvo bugs o necesidades surgidas de esas fases.
+## Estado v0.43.0
+Fases 1–6 tienen base funcional. La integración contextual Burp ↔ Negro permite conservar Investigation/Hypothesis/Entity/Follow Value/Watch/Note desde el tráfico y devuelve contexto compacto a Burp. Cada acción deja eventos reutilizables por la Fase 7. Próximo bloque: **Fase 7 — Dashboard de memoria + IA contextual + trayectoria final + UX de cierre**. El grafo queda en mantenimiento salvo bugs.
 
 ## Contexto compuesto / Investigation Workspace — evolución incremental
 
@@ -11,8 +10,8 @@ Fases 4 y 5 quedan funcionales en su primer incremento: exploraciones persistent
 3. **Fase 3 — Hypothesis bloqueadas + dependencias + Watches + Context Match ✅ (base funcional)**: `hypothesis_requirements` expresa la dependencia humana; Watches observan key/JSON key/value/endpoint/entity/regex; Context Matches son candidatos revisables y sólo la aceptación humana desbloquea la Hypothesis.
 4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation ✅ (base funcional)**: Follow Value y Smart Compare se guardan como exploraciones con query, snapshot y referencias; la evidencia HTTP no se duplica.
 5. **Fase 5 — Runner como experimento ✅ (base funcional)**: Runner conserva objetivo, criterios de apoyo/refutación y la cadena Investigation → Hypothesis → Runner → Flow/Run.
-6. **Fase 6 — Burp ↔ Negro contextual**: extender el bridge existente con acciones de Investigation/Hypothesis/Entity/Follow Value/Watch/Note.
-7. **Fase 7 — Dashboard de memoria + IA contextual + trayectoria de Findings + UX final**.
+6. **Fase 6 — Burp ↔ Negro contextual ✅ (base funcional)**: acciones de Investigation/Hypothesis/Entity/Follow Value/Watch/Note desde Burp, contexto INV/HYP/CTX/FIND de vuelta y eventos preparados para Timeline/trajectory.
+7. **Fase 7 — Dashboard de memoria + IA contextual + trayectoria de Findings + UX final**: siguiente bloque.
 
 Ver `CONTEXT_COMPOUND_AUDIT.md`. Los labs/benchmarks se distribuyen fuera del repositorio principal.
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="0.27.0"
+VERSION="0.28.0"
 MONTOYA_VERSION="2026.7"
 DEPS="$HERE/.deps"
 CLASSES="$HERE/build/classes/java/main"

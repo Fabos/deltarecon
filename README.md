@@ -1,4 +1,23 @@
-# Negro Recon 🐕 — v0.42.0
+# Negro Recon 🐕 — v0.43.0
+
+
+## v0.43.0 — Burp Contextual Workspace
+
+Fase 6 lleva la memoria operativa al lugar donde ocurre el hunting. Desde una Request/Response en Burp puedes abrir o conservar contexto sin abandonar el flujo de trabajo:
+
+- añadir/crear **Investigation**;
+- crear/adjuntar **Hypothesis**;
+- crear **Entity** desde una key/valor observada;
+- **Seguir key** o **Seguir valor**;
+- crear **Watch** en una Hypothesis/Investigation;
+- agregar **Nota** rápida;
+- continuar usando Flow, Identity, Finding y Retest.
+
+Burp recibe de vuelta contexto compacto `INV / HYP / CTX / FIND`; Signals automáticos permanecen separados. Las acciones relevantes se guardan como eventos para alimentar la Fase 7 (Dashboard, Timeline y trayectoria) sin duplicar HTTP ni crear conclusiones automáticas.
+
+**Requiere Negro Burp Bridge v0.28.0 para las nuevas acciones contextuales.** Runner sigue aceptando Bridge v0.27+.
+
+El core continúa sin labs; cualquier benchmark se distribuye por separado.
 
 ## v0.42.0 — Investigation Explorations + Runner Experiments
 

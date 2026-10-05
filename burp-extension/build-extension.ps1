@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Version = "0.27.0"
+$Version = "0.28.0"
 $MontoyaVersion = "2026.7"
 $Deps = Join-Path $Here ".deps"
 $Classes = Join-Path $Here "build\classes\java\main"

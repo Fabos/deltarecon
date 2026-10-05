@@ -4748,6 +4748,40 @@ def create_manual_hypothesis(conn, exchange_id: int, *, title: str, why: str = "
     return int(hid)
 
 
+def attach_hypothesis_evidence(conn, lead_id: int, exchange_id: int, *, source: str = "burp_context") -> dict[str, Any]:
+    """Attach one existing Request as evidence to a human Hypothesis without copying HTTP data."""
+    init_schema(conn)
+    lead = conn.execute("SELECT * FROM leads_v2 WHERE id=?", (int(lead_id),)).fetchone()
+    if not lead:
+        raise ValueError("Hipótesis no encontrada")
+    ex = conn.execute(
+        """SELECT e.id,e.operation_id,e.status_code,o.resource_id,o.method,r.path,r.host_id,h.hostname
+           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id WHERE e.id=?""",
+        (int(exchange_id),),
+    ).fetchone()
+    if not ex:
+        raise ValueError("Request no encontrada")
+    try:
+        evidence = json.loads(lead["evidence_json"] or "[]")
+    except Exception:
+        evidence = []
+    if not isinstance(evidence, list):
+        evidence = []
+    already = any(isinstance(ev, dict) and int(ev.get("exchange_id") or 0) == int(exchange_id) for ev in evidence)
+    if not already:
+        evidence.append({
+            "source": str(source or "burp_context")[:80], "exchange_id": int(exchange_id),
+            "node_ids": [f"exchange:{int(exchange_id)}", f"resource:{int(ex['resource_id'])}"],
+            "method": ex["method"], "path": ex["path"], "host": ex["hostname"], "status": ex["status_code"],
+        })
+        conn.execute(
+            "UPDATE leads_v2 SET evidence_json=?,updated_at=? WHERE id=?",
+            (json.dumps(evidence, ensure_ascii=False), now_iso(), int(lead_id)),
+        )
+    return {"lead_id": int(lead_id), "exchange_id": int(exchange_id), "added": not already}
+
+
 def create_investigation(conn, *, title: str, category: str = "other", summary: str = "", notes: str = "",
                          source_hypothesis_id: int | None = None) -> int:
     init_schema(conn)

@@ -8,7 +8,7 @@ import negro_core as core
 
 
 def main():
-    assert core.VERSION=='0.42.0'
+    assert core.VERSION=='0.43.0'
     html=(ROOT/'web/templates/graph.html').read_text()
     js=(ROOT/'web/static/graph.js').read_text()
     css=(ROOT/'web/static/style.css').read_text()

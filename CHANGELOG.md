@@ -1,3 +1,31 @@
+# v0.43.0 — Burp Contextual Workspace + Phase 7 telemetry prep
+
+## Fase 6 — Burp ↔ Negro contextual
+- El menú contextual de Burp incorpora `Contexto` como entrada rápida al workspace: Investigation, Hypothesis, Entity, Follow Value, Watch y Nota desde la Request/Response actual.
+- `Añadir a Investigation` y `Crear Investigation` reutilizan `investigation_links`; la evidencia HTTP no se copia.
+- `Crear Hypothesis` usa la Request actual como evidencia inicial; `Adjuntar a Hypothesis` reutiliza la Hypothesis existente.
+- `Crear Entity desde key/valor` reutiliza `parameter_observations` + Business Objects.
+- `Seguir key / valor` diferencia concepto (`returnId`) de valor exacto (`RET-5001`) y abre Negro en la vista adecuada.
+- `Watch de key / valor` puede ligarse a Hypothesis o Investigation y opcionalmente convertirse en dependencia bloqueante de la Hypothesis.
+- `Agregar nota` puede quedar sólo en la Request o además en una Investigation.
+- Flow, Identity, Finding y Retest continúan disponibles y ahora también dejan trazabilidad de actividad.
+- La selección exacta del editor Request/Response de Burp puede usarse como punto de partida para Entity, Follow Value y Watch.
+
+## Contexto de Negro visible en Burp
+- Ingest devuelve conteos canónicos `INV / HYP / CTX / FIND` para cada exchange.
+- Burp añade una nota compacta `NEGRO · CONTEXTO · ...` sin sobrescribir highlights humanos.
+- Signals automáticos continúan usando su resaltado cyan independiente.
+- Acciones manuales añaden notas compactas (`INV`, `HYP`, `ENTITY`, `WATCH`, `FIND`, `RETEST`) para que el hunter sepa que esa Request ya pertenece a contexto persistente.
+
+## Preparación Fase 7
+- Las acciones contextuales de Burp se registran en `events` como `burp_context_action`, tanto sobre la Request como sobre Investigation/Hypothesis/Identity/Flow/Finding cuando aplica.
+- Esta telemetría es memoria operativa, no analítica de productividad: servirá al Dashboard, Timeline y trayectoria de Findings sin medir al hunter.
+
+## Extensión
+- Negro Burp Bridge sube a **v0.28.0**.
+- Esta versión sí requiere recompilar/recargar la extensión para usar el nuevo menú contextual.
+- Runner conserva compatibilidad con Bridge v0.27+; las funciones contextuales nuevas requieren v0.28.0.
+
 # v0.42.0 — Investigation Explorations + Runner Experiments
 
 ## Graph fullscreen

@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.27.0
+ * Negro Burp Bridge v0.28.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -78,7 +78,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.27.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.28.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -257,7 +257,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.27.0")
+                    .header("X-Negro-Bridge-Version", "0.28.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -579,9 +579,13 @@ public class NegroBurpBridge implements BurpExtension {
                             accepted.incrementAndGet();
                             markConnected("ingest OK");
                             long signalCount = jsonLong(body, "signal_count");
+                            long investigationCount = Math.max(0, jsonLong(body, "investigation_count"));
+                            long hypothesisCount = Math.max(0, jsonLong(body, "hypothesis_count"));
+                            long contextMatchCount = Math.max(0, jsonLong(body, "context_match_count"));
+                            long findingCount = Math.max(0, jsonLong(body, "finding_count"));
+                            String requestHash = jsonString(body, "request_hash");
+                            String responseHash = jsonString(body, "response_hash");
                             if (signalCount > 0) {
-                                String requestHash = jsonString(body, "request_hash");
-                                String responseHash = jsonString(body, "response_hash");
                                 // HttpHandler annotations are reliable while the handler is returning,
                                 // but this callback runs asynchronously after that lifecycle. Mutating
                                 // response.annotations() here does not reliably repaint Proxy history.
@@ -596,7 +600,12 @@ public class NegroBurpBridge implements BurpExtension {
                                     } catch (Exception ignored) {}
                                 }
                             }
-                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true · signals=" + Math.max(0, signalCount));
+                            if (investigationCount + hypothesisCount + contextMatchCount + findingCount > 0) {
+                                String contextLine = "NEGRO · CONTEXTO · INV " + investigationCount + " · HYP " + hypothesisCount + " · CTX " + contextMatchCount + " · FIND " + findingCount;
+                                if ("PROXY".equalsIgnoreCase(tool)) scheduleContextAnnotation(method, observedUrl, requestHash, responseHash, contextLine, 0);
+                                else if (annotations != null) setNegroContextNote(annotations, contextLine);
+                            }
+                            api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=true · signals=" + Math.max(0, signalCount) + " · inv=" + investigationCount + " hyp=" + hypothesisCount + " ctx=" + contextMatchCount + " find=" + findingCount);
                         } else {
                             ignored.incrementAndGet();
                             api.logging().logToOutput("Negro ← ingest HTTP " + resp.statusCode() + " accepted=false");
@@ -772,14 +781,50 @@ public class NegroBurpBridge implements BurpExtension {
         @Override public String toString() { return type + " · " + name + " · " + preview; }
     }
 
+    private record InvestigationChoice(long id, String title, String status) {
+        @Override public String toString() { return id <= 0 ? title : "#" + id + " · " + title + (status == null || status.isBlank() ? "" : " · " + status); }
+    }
+
+    private record HypothesisChoice(long id, String title, String status) {
+        @Override public String toString() { return "#" + id + " · " + title + (status == null || status.isBlank() ? "" : " · " + status); }
+    }
+
+    private record ParameterChoice(long id, String name, String normalizedName, String value, String location) {
+        @Override public String toString() {
+            String key = normalizedName == null || normalizedName.isBlank() ? name : normalizedName;
+            String preview = value == null ? "" : value;
+            if (preview.length() > 72) preview = preview.substring(0, 69) + "…";
+            return key + " = " + preview + (location == null || location.isBlank() ? "" : " · " + location);
+        }
+    }
+
+    private record WatchTargetChoice(String kind, long id, String label) {
+        @Override public String toString() { return ("hypothesis".equals(kind) ? "HYP" : "INV") + " · " + label; }
+    }
+
     private final class NegroContextMenu implements ContextMenuItemsProvider {
         @Override
         public List<Component> provideMenuItems(ContextMenuEvent event) {
             List<HttpRequestResponse> selected = selectedRequestResponses(event);
             if (selected.isEmpty() || selected.get(0).request() == null || isNegroBridgeTraffic(selected.get(0).request().url())) return List.of();
+            String selectedText = selectedEditorText(event);
             JMenu menu = new JMenu("Negro");
-            JMenuItem open = new JMenuItem("Open in Negro");
-            JMenu stateMenu = new JMenu("State");
+            JMenuItem open = new JMenuItem("Abrir en Negro");
+
+            JMenu contextMenu = new JMenu("Contexto");
+            JMenuItem invAttach = new JMenuItem("Añadir a Investigation…");
+            JMenuItem invCreate = new JMenuItem("Crear Investigation desde esta Request…");
+            JMenuItem hypCreate = new JMenuItem("Crear Hypothesis…");
+            JMenuItem hypAttach = new JMenuItem("Adjuntar a Hypothesis…");
+            JMenuItem entityCreate = new JMenuItem("Crear Entity desde key/valor…");
+            JMenuItem followValue = new JMenuItem("Seguir key / valor…");
+            JMenuItem watch = new JMenuItem("Watch de key / valor…");
+            JMenuItem note = new JMenuItem("Agregar nota…");
+            contextMenu.add(invAttach); contextMenu.add(invCreate); contextMenu.addSeparator();
+            contextMenu.add(hypCreate); contextMenu.add(hypAttach); contextMenu.addSeparator();
+            contextMenu.add(entityCreate); contextMenu.add(followValue); contextMenu.add(watch); contextMenu.addSeparator(); contextMenu.add(note);
+
+            JMenu stateMenu = new JMenu("Estado");
             addStateItem(stateMenu, event, "🔵 Pendiente aprendizaje", "learning");
             addStateItem(stateMenu, event, "🟡 Revisar luego", "review_later");
             addStateItem(stateMenu, event, "🟠 Interesante", "interesting");
@@ -789,25 +834,35 @@ public class NegroBurpBridge implements BurpExtension {
             addStateItem(stateMenu, event, "⚪ Normal", "normal");
 
             JMenu flowMenu = new JMenu("Flow");
-            JMenuItem flowStart = new JMenuItem("Start Flow from here…");
-            JMenuItem flowAdd = new JMenuItem("Add to current Flow…");
-            JMenuItem flowEnd = new JMenuItem("End Flow here…");
-            JMenuItem flowSelected = new JMenuItem("Create Flow from selected exchanges…");
+            JMenuItem flowStart = new JMenuItem("Iniciar Flow desde aquí…");
+            JMenuItem flowAdd = new JMenuItem("Añadir al Flow actual…");
+            JMenuItem flowEnd = new JMenuItem("Terminar Flow aquí…");
+            JMenuItem flowSelected = new JMenuItem("Crear Flow con Requests seleccionadas…");
             flowMenu.add(flowStart); flowMenu.add(flowAdd); flowMenu.add(flowEnd); flowMenu.addSeparator(); flowMenu.add(flowSelected);
 
-            JMenu identityMenu = new JMenu("Identity");
-            JMenuItem assignIdentity = new JMenuItem("Assign to Identity…");
-            JMenuItem createIdentity = new JMenuItem("Create Identity from this request…");
-            JMenuItem updateAuth = new JMenuItem("Update auth material for Identity…");
-            JMenuItem sendAs = new JMenuItem("Send / Re-send as Identity…");
+            JMenu identityMenu = new JMenu("Identidad");
+            JMenuItem assignIdentity = new JMenuItem("Asignar a Identity…");
+            JMenuItem createIdentity = new JMenuItem("Crear Identity desde esta Request…");
+            JMenuItem updateAuth = new JMenuItem("Actualizar auth de Identity…");
+            JMenuItem sendAs = new JMenuItem("Enviar / reenviar como Identity…");
             identityMenu.add(assignIdentity); identityMenu.add(createIdentity); identityMenu.add(updateAuth); identityMenu.addSeparator(); identityMenu.add(sendAs);
 
-            JMenuItem note = new JMenuItem("Add note…");
-            JMenuItem createFinding = new JMenuItem("Create Finding…");
-            JMenuItem attachFinding = new JMenuItem("Attach to existing Finding…");
-            JMenuItem retest = new JMenuItem("Attach as Retest evidence…");
+            JMenu findingMenu = new JMenu("Finding");
+            JMenuItem createFinding = new JMenuItem("Crear Finding…");
+            JMenuItem attachFinding = new JMenuItem("Adjuntar a Finding existente…");
+            JMenuItem retest = new JMenuItem("Adjuntar como evidencia de Retest…");
+            findingMenu.add(createFinding); findingMenu.add(attachFinding); findingMenu.addSeparator(); findingMenu.add(retest);
+
             String tool = event.toolType() == null ? "OTHER" : event.toolType().name();
             open.addActionListener(e -> runContextAction("open", () -> openInNegro(selected.get(0), tool)));
+            invAttach.addActionListener(e -> runContextAction("inv-attach", () -> attachInvestigationFromBurp(selected.get(0), tool)));
+            invCreate.addActionListener(e -> runContextAction("inv-create", () -> createInvestigationFromBurp(selected.get(0), tool)));
+            hypCreate.addActionListener(e -> runContextAction("hyp-create", () -> createHypothesisFromBurp(selected.get(0), tool)));
+            hypAttach.addActionListener(e -> runContextAction("hyp-attach", () -> attachHypothesisFromBurp(selected.get(0), tool)));
+            entityCreate.addActionListener(e -> runContextAction("entity-create", () -> createEntityFromBurp(selected.get(0), tool, selectedText)));
+            followValue.addActionListener(e -> runContextAction("follow", () -> followValueFromBurp(selected.get(0), tool, selectedText)));
+            watch.addActionListener(e -> runContextAction("watch", () -> createWatchFromBurp(selected.get(0), tool, selectedText)));
+            note.addActionListener(e -> runContextAction("note", () -> addNoteFromBurp(selected, tool)));
             flowStart.addActionListener(e -> runContextAction("flow-start", () -> startFlowFromBurp(selected.get(0), tool)));
             flowAdd.addActionListener(e -> runContextAction("flow-add", () -> addToFlowFromBurp(selected.get(0), tool)));
             flowEnd.addActionListener(e -> runContextAction("flow-end", () -> endFlowFromBurp(selected.get(0), tool)));
@@ -816,11 +871,10 @@ public class NegroBurpBridge implements BurpExtension {
             createIdentity.addActionListener(e -> runContextAction("identity-create", () -> createIdentityFromBurp(selected.get(0), tool)));
             updateAuth.addActionListener(e -> runContextAction("identity-update", () -> updateIdentityAuthFromBurp(selected.get(0), tool)));
             sendAs.addActionListener(e -> runContextAction("identity-send", () -> sendAsIdentityFromBurp(selected.get(0), tool)));
-            note.addActionListener(e -> runContextAction("note", () -> addNoteFromBurp(selected, tool)));
             createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(selected.get(0), tool)));
             attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(selected.get(0), tool)));
             retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
-            menu.add(open); menu.add(flowMenu); menu.add(identityMenu); menu.addSeparator(); menu.add(stateMenu); menu.add(note); menu.addSeparator(); menu.add(createFinding); menu.add(attachFinding); menu.addSeparator(); menu.add(retest);
+            menu.add(open); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(stateMenu); menu.add(findingMenu);
             return List.of(menu);
         }
     }
@@ -829,6 +883,30 @@ public class NegroBurpBridge implements BurpExtension {
         JMenuItem item = new JMenuItem(label);
         item.addActionListener(e -> runContextAction("state-" + state, () -> setStateFromBurp(selectedRequestResponses(event), event.toolType() == null ? "OTHER" : event.toolType().name(), state)));
         stateMenu.add(item);
+    }
+
+    private String selectedEditorText(ContextMenuEvent event) {
+        try {
+            var editorOpt = event.messageEditorRequestResponse();
+            if (editorOpt.isEmpty()) return "";
+            var editor = editorOpt.get();
+            var offsetsOpt = editor.selectionOffsets();
+            if (offsetsOpt.isEmpty()) return "";
+            var range = offsetsOpt.get();
+            byte[] bytes;
+            String context = editor.selectionContext().name();
+            HttpRequestResponse rr = editor.requestResponse();
+            if ("RESPONSE".equals(context) && rr.hasResponse() && rr.response() != null) bytes = rr.response().toByteArray().getBytes();
+            else bytes = rr.request().toByteArray().getBytes();
+            int start = Math.max(0, Math.min(range.startIndexInclusive(), bytes.length));
+            int end = Math.max(start, Math.min(range.endIndexExclusive(), bytes.length));
+            String value = new String(bytes, start, end - start, StandardCharsets.UTF_8).trim();
+            if (value.length() > 1000) value = value.substring(0, 1000);
+            if (value.length() >= 2 && ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")))) value = value.substring(1, value.length() - 1);
+            return value.trim();
+        } catch (Exception ex) {
+            return "";
+        }
     }
 
     private List<HttpRequestResponse> selectedRequestResponses(ContextMenuEvent event) {
@@ -938,6 +1016,52 @@ public class NegroBurpBridge implements BurpExtension {
         annotations.setNotes(next);
     }
 
+    private void setNegroContextNote(Annotations annotations, String line) {
+        if (annotations == null || line == null || line.isBlank()) return;
+        String current = annotations.hasNotes() ? annotations.notes() : "";
+        List<String> keep = new ArrayList<>();
+        if (current != null && !current.isBlank()) {
+            for (String part : current.split("\\R")) if (!part.startsWith("NEGRO · CONTEXTO ·")) keep.add(part);
+        }
+        keep.add(line);
+        annotations.setNotes(String.join("\n", keep));
+    }
+
+    private void scheduleContextAnnotation(String method, String observedUrl, String requestHash, String responseHash, String contextLine, int attempt) {
+        if (unloading.get() || requestHash == null || requestHash.isBlank() || contextLine == null || contextLine.isBlank()) return;
+        long delayMs = switch (attempt) { case 0 -> 160L; case 1 -> 500L; default -> 1100L; };
+        bridgePoller.schedule(() -> {
+            if (unloading.get()) return;
+            boolean matched = applyContextAnnotationToProxyHistory(method, observedUrl, requestHash, responseHash, contextLine);
+            if (!matched && attempt < 2) scheduleContextAnnotation(method, observedUrl, requestHash, responseHash, contextLine, attempt + 1);
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private boolean applyContextAnnotationToProxyHistory(String method, String observedUrl, String requestHash, String responseHash, String contextLine) {
+        try {
+            List<ProxyHttpRequestResponse> candidates = api.proxy().history(item -> {
+                try { return item.hasResponse() && method.equalsIgnoreCase(item.finalRequest().method()) && observedUrl.equals(item.finalRequest().url()); }
+                catch (Exception ignored) { return false; }
+            });
+            int checked = 0;
+            for (int i = candidates.size() - 1; i >= 0 && checked < 30; i--, checked++) {
+                ProxyHttpRequestResponse item = candidates.get(i);
+                String reqHash = sha256(item.finalRequest().toByteArray().getBytes());
+                if (!requestHash.equalsIgnoreCase(reqHash)) continue;
+                if (responseHash != null && !responseHash.isBlank()) {
+                    String respHash = sha256(item.response().toByteArray().getBytes());
+                    if (!responseHash.equalsIgnoreCase(respHash)) continue;
+                }
+                setNegroContextNote(item.annotations(), contextLine);
+                return true;
+            }
+            return false;
+        } catch (Exception ex) {
+            api.logging().logToError("Negro context sync exception: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "" : ex.getMessage()));
+            return false;
+        }
+    }
+
     private void applyStateAnnotation(HttpRequestResponse rr, String state) {
         try {
             Annotations a = rr.annotations();
@@ -1003,6 +1127,191 @@ public class NegroBurpBridge implements BurpExtension {
         JComboBox<FlowChoice> combo = new JComboBox<>(list.toArray(new FlowChoice[0]));
         JPanel panel = formPanel(); panel.add(new JLabel("Flow")); panel.add(combo);
         return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (FlowChoice) combo.getSelectedItem() : null;
+    }
+
+    private List<InvestigationChoice> investigationChoices(String targetKey) {
+        try {
+            String json = getText("/api/bridge/investigations/" + targetKey);
+            List<InvestigationChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\s*\\\"id\\\"\\s*:\\s*(\\d+).*?\\\"title\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"", Pattern.DOTALL);
+            Matcher m = p.matcher(json);
+            while (m.find()) out.add(new InvestigationChoice(Long.parseLong(m.group(1)), unescapeJson(m.group(2)), unescapeJson(m.group(3))));
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private InvestigationChoice chooseInvestigation(String targetKey, String title, boolean allowNone) {
+        List<InvestigationChoice> list = investigationChoices(targetKey);
+        if (allowNone) list.add(0, new InvestigationChoice(0, "Sin Investigation", ""));
+        if (list.isEmpty()) { showMessage("Negro", "Todavía no hay Investigations activas.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JComboBox<InvestigationChoice> combo = new JComboBox<>(list.toArray(new InvestigationChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Investigation")); panel.add(combo);
+        return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (InvestigationChoice) combo.getSelectedItem() : null;
+    }
+
+    private List<HypothesisChoice> hypothesisChoices(String targetKey) {
+        try {
+            String json = getText("/api/bridge/hypotheses/" + targetKey);
+            List<HypothesisChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\s*\\\"id\\\"\\s*:\\s*(\\d+).*?\\\"title\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"", Pattern.DOTALL);
+            Matcher m = p.matcher(json);
+            while (m.find()) out.add(new HypothesisChoice(Long.parseLong(m.group(1)), unescapeJson(m.group(2)), unescapeJson(m.group(3))));
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private HypothesisChoice chooseHypothesis(String targetKey, String title) {
+        List<HypothesisChoice> list = hypothesisChoices(targetKey);
+        if (list.isEmpty()) { showMessage("Negro", "Todavía no hay Hypotheses en este target.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JComboBox<HypothesisChoice> combo = new JComboBox<>(list.toArray(new HypothesisChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Hypothesis")); panel.add(combo);
+        return confirmDialog(title, panel) == JOptionPane.OK_OPTION ? (HypothesisChoice) combo.getSelectedItem() : null;
+    }
+
+    private List<ParameterChoice> parameterChoices(String targetKey, long exchangeId) {
+        try {
+            String json = getText("/api/bridge/exchange-context/" + targetKey + "/" + exchangeId);
+            List<ParameterChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\\{\\s*\\\"id\\\"\\s*:\\s*(\\d+),\\s*\\\"name\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\",\\s*\\\"normalized_name\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\",\\s*\\\"value_preview\\\"\\s*:\\s*(?:null|\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"),\\s*\\\"value_raw\\\"\\s*:\\s*(?:null|\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"),\\s*\\\"location\\\"\\s*:\\s*(?:null|\\\"((?:\\\\.|[^\\\"\\\\])*)\\\")", Pattern.DOTALL);
+            Matcher m = p.matcher(json);
+            while (m.find()) {
+                String raw = m.group(5) != null ? unescapeJson(m.group(5)) : (m.group(4) == null ? "" : unescapeJson(m.group(4)));
+                out.add(new ParameterChoice(Long.parseLong(m.group(1)), unescapeJson(m.group(2)), unescapeJson(m.group(3)), raw, m.group(6) == null ? "" : unescapeJson(m.group(6))));
+            }
+            return out;
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private int bestParameterIndex(List<ParameterChoice> list, String selected) {
+        if (selected == null || selected.isBlank()) return 0;
+        String clean = selected.trim();
+        for (int i = 0; i < list.size(); i++) if (clean.equals(list.get(i).value())) return i;
+        for (int i = 0; i < list.size(); i++) if (clean.equalsIgnoreCase(list.get(i).normalizedName()) || clean.equalsIgnoreCase(list.get(i).name())) return i;
+        return 0;
+    }
+
+    private void attachInvestigationFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        InvestigationChoice inv = chooseInvestigation(ctx.targetKey(), "Añadir a Investigation", false); if (inv == null) return;
+        try {
+            postBridgeAction(ctx, "investigation_attach", "\"investigation_id\":" + inv.id());
+            appendNegroNote(rr.annotations(), "NEGRO · INV · " + inv.title());
+            showMessage("Negro", "Request #" + ctx.exchangeId() + " añadida a " + inv.title(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createInvestigationFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        JTextField title = new JTextField("Investigación desde " + rr.request().method(), 36);
+        JTextArea summary = new JTextArea(4, 36); summary.setLineWrap(true); summary.setWrapStyleWord(true);
+        JPanel panel = formPanel(); panel.add(new JLabel("Nombre")); panel.add(title); panel.add(new JLabel("Resumen")); panel.add(new JScrollPane(summary));
+        if (confirmDialog("Crear Investigation", panel) != JOptionPane.OK_OPTION) return;
+        if (title.getText().trim().isEmpty()) return;
+        try {
+            String body = postBridgeAction(ctx, "investigation_create", kv("title", title.getText().trim()) + "," + kv("summary", summary.getText().trim()));
+            long iid = jsonLong(body, "investigation_id");
+            String invTitle = jsonString(body, "title");
+            appendNegroNote(rr.annotations(), "NEGRO · INV · " + (invTitle == null ? ("#" + iid) : invTitle));
+            showMessage("Negro", "Investigation #" + iid + " creada con esta Request como evidencia.", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createHypothesisFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        JTextField question = new JTextField(40);
+        JTextArea why = new JTextArea(3, 40); why.setLineWrap(true); why.setWrapStyleWord(true);
+        JTextArea next = new JTextArea(3, 40); next.setLineWrap(true); next.setWrapStyleWord(true);
+        List<InvestigationChoice> invs = investigationChoices(ctx.targetKey()); invs.add(0, new InvestigationChoice(0, "Sin Investigation", ""));
+        JComboBox<InvestigationChoice> invCombo = new JComboBox<>(invs.toArray(new InvestigationChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Pregunta")); panel.add(question); panel.add(new JLabel("Por qué tiene sentido")); panel.add(new JScrollPane(why)); panel.add(new JLabel("Qué probar")); panel.add(new JScrollPane(next)); panel.add(new JLabel("Investigation opcional")); panel.add(invCombo);
+        if (confirmDialog("Crear Hypothesis", panel) != JOptionPane.OK_OPTION) return;
+        if (question.getText().trim().isEmpty()) return;
+        InvestigationChoice inv = (InvestigationChoice) invCombo.getSelectedItem();
+        try {
+            String extra = kv("title", question.getText().trim()) + "," + kv("why", why.getText().trim()) + "," + kv("next_test", next.getText().trim()) + ",\"investigation_id\":" + (inv == null ? 0 : inv.id());
+            String body = postBridgeAction(ctx, "hypothesis_create", extra);
+            long hid = jsonLong(body, "hypothesis_id");
+            appendNegroNote(rr.annotations(), "NEGRO · HYP · #" + hid + " · " + question.getText().trim());
+            showMessage("Negro", "Hypothesis #" + hid + " creada con esta Request como evidencia.", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void attachHypothesisFromBurp(HttpRequestResponse rr, String tool) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        HypothesisChoice hyp = chooseHypothesis(ctx.targetKey(), "Adjuntar a Hypothesis"); if (hyp == null) return;
+        try {
+            postBridgeAction(ctx, "hypothesis_attach", "\"hypothesis_id\":" + hyp.id());
+            appendNegroNote(rr.annotations(), "NEGRO · HYP · #" + hyp.id() + " · " + hyp.title());
+            showMessage("Negro", "Request #" + ctx.exchangeId() + " añadida como evidencia a Hypothesis #" + hyp.id(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createEntityFromBurp(HttpRequestResponse rr, String tool, String selectedText) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        List<ParameterChoice> params = parameterChoices(ctx.targetKey(), ctx.exchangeId());
+        if (params.isEmpty()) { showMessage("Negro", "Esta Request no tiene keys/values estructurados para convertir en Entity.", JOptionPane.INFORMATION_MESSAGE); return; }
+        JComboBox<ParameterChoice> paramCombo = new JComboBox<>(params.toArray(new ParameterChoice[0]));
+        paramCombo.setSelectedIndex(Math.min(bestParameterIndex(params, selectedText), params.size() - 1));
+        ParameterChoice suggested = (ParameterChoice) paramCombo.getSelectedItem();
+        String key = suggested == null ? "Object" : suggested.normalizedName().toLowerCase();
+        String guess = key.contains("order") ? "Order" : key.contains("return") ? "Return" : key.contains("refund") ? "Refund" : key.contains("payment") ? "Payment" : key.contains("user") || key.contains("customer") || key.contains("account") ? "User" : "Object";
+        JTextField type = new JTextField(guess, 24);
+        List<InvestigationChoice> invs = investigationChoices(ctx.targetKey()); invs.add(0, new InvestigationChoice(0, "Sin Investigation", ""));
+        JComboBox<InvestigationChoice> invCombo = new JComboBox<>(invs.toArray(new InvestigationChoice[0]));
+        JPanel panel = formPanel(); panel.add(new JLabel("Key / valor observado")); panel.add(paramCombo); panel.add(new JLabel("Tipo de Entity")); panel.add(type); panel.add(new JLabel("Investigation opcional")); panel.add(invCombo);
+        if (confirmDialog("Crear Entity", panel) != JOptionPane.OK_OPTION) return;
+        ParameterChoice choice = (ParameterChoice) paramCombo.getSelectedItem(); if (choice == null || type.getText().trim().isEmpty()) return;
+        InvestigationChoice inv = (InvestigationChoice) invCombo.getSelectedItem();
+        try {
+            String body = postBridgeAction(ctx, "entity_create", "\"observation_id\":" + choice.id() + "," + kv("entity_type", type.getText().trim()) + ",\"investigation_id\":" + (inv == null ? 0 : inv.id()));
+            long boid = jsonLong(body, "business_object_id");
+            appendNegroNote(rr.annotations(), "NEGRO · ENTITY · " + type.getText().trim() + " " + choice.value());
+            showMessage("Negro", "Entity " + type.getText().trim() + " creada/actualizada" + (boid > 0 ? " (#" + boid + ")" : "") + ".", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void followValueFromBurp(HttpRequestResponse rr, String tool, String selectedText) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        List<ParameterChoice> params = parameterChoices(ctx.targetKey(), ctx.exchangeId());
+        JComboBox<String> mode = new JComboBox<>(new String[]{"Valor exacto", "Key / parámetro"});
+        JComboBox<ParameterChoice> paramCombo = new JComboBox<>(params.toArray(new ParameterChoice[0]));
+        if (!params.isEmpty()) paramCombo.setSelectedIndex(Math.min(bestParameterIndex(params, selectedText), params.size() - 1));
+        JTextField selected = new JTextField(selectedText == null ? "" : selectedText, 34);
+        JPanel panel = formPanel(); panel.add(new JLabel("Selección de Burp (opcional)")); panel.add(selected); panel.add(new JLabel("O usa una pieza estructurada de esta Request")); panel.add(paramCombo); panel.add(new JLabel("Seguir como")); panel.add(mode);
+        if (confirmDialog("Seguir key / valor", panel) != JOptionPane.OK_OPTION) return;
+        ParameterChoice pc = (ParameterChoice) paramCombo.getSelectedItem();
+        boolean keyMode = mode.getSelectedIndex() == 1;
+        String raw = selected.getText().trim();
+        if (raw.isEmpty() && pc != null) raw = keyMode ? pc.normalizedName() : pc.value();
+        if (raw.isEmpty()) return;
+        try {
+            String body = postBridgeAction(ctx, "follow_value", kv("mode", keyMode ? "key" : "value") + "," + kv("selected", raw) + ",\"observation_id\":" + (pc == null ? 0 : pc.id()));
+            String web = jsonString(body, "web_path");
+            if (web != null) openBrowser(negroBaseUrl + web);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void createWatchFromBurp(HttpRequestResponse rr, String tool, String selectedText) {
+        BridgeContext ctx = ingestContext(rr, tool);
+        List<WatchTargetChoice> targets = new ArrayList<>();
+        for (HypothesisChoice h : hypothesisChoices(ctx.targetKey())) targets.add(new WatchTargetChoice("hypothesis", h.id(), h.title()));
+        for (InvestigationChoice i : investigationChoices(ctx.targetKey())) targets.add(new WatchTargetChoice("investigation", i.id(), i.title()));
+        if (targets.isEmpty()) { showMessage("Negro", "Crea primero una Hypothesis o Investigation para alojar el Watch.", JOptionPane.INFORMATION_MESSAGE); return; }
+        JComboBox<WatchTargetChoice> targetCombo = new JComboBox<>(targets.toArray(new WatchTargetChoice[0]));
+        JComboBox<String> typeCombo = new JComboBox<>(new String[]{"key", "value", "endpoint", "entity_type", "regex"});
+        JTextField pattern = new JTextField(selectedText == null ? "" : selectedText, 34);
+        JTextArea description = new JTextArea(3, 34); description.setLineWrap(true); description.setWrapStyleWord(true);
+        JCheckBox dependency = new JCheckBox("Si es Hypothesis, marcar como dependencia bloqueante", true);
+        JPanel panel = formPanel(); panel.add(new JLabel("Vincular a")); panel.add(targetCombo); panel.add(new JLabel("Tipo de Watch")); panel.add(typeCombo); panel.add(new JLabel("Patrón")); panel.add(pattern); panel.add(new JLabel("Qué estás esperando")); panel.add(new JScrollPane(description)); panel.add(dependency);
+        if (confirmDialog("Crear Watch", panel) != JOptionPane.OK_OPTION) return;
+        WatchTargetChoice target = (WatchTargetChoice) targetCombo.getSelectedItem(); if (target == null || pattern.getText().trim().isEmpty()) return;
+        try {
+            String extra = kv("watch_type", String.valueOf(typeCombo.getSelectedItem())) + "," + kv("pattern", pattern.getText().trim()) + "," + kv("description", description.getText().trim()) + ",\"hypothesis_id\":" + ("hypothesis".equals(target.kind()) ? target.id() : 0) + ",\"investigation_id\":" + ("investigation".equals(target.kind()) ? target.id() : 0) + ",\"as_requirement\":" + (dependency.isSelected() && "hypothesis".equals(target.kind()) ? "true" : "false");
+            String body = postBridgeAction(ctx, "watch_create", extra);
+            long wid = jsonLong(body, "watch_id");
+            appendNegroNote(rr.annotations(), "NEGRO · WATCH · " + typeCombo.getSelectedItem() + "=" + pattern.getText().trim());
+            showMessage("Negro", "Watch #" + wid + " creado para " + target.label(), JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
     }
 
     private List<AuthMaterialChoice> authMaterialChoices(String targetKey, long exchangeId) {
@@ -1137,19 +1446,26 @@ public class NegroBurpBridge implements BurpExtension {
 
     private void addNoteFromBurp(List<HttpRequestResponse> selected, String tool) {
         if (selected == null || selected.isEmpty()) return;
+        BridgeContext first = ingestContext(selected.get(0), tool);
+        List<InvestigationChoice> invs = investigationChoices(first.targetKey());
+        invs.add(0, new InvestigationChoice(0, "Sólo en la Request", ""));
+        JComboBox<InvestigationChoice> invCombo = new JComboBox<>(invs.toArray(new InvestigationChoice[0]));
         JTextArea notes = new JTextArea(5, 38); notes.setLineWrap(true); notes.setWrapStyleWord(true);
-        JPanel form = formPanel(); form.add(new JLabel("Nota para " + selected.size() + " item(s)")); form.add(new JScrollPane(notes));
-        if (confirmDialog("Negro · Add note", form) != JOptionPane.OK_OPTION) return;
+        JPanel form = formPanel(); form.add(new JLabel("Nota para " + selected.size() + " item(s)")); form.add(new JScrollPane(notes)); form.add(new JLabel("También guardar en Investigation")); form.add(invCombo);
+        if (confirmDialog("Negro · Agregar nota", form) != JOptionPane.OK_OPTION) return;
         String note = notes.getText().trim();
         if (note.isEmpty()) return;
-        for (HttpRequestResponse rr : selected) {
-            BridgeContext ctx = ingestContext(rr, tool);
+        InvestigationChoice inv = (InvestigationChoice) invCombo.getSelectedItem();
+        for (int idx = 0; idx < selected.size(); idx++) {
+            HttpRequestResponse rr = selected.get(idx);
+            BridgeContext ctx = idx == 0 ? first : ingestContext(rr, tool);
             try {
-                postBridgeAction(ctx, "add_note", kv("note", note));
+                postBridgeAction(ctx, "add_note", kv("note", note) + ",\"investigation_id\":" + (inv == null ? 0 : inv.id()));
                 appendNegroNote(rr.annotations(), "NEGRO · NOTE · " + note.replace('\n', ' '));
+                if (inv != null && inv.id() > 0) appendNegroNote(rr.annotations(), "NEGRO · INV · " + inv.title());
             } catch (Exception ex) { throw new IllegalStateException(ex); }
         }
-        showMessage("Negro", "Nota guardada en " + selected.size() + " item(s).", JOptionPane.INFORMATION_MESSAGE);
+        showMessage("Negro", "Nota guardada en " + selected.size() + " item(s)." + (inv != null && inv.id() > 0 ? " · " + inv.title() : ""), JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void openInNegro(HttpRequestResponse rr, String tool) {
@@ -1182,6 +1498,7 @@ public class NegroBurpBridge implements BurpExtension {
             String body = postBridgeAction(ctx, "create_finding", extra);
             long fid = jsonLong(body, "finding_id");
             String web = jsonString(body, "web_path");
+            appendNegroNote(rr.annotations(), "NEGRO · FIND · #" + fid);
             showMessage("Negro", "Finding #" + fid + " creado con esta request/response como evidencia.", JOptionPane.INFORMATION_MESSAGE);
             if (web != null && askYesNo("Negro", "¿Abrir el Finding en Negro?")) openBrowser(negroBaseUrl + web);
         } catch (Exception ex) { throw new IllegalStateException(ex); }
@@ -1192,6 +1509,7 @@ public class NegroBurpBridge implements BurpExtension {
         FindingChoice finding = chooseFinding(ctx.targetKey(), "Attach to existing Finding"); if (finding == null) return;
         try {
             postBridgeAction(ctx, "attach_finding", "\"finding_id\":" + finding.id());
+            appendNegroNote(rr.annotations(), "NEGRO · FIND · #" + finding.id());
             showMessage("Negro", "Exchange #" + ctx.exchangeId() + " agregado a Finding #" + finding.id(), JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) { throw new IllegalStateException(ex); }
     }
@@ -1206,6 +1524,7 @@ public class NegroBurpBridge implements BurpExtension {
         String extra = "\"finding_id\":" + finding.id() + "," + kv("result", String.valueOf(result.getSelectedItem())) + "," + kv("notes", notes.getText().trim());
         try {
             postBridgeAction(ctx, "retest", extra);
+            appendNegroNote(rr.annotations(), "NEGRO · RETEST · FIND #" + finding.id());
             showMessage("Negro", "Retest registrado en Finding #" + finding.id() + " con exchange #" + ctx.exchangeId(), JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) { throw new IllegalStateException(ex); }
     }

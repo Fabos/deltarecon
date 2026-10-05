@@ -343,3 +343,16 @@ En vistas semánticas, Negro prioriza tres conceptos: **Identity (quién)**, **E
 Una ruta resaltada no significa vulnerable. El mapa sólo indica que Negro ya tiene inteligencia asociada a esa evidencia: un **Signal** determinístico, una **Hypothesis** activa, o ambos. Desde el detalle se debe poder volver a la evidencia exacta en Hunt.
 
 El motor 2.0 intenta formular mejores preguntas combinando capas que antes estaban aisladas: quién hizo la Request (Identity), en qué historia ocurrió (Flow), qué cosa del negocio tocó (Object/State), qué regla hizo match (Signal), qué patrón se desvió (Anomaly) y cómo variaron respuestas entre identidades. La conclusión sigue siendo humana: confirmar manualmente, medir impacto y sólo entonces crear un Finding.
+
+
+## Burp como superficie de contexto · v0.43
+
+Burp sigue siendo la superficie principal de manipulación HTTP; Negro evita obligar al hunter a cambiar de herramienta sólo para conservar memoria. El menú `Negro → Contexto` permite asociar la Request actual a Investigation/Hypothesis, convertir una observación en Entity, seguir key/valor, crear Watches y dejar notas.
+
+Regla conceptual:
+
+- **Signal** sigue naciendo exclusivamente de una Regla.
+- **Context Match** nace de un Watch y requiere revisión humana.
+- **Hypothesis** sigue siendo una pregunta que el hunter decidió perseguir.
+- Las acciones contextuales de Burp **referencian** la evidencia existente; no crean una segunda copia del HTTP.
+- Las notas `INV/HYP/CTX/FIND` visibles en Burp son memoria de contexto, no verdicts de seguridad.

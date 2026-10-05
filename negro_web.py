@@ -5953,6 +5953,7 @@ def create_app(default_domain: str, default_workspace: Path):
         # never sends a network request and stores only masked secret values.
         passive = {"signals": [], "new_notifications": []}
         signal_count = 0
+        context_summary = {"investigation_count":0,"hypothesis_count":0,"context_match_count":0,"finding_count":0,"investigation_titles":[],"hypothesis_titles":[]}
         try:
             import negro_hunter as hunter
             with _db(paths) as conn:
@@ -6005,11 +6006,75 @@ def create_app(default_domain: str, default_workspace: Path):
                 # returned by one detector path. This also keeps an exchange cyan
                 # when an existing Signal is still pending review.
                 signal_count = core.unreviewed_signal_count(conn, exchange_id=int(result["exchange_id"]))
+                try:
+                    memberships=_exchange_context_memberships(conn,int(result["exchange_id"]))
+                    context_summary={
+                        "investigation_count":len(memberships.get("investigations") or []),
+                        "hypothesis_count":len(memberships.get("hypotheses") or []),
+                        "context_match_count":len(memberships.get("context_matches") or []),
+                        "finding_count":len(memberships.get("findings") or []),
+                        "investigation_titles":[str(x.get("title") or "") for x in (memberships.get("investigations") or [])[:5]],
+                        "hypothesis_titles":[str(x.get("title") or "") for x in (memberships.get("hypotheses") or [])[:5]],
+                    }
+                except Exception as ctx_exc:
+                    print(f"[burp-context] exchange={result.get('exchange_id')} error={type(ctx_exc).__name__}: {str(ctx_exc)[:160]}")
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
         return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": target.get("name") or domain, **result,
-                "signal_count": signal_count,
+                "signal_count": signal_count, **context_summary,
                 "new_notification_count": len(passive.get("new_notifications") or [])}
+
+    def _bridge_record_event(conn, exchange_id: int, action: str, *, target_type: str | None = None, target_id: int | None = None, extra: dict[str, Any] | None = None) -> None:
+        payload = {"action": str(action), "source": "burp", "exchange_id": int(exchange_id or 0), **(extra or {})}
+        if exchange_id:
+            core.log_event(conn, "exchange", int(exchange_id), "burp_context_action", payload)
+        if target_type and target_id:
+            core.log_event(conn, str(target_type), int(target_id), "burp_context_action", payload)
+
+    @app.get("/api/bridge/investigations/{target_key}", response_class=JSONResponse)
+    def bridge_investigations(target_key: str):
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            rows = conn.execute("SELECT id,title,status,summary,updated_at FROM investigations WHERE status!='closed' ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()
+        return {"target_key": target_key, "investigations": [dict(r) for r in rows]}
+
+    @app.get("/api/bridge/hypotheses/{target_key}", response_class=JSONResponse)
+    def bridge_hypotheses(target_key: str):
+        import negro_hunter as hunter
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            hunter.init_schema(conn)
+            rows = conn.execute(
+                """SELECT id,title,status,next_test,updated_at FROM leads_v2
+                   WHERE (upper(COALESCE(source,'')) IN ('MANUAL','AI_IDEA') OR promoted_investigation_id IS NOT NULL)
+                     AND COALESCE(rule_active,1)=1 AND status NOT IN ('discarded')
+                   ORDER BY updated_at DESC,id DESC LIMIT 300"""
+            ).fetchall()
+            out=[]
+            for row in rows:
+                item=dict(row)
+                reqs=hunter.list_hypothesis_requirements(conn,int(item['id']))
+                item['pending_requirements']=sum(1 for x in reqs if x.get('status')=='pending')
+                item['candidate_matches']=sum(int(x.get('candidate_match_count') or 0) for x in reqs)
+                out.append(item)
+        return {"target_key": target_key, "hypotheses": out}
+
+    @app.get("/api/bridge/exchange-context/{target_key}/{exchange_id}", response_class=JSONResponse)
+    def bridge_exchange_context(target_key: str, exchange_id: int):
+        import negro_objects as object_tools
+        import negro_hunter as hunter
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            hunter.init_schema(conn); object_tools.init_schema(conn)
+            if not conn.execute("SELECT id FROM http_exchanges WHERE id=?",(int(exchange_id),)).fetchone():
+                raise HTTPException(status_code=404,detail="Request no encontrada")
+            params=[dict(r) for r in conn.execute(
+                """SELECT id,name,normalized_name,value_preview,value_raw,location,resource_id
+                   FROM parameter_observations WHERE exchange_id=? ORDER BY id LIMIT 250""",(int(exchange_id),)
+            ).fetchall()]
+            types=[str(r['name']) for r in conn.execute("SELECT name FROM business_object_types ORDER BY lower(name) LIMIT 200").fetchall()]
+            memberships=_exchange_context_memberships(conn,int(exchange_id))
+        return {"target_key":target_key,"exchange_id":int(exchange_id),"parameters":params,"object_types":types,"memberships":memberships}
 
     @app.get("/api/bridge/findings/{target_key}", response_class=JSONResponse)
     def bridge_findings(target_key: str):
@@ -6058,6 +6123,7 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.post("/api/bridge/action", response_class=JSONResponse)
     async def bridge_action(request: Request):
+        import negro_hunter as hunter
         try:
             payload = await request.json()
         except Exception:
@@ -6068,7 +6134,9 @@ def create_app(default_domain: str, default_workspace: Path):
         action = str(payload.get("action") or "").strip()
         if action not in {"open","interesting","set_state","add_note","create_finding","attach_finding","retest",
                            "identity_assign","identity_create","identity_update_auth","identity_send_as",
-                           "flow_start","flow_end","flow_add","flow_create_selected"}:
+                           "flow_start","flow_end","flow_add","flow_create_selected",
+                           "investigation_attach","investigation_create","hypothesis_create","hypothesis_attach",
+                           "entity_create","follow_value","watch_create"}:
             raise HTTPException(status_code=400, detail="Acción Burp inválida")
         _, _, paths = _target_context(target_key)
         resource_id = int(payload.get("resource_id") or 0)
@@ -6090,6 +6158,88 @@ def create_app(default_domain: str, default_workspace: Path):
             web_path = f"/t/{target_key}/resource/{resource_id}"
             if action == "open":
                 return {"ok": True, "action": action, "web_path": web_path}
+            if action in {"investigation_attach","investigation_create"}:
+                if action == "investigation_create":
+                    title=str(payload.get("title") or "").strip()[:240]
+                    if not title: raise HTTPException(status_code=400,detail="Título de Investigation requerido")
+                    iid=hunter.create_investigation(conn,title=title,summary=str(payload.get("summary") or "")[:5000],category="manual")
+                else:
+                    iid=int(payload.get("investigation_id") or 0)
+                    if iid<=0 or not conn.execute("SELECT id FROM investigations WHERE id=?",(iid,)).fetchone():
+                        raise HTTPException(status_code=404,detail="Investigation no encontrada")
+                hunter.link_investigation_entity(conn,iid,"exchange",int(exchange_id),"evidence")
+                _bridge_record_event(conn,exchange_id,action,target_type="investigation",target_id=iid,extra={"resource_id":resource_id})
+                _refresh_search(conn,knowledge=True)
+                inv=conn.execute("SELECT title FROM investigations WHERE id=?",(iid,)).fetchone()
+                return {"ok":True,"action":action,"investigation_id":iid,"title":str(inv['title']) if inv else f"Investigation #{iid}","web_path":f"/t/{target_key}/investigations/{iid}"}
+            if action in {"hypothesis_create","hypothesis_attach"}:
+                if action == "hypothesis_create":
+                    hid=hunter.create_manual_hypothesis(conn,int(exchange_id),title=str(payload.get("title") or ""),why=str(payload.get("why") or ""),next_test=str(payload.get("next_test") or ""))
+                else:
+                    hid=int(payload.get("hypothesis_id") or 0)
+                    try: hunter.attach_hypothesis_evidence(conn,hid,int(exchange_id),source="burp_context")
+                    except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+                iid=int(payload.get("investigation_id") or 0)
+                if iid>0:
+                    try:
+                        hunter.link_investigation_entity(conn,iid,"hypothesis",hid,"pursuing")
+                        hunter.link_investigation_entity(conn,iid,"exchange",int(exchange_id),"evidence")
+                    except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+                _bridge_record_event(conn,exchange_id,action,target_type="hypothesis",target_id=hid,extra={"investigation_id":iid or None})
+                _refresh_search(conn,knowledge=True)
+                h=conn.execute("SELECT title FROM leads_v2 WHERE id=?",(hid,)).fetchone()
+                return {"ok":True,"action":action,"hypothesis_id":hid,"title":str(h['title']) if h else f"Hypothesis #{hid}","web_path":f"/t/{target_key}/hypotheses#hypothesis-{hid}"}
+            if action == "entity_create":
+                import negro_objects as object_tools
+                observation_id=int(payload.get("observation_id") or 0)
+                if observation_id<=0:
+                    selected=str(payload.get("selected_value") or "").strip()
+                    if selected:
+                        hit=conn.execute("SELECT id FROM parameter_observations WHERE exchange_id=? AND (value_raw=? OR value_preview=?) ORDER BY id LIMIT 1",(int(exchange_id),selected,selected)).fetchone()
+                        observation_id=int(hit['id']) if hit else 0
+                obs=conn.execute("SELECT id FROM parameter_observations WHERE id=? AND exchange_id=?",(observation_id,int(exchange_id))).fetchone() if observation_id else None
+                if not obs: raise HTTPException(status_code=400,detail="Selecciona un key/value observado en esta Request")
+                try: result=object_tools.track_observation(conn,observation_id,str(payload.get("entity_type") or ""),allow_manual=True)
+                except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+                boid=int(result.get('business_object_id') or 0)
+                iid=int(payload.get("investigation_id") or 0)
+                if iid>0 and boid:
+                    hunter.link_investigation_entity(conn,iid,"business_object",boid,"context")
+                _bridge_record_event(conn,exchange_id,action,target_type="business_object" if boid else None,target_id=boid or None,extra={"object_type":result.get('object_type')})
+                return {"ok":True,"action":action,**result,"web_path":f"/t/{target_key}/objects/{boid}" if boid else f"/t/{target_key}/objects"}
+            if action == "follow_value":
+                mode=str(payload.get("mode") or "value").strip().lower()
+                selected=str(payload.get("selected") or "").strip()
+                observation_id=int(payload.get("observation_id") or 0)
+                web=None
+                if observation_id:
+                    obs=conn.execute("SELECT id,normalized_name,name,value_raw,value_preview FROM parameter_observations WHERE id=? AND exchange_id=?",(observation_id,int(exchange_id))).fetchone()
+                    if obs:
+                        if mode=='key': web=f"/t/{target_key}/parameters/{urllib.parse.quote(str(obs['normalized_name'] or obs['name'] or ''))}"
+                        else: web=f"/t/{target_key}/parameters/follow/{int(obs['id'])}"
+                if not web and selected:
+                    if mode=='key': web=f"/t/{target_key}/parameters/{urllib.parse.quote(selected)}"
+                    else: web=f"/t/{target_key}/search?q={urllib.parse.quote(selected)}"
+                if not web: raise HTTPException(status_code=400,detail="Selecciona una key o valor para seguir")
+                _bridge_record_event(conn,exchange_id,action,extra={"mode":mode,"selected":selected,"observation_id":observation_id or None})
+                return {"ok":True,"action":action,"web_path":web}
+            if action == "watch_create":
+                watch_type=str(payload.get("watch_type") or "key")
+                pattern=str(payload.get("pattern") or "").strip()
+                lead_id=int(payload.get("hypothesis_id") or 0)
+                iid=int(payload.get("investigation_id") or 0)
+                as_requirement=bool(payload.get("as_requirement"))
+                try:
+                    if as_requirement and lead_id:
+                        rid=hunter.add_hypothesis_requirement(conn,lead_id,key_pattern=pattern,description=str(payload.get("description") or ""),requirement_type=watch_type)
+                        w=conn.execute("SELECT id FROM context_watches WHERE requirement_id=?",(rid,)).fetchone(); wid=int(w['id']) if w else 0
+                    else:
+                        wid=hunter.add_context_watch(conn,watch_type=watch_type,pattern=pattern,description=str(payload.get("description") or ""),lead_id=lead_id or None,investigation_id=iid or None,scan_history=True)
+                        rid=None
+                except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc))
+                _bridge_record_event(conn,exchange_id,action,target_type="hypothesis" if lead_id else "investigation",target_id=lead_id or iid,extra={"watch_id":wid,"pattern":pattern,"watch_type":watch_type,"requirement_id":rid})
+                path=f"/t/{target_key}/hypotheses#hypothesis-{lead_id}" if lead_id else f"/t/{target_key}/investigations/{iid}#watches"
+                return {"ok":True,"action":action,"watch_id":wid,"requirement_id":rid,"web_path":path}
             if action.startswith("identity_"):
                 import negro_identity as identity_tools
                 identity_id = int(payload.get("identity_id") or 0)
@@ -6109,17 +6259,20 @@ def create_app(default_domain: str, default_workspace: Path):
                     identity_id = identity_tools.create_identity(conn, name)
                     identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=None, learn_auth=False, source="burp")
                     learned = identity_tools.learn_auth_materials(conn, exchange_id, identity_id, fingerprints=fingerprints, source="burp_create")
+                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"learned": len(learned or [])})
                     return {"ok": True, "action": action, "identity_id": identity_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/identities/view/{identity_id}"}
                 if action == "identity_assign":
                     if identity_id <= 0:
                         raise HTTPException(status_code=400, detail="Identidad requerida")
                     learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=bool(payload.get("learn_auth")), source="burp")
+                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id})
                     return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
                 if action == "identity_update_auth":
                     if identity_id <= 0:
                         raise HTTPException(status_code=400, detail="Identidad requerida")
                     learned = identity_tools.update_identity_auth_from_exchange(conn, exchange_id, identity_id, context_id=context_id, fingerprints=fingerprints, source="burp_update")
                     identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=False, source="burp_update")
+                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id})
                     return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
                 # Send / Re-send as Identity. identity_id=0 is the virtual Anonymous context.
                 rewritten = identity_tools.rewrite_exchange_as_identity(conn, exchange_id, identity_id if identity_id > 0 else None, context_id=context_id)
@@ -6129,18 +6282,21 @@ def create_app(default_domain: str, default_workspace: Path):
                     "INSERT INTO burp_repeater_queue(resource_id, method, url, request_b64, caption, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
                     (resource_id, rewritten["method"], rewritten["url"], rewritten["request_b64"], caption, _now()),
                 )
+                _bridge_record_event(conn, exchange_id, action, target_type="identity" if identity_id > 0 else None, target_id=identity_id if identity_id > 0 else None, extra={"context_id": context_id, "queue_id": int(cur.lastrowid)})
                 return {"ok": True, "action": action, "identity_id": identity_id or None, "context_id": context_id, "exchange_id": exchange_id, "queue_id": int(cur.lastrowid), "materials": rewritten["materials"]}
             if action.startswith("flow_"):
                 import negro_flows as flow_tools
                 if action == "flow_start":
                     name = str(payload.get("name") or "").strip()[:160] or f"Flow from exchange #{exchange_id}"
                     flow_id = flow_tools.start_capture(conn, name, description=str(payload.get("description") or "")[:2000], start_exchange_id=exchange_id, source="burp")
+                    _bridge_record_event(conn, exchange_id, action, target_type="flow", target_id=flow_id)
                     return {"ok": True, "action": action, "flow_id": flow_id, "exchange_id": exchange_id, "web_path": f"/t/{target_key}/flows/{flow_id}"}
                 if action == "flow_end":
                     flow_id = int(payload.get("flow_id") or 0)
                     if flow_id <= 0:
                         raise HTTPException(status_code=400, detail="Flow requerido")
                     result = flow_tools.stop_capture(conn, flow_id, end_exchange_id=exchange_id)
+                    _bridge_record_event(conn, exchange_id, action, target_type="flow", target_id=flow_id, extra={"capture": result})
                     return {"ok": True, "action": action, "flow_id": flow_id, "exchange_id": exchange_id, "capture": result, "web_path": f"/t/{target_key}/flows/{flow_id}"}
                 if action == "flow_add":
                     flow_id = int(payload.get("flow_id") or 0)
@@ -6148,6 +6304,7 @@ def create_app(default_domain: str, default_workspace: Path):
                         raise HTTPException(status_code=400, detail="Flow requerido")
                     step_id = flow_tools.add_step(conn, flow_id, exchange_id, candidate=True)
                     flow_tools.refresh_noise_suggestions(conn, flow_id)
+                    _bridge_record_event(conn, exchange_id, action, target_type="flow", target_id=flow_id, extra={"step_id": step_id})
                     return {"ok": True, "action": action, "flow_id": flow_id, "step_id": step_id, "exchange_id": exchange_id, "web_path": f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}"}
                 name = str(payload.get("name") or "").strip()[:160] or "Flow from Burp selection"
                 raw_ids = payload.get("exchange_ids") or ""
@@ -6187,6 +6344,8 @@ def create_app(default_domain: str, default_workspace: Path):
                 for exid in exchange_ids:
                     flow_tools.add_step(conn, flow_id, exid, candidate=True)
                 flow_tools.refresh_noise_suggestions(conn, flow_id)
+                for exid in exchange_ids:
+                    _bridge_record_event(conn, exid, action, target_type="flow", target_id=flow_id, extra={"selection_size": len(exchange_ids)})
                 return {"ok": True, "action": action, "flow_id": flow_id, "exchange_ids": exchange_ids, "web_path": f"/t/{target_key}/flows/{flow_id}"}
             if action == "set_state":
                 state = str(payload.get("state") or "normal").strip()
@@ -6206,8 +6365,16 @@ def create_app(default_domain: str, default_workspace: Path):
                 note = str(payload.get("note") or "").strip()[:4000]
                 if not note:
                     raise HTTPException(status_code=400, detail="Nota vacía")
+                conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('exchange',?,?,?)", (int(exchange_id), note, _now()))
                 conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('resource',?,?,?)", (resource_id, f"Burp · exchange #{exchange_id}: {note}", _now()))
-                return {"ok": True, "action": action, "resource_id": resource_id, "exchange_id": exchange_id, "web_path": web_path}
+                iid=int(payload.get("investigation_id") or 0)
+                if iid>0:
+                    if not conn.execute("SELECT id FROM investigations WHERE id=?",(iid,)).fetchone(): raise HTTPException(status_code=404,detail="Investigation no encontrada")
+                    conn.execute("INSERT INTO notes(entity_type,entity_id,body,created_at) VALUES('investigation',?,?,?)",(iid,f"Burp · Request #{exchange_id}: {note}",_now()))
+                    hunter.link_investigation_entity(conn,iid,"exchange",int(exchange_id),"evidence")
+                    conn.execute("UPDATE investigations SET updated_at=? WHERE id=?",(_now(),iid))
+                _bridge_record_event(conn,exchange_id,action,target_type="investigation" if iid else None,target_id=iid or None,extra={"note":note[:240]})
+                return {"ok": True, "action": action, "resource_id": resource_id, "exchange_id": exchange_id, "investigation_id":iid or None,"web_path": f"/t/{target_key}/investigations/{iid}#notas" if iid else web_path}
             if action == "interesting":
                 conn.execute("UPDATE resources SET classification=CASE WHEN classification='finding' THEN classification ELSE 'lead' END, review_state=CASE WHEN review_state='pending' THEN 'in_progress' ELSE review_state END, updated_at=? WHERE id=?", (_now(), resource_id))
                 if exchange_id:
@@ -6226,6 +6393,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 if exchange_id:
                     core.set_human_state(conn, "exchange", exchange_id, "finding", source="burp_finding")
                 core.set_human_state(conn, "resource", resource_id, "finding", source="burp_finding", snapshot_exchange_id=exchange_id or None)
+                _bridge_record_event(conn, exchange_id, action, target_type="finding", target_id=fid, extra={"severity": str(payload.get("severity") or "info")})
                 return {"ok": True, "action": action, "finding_id": fid, "web_path": f"/t/{target_key}/finding/{fid}"}
             finding_id = int(payload.get("finding_id") or 0)
             finding = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone() if finding_id else None
@@ -6236,6 +6404,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 if operation_id: _link_finding(conn, finding_id, "operation", operation_id, "affected_operation")
                 if exchange_id: _link_finding(conn, finding_id, "exchange", exchange_id, "evidence")
                 conn.execute("UPDATE resources SET classification='finding', updated_at=? WHERE id=?", (_now(), resource_id))
+                _bridge_record_event(conn, exchange_id, action, target_type="finding", target_id=finding_id)
                 return {"ok": True, "action": action, "finding_id": finding_id, "web_path": f"/t/{target_key}/finding/{finding_id}"}
             result = str(payload.get("result") or "inconclusive")
             if result not in {"still_vulnerable","fixed","fix_verified","inconclusive"}:
@@ -6247,6 +6416,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 conn.execute("INSERT OR IGNORE INTO finding_retest_entities(retest_id,entity_type,entity_id,relation,created_at) VALUES(?, 'exchange', ?, 'evidence', ?)", (retest_id, exchange_id, now))
             status_map = {"still_vulnerable":"retest_required","fixed":"fixed","fix_verified":"closed","inconclusive":"retest_required"}
             conn.execute("UPDATE findings SET status=?,updated_at=? WHERE id=?", (status_map[result], now, finding_id))
+            _bridge_record_event(conn, exchange_id, action, target_type="finding", target_id=finding_id, extra={"retest_id": retest_id, "result": result})
             return {"ok": True, "action": action, "finding_id": finding_id, "retest_id": retest_id, "web_path": f"/t/{target_key}/finding/{finding_id}#retests"}
 
     def _bridge_workspace_paths(target: dict[str, Any]) -> tuple[str, str, dict[str, Path]] | None:
