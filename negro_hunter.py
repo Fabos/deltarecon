@@ -531,6 +531,20 @@ def init_schema(conn) -> None:
             UNIQUE(investigation_id, entity_type, entity_id, relation),
             FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS investigation_explorations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            investigation_id INTEGER NOT NULL,
+            exploration_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            query_text TEXT,
+            source_json TEXT,
+            snapshot_json TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(investigation_id) REFERENCES investigations(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_investigation_explorations ON investigation_explorations(investigation_id, created_at);
         CREATE TABLE IF NOT EXISTS ai_idea_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             origin_type TEXT NOT NULL DEFAULT 'flow',
@@ -4815,6 +4829,47 @@ def list_investigation_links(conn, investigation_id: int, *, entity_type: str | 
         params.append(et)
     sql += " ORDER BY id"
     return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+
+def save_investigation_exploration(conn, investigation_id: int, *, exploration_type: str, title: str, query_text: str = "", source: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None, notes: str = "") -> int:
+    """Persist the reasoning artifact, not copies of its HTTP evidence.
+
+    Search/Follow Value and Smart Compare are calculations over existing evidence.
+    The Investigation keeps the query, timestamp and lightweight references needed
+    to reconstruct why the branch mattered. Source Requests remain canonical.
+    """
+    init_schema(conn)
+    iid=int(investigation_id)
+    if not conn.execute("SELECT id FROM investigations WHERE id=?",(iid,)).fetchone():
+        raise ValueError("Investigación no encontrada")
+    kind=str(exploration_type or "").strip().lower()
+    if kind not in {"follow_value","smart_compare","related_search"}:
+        raise ValueError("Tipo de exploración no soportado")
+    clean=str(title or "").strip()[:240] or ({"follow_value":"Follow Value","smart_compare":"Smart Compare","related_search":"Exploración"}[kind])
+    now=now_iso()
+    cur=conn.execute(
+        """INSERT INTO investigation_explorations(investigation_id,exploration_type,title,query_text,source_json,snapshot_json,notes,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?)""",
+        (iid,kind,clean,str(query_text or "")[:1000],json.dumps(source or {},ensure_ascii=False),json.dumps(snapshot or {},ensure_ascii=False),str(notes or "")[:5000],now,now),
+    )
+    conn.execute("UPDATE investigations SET updated_at=? WHERE id=?",(now,iid))
+    return int(cur.lastrowid)
+
+
+def list_investigation_explorations(conn, investigation_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+    init_schema(conn)
+    rows=conn.execute(
+        "SELECT * FROM investigation_explorations WHERE investigation_id=? ORDER BY created_at DESC,id DESC LIMIT ?",
+        (int(investigation_id),max(1,min(int(limit),300))),
+    ).fetchall()
+    out=[]
+    for row in rows:
+        item=dict(row)
+        for key in ("source_json","snapshot_json"):
+            try: item[key[:-5]]=json.loads(item.get(key) or "{}")
+            except Exception: item[key[:-5]]={}
+        out.append(item)
+    return out
 
 
 def _ai_idea_dict_from_row(row) -> dict[str, Any]:

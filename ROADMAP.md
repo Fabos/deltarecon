@@ -1,3 +1,7 @@
+
+## Estado v0.42.0
+Fases 4 y 5 quedan funcionales en su primer incremento: exploraciones persistentes dentro de Investigation y Runner como experimento contextual. Próximo bloque: Fase 6, integración contextual Burp ↔ Negro; después Fase 7 (dashboard de memoria, IA contextual y trayectoria final). El grafo queda en mantenimiento salvo bugs o necesidades surgidas de esas fases.
+
 ## Contexto compuesto / Investigation Workspace — evolución incremental
 
 > **El contexto genera interés compuesto.** Negro no debe pensar por el hunter; debe evitar que pierda el contexto de lo que ya pensó.
@@ -5,8 +9,8 @@
 1. **Fase 1 — Auditoría + relaciones canónicas ✅**: `investigation_links` se formaliza como grafo many-to-many; backfill compatible desde Hypothesis/Runner/Finding/AI Idea; Identity Context asociable; navegación corregida.
 2. **Fase 2 — Investigation Workspace + asociaciones + Notes + Timeline ✅ (base funcional)**: contexto nuevo, notas rápidas, timeline y grafo contextual de Investigation sobre relaciones existentes.
 3. **Fase 3 — Hypothesis bloqueadas + dependencias + Watches + Context Match ✅ (base funcional)**: `hypothesis_requirements` expresa la dependencia humana; Watches observan key/JSON key/value/endpoint/entity/regex; Context Matches son candidatos revisables y sólo la aceptación humana desbloquea la Hypothesis.
-4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation**: la expansión visual de Follow Value ya inicia en v0.41.4; falta persistir exploraciones/comparaciones dentro de Investigation sin duplicar Requests.
-5. **Fase 5 — Runner como experimento**: conservar Flow Runner y añadir intención/trayectoria Investigation → Hypothesis → Run.
+4. **Fase 4 — Search/Follow Value + Smart Compare dentro de Investigation ✅ (base funcional)**: Follow Value y Smart Compare se guardan como exploraciones con query, snapshot y referencias; la evidencia HTTP no se duplica.
+5. **Fase 5 — Runner como experimento ✅ (base funcional)**: Runner conserva objetivo, criterios de apoyo/refutación y la cadena Investigation → Hypothesis → Runner → Flow/Run.
 6. **Fase 6 — Burp ↔ Negro contextual**: extender el bridge existente con acciones de Investigation/Hypothesis/Entity/Follow Value/Watch/Note.
 7. **Fase 7 — Dashboard de memoria + IA contextual + trayectoria de Findings + UX final**.
 

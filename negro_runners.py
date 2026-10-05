@@ -113,6 +113,14 @@ def init_schema(conn) -> None:
     runner_cols={row["name"] for row in conn.execute("PRAGMA table_info(runners)")}
     if "investigation_id" not in runner_cols:
         conn.execute("ALTER TABLE runners ADD COLUMN investigation_id INTEGER")
+    runner_cols={row["name"] for row in conn.execute("PRAGMA table_info(runners)")}
+    for name,ddl in {
+        "experiment_goal":"TEXT",
+        "expected_support":"TEXT",
+        "expected_refute":"TEXT"
+    }.items():
+        if name not in runner_cols:
+            conn.execute(f"ALTER TABLE runners ADD COLUMN {name} {ddl}")
     run_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_runs)")}
     if "execution_class" not in run_cols:
         conn.execute("ALTER TABLE runner_runs ADD COLUMN execution_class TEXT NOT NULL DEFAULT 'pending'")
@@ -192,7 +200,8 @@ def _flow_steps(conn, flow_id: int) -> list[dict[str, Any]]:
 
 def create_runner_from_flow(conn, flow_id: int, *, alias: str, description: str = "", hypothesis_id: int | None = None,
                             identity_id: int | None = None, investigation_id: int | None = None, origin: str = "manual", ai_idea: dict[str, Any] | None = None,
-                            step_actions: list[dict[str, Any]] | None = None, variables: list[dict[str, Any]] | None = None) -> int:
+                            step_actions: list[dict[str, Any]] | None = None, variables: list[dict[str, Any]] | None = None,
+                            experiment_goal: str = "", expected_support: str = "", expected_refute: str = "") -> int:
     init_schema(conn)
     flow = conn.execute("SELECT id,name,identity_id FROM flows WHERE id=?", (int(flow_id),)).fetchone()
     if not flow:
@@ -210,6 +219,11 @@ def create_runner_from_flow(conn, flow_id: int, *, alias: str, description: str 
          json.dumps(ai_idea,ensure_ascii=False) if ai_idea else None,now,now),
     )
     runner_id=int(cur.lastrowid)
+    if experiment_goal or expected_support or expected_refute:
+        conn.execute(
+            "UPDATE runners SET experiment_goal=?,expected_support=?,expected_refute=?,updated_at=? WHERE id=?",
+            (str(experiment_goal or "")[:5000],str(expected_support or "")[:5000],str(expected_refute or "")[:5000],now,runner_id),
+        )
     if investigation_id is not None:
         conn.execute("UPDATE runners SET investigation_id=? WHERE id=?", (int(investigation_id), runner_id))
         try:
@@ -343,12 +357,18 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
     return {"runner":runner,"steps":steps,"runs":runs,"ai_idea":_load_json(runner.get("ai_idea_json"),{})}
 
 
-def update_runner(conn, runner_id: int, *, alias: str, description: str, identity_id: int | None, max_requests: int = 30) -> None:
+def update_runner(conn, runner_id: int, *, alias: str, description: str, identity_id: int | None, max_requests: int = 30,
+                  experiment_goal: str | None = None, expected_support: str | None = None, expected_refute: str | None = None) -> None:
     init_schema(conn)
     alias=str(alias or "").strip()[:180]
     if not alias: raise ValueError("Alias requerido")
-    conn.execute("UPDATE runners SET alias=?,description=?,identity_id=?,max_requests=?,updated_at=? WHERE id=?",
-                 (alias,str(description or "")[:5000],identity_id,max(1,min(int(max_requests),100)),now_iso(),int(runner_id)))
+    current=conn.execute("SELECT experiment_goal,expected_support,expected_refute FROM runners WHERE id=?",(int(runner_id),)).fetchone()
+    if not current: raise ValueError("Runner no encontrado")
+    goal=current["experiment_goal"] if experiment_goal is None else str(experiment_goal or "")[:5000]
+    support=current["expected_support"] if expected_support is None else str(expected_support or "")[:5000]
+    refute=current["expected_refute"] if expected_refute is None else str(expected_refute or "")[:5000]
+    conn.execute("UPDATE runners SET alias=?,description=?,identity_id=?,max_requests=?,experiment_goal=?,expected_support=?,expected_refute=?,updated_at=? WHERE id=?",
+                 (alias,str(description or "")[:5000],identity_id,max(1,min(int(max_requests),100)),goal,support,refute,now_iso(),int(runner_id)))
 
 
 def update_runner_step(conn, runner_id: int, runner_step_id: int, *, action: str, repeat_count: int = 1, notes: str = "") -> None:

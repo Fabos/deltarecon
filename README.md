@@ -1,4 +1,13 @@
-# Negro Recon 🐕 — v0.41.8
+# Negro Recon 🐕 — v0.42.0
+
+## v0.42.0 — Investigation Explorations + Runner Experiments
+
+- Corrige el fullscreen del grafo desde la raíz del layout: el canvas ocupa toda la etapa en fullscreen y se reajusta con ResizeObserver.
+- Fase 4: Follow Value y Smart Compare pueden guardarse dentro de una Investigation como memoria ligera (consulta, snapshot y referencias), sin copiar HTTP.
+- Las exploraciones guardadas aparecen en Investigation y Timeline y pueden reabrirse.
+- Fase 5: Runner queda formalizado como experimento: Investigation → Hypothesis → Runner → Flow/Run.
+- El experimento conserva objetivo, qué resultado lo apoyaría y qué resultado lo debilitaría, sin decidir la Hypothesis automáticamente.
+- Los labs siguen fuera del core de Negro.
 
 
 

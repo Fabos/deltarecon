@@ -9,12 +9,25 @@
 
 {% if job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Runner en progreso…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Ejecutando secuencialmente. Esta página se actualizará al terminar.</p></section>{% endif %}
 
+{% if r.hypothesis_id or r.investigation_id or r.experiment_goal %}
+<section class="panel runner-experiment-intent">
+  <div class="panel-head"><div><p class="eyebrow">EXPERIMENTO</p><h2>Qué pregunta intenta responder este Runner</h2><p class="muted">El Flow sigue siendo el baseline. Esta capa sólo conserva la intención experimental y cómo interpretar el resultado.</p></div></div>
+  <div class="experiment-intent-grid">
+    <article><small>PREGUNTA / OBJETIVO</small><b>{{ r.experiment_goal or r.hypothesis_title or r.description or 'Experimento sin pregunta explícita' }}</b></article>
+    <article><small>APOYARÍA SI</small><span>{{ r.expected_support or 'No definido todavía.' }}</span></article>
+    <article><small>DEBILITARÍA SI</small><span>{{ r.expected_refute or 'No definido todavía.' }}</span></article>
+  </div>
+</section>
+{% endif %}
+
 <section class="grid two runner-config-grid">
   <article class="panel">
     <div class="panel-head"><div><p class="eyebrow">IDENTIDAD DEL EXPERIMENTO</p><h2>Configuración</h2></div></div>
     <form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>Alias<input name="alias" value="{{ r.alias }}" required></label>
       <label>Descripción<textarea name="description" rows="4">{{ r.description or '' }}</textarea></label>
+      <label>Pregunta / objetivo experimental<textarea name="experiment_goal" rows="2" placeholder="Qué pregunta concreta intenta responder este Run">{{ r.experiment_goal or '' }}</textarea></label>
+      <div class="form-row"><label>La apoyaría si<textarea name="expected_support" rows="2">{{ r.expected_support or '' }}</textarea></label><label>La debilitaría si<textarea name="expected_refute" rows="2">{{ r.expected_refute or '' }}</textarea></label></div>
       <label>Ejecutar como<select name="identity_id"><option value="">Usar auth capturado del Flow</option>{% for i in identities %}<option value="{{ i.id }}" {% if r.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select></label>
       <label>Límite máximo de Requests<input type="number" name="max_requests" min="1" max="100" value="{{ r.max_requests or 30 }}"><small>Protección deliberada: Runner es automatización de investigación, no un fuzzer.</small></label>
       <button class="button secondary" type="submit">Guardar configuración</button>

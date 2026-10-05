@@ -37,6 +37,7 @@
   const discoveryInsightsCount = root.querySelector('[data-discovery-insights-count]');
   const discoveryInsightsClose = root.querySelector('[data-discovery-insights-close]');
   const canvasShell = root.querySelector('[data-graph-canvas-shell]');
+  const canvasWrap = root.querySelector('.graph-canvas-wrap');
   const graphWorkspace = root.querySelector('.graph-workspace');
   const viewExplainer = root.querySelector('[data-view-explainer]');
   const layerControls = root.querySelector('[data-graph-layer-controls]');
@@ -1839,12 +1840,21 @@
     // Reflow against the *new* canvas dimensions. Reusing normal-mode or dragged
     // coordinates is what made a small graph look microscopic in fullscreen.
     fullscreenReflow=active;
-    window.setTimeout(()=>{
+    const reflow=()=>{
       try{
         if(sceneNodes.length){ autoLayout(); render(); fit(); }
       }catch(_){}
-      finally{ fullscreenReflow=false; }
-    },220);
+    };
+    requestAnimationFrame(()=>requestAnimationFrame(reflow));
+    window.setTimeout(()=>{ try{ reflow(); } finally{ fullscreenReflow=false; } },280);
+  }
+  if(typeof ResizeObserver!=="undefined" && canvasWrap){
+    const fullscreenCanvasObserver=new ResizeObserver(()=>{
+      if(document.fullscreenElement===graphWorkspace && sceneNodes.length){
+        requestAnimationFrame(()=>{ try{ render(); fit(); }catch(_){} });
+      }
+    });
+    fullscreenCanvasObserver.observe(canvasWrap);
   }
   fullscreenBtn?.addEventListener('click',async()=>{
     try{

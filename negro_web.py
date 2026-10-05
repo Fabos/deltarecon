@@ -993,6 +993,14 @@ def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) ->
                 labels={"confirmed":"Hipótesis demostrada","negative":"Hipótesis refutada","discarded":"Hipótesis descartada","postponed":"Hipótesis pausada"}
                 items.append({"at":h["updated_at"],"kind":"hypothesis_decision","title":labels.get(str(h["status"]),"Decisión de hipótesis"),"detail":str(h["result_notes"] or h["title"]),"href":f"hypotheses#hypothesis-{int(h['id'])}"})
 
+    for ex in conn.execute("SELECT * FROM investigation_explorations WHERE investigation_id=? ORDER BY created_at,id",(iid,)).fetchall():
+        kind=str(ex["exploration_type"] or "exploration")
+        labels={"follow_value":"Follow Value guardado","smart_compare":"Smart Compare guardado","related_search":"Exploración guardada"}
+        try: source=json.loads(ex["source_json"] or "{}")
+        except Exception: source={}
+        href=str(source.get("href") or "") or None
+        items.append({"at":ex["created_at"],"kind":"exploration","title":labels.get(kind,"Exploración guardada"),"detail":str(ex["title"]),"href":href})
+
     for n in conn.execute("SELECT * FROM notes WHERE entity_type='investigation' AND entity_id=? ORDER BY created_at,id",(iid,)).fetchall():
         items.append({"at":n["created_at"],"kind":"note","title":"Nota","detail":str(n["body"]),"href":None})
 
@@ -1159,10 +1167,19 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
         open_hypotheses=[h for h in hypotheses if str(h.get("status") or "candidate") not in {"confirmed","negative","dismissed"}]
         open_hypotheses.sort(key=lambda h: (0 if h.get("requirements_candidates") else 1 if h.get("requirements_matched") and not h.get("requirements_pending") else 2 if not h.get("requirements_pending") else 3, str(h.get("updated_at") or "")), reverse=False)
         direct_watches=hunter.list_context_watches(conn,investigation_id=int(investigation_id))
+        explorations=hunter.list_investigation_explorations(conn,int(investigation_id),limit=100)
+        flow_options=[]
+        seen_flow_ids=set()
+        for link in links:
+            if str(link["entity_type"])=="flow": seen_flow_ids.add(int(link["entity_id"]))
+        for fid in sorted(seen_flow_ids):
+            fr=conn.execute("SELECT id,name,description FROM flows WHERE id=?",(fid,)).fetchone()
+            if fr: flow_options.append(dict(fr))
         identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
         return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_open_hypotheses":open_hypotheses,"investigation_runners":runners,
                 "investigation_ai_batches":ai_batches,"investigation_findings":findings,"investigation_notes":notes,
-                "investigation_timeline":timeline,"investigation_context_matches":context_matches,"investigation_watches":direct_watches,"identities":identities}
+                "investigation_timeline":timeline,"investigation_context_matches":context_matches,"investigation_watches":direct_watches,"investigation_explorations":explorations,
+                "investigation_flow_options":flow_options,"identities":identities}
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
@@ -4510,6 +4527,35 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
                       planned_requests=planned, active_steps=active_steps, job=job, transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
+    @app.post("/t/{target_key}/investigations/{investigation_id}/runner")
+    def investigation_create_runner(target_key: str, investigation_id: int, flow_id: int = Form(...), hypothesis_id: str = Form(""), alias: str = Form(...), description: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        hid=int(hypothesis_id) if str(hypothesis_id).isdigit() else None
+        with _db(paths) as conn:
+            if not conn.execute("SELECT 1 FROM investigations WHERE id=?",(int(investigation_id),)).fetchone():
+                raise HTTPException(status_code=404,detail="Investigation no encontrada")
+            if not conn.execute("SELECT 1 FROM flows WHERE id=?",(int(flow_id),)).fetchone():
+                raise HTTPException(status_code=404,detail="Flujo base no encontrado")
+            question=""
+            if hid is not None:
+                h=conn.execute("SELECT title,confirm_if,discard_if FROM leads_v2 WHERE id=?",(hid,)).fetchone()
+                if not h: raise HTTPException(status_code=404,detail="Hipótesis no encontrada")
+                linked=conn.execute("SELECT 1 FROM investigation_links WHERE investigation_id=? AND entity_type='hypothesis' AND entity_id=?",(int(investigation_id),hid)).fetchone()
+                src=conn.execute("SELECT source_hypothesis_id FROM investigations WHERE id=?",(int(investigation_id),)).fetchone()
+                if not linked and not (src and src['source_hypothesis_id'] and int(src['source_hypothesis_id'])==hid):
+                    raise HTTPException(status_code=400,detail="La Hipótesis no pertenece a esta Investigation")
+                question=str(h['title'] or '')
+                if not expected_support: expected_support=str(h['confirm_if'] or '')
+                if not expected_refute: expected_refute=str(h['discard_if'] or '')
+            rid=runner_tools.create_runner_from_flow(
+                conn,int(flow_id),alias=alias,description=description,hypothesis_id=hid,investigation_id=int(investigation_id),origin="investigation_experiment",
+                experiment_goal=question or str(description or alias),expected_support=expected_support,expected_refute=expected_refute,
+            )
+            hunter.link_investigation_entity(conn,int(investigation_id),"runner",rid,"experiment")
+        return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
+
     @app.post("/t/{target_key}/flows/{flow_id}/investigation")
     def flow_attach_investigation(target_key: str, flow_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
         import negro_hunter as hunter
@@ -4598,6 +4644,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 conn,int(flow_id),alias=str(h["title"] or f"Hipótesis {lead_id}")[:180],
                 description=str(h["next_test"] or h["why_interesting"] or "Prueba de Hipótesis")[:5000],
                 hypothesis_id=int(lead_id),investigation_id=int(inv_id) if inv_id else None,origin="hypothesis_manual",
+                experiment_goal=str(h["title"] or "")[:5000],expected_support=str(h["confirm_if"] or "")[:5000],expected_refute=str(h["discard_if"] or "")[:5000],
             )
         return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
 
@@ -4648,13 +4695,13 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc: raise HTTPException(status_code=400,detail=str(exc))
 
     @app.post("/t/{target_key}/runners/{runner_id}/update")
-    def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""), max_requests: int = Form(30), csrf: str = Form(...)):
+    def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""), max_requests: int = Form(30), experiment_goal: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         iid = int(identity_id) if str(identity_id).isdigit() else None
         with _db(paths) as conn:
-            runner_tools.update_runner(conn, int(runner_id), alias=alias, description=description, identity_id=iid, max_requests=max_requests)
+            runner_tools.update_runner(conn, int(runner_id), alias=alias, description=description, identity_id=iid, max_requests=max_requests, experiment_goal=experiment_goal, expected_support=expected_support, expected_refute=expected_refute)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/update")
@@ -5015,7 +5062,24 @@ def create_app(default_domain: str, default_workspace: Path):
             data = parameter_tools.follow_observation(conn, observation_id)
             if not data:
                 raise HTTPException(status_code=404, detail="Observación de parámetro no encontrada")
-        return render(request, "parameter_follow.html", target_key, domain, workspace, follow=data)
+            active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+        return render(request, "parameter_follow.html", target_key, domain, workspace, follow=data, active_investigations=active_investigations)
+
+    @app.post("/t/{target_key}/investigations/explorations/follow")
+    def investigation_save_follow_value(target_key: str, investigation_id: int = Form(...), observation_id: int = Form(...), title: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_parameters as parameter_tools
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            data=parameter_tools.follow_observation(conn,int(observation_id))
+            if not data: raise HTTPException(status_code=404,detail="Observación no encontrada")
+            base=data["base"]; occ=data.get("occurrences") or []
+            value=str(base.get("value_raw") or base.get("value_preview") or "")
+            clean_title=str(title or "").strip() or f"Exploración · usos de {base.get('name') or base.get('normalized_name') or 'valor'}"
+            source={"observation_id":int(observation_id),"href":f"parameters/follow/{int(observation_id)}","normalized_name":base.get("normalized_name"),"value_hash":base.get("value_hash"),"value_preview":value[:300]}
+            snapshot={"occurrence_count":len(occ),"exchange_ids":sorted({int(x["exchange_id"]) for x in occ}),"paths":sorted({str(x.get("path") or "") for x in occ if x.get("path")}),"hosts":sorted({str(x.get("hostname") or "") for x in occ if x.get("hostname")})}
+            hunter.save_investigation_exploration(conn,int(investigation_id),exploration_type="follow_value",title=clean_title,query_text=value,source=source,snapshot=snapshot,notes=notes)
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}#exploraciones",status_code=303)
 
     @app.get("/t/{target_key}/parameters/related/{exchange_id}", response_class=HTMLResponse)
     def related_exchange_page(request: Request, target_key: str, exchange_id: int):
@@ -5033,12 +5097,36 @@ def create_app(default_domain: str, default_workspace: Path):
         domain, workspace, paths = _target_context(target_key)
         result = None
         error = None
+        active_investigations=[]
         if a is not None and b is not None:
             with _db(paths) as conn:
                 result = parameter_tools.smart_diff(conn, int(a), int(b))
+                active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
             if result is None:
                 error = "No pude encontrar una de las Requests."
-        return render(request, "smart_diff.html", target_key, domain, workspace, a=a or "", b=b or "", diff=result, diff_error=error)
+        else:
+            with _db(paths) as conn:
+                active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+        return render(request, "smart_diff.html", target_key, domain, workspace, a=a or "", b=b or "", diff=result, diff_error=error, active_investigations=active_investigations)
+
+    @app.post("/t/{target_key}/investigations/explorations/compare")
+    def investigation_save_smart_compare(target_key: str, investigation_id: int = Form(...), a: int = Form(...), b: int = Form(...), title: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
+        import negro_parameters as parameter_tools
+        import negro_hunter as hunter
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            diff=parameter_tools.smart_diff(conn,int(a),int(b))
+            if not diff: raise HTTPException(status_code=404,detail="No pude reconstruir la comparación")
+            clean_title=str(title or "").strip() or f"Comparación · Request #{int(a)} ↔ #{int(b)}"
+            source={"a":int(a),"b":int(b),"href":f"parameters/diff?a={int(a)}&b={int(b)}"}
+            snapshot={"business_changes":int(diff.get("business_changes") or 0),"other_changes":int(diff.get("other_changes") or 0),"alias_candidates":int(diff.get("alias_candidates") or 0),"strong_correlations":len(diff.get("strong_correlations") or []),"medium_correlations":len(diff.get("medium_correlations") or [])}
+            hunter.save_investigation_exploration(conn,int(investigation_id),exploration_type="smart_compare",title=clean_title,query_text=f"#{int(a)} ↔ #{int(b)}",source=source,snapshot=snapshot,notes=notes)
+            # The comparison itself is an Investigation memory artifact. Keep the two
+            # source Requests linked as evidence without copying their HTTP bodies.
+            for exid in (int(a),int(b)):
+                try: hunter.link_investigation_entity(conn,int(investigation_id),"exchange",exid,"compared")
+                except Exception: pass
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}#exploraciones",status_code=303)
 
     @app.get("/t/{target_key}/parameters/{normalized_name}", response_class=HTMLResponse)
     def parameter_detail_page(request: Request, target_key: str, normalized_name: str):

@@ -23,7 +23,7 @@ def analyze(paths,ex):
         return hunter.evaluate_correlation_memory(conn,int(ex['exchange_id']))
 
 def main():
-    assert core.VERSION=='0.41.8'
+    assert core.VERSION=='0.42.0'
     with tempfile.TemporaryDirectory(prefix='negro-v050-') as td:
         paths=core.ensure_workspace(Path(td)/'workspace','shop.negro.lab')
         missing=capture(paths,'/api/refunds','POST',400,'{"orderId":"ORD-1001"}','{"error":"missing_field","field":"returnId"}')

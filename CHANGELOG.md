@@ -1,3 +1,19 @@
+# v0.42.0 — Investigation Explorations + Runner Experiments
+
+## Graph fullscreen
+- `graph-canvas-wrap` deja de depender de la fila `auto` del grid durante fullscreen; canvas/shell pasan a layout absoluto dentro de la etapa.
+- ResizeObserver recalcula `render + fit` ante cambios reales del canvas.
+
+## Fase 4
+- Nueva memoria `investigation_explorations`.
+- Follow Value y Smart Compare se guardan como consulta + snapshot + referencias, no como copias de Requests.
+- Investigation muestra exploraciones guardadas y Timeline las recuerda.
+
+## Fase 5
+- Runner conserva `experiment_goal`, `expected_support` y `expected_refute`.
+- Crear experimento desde Investigation usando un Flow asociado y, opcionalmente, una Hypothesis de esa Investigation.
+- Runner deja explícita la cadena Investigation → Hypothesis → Runner → Flow/Run sin cerrar la Hypothesis automáticamente.
+
 # v0.41.8 — Context Watches + fullscreen reflow
 
 - Corrige el fullscreen del mapa: al entrar/salir recalcula layout y zoom con las dimensiones reales del workspace; si no hay detalle seleccionado, oculta el panel derecho vacío para aprovechar el ancho.
