@@ -794,6 +794,7 @@ INVESTIGATION_ENTITY_TABLES: dict[str, tuple[str, str]] = {
     "runner": ("runners", "Runner"),
     "ai_idea": ("ai_ideas", "Idea IA"),
     "finding": ("findings", "Finding"),
+    "authorization_replay": ("authorization_replays", "Replay de autorización"),
 }
 
 

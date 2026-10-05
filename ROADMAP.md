@@ -1,4 +1,20 @@
-## Estado v0.43.0
+## Estado v0.44.0 — Contexto compuesto funcionalmente cerrado
+
+Las Fases 1–7 tienen ya una base funcional integrada. A partir de esta versión Negro entra en **dogfooding / bounty real**: la prioridad deja de ser añadir módulos por anticipación y pasa a ser corregir fricción observada, reforzar estabilidad y añadir reglas/Signals sólo cuando representen patrones repetibles y defendibles.
+
+Estado:
+- Fase 1 · relaciones canónicas: ✅
+- Fase 2 · Investigation Workspace / Notes / Timeline: ✅
+- Fase 3 · dependencias / Watches / Context Match: ✅
+- Fase 4 · Follow Value / Smart Compare persistentes: ✅
+- Fase 5 · Runner como experimento: ✅
+- Fase 6 · Burp contextual: ✅
+- Fase 7 · Home de memoria / IA contextual / trayectoria: ✅ base funcional
+- Replay as Identity: ✅ integrado antes del cierre
+
+Siguiente etapa: uso real, hardening, backups/recuperación, reducción de ruido y Signals derivados del aprendizaje. No crear un Signal por cada nombre de vulnerabilidad: si requiere intención/semántica humana debe vivir como Hypothesis/playbook/experimento, no como regla automática.
+
+## Estado histórico v0.43.0
 Fases 1–6 tienen base funcional. La integración contextual Burp ↔ Negro permite conservar Investigation/Hypothesis/Entity/Follow Value/Watch/Note desde el tráfico y devuelve contexto compacto a Burp. Cada acción deja eventos reutilizables por la Fase 7. Próximo bloque: **Fase 7 — Dashboard de memoria + IA contextual + trayectoria final + UX de cierre**. El grafo queda en mantenimiento salvo bugs.
 
 ## Contexto compuesto / Investigation Workspace — evolución incremental

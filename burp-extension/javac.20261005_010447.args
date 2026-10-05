@@ -1,9 +1,0 @@
--Xmaxerrs
-1000
---release
-21
--encoding
-UTF-8
--d
-/tmp/negro-classes
-src/main/java/com/negro/bridge/NegroBurpBridge.java

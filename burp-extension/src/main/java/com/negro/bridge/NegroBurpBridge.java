@@ -20,6 +20,8 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 
 import javax.swing.*;
+import javax.swing.event.MenuEvent;
+import javax.swing.event.MenuListener;
 import java.awt.*;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -44,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.28.0
+ * Negro Burp Bridge v0.29.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -78,7 +80,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.28.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.29.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -257,7 +259,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.28.0")
+                    .header("X-Negro-Bridge-Version", "0.29.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -314,7 +316,7 @@ public class NegroBurpBridge implements BurpExtension {
                     request = fallbackRequest(url, method, service);
                 }
 
-                if ("execute".equalsIgnoreCase(jobKind)) {
+                if ("execute".equalsIgnoreCase(jobKind) || "replay_execute".equalsIgnoreCase(jobKind)) {
                     String inflightKey = request.method().toUpperCase() + " " + request.url();
                     runnerBridgeInFlight.add(inflightKey);
                     long startedNs = System.nanoTime();
@@ -333,7 +335,7 @@ public class NegroBurpBridge implements BurpExtension {
                         statusCode = (int) received.statusCode();
                         resultUrl = sent.url();
                         ok = true;
-                        api.logging().logToOutput("Negro Runner ✓ Burp transport · queue=" + queueId + " HTTP " + statusCode + " · " + elapsedMs + "ms · " + sent.method() + " " + sent.url());
+                        api.logging().logToOutput(("replay_execute".equalsIgnoreCase(jobKind) ? "Negro Replay" : "Negro Runner") + " ✓ Burp transport · queue=" + queueId + " HTTP " + statusCode + " · " + elapsedMs + "ms · " + sent.method() + " " + sent.url());
                     } finally {
                         runnerBridgeInFlight.remove(inflightKey);
                     }
@@ -773,6 +775,8 @@ public class NegroBurpBridge implements BurpExtension {
         @Override public String toString() { return label; }
     }
 
+    private record ReplayMenuData(BridgeContext context, List<IdentityChoice> identities) {}
+
     private record FlowChoice(long id, String name, String captureStatus) {
         @Override public String toString() { return "#" + id + " · " + name + ("capturing".equals(captureStatus) ? " · ● capturando" : ""); }
     }
@@ -811,6 +815,15 @@ public class NegroBurpBridge implements BurpExtension {
             JMenu menu = new JMenu("Negro");
             JMenuItem open = new JMenuItem("Abrir en Negro");
 
+            // Replay is intentionally manual.  The submenu is populated lazily so
+            // opening a normal Burp context menu never blocks on Negro.  Selecting
+            // an Identity prepares a reviewable request in Negro; it does NOT send it.
+            JMenu replayMenu = new JMenu("Replay as Identity");
+            JMenuItem replayLoading = new JMenuItem("Abrir para cargar Identity Contexts…");
+            replayLoading.setEnabled(false);
+            replayMenu.add(replayLoading);
+            JMenuItem compareIdentity = new JMenuItem("Compare Identity…");
+
             JMenu contextMenu = new JMenu("Contexto");
             JMenuItem invAttach = new JMenuItem("Añadir a Investigation…");
             JMenuItem invCreate = new JMenuItem("Crear Investigation desde esta Request…");
@@ -844,7 +857,7 @@ public class NegroBurpBridge implements BurpExtension {
             JMenuItem assignIdentity = new JMenuItem("Asignar a Identity…");
             JMenuItem createIdentity = new JMenuItem("Crear Identity desde esta Request…");
             JMenuItem updateAuth = new JMenuItem("Actualizar auth de Identity…");
-            JMenuItem sendAs = new JMenuItem("Enviar / reenviar como Identity…");
+            JMenuItem sendAs = new JMenuItem("Enviar a Repeater con Identity…");
             identityMenu.add(assignIdentity); identityMenu.add(createIdentity); identityMenu.add(updateAuth); identityMenu.addSeparator(); identityMenu.add(sendAs);
 
             JMenu findingMenu = new JMenu("Finding");
@@ -854,6 +867,48 @@ public class NegroBurpBridge implements BurpExtension {
             findingMenu.add(createFinding); findingMenu.add(attachFinding); findingMenu.addSeparator(); findingMenu.add(retest);
 
             String tool = event.toolType() == null ? "OTHER" : event.toolType().name();
+            replayMenu.addMenuListener(new MenuListener() {
+                private boolean loading = false;
+                @Override public void menuSelected(MenuEvent event) {
+                    if (loading || Boolean.TRUE.equals(replayMenu.getClientProperty("negro.loaded"))) return;
+                    loading = true;
+                    replayMenu.removeAll();
+                    JMenuItem wait = new JMenuItem("Cargando Identity Contexts…"); wait.setEnabled(false); replayMenu.add(wait);
+                    new SwingWorker<ReplayMenuData, Void>() {
+                        @Override protected ReplayMenuData doInBackground() {
+                            BridgeContext ctx = ingestContext(selected.get(0), tool);
+                            return new ReplayMenuData(ctx, identityChoices(ctx.targetKey()));
+                        }
+                        @Override protected void done() {
+                            replayMenu.removeAll();
+                            try {
+                                ReplayMenuData data = get();
+                                JMenuItem anonymous = new JMenuItem("Sin autenticación");
+                                anonymous.addActionListener(e -> runContextAction("replay-anonymous", () -> prepareReplayFromContext(selected.get(0), data.context(), new IdentityChoice(0,0,"Sin autenticación"))));
+                                replayMenu.add(anonymous);
+                                if (!data.identities().isEmpty()) replayMenu.addSeparator();
+                                for (IdentityChoice choice : data.identities()) {
+                                    JMenuItem item = new JMenuItem(choice.label());
+                                    item.addActionListener(e -> runContextAction("replay-identity", () -> prepareReplayFromContext(selected.get(0), data.context(), choice)));
+                                    replayMenu.add(item);
+                                }
+                                replayMenu.addSeparator();
+                                JMenuItem choose = new JMenuItem("Elegir / comparar…");
+                                choose.addActionListener(e -> runContextAction("replay-compare", () -> openReplayChooserFromContext(data.context())));
+                                replayMenu.add(choose);
+                                replayMenu.putClientProperty("negro.loaded", Boolean.TRUE);
+                                replayMenu.revalidate(); replayMenu.repaint();
+                            } catch (Exception ex) {
+                                JMenuItem error = new JMenuItem("No se pudieron cargar Identity Contexts"); error.setEnabled(false); replayMenu.add(error);
+                                replayMenu.revalidate(); replayMenu.repaint();
+                                recordError("Replay menu: " + ex.getMessage());
+                            } finally { loading = false; }
+                        }
+                    }.execute();
+                }
+                @Override public void menuDeselected(MenuEvent event) {}
+                @Override public void menuCanceled(MenuEvent event) {}
+            });
             open.addActionListener(e -> runContextAction("open", () -> openInNegro(selected.get(0), tool)));
             invAttach.addActionListener(e -> runContextAction("inv-attach", () -> attachInvestigationFromBurp(selected.get(0), tool)));
             invCreate.addActionListener(e -> runContextAction("inv-create", () -> createInvestigationFromBurp(selected.get(0), tool)));
@@ -871,10 +926,11 @@ public class NegroBurpBridge implements BurpExtension {
             createIdentity.addActionListener(e -> runContextAction("identity-create", () -> createIdentityFromBurp(selected.get(0), tool)));
             updateAuth.addActionListener(e -> runContextAction("identity-update", () -> updateIdentityAuthFromBurp(selected.get(0), tool)));
             sendAs.addActionListener(e -> runContextAction("identity-send", () -> sendAsIdentityFromBurp(selected.get(0), tool)));
+            compareIdentity.addActionListener(e -> runContextAction("replay-compare", () -> openReplayChooserFromBurp(selected.get(0), tool)));
             createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(selected.get(0), tool)));
             attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(selected.get(0), tool)));
             retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
-            menu.add(open); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(stateMenu); menu.add(findingMenu);
+            menu.add(open); menu.add(replayMenu); menu.add(compareIdentity); menu.addSeparator(); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(stateMenu); menu.add(findingMenu);
             return List.of(menu);
         }
     }
@@ -1388,6 +1444,29 @@ public class NegroBurpBridge implements BurpExtension {
             postBridgeAction(ctx, "identity_send_as", extra);
             showMessage("Negro", "Enviado a Repeater como " + choice.label() + ". Método/path/body se conservan; sólo cambia auth conocida.", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void prepareReplayFromContext(HttpRequestResponse rr, BridgeContext ctx, IdentityChoice choice) {
+        try {
+            String extra = "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null");
+            String body = postBridgeAction(ctx, "replay_prepare", extra);
+            String web = jsonString(body, "web_path");
+            appendNegroNote(rr.annotations(), "NEGRO · REPLAY PREPARED · " + choice.label());
+            if (web == null || web.isBlank()) throw new IllegalStateException("Negro no devolvió la vista del Replay");
+            openBrowser(negroBaseUrl + web);
+        } catch (Exception ex) { throw new IllegalStateException(ex); }
+    }
+
+    private void prepareReplayFromBurp(HttpRequestResponse rr, String tool, IdentityChoice choice) {
+        prepareReplayFromContext(rr, ingestContext(rr, tool), choice);
+    }
+
+    private void openReplayChooserFromContext(BridgeContext ctx) {
+        openBrowser(negroBaseUrl + "/t/" + ctx.targetKey() + "/replays/new?exchange_id=" + ctx.exchangeId());
+    }
+
+    private void openReplayChooserFromBurp(HttpRequestResponse rr, String tool) {
+        openReplayChooserFromContext(ingestContext(rr, tool));
     }
 
     private void startFlowFromBurp(HttpRequestResponse rr, String tool) {

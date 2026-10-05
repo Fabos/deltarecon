@@ -1877,6 +1877,7 @@
   const initialFocus=initialParams.get('focus');
   const initialDiscover=initialParams.get('discover');
   const initialObservation=Number(initialParams.get('observation')||0);
+  const initialAi=initialParams.get('ai')==='1';
   let inferred='surface';
   if(routePanel) routePanel.hidden=true;
   if(initialDiscover||initialObservation){
@@ -1896,6 +1897,7 @@
       const canonical=graph.meta?.focus_node||initialFocus;
       const n=sceneNodes.find(x=>x.id===canonical)||graph.nodes?.find(x=>x.id===canonical);
       if(n){selected=n.id;showNode(n);if(!canvasShell?.hidden){if(['identity','flow','objects'].includes(inferred))fit();else focusNeighborhood(n.id,1);}}
-    }
+      if(initialAi) openAiPanel(canonical,n?.label||'Investigation');
+    } else if(initialAi) openAiPanel();
   });
 })();

@@ -356,3 +356,23 @@ Regla conceptual:
 - **Hypothesis** sigue siendo una pregunta que el hunter decidió perseguir.
 - Las acciones contextuales de Burp **referencian** la evidencia existente; no crean una segunda copia del HTTP.
 - Las notas `INV/HYP/CTX/FIND` visibles en Burp son memoria de contexto, no verdicts de seguridad.
+
+
+## Replay as Identity · v0.44
+
+**Manual cuando importa, automatizado donde ahorra trabajo, siempre preservando contexto.**
+
+Replay as Identity responde una pregunta puntual: “esta Request me genera duda; ¿qué pasa si la ejecuto como otra Identity?”. No es Autorize ni un scanner automático. El hunter elige Request, Identity y momento.
+
+Reglas metodológicas:
+- Cambiar auth no significa cambiar el Business Object. `Order 123` debe seguir siendo `Order 123` al usar Identity B.
+- Revisar siempre la Request preparada antes de enviarla.
+- GET/lectura suele ser replay-safe; POST/PUT/PATCH/DELETE se advierten como state-changing. Operaciones one-shot se tratan como state-dependent.
+- `409 already confirmed`, token consumido o estado incompatible = **Estado inválido / Inconcluso**, no “autorización protegida”.
+- Runner prepara estado cuando hace falta; Replay ejecuta la prueba manual puntual.
+- Replay no entra al discovery normal ni crea Flow Capture de navegación humana.
+- Un 2xx no es vulnerabilidad. Ownership, Identity, estado e impacto deben sostener la conclusión.
+
+## Modo de producto después de v0.44
+
+Negro entra en uso real. Nuevas capacidades deben justificar que eliminan trabajo repetitivo o conservan contexto que hoy se pierde. Las reglas/Signals se amplían conforme se estudian vulnerabilidades **sólo cuando existe un patrón observable y automatizable con una tasa de ruido aceptable**. La lógica de negocio que dependa de intención o semántica permanece como Hypothesis/Investigation/Runner.

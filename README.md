@@ -1,5 +1,22 @@
-# Negro Recon 🐕 — v0.43.0
+# Negro Recon 🐕 — v0.44.0
 
+
+
+## v0.44.0 — Replay as Identity + Memory Home
+
+Esta versión cierra el roadmap **Contexto compuesto** en modo funcional y añade **Replay as Identity** como prueba manual de autorización integrada.
+
+- Burp → `Replay as Identity` usa los Identity Contexts existentes y abre una vista previa; nunca envía automáticamente.
+- Replay cambia únicamente el mecanismo de autenticación equivalente que la Request original ya usaba. Path/query/body y Business Objects permanecen intactos por defecto.
+- `Sin autenticación` elimina auth conocida sin tocar el objeto objetivo.
+- Cada Authorization Replay vive fuera de `http_exchanges`: conserva Request/Response como evidencia, pero no infla discovery, métricas ni Flow Capture.
+- Resultados: `Permitido`, `Denegado`, `Inconcluso`, `Error de transporte`, `Estado inválido` y `Pendiente`. Un 409/one-shot no descarta una Hypothesis.
+- Investigation Timeline y Findings pueden reconstruir Authorization Replays dentro de la trayectoria.
+- Inicio incorpora **Memoria de hunting**: Investigations activas, Context Matches nuevos, próximas ramas, Investigations inactivas y Replays recientes.
+- Investigation expone **IA contextual** reutilizando el motor del grafo enfocado en esa Investigation; la IA propone preguntas, nunca Findings automáticos.
+- Burp Bridge requerido para ejecución directa de Replay: **v0.29.0**.
+
+El core continúa **sin labs**. Cualquier Vagrant/benchmark se distribuye como proyecto separado.
 
 ## v0.43.0 — Burp Contextual Workspace
 

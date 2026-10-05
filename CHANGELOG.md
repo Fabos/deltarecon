@@ -1,3 +1,26 @@
+# v0.44.0 — Replay as Identity + Phase 7 closure
+
+## Replay as Identity
+- Nueva abstracción `authorization_replays`; reutiliza Identity Contexts, auth materials, Business Objects, Flows, Hypotheses, Investigations y la cola Burp existente.
+- Request Workbench y Burp pueden preparar un Replay manual con otra Identity o sin autenticación.
+- Vista previa obligatoria antes de enviar; método/path/query/body se conservan salvo edición humana.
+- Sólo se sustituye el mecanismo de auth equivalente presente en la Request original; no se cambia Bearer por Cookie/API-Key automáticamente.
+- Clasificación previa: lectura, state-changing o state-dependent/one-shot.
+- Comparación original/replay: status, tamaño, similarity, estructura JSON, headers relevantes, tiempo y HTTP completo.
+- Estados de validez separados de la conclusión de la Hypothesis. `STATE INVALID`/inconcluso mantiene la pregunta pendiente.
+- Replay se ejecuta por Burp Bridge como `replay_execute` y no se ingiere como navegación/discovery.
+- Regla built-in opcional `possible_cross_owner_access` sólo cuando ownership observado + Identity distinta + comportamiento permitido lo justifican.
+
+## Phase 7
+- Home de memoria operativa con Investigations activas, Context Matches, próximas ramas, inactividad y Replays recientes.
+- Investigation → IA contextual abre el grafo enfocado y su Motor de Hipótesis 2.0.
+- Timeline y trayectoria de Finding incluyen Authorization Replay.
+- Burp Bridge v0.29.0 añade menú `Replay as Identity` dinámico y `Compare Identity…`.
+
+## Compatibilidad
+- Migración aditiva; no se elimina evidencia existente.
+- Core sin labs.
+
 # v0.43.0 — Burp Contextual Workspace + Phase 7 telemetry prep
 
 ## Fase 6 — Burp ↔ Negro contextual

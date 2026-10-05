@@ -72,6 +72,7 @@ UI_LABELS = {
     "fixed": "Corregido", "fix_verified": "Corrección verificada", "closed": "Cerrado", "inconclusive": "No concluyente",
     "not_applicable": "No aplica", "quick": "Chequeo rápido",
     "queued": "En cola", "running": "Ejecutando", "done": "Terminado", "completed": "Completado", "failed": "Falló", "ready": "Listo", "error": "Error",
+    "allowed": "Permitido", "denied": "Denegado", "state_invalid": "Estado inválido", "transport_error": "Error de transporte", "prepared": "Preparado",
     "affected": "Afectado", "evidence": "Evidencia", "step": "Paso",
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Regla personalizada",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
@@ -679,7 +680,69 @@ def _dashboard_data(paths: dict[str, Path]) -> dict[str, Any]:
                         active_lead_count DESC, h.updated_at DESC LIMIT 12"""
         ).fetchall()
         recent_runs = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 10").fetchall()
-    return {"stats": stats, "priority_hosts": priority, "recent_runs": recent_runs}
+
+        # Fase 7 · Home de memoria operativa.  Esta sección no inventa trabajo:
+        # resume Investigations/Hypotheses/Watches/Context Matches que ya existen.
+        memory_investigations=[]
+        for inv in conn.execute("SELECT * FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 12").fetchall():
+            iid=int(inv["id"]); hyp_ids={int(x["entity_id"]) for x in conn.execute("SELECT entity_id FROM investigation_links WHERE investigation_id=? AND entity_type='hypothesis'",(iid,)).fetchall()}
+            if inv["source_hypothesis_id"]: hyp_ids.add(int(inv["source_hypothesis_id"]))
+            open_count=blocked_count=ready_count=0
+            hypothesis_candidates=0
+            for hid in hyp_ids:
+                h=conn.execute("SELECT status FROM leads_v2 WHERE id=?",(hid,)).fetchone()
+                if not h or str(h["status"] or "") in {"confirmed","negative","discarded"}: continue
+                open_count+=1
+                reqs=conn.execute("SELECT status FROM hypothesis_requirements WHERE lead_id=?",(hid,)).fetchall()
+                pending=sum(1 for r in reqs if str(r["status"])=='pending')
+                candidates=int(conn.execute("""SELECT COUNT(*) c FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id WHERE w.lead_id=? AND cm.status='candidate'""",(hid,)).fetchone()["c"] or 0)
+                hypothesis_candidates += candidates
+                matched=sum(1 for r in reqs if str(r["status"])=='matched')
+                if candidates or (matched and not pending): ready_count+=1
+                elif pending: blocked_count+=1
+            direct_candidates=int(conn.execute("SELECT COUNT(*) c FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id WHERE w.investigation_id=? AND cm.status='candidate'",(iid,)).fetchone()["c"] or 0)
+            memory_investigations.append({**dict(inv),"open_hypotheses":open_count,"blocked_hypotheses":blocked_count,"ready_hypotheses":ready_count,"new_context":direct_candidates+hypothesis_candidates})
+
+        memory_context=[]
+        for cm in conn.execute("""SELECT cm.id,cm.created_at,cm.status,cm.matched_key,cm.matched_value_preview,cm.matched_value_raw,cm.exchange_id,
+                                         w.pattern,w.watch_type,w.lead_id,w.investigation_id,l.title hypothesis_title,i.title investigation_title,
+                                         o.method,r.path,r.id resource_id
+                                  FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id
+                                  LEFT JOIN leads_v2 l ON l.id=w.lead_id LEFT JOIN investigations i ON i.id=w.investigation_id
+                                  LEFT JOIN resource_operations o ON o.id=cm.operation_id LEFT JOIN resources r ON r.id=cm.resource_id
+                                  WHERE cm.status='candidate' ORDER BY cm.created_at DESC,cm.id DESC LIMIT 10""").fetchall():
+            memory_context.append(dict(cm))
+
+        memory_next=[]
+        for h in conn.execute("""SELECT * FROM leads_v2 WHERE (upper(COALESCE(source,'')) IN ('MANUAL','AI_IDEA') OR promoted_investigation_id IS NOT NULL)
+                                 AND COALESCE(rule_active,1)=1 AND status NOT IN ('confirmed','negative','discarded') ORDER BY updated_at DESC LIMIT 80""").fetchall():
+            item=dict(h); reqs=conn.execute("SELECT status FROM hypothesis_requirements WHERE lead_id=?",(int(h["id"]),)).fetchall()
+            item['requirements_pending']=sum(1 for x in reqs if str(x['status'])=='pending')
+            item['requirements_matched']=sum(1 for x in reqs if str(x['status'])=='matched')
+            item['requirements_candidates']=int(conn.execute("SELECT COUNT(*) c FROM context_matches cm JOIN context_watches w ON w.id=cm.watch_id WHERE w.lead_id=? AND cm.status='candidate'",(int(h['id']),)).fetchone()['c'] or 0)
+            item['display_state'],item['display_state_label']=_hypothesis_display_state(item)
+            if item['display_state'] in {'ready','blocked','open'}:
+                memory_next.append(item)
+            if len(memory_next)>=10: break
+
+        stale_investigations=[]
+        now_dt=datetime.now(timezone.utc)
+        for inv in conn.execute("SELECT id,title,updated_at,status FROM investigations WHERE status='active' ORDER BY updated_at ASC LIMIT 30").fetchall():
+            try:
+                dt=datetime.fromisoformat(str(inv['updated_at'] or ''))
+                if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+                days=max(0,(now_dt-dt).days)
+            except Exception: days=0
+            if days>=2: stale_investigations.append({**dict(inv),'days_inactive':days})
+
+        try:
+            import negro_replay as replay_tools
+            recent_replays=replay_tools.list_replays(conn,limit=8)
+        except Exception:
+            recent_replays=[]
+    return {"stats": stats, "priority_hosts": priority, "recent_runs": recent_runs,
+            "memory_investigations":memory_investigations,"memory_context":memory_context,"memory_next":memory_next,
+            "stale_investigations":stale_investigations,"recent_replays":recent_replays}
 
 def _target_cards() -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
@@ -954,6 +1017,15 @@ def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) ->
         elif typ=="flow":
             f=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
             if f: items.append({"at":at,"kind":"flow","title":"Flujo asociado","detail":str(f["name"]),"href":f"flows/{eid}","relation":rel})
+        elif typ=="authorization_replay":
+            try:
+                import negro_replay as replay_tools
+                rp=replay_tools.get_replay(conn,eid)
+            except Exception:
+                rp=None
+            if rp:
+                actor=rp.get("replay_identity_name") or "Sin autenticación"
+                items.append({"at":at,"kind":"authorization_replay","title":"Authorization Replay","detail":f"{actor} → {rp.get('method')} {rp.get('path')} · {rp.get('test_validity')}","href":f"replays/{eid}","relation":rel})
 
     src=conn.execute("SELECT source_hypothesis_id FROM investigations WHERE id=?",(iid,)).fetchone()
     if src and src["source_hypothesis_id"]: hyp_ids.add(int(src["source_hypothesis_id"]))
@@ -1134,6 +1206,13 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
             elif typ=="flow":
                 r=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
                 if r: item.update(label=f"Flujo · {r['name']}",href=f"flows/{eid}")
+            elif typ=="authorization_replay":
+                try:
+                    import negro_replay as replay_tools
+                    rp=replay_tools.get_replay(conn,eid)
+                except Exception:
+                    rp=None
+                if rp: item.update(label=f"Replay · {rp.get('method')} {rp.get('path')}",meta=f"{rp.get('replay_identity_name') or 'Sin autenticación'} · {rp.get('test_validity')}",href=f"replays/{eid}")
             elif typ=="hypothesis": hypothesis_ids.add(eid); continue
             elif typ=="runner": runner_ids.add(eid); continue
             elif typ=="finding": finding_ids.add(eid); continue
@@ -1176,10 +1255,15 @@ def _investigation_detail(paths: dict[str, Path], investigation_id: int) -> dict
             fr=conn.execute("SELECT id,name,description FROM flows WHERE id=?",(fid,)).fetchone()
             if fr: flow_options.append(dict(fr))
         identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
+        try:
+            import negro_replay as replay_tools
+            authorization_replays=replay_tools.list_replays(conn,investigation_id=int(investigation_id),limit=100)
+        except Exception:
+            authorization_replays=[]
         return {"investigation":dict(inv),"context_known":context,"investigation_hypotheses":hypotheses,"investigation_open_hypotheses":open_hypotheses,"investigation_runners":runners,
                 "investigation_ai_batches":ai_batches,"investigation_findings":findings,"investigation_notes":notes,
                 "investigation_timeline":timeline,"investigation_context_matches":context_matches,"investigation_watches":direct_watches,"investigation_explorations":explorations,
-                "investigation_flow_options":flow_options,"identities":identities}
+                "investigation_flow_options":flow_options,"identities":identities,"investigation_authorization_replays":authorization_replays}
 
 
 def _host_rows(paths: dict[str, Path], q: str = "", review: str = "", classification: str = "", priority: str = "", resource_review: str = "", limit: int = 500):
@@ -6136,7 +6220,7 @@ def create_app(default_domain: str, default_workspace: Path):
                            "identity_assign","identity_create","identity_update_auth","identity_send_as",
                            "flow_start","flow_end","flow_add","flow_create_selected",
                            "investigation_attach","investigation_create","hypothesis_create","hypothesis_attach",
-                           "entity_create","follow_value","watch_create"}:
+                           "entity_create","follow_value","watch_create","replay_prepare"}:
             raise HTTPException(status_code=400, detail="Acción Burp inválida")
         _, _, paths = _target_context(target_key)
         resource_id = int(payload.get("resource_id") or 0)
@@ -6158,6 +6242,14 @@ def create_app(default_domain: str, default_workspace: Path):
             web_path = f"/t/{target_key}/resource/{resource_id}"
             if action == "open":
                 return {"ok": True, "action": action, "web_path": web_path}
+            if action == "replay_prepare":
+                import negro_replay as replay_tools
+                identity_id=int(payload.get("identity_id") or 0)
+                context_raw=payload.get("context_id")
+                context_id=int(context_raw) if str(context_raw or "").isdigit() and int(context_raw)>0 else None
+                rid=replay_tools.create_replay(conn,int(exchange_id),identity_id if identity_id>0 else None,replay_context_id=context_id)
+                _bridge_record_event(conn,int(exchange_id),action,target_type="authorization_replay",target_id=rid,extra={"identity_id":identity_id or None,"context_id":context_id})
+                return {"ok":True,"action":action,"replay_id":rid,"web_path":f"/t/{target_key}/replays/{rid}"}
             if action in {"investigation_attach","investigation_create"}:
                 if action == "investigation_create":
                     title=str(payload.get("title") or "").strip()[:240]
@@ -6498,6 +6590,14 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception:
             return False
 
+    def _bridge_supports_replay(version: str) -> bool:
+        try:
+            parts=[int(x) for x in re.findall(r"\d+", str(version or ""))[:3]]
+            while len(parts)<3: parts.append(0)
+            return tuple(parts) >= (0,29,0)
+        except Exception:
+            return False
+
     @app.get("/api/bridge/repeater/status", response_class=JSONResponse)
     def bridge_repeater_status():
         totals = {"pending": 0, "claimed": 0, "done": 0, "error": 0}
@@ -6528,6 +6628,7 @@ def create_app(default_domain: str, default_workspace: Path):
             "instance": str(active or "")[:8] or None,
             "version": active_version,
             "runner_transport_ready": bool(active and (now_ts-last_seen)<=REPEATER_BRIDGE_LEASE_SECONDS and _bridge_supports_execute(str(active_version or ""))),
+            "replay_transport_ready": bool(active and (now_ts-last_seen)<=REPEATER_BRIDGE_LEASE_SECONDS and _bridge_supports_replay(str(active_version or ""))),
             "last_seen_seconds_ago": round(max(0.0, now_ts - last_seen), 2) if active else None,
         }
         return {"ok": True, "version": core.VERSION, "counts": totals, "bridge": bridge, "latest": latest[:10]}
@@ -6582,8 +6683,11 @@ def create_app(default_domain: str, default_workspace: Path):
 
         pending.sort(key=lambda x: (x[0], int(x[4].get("id") or 0)))
         _, target_key, domain, paths, item = pending[0]
-        if str(item.get("job_kind") or "repeater") == "execute" and not _bridge_supports_execute(bridge_version):
+        job_kind = str(item.get("job_kind") or "repeater")
+        if job_kind == "execute" and not _bridge_supports_execute(bridge_version):
             return {"pending": False, "upgrade_required": True, "required_bridge_version": "0.27.0", "installed_bridge_version": bridge_version or None}
+        if job_kind == "replay_execute" and not _bridge_supports_replay(bridge_version):
+            return {"pending": False, "upgrade_required": True, "required_bridge_version": "0.29.0", "installed_bridge_version": bridge_version or None}
         try:
             with _db(paths) as conn:
                 cur = conn.execute(
@@ -6629,7 +6733,104 @@ def create_app(default_domain: str, default_workspace: Path):
                           str(payload.get("url") or "") or None,int(payload.get("elapsed_ms") or 0) or None,int(queue_id)))
         if row and str(row["job_kind"] or "repeater")=="execute":
             print(f"[runner-bridge] ack queue={queue_id} ok={ok} bridge={str(row['bridge_instance_id'] or '')[:8]} status={payload.get('status_code')} elapsed_ms={payload.get('elapsed_ms')} error={error or '-'}",flush=True)
+        if row and str(row["job_kind"] or "repeater")=="replay_execute":
+            try:
+                import negro_replay as replay_tools
+                with _db(paths) as conn:
+                    completed=replay_tools.complete_from_queue(conn,int(queue_id))
+                    if completed:
+                        replay_tools.maybe_emit_cross_owner_signal(conn,completed)
+                print(f"[replay-bridge] ack queue={queue_id} ok={ok} status={payload.get('status_code')} elapsed_ms={payload.get('elapsed_ms')} error={error or '-'}",flush=True)
+            except Exception as replay_exc:
+                print(f"[replay-bridge] complete error queue={queue_id}: {replay_exc}",flush=True)
         return {"ok": True}
+
+
+    @app.get("/t/{target_key}/replays/new", response_class=HTMLResponse)
+    def replay_new(request: Request, target_key: str, exchange_id: int, identity_id: int = -999, context_id: int = 0):
+        import negro_identity as identity_tools
+        import negro_replay as replay_tools
+        _, domain, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            identity_tools.init_schema(conn); replay_tools.init_schema(conn)
+            rr=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(exchange_id),)).fetchone()
+            if not rr: raise HTTPException(status_code=404,detail="Request no encontrada")
+            identities=identity_tools.list_identities(conn); ctx_rows=identity_tools.contexts(conn)
+            by_identity={}
+            for c in ctx_rows: by_identity.setdefault(int(c['identity_id']),[]).append(c)
+            choices=[]
+            for i in identities:
+                iid=int(i['id']); choices.append({'identity_id':iid,'context_id':None,'label':str(i['name'])})
+                for c in by_identity.get(iid,[]): choices.append({'identity_id':iid,'context_id':int(c['id']),'label':f"{i['name']} · {c['label']}"})
+            preview=None
+            selected_context_id=int(context_id) if int(context_id or 0)>0 else None
+            selected_identity_id=int(identity_id)
+            if selected_identity_id != -999:
+                preview=replay_tools.prepare_context(conn,int(exchange_id),None if selected_identity_id<0 else selected_identity_id,replay_context_id=selected_context_id)
+        return render(request,"replay_prepare.html",target_key,domain,paths['root'],exchange_id=int(exchange_id),resource_id=int(rr['resource_id']),identity_choices=choices,selected_identity_id=selected_identity_id,selected_context_id=selected_context_id,preview=preview)
+
+    @app.post("/t/{target_key}/replays/prepare")
+    def replay_prepare_submit(target_key: str, exchange_id: int = Form(...), identity_id: int = Form(...), context_id: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        import negro_replay as replay_tools
+        ctx=int(context_id) if str(context_id).isdigit() and int(context_id)>0 else None
+        with _db(paths) as conn:
+            replay_tools.init_schema(conn)
+            rid=replay_tools.create_replay(conn,int(exchange_id),None if int(identity_id)<0 else int(identity_id),replay_context_id=ctx)
+        return RedirectResponse(url=f"/t/{target_key}/replays/{rid}",status_code=303)
+
+    @app.get("/t/{target_key}/replays/{replay_id}", response_class=HTMLResponse)
+    def replay_detail(request: Request, target_key: str, replay_id: int):
+        import negro_replay as replay_tools
+        _,domain,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            replay_tools.init_schema(conn)
+            replay=replay_tools.get_replay(conn,int(replay_id))
+            if not replay: raise HTTPException(status_code=404,detail="Replay no encontrado")
+            rr=conn.execute("SELECT o.resource_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id WHERE e.id=?",(int(replay['original_exchange_id']),)).fetchone()
+            investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+        return render(request,"replay_detail.html",target_key,domain,paths['root'],replay=replay,resource_id=int(rr['resource_id']),investigations=investigations)
+
+    @app.post("/t/{target_key}/replays/{replay_id}/send")
+    def replay_send(target_key: str, replay_id: int, request_text: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        import negro_replay as replay_tools
+        with _db(paths) as conn:
+            replay_tools.queue_replay(conn,int(replay_id),request_text=request_text)
+        return RedirectResponse(url=f"/t/{target_key}/replays/{int(replay_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/replays/{replay_id}/update")
+    def replay_update(target_key: str, replay_id: int, test_validity: str = Form(...), notes: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        import negro_replay as replay_tools
+        with _db(paths) as conn:
+            replay_tools.update_replay(conn,int(replay_id),test_validity=test_validity,notes=notes)
+            replay=replay_tools.get_replay(conn,int(replay_id))
+            if replay: replay_tools.maybe_emit_cross_owner_signal(conn,replay)
+        return RedirectResponse(url=f"/t/{target_key}/replays/{int(replay_id)}",status_code=303)
+
+    @app.post("/t/{target_key}/replays/{replay_id}/hypothesis")
+    def replay_to_hypothesis(target_key: str, replay_id: int, title: str = Form(...), why: str = Form(""), next_test: str = Form(""), investigation_id: int = Form(0), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        import negro_replay as replay_tools
+        import negro_hunter as hunter
+        with _db(paths) as conn:
+            hid=replay_tools.create_hypothesis_from_replay(conn,int(replay_id),title=title,why=why,next_test=next_test)
+            if int(investigation_id)>0:
+                hunter.link_investigation_entity(conn,int(investigation_id),'hypothesis',hid,'pursuing')
+                hunter.link_investigation_entity(conn,int(investigation_id),'authorization_replay',int(replay_id),'authorization_test')
+                replay_tools.update_replay(conn,int(replay_id),investigation_id=int(investigation_id),hypothesis_id=hid)
+        return RedirectResponse(url=f"/t/{target_key}/hypotheses#hypothesis-{hid}",status_code=303)
+
+    @app.post("/t/{target_key}/replays/{replay_id}/investigation")
+    def replay_to_investigation(target_key: str, replay_id: int, investigation_id: int = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        import negro_replay as replay_tools
+        import negro_hunter as hunter
+        with _db(paths) as conn:
+            hunter.link_investigation_entity(conn,int(investigation_id),'authorization_replay',int(replay_id),'authorization_test')
+            replay_tools.update_replay(conn,int(replay_id),investigation_id=int(investigation_id))
+        return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}",status_code=303)
 
     @app.get("/api/t/{target_key}/jobs", response_class=JSONResponse)
     def jobs_api(target_key: str):

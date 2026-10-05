@@ -488,7 +488,7 @@ def _known_custom_auth_headers(conn) -> set[str]:
     ).fetchall() if str(r["material_name"] or "")}
 
 
-def rewrite_exchange_as_identity(conn, exchange_id: int, identity_id: int | None, *, context_id: int | None = None) -> dict[str, Any]:
+def rewrite_exchange_as_identity(conn, exchange_id: int, identity_id: int | None, *, context_id: int | None = None, match_original_mechanism: bool = False) -> dict[str, Any]:
     """Return an observed raw request with only known authentication material swapped.
 
     identity_id=None produces an Anonymous variant: Authorization and auth material
@@ -519,15 +519,22 @@ def rewrite_exchange_as_identity(conn, exchange_id: int, identity_id: int | None
         parsed_headers.append((name.strip(), value.strip()))
 
     target_materials = current_auth_materials(conn, int(identity_id), context_id=context_id) if identity_id else []
-    target_cookies = {str(m["material_name"]): str(m["raw_value"]) for m in target_materials if m["material_type"] == "cookie"}
-    target_headers = {str(m["material_name"]).lower(): (str(m["material_name"]), str(m["raw_value"])) for m in target_materials if m["material_type"] == "header"}
+    original_materials = extract_auth_materials(conn, int(exchange_id)) if match_original_mechanism else []
+    original_cookie_slots = {str(m.get("name") or "").lower() for m in original_materials if str(m.get("material_type") or "") == "cookie"}
+    original_header_slots = {str(m.get("name") or "").lower() for m in original_materials if str(m.get("material_type") or "") == "header"}
+    original_has_authorization = any(str(m.get("material_type") or "") in {"bearer","authorization"} for m in original_materials)
+    target_cookies = {str(m["material_name"]): str(m["raw_value"]) for m in target_materials if m["material_type"] == "cookie" and (not match_original_mechanism or str(m["material_name"]).lower() in original_cookie_slots)}
+    target_headers = {str(m["material_name"]).lower(): (str(m["material_name"]), str(m["raw_value"])) for m in target_materials if m["material_type"] == "header" and (not match_original_mechanism or str(m["material_name"]).lower() in original_header_slots)}
     target_authorization: str | None = None
     for m in target_materials:
         typ = str(m["material_type"])
         if typ == "bearer":
-            target_authorization = "Bearer " + str(m["raw_value"])
-            break
+            if not match_original_mechanism or original_has_authorization:
+                target_authorization = "Bearer " + str(m["raw_value"])
+                break
         if typ == "authorization":
+            if match_original_mechanism and not original_has_authorization:
+                continue
             # material_name stores the scheme when present.
             scheme = str(m["material_name"] or "Authorization")
             value = str(m["raw_value"])
@@ -576,7 +583,12 @@ def rewrite_exchange_as_identity(conn, exchange_id: int, identity_id: int | None
         "request_b64": base64.b64encode(new_raw.encode("iso-8859-1", errors="replace")).decode("ascii"),
         "method": str(row["method"]), "url": str(row["url"]), "path": str(row["path"]),
         "identity_id": int(identity_id) if identity_id else None, "context_id": context_id,
-        "materials": [{"type": m["material_type"], "name": m["material_name"], "preview": m["masked_preview"]} for m in target_materials],
+        "materials": [{"type": m["material_type"], "name": m["material_name"], "preview": m["masked_preview"]} for m in target_materials
+                      if (not match_original_mechanism)
+                      or (m["material_type"] in {"bearer","authorization"} and original_has_authorization)
+                      or (m["material_type"] == "cookie" and str(m["material_name"]).lower() in original_cookie_slots)
+                      or (m["material_type"] == "header" and str(m["material_name"]).lower() in original_header_slots)],
+        "auth_mechanism_matched": (not match_original_mechanism) or identity_id is None or bool(target_authorization or target_cookies or target_headers),
     }
 
 def add_parameter_resolver(conn, observation_id: int, identity_id: int, *, context_id: int | None = None, source: str = "manual") -> int:

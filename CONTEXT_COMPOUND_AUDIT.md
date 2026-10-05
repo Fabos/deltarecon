@@ -155,3 +155,16 @@ Se añadió `tests/v042_context_compound_phase1_test.py` para cubrir:
 - render del contexto y navegación directa de Investigation.
 
 Además permanecen verdes las regresiones v0.39, v0.40 y v0.41.
+
+
+## Cierre v0.44 · Replay + Phase 7
+
+La arquitectura final evita un segundo sistema paralelo:
+- `Identity Contexts/auth_materials` son la fuente de autenticación de Replay.
+- `rewrite_exchange_as_identity` conserva la Request y sustituye sólo auth equivalente.
+- `authorization_replays` guarda intención/resultado/comparación sin insertar tráfico artificial en `http_exchanges`.
+- la cola Burp existente ejecuta `replay_execute`; Runner conserva su `execute`.
+- `investigation_links`, Hypotheses y Timeline reciben referencias al Replay, no copias de HTTP.
+- Home, graph AI enfocado y Finding trajectory consumen la misma memoria existente.
+
+Riesgos controlados: state-changing requiere acción manual; one-shot puede quedar `state_invalid`; versiones antiguas del Bridge no consumen `replay_execute`; Replay no alimenta Flow Capture/discovery principal.

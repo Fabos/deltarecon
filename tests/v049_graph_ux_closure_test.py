@@ -8,7 +8,7 @@ import negro_identity as identity
 
 
 def main():
-    assert core.VERSION == "0.43.0"
+    assert core.VERSION == "0.44.0"
     js=(ROOT/'web/static/graph.js').read_text()
     css=(ROOT/'web/static/style.css').read_text()
     html=(ROOT/'web/templates/identity_matrix.html').read_text()

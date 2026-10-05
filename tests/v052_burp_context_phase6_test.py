@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression v0.43.0: Burp contextual actions + Phase 7 event preparation."""
+"""Regression v0.44.0: Burp contextual actions + Phase 7 event preparation."""
 from pathlib import Path
 import base64, json, sys, tempfile
 ROOT=Path(__file__).resolve().parents[1]
@@ -21,7 +21,7 @@ def payload(key,result,action,**extra):
     return {'target_key':key,'action':action,'resource_id':int(result['resource_id']),'operation_id':int(result['operation_id']),'exchange_id':int(result['exchange_id']),**extra}
 
 def main():
-    assert core.VERSION=='0.43.0'
+    assert core.VERSION=='0.44.0'
     with tempfile.TemporaryDirectory(prefix='negro-v052-') as td:
         root=Path(td); ws=root/'workspace'; paths=core.ensure_workspace(ws,'shop.negro.lab')
         result=capture(paths)
@@ -73,7 +73,7 @@ def main():
 
     src=(ROOT/'burp-extension/src/main/java/com/negro/bridge/NegroBurpBridge.java').read_text()
     for text in ['Añadir a Investigation…','Crear Hypothesis…','Adjuntar a Hypothesis…','Crear Entity desde key/valor…','Seguir key / valor…','Watch de key / valor…','selectionOffsets()','NEGRO · CONTEXTO · INV ']: assert text in src,text
-    assert 'v0.28.0' in src
+    assert 'v0.29.0' in src
     print('[OK] Burp context menu covers Investigation/Hypothesis/Entity/Follow Value/Watch/Note')
     print('[OK] Backend keeps canonical links/evidence and emits Phase 7 audit events')
     print('[OK] Ingest exposes INV/HYP/CTX/FIND counters for subtle Burp annotations')

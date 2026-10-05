@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.28.0
+# Negro Burp Bridge v0.29.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.28.0.jar
+build/libs/negro-burp-bridge-0.29.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,7 +42,7 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.28.0.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.29.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
@@ -91,4 +91,12 @@ NEGRO · CONTEXTO · INV 1 · HYP 1 · CTX 1 · FIND 0
 
 Las acciones contextuales añaden notas `INV`, `HYP`, `ENTITY`, `WATCH`, `FIND` o `RETEST`. No se cambia el highlight sólo por pertenecer a una Investigation/Hypothesis, evitando llenar Burp de colores.
 
-> Las acciones contextuales v0.28 requieren Bridge v0.28.0. El transporte del Runner mantiene compatibilidad con v0.27+.
+> Las acciones contextuales v0.28 requieren Bridge v0.29.0. El transporte del Runner mantiene compatibilidad con v0.27+.
+
+## v0.29.0 · Replay as Identity
+
+Desde cualquier Request/Response: `Negro → Replay as Identity` carga los Identity Contexts del target. Elegir una Identity o `Sin autenticación` **sólo prepara** el Replay y abre Negro para revisar la Request; no la envía automáticamente.
+
+`Compare Identity…` abre el mismo Workbench sin preseleccionar Identity. Cuando pulses `Enviar prueba controlada` en Negro, Bridge v0.29 consume `job_kind=replay_execute` y devuelve status, HTTP completo y tiempo. Esa ejecución se excluye del ingest pasivo para no contaminar discovery/Flow Capture.
+
+El menú antiguo `Identidad → Enviar a Repeater con Identity…` se mantiene por compatibilidad como utilidad de Repeater; no sustituye el nuevo Authorization Replay persistente.
