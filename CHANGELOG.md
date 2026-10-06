@@ -1,3 +1,11 @@
+## v0.46.0 · Identity dossier + Burp → HTTP teaching flow + explainable graph
+
+- Burp Identity create/assign now returns directly to the HTTP Inspector with the chosen Identity preselected, so the researcher teaches AUTH / RESOLVER / CONTEXT / ENTITY / IGNORE from the real Request/Response.
+- HTTP Inspector supports batch editing: configure many values/claims and save once without a full-page reload.
+- Identity Detail is now a dossier: AUTH, RESOLVERS, CONTEXT, ignored evidence, related endpoints, pivots and attributed Requests with direct HTTP links.
+- Identity→endpoint/request graph edges now carry human-readable attribution evidence (manual anchor, matching AUTH, matching resolver/context).
+- Map relation details answer “why is Fabian related to this endpoint?” and link back to the supporting HTTP exchange.
+
 
 ## v0.45.1 · JWT Claims layout hotfix
 

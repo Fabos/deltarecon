@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.45.
+"""Local web workspace for Negro Recon v0.46.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -2305,7 +2305,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
             actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()
             if actor and actor["identity_id"]:
                 ident=add_identity(int(actor["identity_id"]))
-                if ident: add_edge(ident,request_node,"performed",source="identity",evidence={"request_id":exid})
+                if ident: add_edge(ident,request_node,"performed",source="identity",evidence={"request_id":exid,"why":identity_tools.attribution_evidence(conn,int(exid),int(actor["identity_id"]))})
             for orow in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE exchange_id=? ORDER BY business_object_id", (int(exid),)).fetchall():
                 obj=add_object(int(orow["business_object_id"]))
                 if obj:
@@ -2331,7 +2331,7 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                 actor = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exid),)).fetchone()
                 if actor and actor["identity_id"]:
                     ident = add_identity(int(actor["identity_id"]))
-                    if ident: add_edge(ident, resource_node, "called_endpoint", source="identity", evidence={"request_id": int(exid)})
+                    if ident: add_edge(ident, resource_node, "called_endpoint", source="identity", evidence={"request_id": int(exid),"why":identity_tools.attribution_evidence(conn,int(exid),int(actor["identity_id"]))})
             for orow in conn.execute("SELECT DISTINCT business_object_id FROM business_object_observations WHERE exchange_id=? ORDER BY business_object_id", (int(exid),)).fetchall():
                 obj = add_object(int(orow["business_object_id"]))
                 if obj:
@@ -2723,11 +2723,13 @@ def _graph_semantic_data(paths: dict[str, Path], domain: str, *, scope: str,
                     for rid,bucket in by_resource.items():
                         resource=add_resource(rid)
                         if resource and inode:
+                            why_items=[identity_tools.attribution_evidence(conn,int(exid),int(iid)) for exid in bucket["request_ids"][:4]]
                             add_edge(inode,resource,"called_endpoint",source="identity",evidence={
                                 "request_count":len(bucket["request_ids"]),
                                 "methods":sorted(bucket["methods"]),
                                 "statuses":sorted(bucket["statuses"]),
                                 "request_ids":bucket["request_ids"][:12],
+                                "why":why_items,
                             })
                         # Keep Request evidence available behind the optional Request layer.
                         for exid in bucket["request_ids"]:
@@ -5471,7 +5473,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#operation-{operation_id}-coverage", status_code=303)
 
     @app.get("/t/{target_key}/exchange/{exchange_id}/inspect", response_class=HTMLResponse)
-    def http_inspector_page(request: Request, target_key: str, exchange_id: int):
+    def http_inspector_page(request: Request, target_key: str, exchange_id: int, identity_id: int = 0, identity_setup: int = 0):
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
         with _db(paths) as conn:
@@ -5485,7 +5487,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "http_inspector.html", target_key, domain, workspace,
                       inspector=inspector, identities=identities,
                       request_highlighted=request_highlighted, response_highlighted=response_highlighted,
-                      message=request.query_params.get("message", ""), error=request.query_params.get("error", ""))
+                      message=request.query_params.get("message", ""), error=request.query_params.get("error", ""), selected_identity_id=int(identity_id or 0), identity_setup=bool(identity_setup))
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/annotate")
     def http_inspector_annotate(target_key: str, exchange_id: int,
@@ -5504,6 +5506,21 @@ def create_app(default_domain: str, default_workspace: Path):
             return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?error={msg}", status_code=303)
         msg = urllib.parse.quote(f"{key} guardado como {classification.upper()}", safe="")
         return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?message={msg}", status_code=303)
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/annotations/batch")
+    def http_inspector_annotate_batch(request: Request, target_key: str, exchange_id: int, annotations_json: str = Form(...), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            items = json.loads(annotations_json)
+            if not isinstance(items, list): raise ValueError("Formato de anotaciones inválido")
+            with _db(paths) as conn:
+                for item in items[:500]:
+                    if not isinstance(item, dict): continue
+                    http_inspector.save_annotation(conn, int(exchange_id), side=str(item.get("side") or ""), location=str(item.get("location") or ""), key=str(item.get("key") or ""), value=str(item.get("value") or ""), classification=str(item.get("classification") or "ignore"), identity_id=int(item.get("identity_id") or 0) or None, object_type=str(item.get("object_type") or ""), note=str(item.get("note") or ""))
+            return JSONResponse({"ok": True, "saved": len(items)})
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     @app.get("/t/{target_key}/findings", response_class=HTMLResponse)
     def findings(request: Request, target_key: str, status: str = "", severity: str = ""):
@@ -6560,13 +6577,13 @@ def create_app(default_domain: str, default_workspace: Path):
                         if cid: decisions[cid] = cls
                     learned = identity_tools.apply_evidence_decisions(conn, exchange_id, identity_id, decisions, source="burp_create")
                     _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"learned": learned})
-                    return {"ok": True, "action": action, "identity_id": identity_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/identities/view/{identity_id}"}
+                    return {"ok": True, "action": action, "identity_id": identity_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/exchange/{exchange_id}/inspect?identity_id={identity_id}&identity_setup=1"}
                 if action == "identity_assign":
                     if identity_id <= 0:
                         raise HTTPException(status_code=400, detail="Identidad requerida")
                     learned = identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=bool(payload.get("learn_auth")), source="burp")
                     _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id})
-                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
+                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/exchange/{exchange_id}/inspect?identity_id={identity_id}&identity_setup=1"}
                 if action == "identity_update_auth":
                     if identity_id <= 0:
                         raise HTTPException(status_code=400, detail="Identidad requerida")
@@ -6579,7 +6596,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     learned = identity_tools.apply_evidence_decisions(conn, exchange_id, identity_id, decisions, context_id=context_id, source="burp_update")
                     identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=False, source="burp_update")
                     _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id,"learned":learned})
-                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
+                    return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/exchange/{exchange_id}/inspect?identity_id={identity_id}&identity_setup=1"}
                 # Send / Re-send as Identity. identity_id=0 is the virtual Anonymous context.
                 rewritten = identity_tools.rewrite_exchange_as_identity(conn, exchange_id, identity_id if identity_id > 0 else None, context_id=context_id)
                 caption_identity = "Anonymous" if identity_id <= 0 else (conn.execute("SELECT name FROM identities WHERE id=?", (identity_id,)).fetchone() or {"name": f"Identity {identity_id}"})["name"]

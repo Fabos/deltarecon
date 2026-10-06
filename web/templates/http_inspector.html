@@ -2,55 +2,59 @@
 {% block title %}HTTP Inspector · Request #{{ inspector.exchange.id }} · Negro{% endblock %}
 {% block content %}
 <nav class="breadcrumbs"><a href="{{ target_base }}/resource/{{ inspector.exchange.resource_id }}?exchange={{ inspector.exchange.id }}#exchange-{{ inspector.exchange.id }}">Endpoint</a><span>›</span><strong>HTTP Inspector #{{ inspector.exchange.id }}</strong></nav>
+<section class="page-head compact-hero inspector-hero"><div><p class="eyebrow">HTTP INSPECTOR</p><h1>Request #{{ inspector.exchange.id }}</h1><p class="muted"><b>{{ inspector.exchange.method }}</b> {{ inspector.exchange.hostname }}<code>{{ inspector.exchange.path }}</code> · HTTP {{ inspector.exchange.status_code or '—' }}</p></div><div class="page-actions"><a class="button ghost" href="{{ target_base }}/resource/{{ inspector.exchange.resource_id }}?exchange={{ inspector.exchange.id }}#exchange-{{ inspector.exchange.id }}">Volver al endpoint</a><a class="button ghost" href="{{ target_base }}/graph?focus=request:{{ inspector.exchange.id }}">Mapa</a></div></section>
 
-<section class="page-head compact-hero inspector-hero">
-  <div><p class="eyebrow">HTTP INSPECTOR</p><h1>Request #{{ inspector.exchange.id }}</h1><p class="muted"><b>{{ inspector.exchange.method }}</b> {{ inspector.exchange.hostname }}<code>{{ inspector.exchange.path }}</code> · HTTP {{ inspector.exchange.status_code or '—' }}</p></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/resource/{{ inspector.exchange.resource_id }}?exchange={{ inspector.exchange.id }}#exchange-{{ inspector.exchange.id }}">Volver al endpoint</a><a class="button ghost" href="{{ target_base }}/graph?focus=request:{{ inspector.exchange.id }}">Mapa</a></div>
-</section>
+{% if identity_setup and selected_identity_id %}<div class="callout info identity-setup-callout"><b>Configura la Identity recién seleccionada.</b> Revisa Request y Response, decide qué es AUTH / RESOLVER / CONTEXT / ENTITY / IGNORE y guarda todo una sola vez. Los selectores de Identity ya vienen apuntando a la cuenta elegida.</div>{% endif %}
+<section class="panel inspector-intro"><div class="panel-head"><div><p class="eyebrow">ENSEÑAR CONTEXTO</p><h2>HTTP primero, significado después</h2></div><span>{{ inspector["values"]|length }} valores</span></div><p class="muted">Configura todos los valores que te interesen. Nada se persiste hasta pulsar <b>Guardar cambios</b>.</p>{% if message %}<div class="callout success">{{ message }}</div>{% endif %}{% if error %}<div class="callout danger">{{ error }}</div>{% endif %}</section>
 
-<section class="panel inspector-intro">
-  <div class="panel-head"><div><p class="eyebrow">ENSEÑAR CONTEXTO</p><h2>HTTP primero, significado después</h2></div><span>{{ inspector["values"]|length }} valores escalares</span></div>
-  <p class="muted">Negro muestra todo lo observado en Request y Response. <b>Tú decides</b> si un valor autentica, identifica al actor, describe contexto, representa una Entity o es ruido. Las decisiones se conservan y alimentan los highlights y relaciones.</p>
-  {% if message %}<div class="callout success">{{ message }}</div>{% endif %}
-  {% if error %}<div class="callout danger">{{ error }}</div>{% endif %}
-</section>
+<section class="http-inspector-grid"><article class="panel inspector-http-pane"><div class="panel-head"><div><p class="eyebrow">REQUEST</p><h2>Request completa</h2></div><span>{{ inspector.exchange.request_size or 0 }} B</span></div><pre class="http-message inspector-highlighted">{{ request_highlighted|safe }}</pre></article><article class="panel inspector-http-pane"><div class="panel-head"><div><p class="eyebrow">RESPONSE</p><h2>Response completa</h2></div><span>{{ inspector.exchange.response_size or 0 }} B</span></div><pre class="http-message inspector-highlighted">{{ response_highlighted|safe }}</pre></article></section>
 
-<section class="http-inspector-grid">
-  <article class="panel inspector-http-pane"><div class="panel-head"><div><p class="eyebrow">REQUEST</p><h2>Request completa</h2></div><span>{{ inspector.exchange.request_size or 0 }} B</span></div><pre class="http-message inspector-highlighted">{{ request_highlighted|safe }}</pre></article>
-  <article class="panel inspector-http-pane"><div class="panel-head"><div><p class="eyebrow">RESPONSE</p><h2>Response completa</h2></div><span>{{ inspector.exchange.response_size or 0 }} B</span></div><pre class="http-message inspector-highlighted">{{ response_highlighted|safe }}</pre></article>
-</section>
-
-<section class="panel inspector-values">
-  <div class="panel-head"><div><p class="eyebrow">KEY / VALUE</p><h2>Valores observados</h2><p class="muted small">Incluye headers, cookies, query, body JSON/form y JWT detectados tanto en Request como Response.</p></div><span>{{ inspector["values"]|length }}</span></div>
+<section class="panel inspector-values" data-batch-inspector data-endpoint="{{ target_base }}/exchange/{{ inspector.exchange.id }}/annotations/batch" data-csrf="{{ csrf_token }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div class="panel-head"><div><p class="eyebrow">KEY / VALUE</p><h2>Valores observados</h2><p class="muted small">Headers, cookies, query, JSON/form y claims JWT de Request y Response.</p></div><span>{{ inspector["values"]|length }}</span></div>
+  <div class="inspector-batch-toolbar"><div><strong data-dirty-count>0 cambios pendientes</strong><small data-save-status>Configura primero; guarda una sola vez.</small></div><div class="row-actions"><button type="button" class="button ghost" data-reset-drafts disabled>Descartar cambios</button><button type="button" class="button" data-save-all disabled>Guardar cambios</button></div></div>
   <div class="inspector-filter-row"><input type="search" placeholder="Filtrar key, path o valor…" data-inspector-filter><button type="button" class="mini-action" data-inspector-side="all">Todos</button><button type="button" class="mini-action" data-inspector-side="request">Request</button><button type="button" class="mini-action" data-inspector-side="response">Response</button></div>
   <div class="inspector-value-table" data-inspector-table>
     <div class="inspector-value-head"><span>Origen</span><span>Key / path</span><span>Valor</span><span>Decisión</span></div>
-    {% for v in inspector["values"] %}
-    {% set ann=v.annotation %}
+    {% for v in inspector["values"] %}{% set ann=v.annotation %}{% set current=ann.classification if ann else v.default_classification %}
     <article class="inspector-value-row" data-side="{{ v.side }}" data-search="{{ (v.key ~ ' ' ~ v.location ~ ' ' ~ v.preview)|lower }}">
       <div><span class="badge {{ 'response-badge' if v.side=='response' else 'request-badge' }}">{{ v.side|upper }}</span><small>{{ v.location }}</small></div>
-      <div><b><code>{{ v.key }}</code></b><small>{{ v.detected_type }}{% if ann %} · guardado como {{ ann.classification|upper }}{% endif %}</small></div>
-      <div class="inspector-value-preview"><code>{{ v.preview or '(vacío)' }}</code>{% if v.jwt %}<details class="jwt-details"><summary>JWT · ver claims</summary><div class="jwt-claims"><div><b>Header</b><pre>{{ v.jwt.header|tojson(indent=2) }}</pre></div><div><b>Claims</b>{% for claim in v.jwt_claims %}<div class="jwt-claim-row"><code class="jwt-claim-key">{{ claim.key }}</code><code class="jwt-claim-value">{{ claim.value }}</code><form action="{{ target_base }}/exchange/{{ inspector.exchange.id }}/annotate" method="post" class="inline-annotation-form jwt-claim-actions"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="side" value="{{ v.side }}"><input type="hidden" name="location" value="{{ v.location }}#jwt:{{ claim.key }}"><input type="hidden" name="key" value="jwt.{{ claim.key }}"><input type="hidden" name="value" value="{{ claim.value }}"><select name="classification"><option value="resolver" {% if claim.default_classification=='resolver' %}selected{% endif %}>Resolver</option><option value="context" {% if claim.default_classification=='context' %}selected{% endif %}>Context</option><option value="ignore" {% if claim.default_classification=='ignore' %}selected{% endif %}>Ignore</option></select><select name="identity_id"><option value="">Identity…</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select><button class="mini-action" type="submit">Aplicar</button></form></div>{% endfor %}</div></div></details>{% endif %}</div>
-      <form action="{{ target_base }}/exchange/{{ inspector.exchange.id }}/annotate" method="post" class="inspector-annotation-form">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="side" value="{{ v.side }}"><input type="hidden" name="location" value="{{ v.location }}"><input type="hidden" name="key" value="{{ v.key }}"><input type="hidden" name="value" value="{{ v.value }}">
-        <select name="classification" data-classification-select>
-          {% set current=ann.classification if ann else v.default_classification %}
-          <option value="auth" {% if current=='auth' %}selected{% endif %}>AUTH</option><option value="resolver" {% if current=='resolver' %}selected{% endif %}>RESOLVER</option><option value="context" {% if current=='context' %}selected{% endif %}>CONTEXT</option><option value="entity" {% if current=='entity' %}selected{% endif %}>ENTITY</option><option value="ignore" {% if current=='ignore' %}selected{% endif %}>IGNORE</option>
-        </select>
-        <select name="identity_id"><option value="">Identity…</option>{% for i in identities %}<option value="{{ i.id }}" {% if ann and ann.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select>
-        <input name="object_type" value="{{ ann.object_type if ann else '' }}" placeholder="Entity type (Order/User…)">
-        <button class="mini-action" type="submit">Guardar</button>
-      </form>
-    </article>
-    {% endfor %}
+      <div><b><code>{{ v.key }}</code></b><small>{{ v.detected_type }}{% if ann %} · guardado {{ ann.classification|upper }}{% endif %}</small></div>
+      <div class="inspector-value-preview"><code>{{ v.preview or '(vacío)' }}</code>
+        {% if v.jwt %}<details class="jwt-details"><summary>JWT · ver claims</summary><div class="jwt-claims"><div><b>Header</b><pre>{{ v.jwt.header|tojson(indent=2) }}</pre></div><div><b>Claims</b>
+          {% for claim in v.jwt_claims %}
+          <div class="jwt-claim-row annotation-draft" data-initial="{{ claim.default_classification }}|{{ selected_identity_id or 0 }}|">
+            <input type="hidden" data-field="side" value="{{ v.side }}"><input type="hidden" data-field="location" value="{{ v.location }}#jwt:{{ claim.key }}"><input type="hidden" data-field="key" value="jwt.{{ claim.key }}"><input type="hidden" data-field="value" value="{{ claim.value }}">
+            <div class="jwt-claim-copy"><code class="jwt-claim-key">{{ claim.key }}</code><code class="jwt-claim-value">{{ claim.value }}</code></div>
+            <div class="jwt-claim-actions"><select data-field="classification"><option value="resolver" {% if claim.default_classification=='resolver' %}selected{% endif %}>RESOLVER</option><option value="context" {% if claim.default_classification=='context' %}selected{% endif %}>CONTEXT</option><option value="ignore" {% if claim.default_classification=='ignore' %}selected{% endif %}>IGNORE</option></select><select data-field="identity_id"><option value="">Identity…</option>{% for ident in identities %}<option value="{{ ident.id }}" {% if selected_identity_id==ident.id %}selected{% endif %}>{{ ident.name }}</option>{% endfor %}</select><span class="draft-state">sin cambios</span></div>
+          </div>{% endfor %}
+        </div></div></details>{% endif %}
+      </div>
+      <div class="inspector-annotation-form annotation-draft" data-initial="{{ current }}|{{ (ann.identity_id if ann else selected_identity_id) or 0 }}|{{ ann.object_type if ann else '' }}">
+        <input type="hidden" data-field="side" value="{{ v.side }}"><input type="hidden" data-field="location" value="{{ v.location }}"><input type="hidden" data-field="key" value="{{ v.key }}"><input type="hidden" data-field="value" value="{{ v.value }}">
+        <select data-field="classification"><option value="auth" {% if current=='auth' %}selected{% endif %}>AUTH</option><option value="resolver" {% if current=='resolver' %}selected{% endif %}>RESOLVER</option><option value="context" {% if current=='context' %}selected{% endif %}>CONTEXT</option><option value="entity" {% if current=='entity' %}selected{% endif %}>ENTITY</option><option value="ignore" {% if current=='ignore' %}selected{% endif %}>IGNORE</option></select>
+        <select data-field="identity_id"><option value="">Identity…</option>{% for ident in identities %}<option value="{{ ident.id }}" {% if (ann and ann.identity_id==ident.id) or (not ann and selected_identity_id==ident.id) %}selected{% endif %}>{{ ident.name }}</option>{% endfor %}</select>
+        <input data-field="object_type" value="{{ ann.object_type if ann else '' }}" placeholder="Entity type (Order/User…)" class="entity-type-input"><span class="draft-state">sin cambios</span>
+      </div>
+    </article>{% endfor %}
   </div>
 </section>
 <script>
 (() => {
- const input=document.querySelector('[data-inspector-filter]'); const table=document.querySelector('[data-inspector-table]'); if(!table)return;
- let side='all'; const rows=[...table.querySelectorAll('.inspector-value-row')];
- const run=()=>{const q=(input?.value||'').toLowerCase(); rows.forEach(r=>{r.hidden=!((side==='all'||r.dataset.side===side)&&(!q||(r.dataset.search||'').includes(q)));});};
- input?.addEventListener('input',run); document.querySelectorAll('[data-inspector-side]').forEach(b=>b.addEventListener('click',()=>{side=b.dataset.inspectorSide;run();}));
+ const root=document.querySelector('[data-batch-inspector]'); if(!root)return;
+ const input=root.querySelector('[data-inspector-filter]'), table=root.querySelector('[data-inspector-table]'); let side='all';
+ const rows=[...table.querySelectorAll('.inspector-value-row')], drafts=[...root.querySelectorAll('.annotation-draft')];
+ const save=root.querySelector('[data-save-all]'), reset=root.querySelector('[data-reset-drafts]'), count=root.querySelector('[data-dirty-count]'), status=root.querySelector('[data-save-status]');
+ const get=d=>Object.fromEntries([...d.querySelectorAll('[data-field]')].map(x=>[x.dataset.field,x.value]));
+ const sig=d=>{const v=get(d);return `${v.classification||''}|${v.identity_id||0}|${v.object_type||''}`};
+ drafts.forEach(d=>{ if(!d.dataset.initial) d.dataset.initial=sig(d); d.dataset.saved=d.dataset.initial; });
+ const refresh=()=>{let n=0;drafts.forEach(d=>{const dirty=sig(d)!==d.dataset.saved;d.classList.toggle('is-dirty',dirty);const st=d.querySelector('.draft-state');if(st)st.textContent=dirty?'modificado':'sin cambios';if(dirty)n++;});count.textContent=`${n} cambio${n===1?'':'s'} pendiente${n===1?'':'s'}`;save.disabled=!n;reset.disabled=!n;};
+ drafts.forEach(d=>d.querySelectorAll('select,input').forEach(el=>el.addEventListener('change',refresh)));
+ const run=()=>{const q=(input?.value||'').toLowerCase();rows.forEach(r=>r.hidden=!((side==='all'||r.dataset.side===side)&&(!q||(r.dataset.search||'').includes(q))))};input?.addEventListener('input',run);root.querySelectorAll('[data-inspector-side]').forEach(b=>b.addEventListener('click',()=>{side=b.dataset.inspectorSide;run()}));
+ reset.addEventListener('click',()=>{drafts.forEach(d=>{const [c,i,o]=String(d.dataset.saved||'ignore|0|').split('|');const f=getFields(d);if(f.classification)f.classification.value=c;if(f.identity_id)f.identity_id.value=(i==='0'?'':i);if(f.object_type)f.object_type.value=o||'';});refresh();});
+ function getFields(d){return Object.fromEntries([...d.querySelectorAll('[data-field]')].map(x=>[x.dataset.field,x]));}
+ save.addEventListener('click',async()=>{const changed=drafts.filter(d=>sig(d)!==d.dataset.saved);if(!changed.length)return;const items=changed.map(get);save.disabled=true;status.textContent='Guardando y recalculando relaciones…';try{const fd=new FormData();fd.set('csrf',root.dataset.csrf);fd.set('annotations_json',JSON.stringify(items));const r=await fetch(root.dataset.endpoint,{method:'POST',headers:{'X-Requested-With':'NegroFetch','Accept':'application/json'},body:fd});const out=await r.json();if(!r.ok||!out.ok)throw new Error(out.error||`HTTP ${r.status}`);changed.forEach(d=>{d.dataset.saved=sig(d);const st=d.querySelector('.draft-state');if(st)st.textContent='guardado';});status.textContent=`${out.saved} cambios guardados. El mapa/Identity ya usan estas decisiones.`;refresh();}catch(e){status.textContent=`No se pudo guardar: ${e.message}`;save.disabled=false;}});
+ refresh();
 })();
 </script>
 {% endblock %}

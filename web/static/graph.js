@@ -1396,10 +1396,20 @@
     return [...groups.values()].sort((a,b)=>a.type.localeCompare(b.type)||a.label.localeCompare(b.label));
   }
 
+  function evidenceWhySummary(evidence){
+    if(!evidence)return '';
+    const why=evidence.why;
+    if(Array.isArray(why)){for(const item of why){if(item?.summary)return item.summary;}}
+    if(why?.summary)return why.summary;
+    if(Array.isArray(why?.reasons)&&why.reasons.length)return why.reasons[0]?.detail||'';
+    return '';
+  }
+
   function relationGroupRow(group,{note=''}={}){
     const first=group.nodes[0];
     const count=group.count>1?`<span class="graph-relation-count">×${group.count}</span>`:'';
-    const context=note||((group.type==='object'&&first?.meta?.ui_quality==='ambiguous')?'mismo valor observado con varias clasificaciones internas':'');
+    const why=(group.relation==='called_endpoint'||group.relation==='performed')?evidenceWhySummary(group.edges?.[0]?.meta?.evidence):'';
+    const context=note||why||((group.type==='object'&&first?.meta?.ui_quality==='ambiguous')?'mismo valor observado con varias clasificaciones internas':'');
     return `<button type="button" class="graph-relation compact" data-focus="${esc(first?.id||'')}"><span>${esc(relationLabel[group.relation]||group.relation)}</span><b>${esc(group.label)}${context?` <small class="graph-relation-note">· ${esc(context)}</small>`:''}</b>${count}</button>`;
   }
 
@@ -1518,8 +1528,12 @@
 
   function showEdge(e){
     const map=sceneById(),a=map.get(e.source)||graph.nodes.find(n=>n.id===e.source),b=map.get(e.target)||graph.nodes.find(n=>n.id===e.target),m=e.meta||{};
-    const rel=relationLabel[e.relation]||e.relation;
-    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELACIÓN</span><h2>${esc(rel)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(rel)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>Fuente</span><b>${esc(m.source||'—')}</b></div></div>${m.evidence?`<div class="graph-detail-section"><h3>Por qué existe</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`:''}`;
+    const rel=relationLabel[e.relation]||e.relation, ev=m.evidence||{};
+    let whyHtml='';
+    const whys=Array.isArray(ev.why)?ev.why:(ev.why?[ev.why]:[]);
+    if(whys.length){whyHtml=`<div class="graph-detail-section"><h3>Por qué existe esta relación</h3>${whys.slice(0,4).map(w=>`<div class="graph-why-card"><b>${esc(w.summary||'Evidencia observada')}</b>${(w.reasons||[]).slice(0,4).map(r=>`<span class="graph-why-reason kind-${esc(r.kind||'observed')}">${esc(r.label||r.kind||'evidencia')} · ${esc(r.detail||'')}</span>`).join('')}${ev.request_id?`<a class="btn-secondary" href="${base}/exchange/${Number(ev.request_id)}/inspect">Ver HTTP #${Number(ev.request_id)}</a>`:''}</div>`).join('')}</div>`;}
+    else if(m.evidence){whyHtml=`<div class="graph-detail-section"><h3>Por qué existe</h3><pre>${esc(JSON.stringify(m.evidence,null,2))}</pre></div>`;}
+    detail.innerHTML=`<div class="graph-detail-head"><span class="graph-node-kind">RELACIÓN</span><h2>${esc(rel)}</h2></div><div class="graph-edge-explain"><b>${esc(a?.label||e.source)}</b><span>— ${esc(rel)} →</span><b>${esc(b?.label||e.target)}</b></div><div class="graph-detail-meta"><div><span>Fuente</span><b>${esc(m.source||'—')}</b></div></div>${whyHtml}`;
   }
 
   function toggleCluster(n){

@@ -1,3 +1,5 @@
+> Current build: **v0.46.0** — Identity dossier, batch HTTP teaching and explainable Identity graph.
+
 # Negro Recon 🐕 — v0.44.8
 
 ## v0.44.6 — Scope por proyecto + Runner migration hotfix

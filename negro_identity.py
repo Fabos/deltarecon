@@ -872,6 +872,90 @@ def recompute_identity_attribution(conn, identity_id: int) -> dict[str, int]:
     return result
 
 
+
+def attribution_evidence(conn, exchange_id: int, identity_id: int) -> dict[str, Any]:
+    """Explain, in investigator language, why one exchange is attributed to an Identity."""
+    init_schema(conn)
+    ei = conn.execute(
+        "SELECT * FROM exchange_identities WHERE exchange_id=? AND identity_id=?",
+        (int(exchange_id), int(identity_id)),
+    ).fetchone()
+    if not ei:
+        return {"summary": "Sin atribución observada", "reasons": []}
+    ei = dict(ei)
+    reasons: list[dict[str, Any]] = []
+    source = str(ei.get("source") or "")
+    if source in {"manual", "burp", "manual_assignment", "burp_update", "http_inspector"}:
+        reasons.append({"kind": "manual", "label": "Asignación explícita", "detail": ei.get("notes") or f"La Request fue asignada manualmente a esta Identity ({source})."})
+
+    resolver_id = int(ei.get("resolver_id") or 0)
+    if resolver_id:
+        r = conn.execute("SELECT * FROM identity_resolvers WHERE id=? AND identity_id=?", (resolver_id, int(identity_id))).fetchone()
+        if r:
+            r = dict(r)
+            value = str(r.get("value_raw") or r.get("value_preview") or "")
+            reasons.append({
+                "kind": "resolver", "label": "Resolver coincidente",
+                "selector": r.get("selector") or r.get("resolver_type"), "value": value,
+                "detail": f"{r.get('selector') or r.get('resolver_type')} = {value or '[valor por hash]'} aparece en esta Request/Response.",
+            })
+
+    # Show every active resolver that actually appears in this exchange, not just the chosen resolver_id.
+    try:
+        import negro_http_inspector as http_inspector
+        observed = http_inspector.extract_exchange(conn, int(exchange_id)) or {}
+        seen = {(str(v.get("location") or ""), str(v.get("value_hash") or "")): v for v in (observed.get("values") or [])}
+        for r in conn.execute(
+            "SELECT * FROM identity_resolvers WHERE identity_id=? AND enabled=1 AND classification='resolver'",
+            (int(identity_id),),
+        ).fetchall():
+            rd = dict(r); selector = str(rd.get("selector") or ""); vh = str(rd.get("value_hash") or "")
+            matched = None
+            if rd.get("resolver_type") == "http_value":
+                matched = seen.get((selector, vh))
+            elif rd.get("resolver_type") == "jwt_claim" and selector.startswith("jwt:"):
+                claim = selector.split(":",1)[1]
+                for v in observed.get("values") or []:
+                    jwt = v.get("jwt") or {}
+                    claims = jwt.get("claims") or {}
+                    if claim in claims and _sha(str(claims[claim])) == vh:
+                        matched = {"key": f"jwt.{claim}", "value": claims[claim], "location": v.get("location")}
+                        break
+            if matched and not any(x.get("selector")==selector and x.get("kind")=="resolver" for x in reasons):
+                value = str(rd.get("value_raw") or rd.get("value_preview") or matched.get("value") or "")
+                reasons.append({"kind":"resolver","label":"Resolver coincidente","selector":selector,"value":value,"location":matched.get("location"),"detail":f"{selector} = {value or '[valor por hash]'} fue observado aquí."})
+    except Exception:
+        pass
+
+    # Authentication material that is both active for the Identity and present in this request.
+    try:
+        current = extract_auth_materials(conn, int(exchange_id))
+        active = {str(r["fingerprint"]): dict(r) for r in conn.execute(
+            "SELECT * FROM auth_materials WHERE identity_id=? AND active=1 AND classification='auth'",
+            (int(identity_id),),
+        ).fetchall()}
+        for m in current:
+            row = active.get(str(m.get("fingerprint") or ""))
+            if row:
+                reasons.append({"kind":"auth","label":"AUTH coincidente","selector":f"{row.get('material_type')} · {row.get('material_name')}","value":row.get("raw_value") or row.get("masked_preview") or "","detail":f"Esta Request contiene {row.get('material_type')} · {row.get('material_name')} configurado como AUTH de la Identity."})
+    except Exception:
+        pass
+
+    # Context annotations explain role/tenant-like evidence but do not resolve the actor.
+    try:
+        rows = conn.execute(
+            """SELECT key_name,value_raw,location FROM http_value_annotations
+               WHERE exchange_id=? AND identity_id=? AND classification='context' ORDER BY id""",
+            (int(exchange_id), int(identity_id)),
+        ).fetchall()
+        for r in rows:
+            reasons.append({"kind":"context","label":"Contexto observado","selector":r["key_name"],"value":r["value_raw"],"location":r["location"],"detail":f"{r['key_name']} = {r['value_raw']} fue clasificado como CONTEXT para esta Identity."})
+    except Exception:
+        pass
+
+    summary = reasons[0]["detail"] if reasons else f"Atribución registrada por {source or 'Negro'}."
+    return {"summary": summary, "source": source, "reasons": reasons}
+
 def list_identities(conn) -> list[dict[str, Any]]:
     init_schema(conn)
     rows = conn.execute(
@@ -938,9 +1022,22 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
     materials = [dict(r) for r in conn.execute(
         "SELECT * FROM auth_materials WHERE identity_id=? ORDER BY last_seen_at DESC LIMIT 100", (int(identity_id),)
     ).fetchall()]
+    # Give every piece of Identity evidence a concrete HTTP pivot whenever possible.
+    identity_exchange_ids = [int(r["exchange_id"]) for r in conn.execute(
+        "SELECT exchange_id FROM exchange_identities WHERE identity_id=? ORDER BY assigned_at DESC", (int(identity_id),)
+    ).fetchall()]
+    for material in materials:
+        material["evidence_exchange_id"] = None
+        fp = str(material.get("fingerprint") or "")
+        for exid in identity_exchange_ids[:240]:
+            if any(str(m.get("fingerprint") or "") == fp for m in extract_auth_materials(conn, exid)):
+                material["evidence_exchange_id"] = exid
+                break
     resolvers = [dict(r) for r in conn.execute(
         "SELECT * FROM identity_resolvers WHERE identity_id=? ORDER BY enabled DESC,updated_at DESC LIMIT 100", (int(identity_id),)
     ).fetchall()]
+    for resolver in resolvers:
+        resolver["evidence_exchange_id"] = int(resolver.get("anchor_exchange_id") or 0) or None
     exchanges = [dict(r) for r in conn.execute(
         """SELECT ei.*,h.hostname,r.id resource_id,r.path,o.method,e.status_code,e.first_seen_at,e.last_seen_at,c.label context_label
            FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
@@ -965,11 +1062,13 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
            JOIN business_object_observations boo ON boo.exchange_id=ei.exchange_id WHERE ei.identity_id=?""", (int(identity_id),)
     ).fetchone()["c"] or 0)
     actions = [dict(r) for r in conn.execute(
-        """SELECT o.method,r.path,COUNT(*) requests,GROUP_CONCAT(DISTINCT COALESCE(e.status_code,'—')) statuses
+        """SELECT o.method,r.path,o.resource_id,COUNT(*) requests,GROUP_CONCAT(DISTINCT COALESCE(e.status_code,'—')) statuses,MAX(e.id) sample_exchange_id
            FROM exchange_identities ei JOIN http_exchanges e ON e.id=ei.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
-           WHERE ei.identity_id=? GROUP BY o.method,r.path ORDER BY requests DESC,r.path LIMIT 24""", (int(identity_id),)
+           WHERE ei.identity_id=? GROUP BY o.method,r.path,o.resource_id ORDER BY requests DESC,r.path LIMIT 24""", (int(identity_id),)
     ).fetchall()]
+    for action in actions:
+        action["why"] = attribution_evidence(conn, int(action.get("sample_exchange_id") or 0), int(identity_id)) if action.get("sample_exchange_id") else {}
     pivots = [dict(r) for r in conn.execute(
         """SELECT im.value_hash,MAX(COALESCE(NULLIF(im.value_raw,''),im.value_preview,'')) value,
                   GROUP_CONCAT(DISTINCT im.normalized_name) keys,COUNT(DISTINCT im.exchange_id) requests,
@@ -978,11 +1077,19 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
            GROUP BY im.value_hash HAVING TRIM(MAX(COALESCE(NULLIF(im.value_raw,''),im.value_preview,'')))<>''
            ORDER BY requests DESC,endpoints DESC LIMIT 24""", (int(identity_id),)
     ).fetchall()]
+    for ex in exchanges:
+        ex["why"] = attribution_evidence(conn, int(ex["exchange_id"]), int(identity_id))
+    grouped_evidence = {
+        "auth": [m for m in materials if str(m.get("classification") or "auth") == "auth" and int(m.get("active") or 0)],
+        "resolvers": [r for r in resolvers if str(r.get("classification") or "resolver") == "resolver" and int(r.get("enabled") or 0)],
+        "context": [m for m in materials if str(m.get("classification") or "") == "context"] + [r for r in resolvers if str(r.get("classification") or "") == "context"],
+        "ignored": [m for m in materials if str(m.get("classification") or "") == "ignore"] + [r for r in resolvers if str(r.get("classification") or "") == "ignore"],
+    }
     activity = {
         "requests": request_count, "endpoints": endpoint_count, "flows": flow_count, "objects": object_count,
         "actions": actions, "pivots": pivots,
     }
-    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "exchanges": exchanges, "activity": activity}
+    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "grouped_evidence": grouped_evidence, "exchanges": exchanges, "activity": activity}
 
 
 def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:
