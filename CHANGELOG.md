@@ -1,3 +1,12 @@
+# v0.44.5 — Burp Scope Sync
+
+- Burp es la fuente de verdad del scope activo: Negro guarda `IN_SCOPE`, `EXCLUDED` o `UNKNOWN` por Request sin borrar evidencia.
+- El Bridge v0.31.0 escucha cambios del suite scope, reconcilia automáticamente el histórico conocido por Negro y vuelve a sincronizar al cargar/reiniciar la extensión.
+- El tráfico nuevo llega con su estado `isInScope()` desde Burp.
+- Menú contextual Negro → Scope permite incluir/excluir el host en Burp; el cambio se refleja en Negro.
+- Buscar admite `scope:in`, `scope:excluded` y `scope:unknown`.
+- Environment e Identity Evidence siguen siendo dimensiones independientes del scope.
+
 # v0.44.4 — Identity Evidence Classification
 
 - al crear/actualizar una Identity desde Burp, cada cookie/header/token/claim se clasifica como `AUTH`, `RESOLVER`, `CONTEXT` o `IGNORE`;

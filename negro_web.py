@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import negro_core as core
 import negro_rules as rulebook
 import negro_environment as environment_tools
+import negro_scope as scope_tools
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -6039,6 +6040,63 @@ def create_app(default_domain: str, default_workspace: Path):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+
+    @app.get("/api/bridge/scope/candidates")
+    def bridge_scope_candidates():
+        """URLs already known by Negro that Burp should classify on bridge start/scope change."""
+        lines = []
+        for target in core.list_targets():
+            try:
+                domain = str(target["domain"])
+                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
+                with _db(paths) as conn:
+                    scope_tools.init_schema(conn)
+                    for item in scope_tools.candidate_urls(conn, limit=20000):
+                        url = str(item.get("url") or "").replace("\t", "").replace("\n", "")
+                        if url:
+                            lines.append(f"{target['key']}\t{url}")
+            except Exception:
+                continue
+        return HTMLResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
+
+    @app.post("/api/bridge/scope/sync", response_class=JSONResponse)
+    async def bridge_scope_sync(request: Request):
+        """Apply Burp's current suite-scope classification to already captured evidence."""
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        grouped = {}
+        for line in raw.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) != 3:
+                continue
+            target_key, status, url = parts
+            grouped.setdefault(target_key, []).append((status, url))
+        changed = 0
+        touched = 0
+        for target_key, entries in grouped.items():
+            try:
+                _, _, paths = _target_context(target_key)
+            except Exception:
+                continue
+            with _db(paths) as conn:
+                scope_tools.init_schema(conn)
+                reindex = set()
+                for status, url in entries:
+                    row = conn.execute("SELECT id FROM resources WHERE url=?", (url,)).fetchone()
+                    if not row:
+                        continue
+                    ids = scope_tools.set_resource_scope(conn, int(row["id"]), status)
+                    touched += len(ids)
+                    reindex.update(ids)
+                if reindex:
+                    try:
+                        import negro_search as search_index
+                        for exchange_id in reindex:
+                            search_index.index_exchange(conn, exchange_id)
+                    except Exception:
+                        pass
+                    changed += len(reindex)
+        return {"ok": True, "updated_exchanges": changed, "touched": touched}
+
     @app.get("/api/ingest/health", response_class=JSONResponse)
     def ingest_health():
         return {"ok": True, "version": core.VERSION, "targets": len(core.list_targets()), "mode": "auto-route"}
@@ -6092,6 +6150,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 response_headers=payload.get("response_headers") if isinstance(payload.get("response_headers"), list) else None,
                 query=payload.get("query"),
                 response_body_b64=payload.get("response_body_b64"),
+                burp_in_scope=payload.get("burp_in_scope") if isinstance(payload.get("burp_in_scope"), bool) else None,
             )
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)

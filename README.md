@@ -1,4 +1,12 @@
-# Negro Recon 🐕 — v0.44.4
+# Negro Recon 🐕 — v0.44.5
+
+## v0.44.5 — Burp Scope Sync
+
+- Burp es la fuente de verdad del scope activo. Negro conserva el tráfico excluido como evidencia y lo etiqueta `EXCLUDED`.
+- Bridge v0.31.0 sincroniza cambios de Scope desde Site map/Target Scope y reconcilia el histórico al arrancar.
+- Buscar: `scope:in`, `scope:excluded`, `scope:unknown`.
+- Negro → Scope permite incluir/excluir el host desde el menú contextual de Burp.
+
 
 
 

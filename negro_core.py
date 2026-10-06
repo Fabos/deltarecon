@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.44.4"
+VERSION = "0.44.5"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
@@ -646,6 +646,10 @@ def init_db(paths: dict[str, Path], domain: str) -> None:
         import negro_environment as environment_tools
         environment_tools.init_schema(conn)
 
+        # v0.44.5: Burp suite scope is request context, separate from Negro target membership.
+        import negro_scope as scope_tools
+        scope_tools.init_schema(conn)
+
         # v0.41: the existing Burp queue is now also the transport bridge for Runner.
         # Reusing the same queue avoids inventing a second Burp integration path.
         queue_cols = {row["name"] for row in conn.execute("PRAGMA table_info(burp_repeater_queue)")}
@@ -988,6 +992,7 @@ def upsert_http_observation(
     response_headers: list[dict] | None = None,
     query: dict | list | str | None = None,
     response_body_b64: str | None = None,
+    burp_in_scope: bool | None = None,
 ) -> dict:
     """Ingesta HTTP sin duplicar el recurso por método.
 
@@ -1056,21 +1061,23 @@ def upsert_http_observation(
             conn.execute("INSERT INTO operation_sources(operation_id, source, first_seen_at, last_seen_at, seen_count) VALUES(?,?,?,?,1)", (operation_id, source, ts, ts))
 
         import negro_environment as environment_tools
+        import negro_scope as scope_tools
         environment, environment_source = environment_tools.infer_environment(host, conn)
-        ex = conn.execute("SELECT id,environment_source FROM http_exchanges WHERE operation_id=? AND fingerprint=?", (operation_id, fingerprint)).fetchone()
+        burp_scope_status = scope_tools.normalize_status(burp_in_scope) if burp_in_scope is not None else "UNKNOWN"
+        ex = conn.execute("SELECT id,environment_source,burp_scope_status FROM http_exchanges WHERE operation_id=? AND fingerprint=?", (operation_id, fingerprint)).fetchone()
         exchange_created = ex is None
         if ex:
             exchange_id = int(ex["id"])
             if str(ex['environment_source'] or 'auto') == 'manual':
-                conn.execute("UPDATE http_exchanges SET last_seen_at=?, seen_count=seen_count+1, status_code=COALESCE(?,status_code) WHERE id=?", (ts, status_code, exchange_id))
+                conn.execute("UPDATE http_exchanges SET last_seen_at=?, seen_count=seen_count+1, status_code=COALESCE(?,status_code), burp_scope_status=CASE WHEN ?='UNKNOWN' THEN burp_scope_status ELSE ? END, burp_scope_updated_at=CASE WHEN ?='UNKNOWN' THEN burp_scope_updated_at ELSE ? END WHERE id=?", (ts, status_code, burp_scope_status, burp_scope_status, burp_scope_status, ts, exchange_id))
             else:
-                conn.execute("UPDATE http_exchanges SET last_seen_at=?, seen_count=seen_count+1, status_code=COALESCE(?,status_code), environment=?, environment_source=? WHERE id=?", (ts, status_code, environment, environment_source, exchange_id))
+                conn.execute("UPDATE http_exchanges SET last_seen_at=?, seen_count=seen_count+1, status_code=COALESCE(?,status_code), environment=?, environment_source=?, burp_scope_status=CASE WHEN ?='UNKNOWN' THEN burp_scope_status ELSE ? END, burp_scope_updated_at=CASE WHEN ?='UNKNOWN' THEN burp_scope_updated_at ELSE ? END WHERE id=?", (ts, status_code, environment, environment_source, burp_scope_status, burp_scope_status, burp_scope_status, ts, exchange_id))
         else:
             cur = conn.execute(
-                """INSERT INTO http_exchanges(operation_id, source, tool, status_code, request_hash, response_hash, fingerprint, request_b64, response_b64, request_size, response_size, request_headers_json, response_headers_json, query_json, first_seen_at, last_seen_at, seen_count, environment, environment_source)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                """INSERT INTO http_exchanges(operation_id, source, tool, status_code, request_hash, response_hash, fingerprint, request_b64, response_b64, request_size, response_size, request_headers_json, response_headers_json, query_json, first_seen_at, last_seen_at, seen_count, environment, environment_source, burp_scope_status, burp_scope_updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)""",
                 (operation_id, source, tool, status_code, req_hash, resp_hash or None, fingerprint, request_b64, response_b64, len(req), len(resp),
-                 json.dumps(request_headers or [], ensure_ascii=False), json.dumps(response_headers or [], ensure_ascii=False), json.dumps(query if query is not None else parsed.query, ensure_ascii=False), ts, ts, environment, environment_source),
+                 json.dumps(request_headers or [], ensure_ascii=False), json.dumps(response_headers or [], ensure_ascii=False), json.dumps(query if query is not None else parsed.query, ensure_ascii=False), ts, ts, environment, environment_source, burp_scope_status, ts if burp_scope_status != "UNKNOWN" else None),
             )
             exchange_id = int(cur.lastrowid)
 

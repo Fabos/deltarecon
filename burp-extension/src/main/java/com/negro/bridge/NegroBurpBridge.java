@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.30.0
+ * Negro Burp Bridge v0.31.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -65,6 +65,7 @@ public class NegroBurpBridge implements BurpExtension {
     private final AtomicLong accepted = new AtomicLong();
     private final AtomicLong ignored = new AtomicLong();
     private final AtomicLong errors = new AtomicLong();
+    private final AtomicLong lastScopeReconcileMs = new AtomicLong(0L);
     private volatile String negroBaseUrl = System.getProperty("negro.url", "http://127.0.0.1:8765");
     private JLabel statusLabel;
     private JLabel lastErrorLabel;
@@ -80,7 +81,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.30.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.31.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -89,9 +90,11 @@ public class NegroBurpBridge implements BurpExtension {
             }
         });
         api.http().registerHttpHandler(new BridgeHttpHandler());
+        api.scope().registerScopeChangeHandler(change -> reconcileBurpScopeAsync("scope-change"));
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
+        bridgePoller.schedule(() -> reconcileBurpScope("startup"), 700, TimeUnit.MILLISECONDS);
         bridgePoller.scheduleWithFixedDelay(this::pollRepeaterQueue, 1, 1, TimeUnit.SECONDS);
         api.logging().logToOutput("Negro → Repeater poller activo · consultando /api/bridge/repeater/next cada 1s");
     }
@@ -214,7 +217,10 @@ public class NegroBurpBridge implements BurpExtension {
                 .GET().build();
         client.sendAsync(req, BodyHandlers.ofString())
                 .thenAccept(r -> {
-                    if (r.statusCode() == 200) markConnected("health OK");
+                    if (r.statusCode() == 200) {
+                        markConnected("health OK");
+                        if (System.currentTimeMillis() - lastScopeReconcileMs.get() > 300000L) reconcileBurpScopeAsync("health-reconnect");
+                    }
                     else SwingUtilities.invokeLater(() -> { if (statusLabel != null) statusLabel.setText("○ Negro respondió HTTP " + r.statusCode()); });
                 })
                 .exceptionally(ex -> {
@@ -259,7 +265,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.30.0")
+                    .header("X-Negro-Bridge-Version", "0.31.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -735,7 +741,8 @@ public class NegroBurpBridge implements BurpExtension {
                 "\"response_headers\":" + headersJson(response.headers()) + "," +
                 kv("request_b64", requestB64) + "," +
                 kv("response_b64", responseB64) + "," +
-                kv("response_body_b64", responseBodyB64) +
+                kv("response_body_b64", responseBodyB64) + "," +
+                "\"burp_in_scope\":" + api.scope().isInScope(request.url()) +
                 "}";
     }
 
@@ -761,7 +768,8 @@ public class NegroBurpBridge implements BurpExtension {
                 "\"response_headers\":" + (response == null ? "[]" : headersJson(response.headers())) + "," +
                 kv("request_b64", requestB64) + "," +
                 kv("response_b64", responseB64) + "," +
-                kv("response_body_b64", responseBodyB64) +
+                kv("response_body_b64", responseBodyB64) + "," +
+                "\"burp_in_scope\":" + api.scope().isInScope(request.url()) +
                 "}";
     }
 
@@ -855,6 +863,13 @@ public class NegroBurpBridge implements BurpExtension {
             JMenuItem flowSelected = new JMenuItem("Crear Flow con Requests seleccionadas…");
             flowMenu.add(flowStart); flowMenu.add(flowAdd); flowMenu.add(flowEnd); flowMenu.addSeparator(); flowMenu.add(flowSelected);
 
+            JMenu scopeMenu = new JMenu("Scope");
+            JMenuItem scopeStatus = new JMenuItem(api.scope().isInScope(selected.get(0).request().url()) ? "Estado: IN_SCOPE" : "Estado: EXCLUDED");
+            scopeStatus.setEnabled(false);
+            JMenuItem scopeInclude = new JMenuItem("Añadir host a Burp scope");
+            JMenuItem scopeExclude = new JMenuItem("Excluir host de Burp scope");
+            scopeMenu.add(scopeStatus); scopeMenu.addSeparator(); scopeMenu.add(scopeInclude); scopeMenu.add(scopeExclude);
+
             JMenu identityMenu = new JMenu("Identidad");
             JMenuItem assignIdentity = new JMenuItem("Asignar a Identity…");
             JMenuItem createIdentity = new JMenuItem("Crear Identity desde esta Request…");
@@ -924,6 +939,8 @@ public class NegroBurpBridge implements BurpExtension {
             flowAdd.addActionListener(e -> runContextAction("flow-add", () -> addToFlowFromBurp(selected.get(0), tool)));
             flowEnd.addActionListener(e -> runContextAction("flow-end", () -> endFlowFromBurp(selected.get(0), tool)));
             flowSelected.addActionListener(e -> runContextAction("flow-selected", () -> createFlowFromSelection(selected, tool)));
+            scopeInclude.addActionListener(e -> runContextAction("scope-include", () -> setHostBurpScope(selected.get(0).request().url(), true)));
+            scopeExclude.addActionListener(e -> runContextAction("scope-exclude", () -> setHostBurpScope(selected.get(0).request().url(), false)));
             assignIdentity.addActionListener(e -> runContextAction("identity-assign", () -> assignIdentityFromBurp(selected.get(0), tool)));
             createIdentity.addActionListener(e -> runContextAction("identity-create", () -> createIdentityFromBurp(selected.get(0), tool)));
             updateAuth.addActionListener(e -> runContextAction("identity-update", () -> updateIdentityAuthFromBurp(selected.get(0), tool)));
@@ -932,8 +949,62 @@ public class NegroBurpBridge implements BurpExtension {
             createFinding.addActionListener(e -> runContextAction("finding", () -> createFindingFromBurp(selected.get(0), tool)));
             attachFinding.addActionListener(e -> runContextAction("attach", () -> attachFindingFromBurp(selected.get(0), tool)));
             retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
-            menu.add(open); menu.add(replayMenu); menu.add(compareIdentity); menu.addSeparator(); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(stateMenu); menu.add(findingMenu);
+            menu.add(open); menu.add(replayMenu); menu.add(compareIdentity); menu.addSeparator(); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(scopeMenu); menu.add(stateMenu); menu.add(findingMenu);
             return List.of(menu);
+        }
+    }
+
+    private void setHostBurpScope(String observedUrl, boolean include) {
+        try {
+            URI u = URI.create(observedUrl);
+            String scheme = u.getScheme() == null ? "https" : u.getScheme();
+            int port = u.getPort();
+            boolean defaultPort = port < 0 || ("https".equalsIgnoreCase(scheme) && port == 443) || ("http".equalsIgnoreCase(scheme) && port == 80);
+            String base = scheme + "://" + u.getHost() + (defaultPort ? "" : ":" + port) + "/";
+            if (include) api.scope().includeInScope(base); else api.scope().excludeFromScope(base);
+            api.logging().logToOutput("Negro scope → " + (include ? "include " : "exclude ") + base);
+            reconcileBurpScopeAsync(include ? "menu-include" : "menu-exclude");
+        } catch (Exception ex) {
+            throw new IllegalStateException("No pude actualizar Burp scope: " + ex.getMessage(), ex);
+        }
+    }
+
+    private void reconcileBurpScopeAsync(String reason) {
+        bridgePoller.execute(() -> reconcileBurpScope(reason));
+    }
+
+    private void reconcileBurpScope(String reason) {
+        if (unloading.get()) return;
+        try {
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(negroBaseUrl + "/api/bridge/scope/candidates"))
+                    .timeout(Duration.ofSeconds(10)).header("Accept", "text/plain").GET().build();
+            java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() != 200) return;
+            StringBuilder body = new StringBuilder();
+            int candidates = 0;
+            for (String line : resp.body().split("\\R")) {
+                if (line.isBlank()) continue;
+                int tab = line.indexOf('\t');
+                if (tab <= 0 || tab >= line.length() - 1) continue;
+                String targetKey = line.substring(0, tab);
+                String url = line.substring(tab + 1).trim();
+                if (url.isBlank()) continue;
+                boolean inScope;
+                try { inScope = api.scope().isInScope(url); } catch (Exception ex) { continue; }
+                body.append(targetKey).append('\t').append(inScope ? "IN_SCOPE" : "EXCLUDED").append('\t').append(url).append('\n');
+                candidates++;
+            }
+            if (candidates == 0) return;
+            java.net.http.HttpRequest sync = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(negroBaseUrl + "/api/bridge/scope/sync"))
+                    .timeout(Duration.ofSeconds(15)).header("Content-Type", "text/plain; charset=utf-8")
+                    .POST(BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8)).build();
+            java.net.http.HttpResponse<String> synced = client.send(sync, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (synced.statusCode() >= 200 && synced.statusCode() < 300) lastScopeReconcileMs.set(System.currentTimeMillis());
+            api.logging().logToOutput("Negro scope sync · " + reason + " · URLs=" + candidates + " · HTTP " + synced.statusCode());
+        } catch (Throwable ex) {
+            api.logging().logToError("Negro scope sync falló · " + reason + " · " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
         }
     }
 
