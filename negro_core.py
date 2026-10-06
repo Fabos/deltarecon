@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.44.7"
+VERSION = "0.44.8"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 _WORKSPACE_INIT_LOCK = threading.RLock()
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
@@ -3184,6 +3184,7 @@ def target_key(domain: str) -> str:
 
 def targets_load() -> dict:
     data = {"last_target": None, "targets": {}}
+    registry_loaded = False
     if TARGETS_PATH.exists():
         try:
             raw = json.loads(TARGETS_PATH.read_text(encoding="utf-8"))
@@ -3192,20 +3193,81 @@ def targets_load() -> dict:
                 targets = raw.get("targets")
                 if isinstance(targets, dict):
                     data["targets"] = targets
+                    registry_loaded = True
         except Exception:
             pass
 
+    changed = False
+
     # One-time/backward-compatible migration from v0.5's single target config.
-    legacy = _legacy_config_load()
-    if legacy.get("domain") and legacy.get("workspace"):
-        key = target_key(str(legacy["domain"]))
-        if key and key not in data["targets"]:
-            data["targets"][key] = {
-                "domain": str(legacy["domain"]).strip().lower().rstrip("."),
-                "workspace": str(Path(str(legacy["workspace"])).expanduser()),
-            }
-        if not data.get("last_target"):
-            data["last_target"] = key
+    # IMPORTANT: config.json is still maintained as a compatibility mirror of the
+    # current project. Once targets.json already contains projects, treating that
+    # mirror as legacy input would recreate a domain-key alias on every load
+    # (e.g. project key `terpel` + domain `terpel.com` => duplicate `terpel.com`).
+    if not data["targets"]:
+        legacy = _legacy_config_load()
+        if legacy.get("domain") and legacy.get("workspace"):
+            key = target_key(str(legacy.get("name") or legacy["domain"]))
+            if key:
+                domain = str(legacy["domain"]).strip().lower().rstrip(".")
+                entry = {
+                    "domain": domain,
+                    "workspace": str(Path(str(legacy["workspace"])).expanduser()),
+                }
+                if legacy.get("name"):
+                    entry["name"] = str(legacy["name"])
+                roots = normalize_scopes(legacy.get("scopes"), domain)
+                if roots:
+                    entry["scopes"] = roots
+                data["targets"][key] = entry
+                if not data.get("last_target"):
+                    data["last_target"] = key
+                changed = True
+
+    # Auto-heal exact legacy aliases that point at the same domain + workspace.
+    # Prefer the named/richer project key over the old domain-derived alias.
+    groups: dict[tuple[str, str], list[str]] = {}
+    for key, target in list(data.get("targets", {}).items()):
+        if not isinstance(target, dict):
+            continue
+        domain = (normalize_scope(target.get("domain")) or "").lower()
+        workspace_raw = str(target.get("workspace") or "").strip()
+        if not domain or not workspace_raw:
+            continue
+        try:
+            workspace_id = str(Path(workspace_raw).expanduser().resolve())
+        except Exception:
+            workspace_id = str(Path(workspace_raw).expanduser())
+        groups.setdefault((domain, workspace_id), []).append(key)
+
+    for (domain, _workspace_id), keys in groups.items():
+        if len(keys) < 2:
+            continue
+        domain_key = target_key(domain)
+
+        def _project_score(key: str) -> tuple[int, int, int, int, str]:
+            target = data["targets"].get(key) or {}
+            # A non-domain key is normally the explicit project name (e.g. terpel).
+            named_key = int(key != domain_key)
+            has_name = int(bool(str(target.get("name") or "").strip()))
+            has_scopes = int(bool(target.get("scopes")))
+            is_current = int(key == data.get("last_target"))
+            return (named_key, has_name, has_scopes, is_current, key)
+
+        keep = max(keys, key=_project_score)
+        for duplicate in keys:
+            if duplicate == keep:
+                continue
+            data["targets"].pop(duplicate, None)
+            if data.get("last_target") == duplicate:
+                data["last_target"] = keep
+            changed = True
+
+    # Persist migrations/healing immediately so they are truly one-time.
+    if changed:
+        TARGETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(TARGETS_PATH, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
     return data
 
 

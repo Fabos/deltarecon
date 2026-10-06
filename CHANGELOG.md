@@ -1,3 +1,10 @@
+# v0.44.8 — Project registry legacy-alias hotfix
+
+- Corrige la recreación automática de aliases legacy como `terpel.com` cuando ya existe un proyecto nombrado (`terpel`) con el mismo dominio/workspace.
+- `config.json` sólo se migra cuando no existe un registro de proyectos; deja de reinterpretarse en cada carga.
+- Auto-heal conservador: si dos targets comparten exactamente dominio + workspace, conserva el proyecto nombrado/rico y elimina el alias duplicado.
+- La curación se persiste de forma atómica en `targets.json`.
+
 # v0.44.7 — Scope performance + atomic workspace state hotfix
 
 - Scope Sync reconciles only project roots/hosts, not every captured URL.
