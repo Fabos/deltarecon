@@ -1,3 +1,11 @@
+
+## v0.45.1 · JWT Claims layout hotfix
+
+- corrige el layout del HTTP Inspector para que nombres de claims como `tipoDocumento` o `codigoTipoDocumento` no se partan letra por letra;
+- separa visualmente nombre/valor del claim y controles de clasificación;
+- valores largos siguen pudiendo envolver sin deformar las keys;
+- mantiene Bridge v0.33.0 sin cambios.
+
 # v0.44.8 — Project registry legacy-alias hotfix
 
 - Corrige la recreación automática de aliases legacy como `terpel.com` cuando ya existe un proyecto nombrado (`terpel`) con el mismo dominio/workspace.
