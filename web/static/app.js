@@ -542,7 +542,15 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const content = pane?.querySelector('[data-http-content]');
     const countEl = pane?.querySelector('[data-http-count]');
     if (!content) return [];
-    if (content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+    if (content.dataset.rawHttp === undefined) {
+      content.dataset.rawHttp = content.textContent || '';
+      if (content.querySelector('.http-annotation')) content.dataset.annotatedHtml = content.innerHTML;
+    }
+    if (!String(query || '').trim() && content.dataset.annotatedHtml) {
+      content.innerHTML = content.dataset.annotatedHtml;
+      if (countEl) countEl.textContent = 'contexto resaltado';
+      return [];
+    }
     const raw = String(content.dataset.rawHttp || '').replace(/\r\n/g, '\n');
     const lines = raw.split('\n');
     content.replaceChildren();
@@ -593,6 +601,8 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     return marks;
   };
 
+  const wrapPrefKey = 'negro.http.wrap';
+  const wrapDefault = localStorage.getItem(wrapPrefKey) !== 'off';
   document.querySelectorAll('[data-http-pane]').forEach((pane) => {
     const input = pane.querySelector('[data-http-search]');
     const next = pane.querySelector('[data-http-next]');
@@ -600,6 +610,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const wrap = pane.querySelector('[data-http-wrap]');
     const expand = pane.querySelector('[data-http-expand]');
     const content = pane.querySelector('[data-http-content]');
+    if (wrapDefault) pane.classList.add('wrap');
+    else pane.classList.remove('wrap');
+    if (wrap) wrap.textContent = pane.classList.contains('wrap') ? 'Líneas exactas' : 'Ajustar líneas';
     if (content && content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
     renderHttp(pane, '');
 
@@ -633,7 +646,10 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     });
     wrap?.addEventListener('click', () => {
       pane.classList.toggle('wrap');
-      wrap.textContent = pane.classList.contains('wrap') ? 'Líneas exactas' : 'Ajustar líneas';
+      const enabled = pane.classList.contains('wrap');
+      localStorage.setItem(wrapPrefKey, enabled ? 'on' : 'off');
+      document.querySelectorAll('[data-http-pane]').forEach(p => p.classList.toggle('wrap', enabled));
+      document.querySelectorAll('[data-http-wrap]').forEach(b => { b.textContent = enabled ? 'Líneas exactas' : 'Ajustar líneas'; });
     });
     expand?.addEventListener('click', () => {
       pane.classList.toggle('fullscreen-pane');
@@ -726,4 +742,27 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
       finally{btn.disabled=false;}
     });
   });
+})();
+
+// v0.47 · persistent HTTP context visibility toggles
+(()=>{
+  const root=document.querySelector('[data-http-highlight-root]');
+  if(!root) return;
+  const apply=()=>{
+    const identity=document.querySelector('[data-highlight-identity]');
+    const objects=document.querySelector('[data-highlight-objects]');
+    const context=document.querySelector('[data-highlight-context]');
+    const identityOn=identity ? identity.checked : localStorage.getItem('negro.http.identity')!=='off';
+    const objectsOn=objects ? objects.checked : localStorage.getItem('negro.http.objects')!=='off';
+    const contextOn=context ? context.checked : localStorage.getItem('negro.http.context')==='on';
+    root.classList.toggle('hide-identity-highlights',!identityOn);
+    root.classList.toggle('hide-object-highlights',!objectsOn);
+    root.classList.toggle('hide-context-highlights',!contextOn);
+  };
+  [['[data-highlight-identity]','negro.http.identity',true],['[data-highlight-objects]','negro.http.objects',true],['[data-highlight-context]','negro.http.context',false]].forEach(([sel,key,def])=>{
+    const el=document.querySelector(sel); if(!el) return;
+    const saved=localStorage.getItem(key); el.checked=saved===null?def:saved==='on';
+    el.addEventListener('change',()=>{localStorage.setItem(key,el.checked?'on':'off');apply();});
+  });
+  apply();
 })();

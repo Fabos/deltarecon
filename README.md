@@ -1,4 +1,4 @@
-> Current build: **v0.46.0** — Identity dossier, batch HTTP teaching and explainable Identity graph.
+> Current build: **v0.47.0** — HTTP focus mode, compact history, Objects-first UX and Burp Negro Context tabs.
 
 # Negro Recon 🐕 — v0.44.8
 

@@ -669,6 +669,8 @@ def _candidate_guidance(identifier_name: str) -> tuple[str, str]:
     compact = n.replace("_", "")
     if compact in {"id", "uuid", "ref", "reference", "identifier"}:
         return "generic", "Nombre demasiado genérico: mira el endpoint/response antes de decidir qué entidad representa."
+    if compact in {"userid", "memberid", "clientid", "accountid", "customerid", "buyerid", "sellerid", "username", "email"}:
+        return "identity", "Puede identificar al actor/cuenta. Antes de crear un Object, revisa si encaja mejor como RESOLVER de una Identity."
     if compact in {"ownerid", "roleid", "tenantid", "organizationid", "orgid"}:
         return "context", "Suele describir ownership, rol o contexto. Puede ser útil, pero no necesariamente es el objeto principal de esta request."
     if compact.endswith(("id", "uuid")) and len(compact) > 4:
@@ -689,7 +691,7 @@ def candidate_identifiers(conn, *, limit: int = 80) -> list[dict[str, Any]]:
            GROUP BY p.normalized_name ORDER BY observations DESC LIMIT 500"""
     ).fetchall()]
     out: list[dict[str, Any]] = []
-    rank = {"strong": 0, "context": 1, "generic": 2}
+    rank = {"strong": 0, "identity": 1, "context": 2, "generic": 3}
     for row in rows:
         name = str(row["normalized_name"] or "")
         if name in tracked or not _identifierish(name, str(row.get("sample_location") or "")):
@@ -698,6 +700,15 @@ def candidate_identifiers(conn, *, limit: int = 80) -> list[dict[str, Any]]:
         quality, guidance = _candidate_guidance(name)
         row["candidate_quality"] = quality
         row["candidate_guidance"] = guidance
+        sample = conn.execute(
+            """SELECT p.exchange_id,p.resource_id,p.location,o.method,r.path,h.hostname
+               FROM parameter_observations p JOIN http_exchanges e ON e.id=p.exchange_id
+               JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=p.resource_id
+               JOIN hosts h ON h.id=r.host_id WHERE p.id=?""",
+            (int(row["sample_observation_id"]),),
+        ).fetchone()
+        if sample:
+            row.update({f"sample_{k}": sample[k] for k in sample.keys()})
         out.append(row)
     out.sort(key=lambda x: (rank.get(str(x.get("candidate_quality")), 9), -int(x.get("observations") or 0), str(x.get("normalized_name") or "")))
     return out[: max(1, min(int(limit), 200))]

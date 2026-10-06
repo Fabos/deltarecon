@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.46.
+"""Local web workspace for Negro Recon v0.47.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -6196,6 +6196,114 @@ def create_app(default_domain: str, default_workspace: Path):
                     changed += scope_tools.set_host_scope(conn, host, status)
                     hosts_touched += 1
         return {"ok": True, "updated_exchanges": changed, "hosts_touched": hosts_touched}
+
+    @app.post("/api/bridge/context", response_class=JSONResponse)
+    async def bridge_context(request: Request):
+        """Return a compact, read-only Negro context summary for an exact Burp request.
+
+        This endpoint is intentionally cheap and side-effect free. Burp's custom editor
+        tab uses it asynchronously; teaching/editing remains in HTTP Inspector.
+        """
+        raw=(await request.body()).decode("utf-8", errors="replace")
+        parts=raw.split("\t", 2)
+        if len(parts) != 3:
+            return {"found": False, "text": "Negro Context\n\nSin request válida para consultar."}
+        _url, _method, request_b64 = parts
+        try:
+            request_bytes=base64.b64decode(request_b64 or "", validate=False)
+        except Exception:
+            request_bytes=b""
+        if not request_bytes:
+            return {"found": False, "text": "Negro Context\n\nRequest sin bytes disponibles."}
+        req_hash=hashlib.sha256(request_bytes).hexdigest()
+        best=None
+        for target in core.list_targets():
+            key=str(target.get("key") or "")
+            if not key:
+                continue
+            try:
+                workspace_raw=str(target.get("workspace") or "").strip()
+                if not workspace_raw:
+                    continue
+                paths=core.workspace_paths(Path(workspace_raw).expanduser())
+                if not paths["db_file"].exists():
+                    continue
+                with _db(paths) as conn:
+                    row=conn.execute(
+                        """SELECT e.id,e.environment,e.burp_scope_status,e.last_seen_at,o.method,r.path,h.hostname
+                           FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                           JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+                           WHERE e.request_hash=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 1""",
+                        (req_hash,),
+                    ).fetchone()
+                    if not row:
+                        continue
+                    candidate=(str(row["last_seen_at"] or ""), key, dict(row))
+                    if best is None or candidate[0] > best[0]:
+                        best=candidate
+            except Exception:
+                continue
+        if best is None:
+            return {"found": False, "text": "Negro Context\n\nEsta Request todavía no tiene evidencia exacta en Negro.\nCaptúrala con el Bridge o ábrela en HTTP Inspector."}
+        _, target_key, ex=best
+        target=core.get_target(target_key) or {}
+        paths=core.workspace_paths(Path(str(target.get("workspace") or "")).expanduser())
+        lines=[
+            "Negro Context",
+            "",
+            f"Proyecto: {target_key}",
+            f"Request: #{ex['id']} · {ex.get('method') or ''} {ex.get('path') or ''}",
+            f"Host: {ex.get('hostname') or ''}",
+            f"Environment: {ex.get('environment') or 'UNKNOWN'} · Scope: {ex.get('burp_scope_status') or 'UNKNOWN'}",
+        ]
+        with _db(paths) as conn:
+            try:
+                identity_rows=conn.execute(
+                    """SELECT DISTINCT i.name,ei.source FROM exchange_identities ei
+                       JOIN identities i ON i.id=ei.identity_id WHERE ei.exchange_id=? ORDER BY i.name""",
+                    (int(ex["id"]),),
+                ).fetchall()
+            except Exception:
+                identity_rows=[]
+            if identity_rows:
+                lines += ["", "IDENTITY"]
+                for r in identity_rows:
+                    lines.append(f"  {r['name']} · {r['source']}")
+            try:
+                ann_rows=conn.execute(
+                    """SELECT a.classification,a.side,a.location,a.key_name,a.value_preview,a.object_type,i.name identity_name
+                       FROM http_value_annotations a LEFT JOIN identities i ON i.id=a.identity_id
+                       WHERE a.exchange_id=? AND a.classification!='ignore'
+                       ORDER BY CASE a.classification WHEN 'auth' THEN 1 WHEN 'resolver' THEN 2 WHEN 'context' THEN 3 WHEN 'entity' THEN 4 ELSE 9 END,a.id""",
+                    (int(ex["id"]),),
+                ).fetchall()
+            except Exception:
+                ann_rows=[]
+            if ann_rows:
+                lines += ["", "EVIDENCIA APRENDIDA"]
+                for r in ann_rows:
+                    cls=str(r["classification"] or "").upper()
+                    owner=str(r["identity_name"] or r["object_type"] or "")
+                    val=str(r["value_preview"] or "")
+                    if len(val)>90: val=val[:87]+"..."
+                    suffix=f" · {owner}" if owner else ""
+                    lines.append(f"  [{cls}] {r['key_name']} = {val}{suffix}")
+            try:
+                obj_rows=conn.execute(
+                    """SELECT DISTINCT bt.name,bo.identifier_preview,bo.identifier_raw
+                       FROM business_object_observations boo JOIN business_objects bo ON bo.id=boo.business_object_id
+                       JOIN business_object_types bt ON bt.id=bo.object_type_id
+                       WHERE boo.exchange_id=? ORDER BY bt.name,bo.id LIMIT 30""",
+                    (int(ex["id"]),),
+                ).fetchall()
+            except Exception:
+                obj_rows=[]
+            if obj_rows:
+                lines += ["", "OBJECTS"]
+                for r in obj_rows:
+                    lines.append(f"  {r['name']} · {r['identifier_raw'] or r['identifier_preview'] or ''}")
+        lines += ["", f"Abrir: http://127.0.0.1:8765/t/{target_key}/exchange/{int(ex['id'])}/inspect"]
+        return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines)}
 
     @app.get("/api/ingest/health", response_class=JSONResponse)
     def ingest_health():

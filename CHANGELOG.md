@@ -1,3 +1,12 @@
+## v0.47.0 · HTTP focus mode + compact history + Objects UX + Burp Context
+
+- HTTP Request/Response panes start with line wrapping enabled and remember the researcher preference.
+- Request Workbench adds persistent highlight toggles for Identity and Business Objects without changing stored evidence.
+- Repeated variants are compacted: the newest/focused Request stays primary and older variants live under a collapsed history drawer.
+- Objects now leads with taught object types/instances; raw candidates are secondary and collapsed by default.
+- Burp Bridge v0.34.0 adds read-only `Negro Context` request/response editor tabs. They query Negro asynchronously and summarize the Identity/Object/Context already learned for the exact captured Request.
+- The Burp context tabs are visualization only; teaching/editing remains in Negro HTTP Inspector.
+
 ## v0.46.0 · Identity dossier + Burp → HTTP teaching flow + explainable graph
 
 - Burp Identity create/assign now returns directly to the HTTP Inspector with the chosen Identity preselected, so the researcher teaches AUTH / RESOLVER / CONTEXT / ENTITY / IGNORE from the real Request/Response.
