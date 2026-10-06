@@ -52,7 +52,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.34.0
+ * Negro Burp Bridge v0.35.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -88,7 +88,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.34.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.35.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -242,15 +242,15 @@ public class NegroBurpBridge implements BurpExtension {
                 });
     }
 
-    private void loadNegroContextAsync(HttpRequestResponse pair, JTextArea area) {
+    private void loadNegroContextAsync(HttpRequestResponse pair, JEditorPane area, String side) {
         if (pair == null || pair.request() == null) {
-            area.setText("Negro Context\n\nSin Request disponible.");
+            area.setText("<html><body><b>Negro Context</b><br><br>Sin Request disponible.</body></html>");
             return;
         }
         HttpRequest req = pair.request();
         String requestB64 = Base64.getEncoder().encodeToString(req.toByteArray().getBytes());
         String body = req.url() + "\t" + req.method() + "\t" + requestB64;
-        area.setText("Negro Context\n\nConsultando contexto aprendido…");
+        area.setText("<html><body><b>Negro Context</b><br><br>Consultando contexto aprendido…</body></html>");
         java.net.http.HttpRequest httpReq = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/bridge/context"))
                 .timeout(Duration.ofSeconds(4))
@@ -258,25 +258,31 @@ public class NegroBurpBridge implements BurpExtension {
                 .POST(BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
         client.sendAsync(httpReq, BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenAccept(resp -> {
-                    String text = resp.statusCode() == 200 ? jsonString(resp.body(), "text") : null;
-                    String rendered = text == null || text.isBlank()
-                            ? "Negro Context\n\nNegro respondió HTTP " + resp.statusCode()
-                            : text;
+                    String html = resp.statusCode() == 200 ? jsonString(resp.body(), "response".equals(side) ? "response_html" : "request_html") : null;
+                    String rendered = html == null || html.isBlank()
+                            ? "<html><body><b>Negro Context</b><br><br>Negro respondió HTTP " + resp.statusCode() + "</body></html>"
+                            : html;
                     SwingUtilities.invokeLater(() -> { area.setText(rendered); area.setCaretPosition(0); });
                 })
                 .exceptionally(ex -> {
-                    SwingUtilities.invokeLater(() -> area.setText("Negro Context\n\nNegro no disponible: " + ex.getClass().getSimpleName()));
+                    SwingUtilities.invokeLater(() -> area.setText("<html><body><b>Negro Context</b><br><br>Negro no disponible: " + ex.getClass().getSimpleName() + "</body></html>"));
                     return null;
                 });
     }
 
-    private JTextArea contextTextArea() {
-        JTextArea area = new JTextArea();
+    private JEditorPane contextPane() {
+        JEditorPane area = new JEditorPane();
         area.setEditable(false);
-        area.setLineWrap(true);
-        area.setWrapStyleWord(true);
+        area.setContentType("text/html");
+        area.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
         area.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        area.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        area.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        area.addHyperlinkListener(ev -> {
+            if (ev.getEventType() == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED && ev.getURL() != null) {
+                try { Desktop.getDesktop().browse(ev.getURL().toURI()); }
+                catch (Exception ex) { api.logging().logToError("Negro Context no pudo abrir Inspector: " + ex.getMessage()); }
+            }
+        });
         return area;
     }
 
@@ -284,9 +290,9 @@ public class NegroBurpBridge implements BurpExtension {
         @Override
         public ExtensionProvidedHttpRequestEditor provideHttpRequestEditor(EditorCreationContext context) {
             return new ExtensionProvidedHttpRequestEditor() {
-                private final JTextArea area = contextTextArea();
+                private final JEditorPane area = contextPane();
                 private HttpRequest currentRequest;
-                @Override public void setRequestResponse(HttpRequestResponse pair) { currentRequest = pair == null ? null : pair.request(); loadNegroContextAsync(pair, area); }
+                @Override public void setRequestResponse(HttpRequestResponse pair) { currentRequest = pair == null ? null : pair.request(); loadNegroContextAsync(pair, area, "request"); }
                 @Override public HttpRequest getRequest() { return currentRequest; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
@@ -301,9 +307,9 @@ public class NegroBurpBridge implements BurpExtension {
         @Override
         public ExtensionProvidedHttpResponseEditor provideHttpResponseEditor(EditorCreationContext context) {
             return new ExtensionProvidedHttpResponseEditor() {
-                private final JTextArea area = contextTextArea();
+                private final JEditorPane area = contextPane();
                 private HttpResponse currentResponse;
-                @Override public void setRequestResponse(HttpRequestResponse pair) { currentResponse = pair == null ? null : pair.response(); loadNegroContextAsync(pair, area); }
+                @Override public void setRequestResponse(HttpRequestResponse pair) { currentResponse = pair == null ? null : pair.response(); loadNegroContextAsync(pair, area, "response"); }
                 @Override public HttpResponse getResponse() { return currentResponse; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
@@ -350,7 +356,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.34.0")
+                    .header("X-Negro-Bridge-Version", "0.35.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an

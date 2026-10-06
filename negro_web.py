@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import re
 import secrets
@@ -1641,7 +1642,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["focused"] = bool(focus_exchange_id and int(ex["id"]) == int(focus_exchange_id))
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
-                exd["annotations"] = [dict(a) for a in conn.execute("SELECT * FROM http_value_annotations WHERE exchange_id=? ORDER BY id", (int(ex["id"]),)).fetchall()]
+                exd["annotations"] = http_inspector.learned_annotations(conn, int(ex["id"]))
                 exd["annotation_counts"] = {}
                 for _a in exd["annotations"]:
                     _cls = str(_a.get("classification") or "ignore")
@@ -5481,7 +5482,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if not inspector:
                 raise HTTPException(status_code=404, detail="Request no encontrada")
             identities = identity_tools.list_identities(conn)
-            anns = inspector.get("annotations") or []
+            anns = http_inspector.learned_annotations(conn, int(exchange_id))
             request_highlighted = http_inspector.highlighted_html(inspector.get("request_text") or "", anns, "request")
             response_highlighted = http_inspector.highlighted_html(inspector.get("response_text") or "", anns, "response")
         return render(request, "http_inspector.html", target_key, domain, workspace,
@@ -6257,6 +6258,12 @@ def create_app(default_domain: str, default_workspace: Path):
             f"Environment: {ex.get('environment') or 'UNKNOWN'} · Scope: {ex.get('burp_scope_status') or 'UNKNOWN'}",
         ]
         with _db(paths) as conn:
+            http_row = conn.execute("SELECT request_b64,response_b64 FROM http_exchanges WHERE id=?", (int(ex["id"]),)).fetchone()
+            request_text = _decode_http_blob(http_row["request_b64"] if http_row else None)
+            response_text = _decode_http_blob(http_row["response_b64"] if http_row else None)
+            learned_anns = http_inspector.learned_annotations(conn, int(ex["id"]))
+            request_annotated = http_inspector.highlighted_html(request_text, learned_anns, "request")
+            response_annotated = http_inspector.highlighted_html(response_text, learned_anns, "response")
             try:
                 identity_rows=conn.execute(
                     """SELECT DISTINCT i.name,ei.source FROM exchange_identities ei
@@ -6302,8 +6309,13 @@ def create_app(default_domain: str, default_workspace: Path):
                 lines += ["", "OBJECTS"]
                 for r in obj_rows:
                     lines.append(f"  {r['name']} · {r['identifier_raw'] or r['identifier_preview'] or ''}")
-        lines += ["", f"Abrir: http://127.0.0.1:8765/t/{target_key}/exchange/{int(ex['id'])}/inspect"]
-        return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines)}
+        inspector_url=f"http://127.0.0.1:8765/t/{target_key}/exchange/{int(ex['id'])}/inspect"
+        lines += ["", f"Abrir: {inspector_url}"]
+        css = """body{font-family:monospace;background:#101417;color:#d6dde1;margin:0;padding:10px} .meta{font-family:sans-serif;font-size:12px;color:#aab5bb;margin-bottom:10px}.meta b{color:#e8eef1} pre{white-space:pre-wrap;word-break:break-word;line-height:1.42;margin:0}.http-annotation{border-radius:3px;padding:0 1px;font-weight:700}.http-ann-auth{background:#38552e;color:#eaffdd;outline:1px solid #79b65f}.http-ann-resolver{background:#233f5a;color:#d8edff;text-decoration:underline 2px #78aee0}.http-ann-context{background:#403357;color:#f0e4ff;border-bottom:2px dashed #a982d0}.http-ann-entity{background:#553c22;color:#ffe8cb;border:1px solid #c7904f}.legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.pill{border:1px solid #40505a;border-radius:12px;padding:2px 6px;font-size:10px}.open{color:#b5f36b} """
+        meta = f"<div class='meta'><b>Negro Context</b> · {html.escape(target_key)} · Request #{int(ex['id'])} · {html.escape(str(ex.get('environment') or 'UNKNOWN'))} · {html.escape(str(ex.get('burp_scope_status') or 'UNKNOWN'))}<div class='legend'><span class='pill'>AUTH</span><span class='pill'>RESOLVER</span><span class='pill'>CONTEXT</span><span class='pill'>ENTITY</span></div><div><a class='open' href='{html.escape(inspector_url)}'>Open in Negro Inspector</a></div></div>"
+        request_html=f"<html><head><style>{css}</style></head><body>{meta}<pre>{request_annotated}</pre></body></html>"
+        response_html=f"<html><head><style>{css}</style></head><body>{meta}<pre>{response_annotated or html.escape(response_text)}</pre></body></html>"
+        return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines), "request_html": request_html, "response_html": response_html, "inspector_url": inspector_url}
 
     @app.get("/api/ingest/health", response_class=JSONResponse)
     def ingest_health():

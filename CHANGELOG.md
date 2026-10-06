@@ -1,3 +1,12 @@
+# v0.47.1 · Inline Context Rendering
+
+- HTTP Workbench e Inspector ahora proyectan evidencia aprendida de Identity/Object sobre Requests futuras, no sólo anotaciones guardadas en el exchange original.
+- Matching conservador: path+valor primero; key+valor sólo como fallback semántico.
+- Highlights visibles `AUTH · Identity`, `RESOLVER · Identity`, `CONTEXT · Identity` y `ENTITY · Type`.
+- Tooltips explican por qué existe el highlight y, cuando aplica, en qué Request se aprendió.
+- `Negro Context` de Burp ahora muestra Request/Response HTTP completos con el mismo contexto resaltado y enlace a HTTP Inspector.
+- Bridge v0.35.0.
+
 ## v0.47.0 · HTTP focus mode + compact history + Objects UX + Burp Context
 
 - HTTP Request/Response panes start with line wrapping enabled and remember the researcher preference.

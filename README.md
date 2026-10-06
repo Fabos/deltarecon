@@ -2,6 +2,11 @@
 
 # Negro Recon 🐕 — v0.44.8
 
+## v0.47.1 · Contexto inline explicable
+
+Los valores enseñados como AUTH/RESOLVER/CONTEXT/ENTITY se proyectan sobre Requests y Responses compatibles. Negro prefiere coincidencia de path+valor y usa key+valor sólo como fallback conservador. El visor muestra badges inline y tooltip con la razón. Burp Bridge v0.35.0 usa la pestaña `Negro Context` como visor HTTP contextual, no como simple resumen.
+
+
 ## v0.44.6 — Scope por proyecto + Runner migration hotfix
 
 - Burp es la fuente de verdad del scope activo. Negro conserva el tráfico excluido como evidencia y lo etiqueta `EXCLUDED`.

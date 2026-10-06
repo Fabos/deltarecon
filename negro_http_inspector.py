@@ -380,20 +380,216 @@ def annotation_css(cls: str) -> str:
     return {"auth":"http-ann-auth","resolver":"http-ann-resolver","context":"http-ann-context","entity":"http-ann-entity","ignore":""}.get(cls, "")
 
 
+def _normalized_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9_]", "", str(value or "").strip().lower().replace("-", "_"))
+
+def _auth_fingerprint_candidates(item: dict[str, Any]) -> set[str]:
+    value = str(item.get("value") or "").strip()
+    out = {sha(value)} if value else set()
+    jwt = jwt_parts(value)
+    if jwt:
+        out.add(sha(str(jwt.get("token") or "")))
+    if value.lower().startswith("bearer "):
+        out.add(sha(value[7:].strip()))
+    return {x for x in out if x}
+
+def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
+    """Return explicit + learned annotations applicable to one exchange.
+
+    Explicit annotations on the exchange always win. Learned matches are projected
+    conservatively from active Identity auth/resolvers/context evidence and taught
+    Business Object identifiers. Exact path+value is preferred; key+value is a
+    fallback only when the learned evidence used the same semantic key.
+    """
+    init_schema(conn)
+    try:
+        import negro_identity as identity_tools
+        import negro_objects as object_tools
+        identity_tools.init_schema(conn); object_tools.init_schema(conn)
+    except Exception:
+        pass
+    payload = extract_exchange(conn, int(exchange_id))
+    if not payload:
+        return []
+    values = payload.get("values") or []
+    explicit = [dict(a) for a in payload.get("annotations") or []]
+    out = list(explicit)
+    explicit_keys = {(str(a.get("side")), str(a.get("location")), str(a.get("key_name")), str(a.get("value_hash"))) for a in explicit}
+
+    identities = {int(r["id"]): str(r["name"]) for r in conn.execute("SELECT id,name FROM identities").fetchall()} if _table_exists(conn, "identities") else {}
+    for a in out:
+        iid=int(a.get("identity_id") or 0)
+        if iid and not a.get("identity_name"):
+            a["identity_name"] = identities.get(iid, "")
+        a.setdefault("match_reason", "explicit teaching")
+        a.setdefault("source_exchange_id", int(exchange_id))
+
+    # Active AUTH material. Match the actual secret/token value, not the display name.
+    auth_rows = []
+    if _table_exists(conn, "auth_materials"):
+        auth_rows = [dict(r) for r in conn.execute("SELECT * FROM auth_materials WHERE active=1 AND COALESCE(classification,'auth')='auth'").fetchall()]
+    auth_by_fp: dict[str, list[dict[str, Any]]] = {}
+    for r in auth_rows:
+        auth_by_fp.setdefault(str(r.get("fingerprint") or ""), []).append(r)
+
+    # Resolver knowledge with the original key, when available.
+    resolver_rows = []
+    if _table_exists(conn, "identity_resolvers"):
+        resolver_rows = [dict(r) for r in conn.execute("SELECT * FROM identity_resolvers WHERE enabled=1 AND COALESCE(classification,'resolver')='resolver'").fetchall()]
+    anchor_key: dict[tuple[int,str,str], str] = {}
+    if resolver_rows:
+        try:
+            for r in conn.execute("""SELECT a.identity_id,a.location,a.value_hash,a.key_name FROM http_value_annotations a
+                                      WHERE a.classification='resolver' AND a.identity_id IS NOT NULL""").fetchall():
+                anchor_key[(int(r["identity_id"]), str(r["location"]), str(r["value_hash"]))] = str(r["key_name"] or "")
+        except Exception:
+            pass
+
+    # CONTEXT is annotation-led; project previously taught same path/key/value.
+    context_rows = []
+    try:
+        context_rows = [dict(r) for r in conn.execute("""SELECT a.*,i.name identity_name FROM http_value_annotations a
+                    LEFT JOIN identities i ON i.id=a.identity_id
+                    WHERE a.classification='context' AND a.identity_id IS NOT NULL""").fetchall()]
+    except Exception:
+        pass
+
+    # Taught entities are backed by object identifiers and concrete object values.
+    entity_map: dict[tuple[str,str], list[dict[str, Any]]] = {}
+    try:
+        for r in conn.execute("""SELECT bi.normalized_name,bo.identifier_hash,bt.name object_type,bo.identifier_raw,bo.identifier_preview
+            FROM business_object_identifiers bi JOIN business_object_types bt ON bt.id=bi.object_type_id
+            JOIN business_objects bo ON bo.object_type_id=bt.id""").fetchall():
+            entity_map.setdefault((_normalized_key(r["normalized_name"]), str(r["identifier_hash"])), []).append(dict(r))
+    except Exception:
+        pass
+
+    def add(item: dict[str, Any], cls: str, *, identity_id: int|None=None, identity_name: str="", object_type: str="", source_exchange_id: int|None=None, match_reason: str="learned"):
+        ek=(str(item.get("side")),str(item.get("location")),str(item.get("key")),str(item.get("value_hash")))
+        if ek in explicit_keys:
+            return
+        # Do not add duplicate learned meaning for the same exact observation/class/owner.
+        sig=(ek,cls,int(identity_id or 0),object_type)
+        for a in out:
+            if ( (str(a.get("side")),str(a.get("location")),str(a.get("key_name")),str(a.get("value_hash"))), str(a.get("classification")), int(a.get("identity_id") or 0), str(a.get("object_type") or "") ) == sig:
+                return
+        out.append({
+            "id": None, "exchange_id": int(exchange_id), "side": item.get("side"), "location": item.get("location"),
+            "key_name": item.get("key"), "value_hash": item.get("value_hash"), "value_preview": item.get("preview"),
+            "value_raw": item.get("value"), "classification": cls, "identity_id": identity_id, "identity_name": identity_name,
+            "object_type": object_type or None, "source": "learned", "source_exchange_id": source_exchange_id,
+            "match_reason": match_reason,
+        })
+
+    for item in values:
+        # AUTH
+        for fp in _auth_fingerprint_candidates(item):
+            for r in auth_by_fp.get(fp, []):
+                iid=int(r.get("identity_id") or 0) or None
+                add(item,"auth",identity_id=iid,identity_name=identities.get(iid or 0,""),match_reason="auth value/fingerprint")
+        # RESOLVER
+        for r in resolver_rows:
+            if str(r.get("value_hash") or "") != str(item.get("value_hash") or ""):
+                continue
+            iid=int(r.get("identity_id") or 0) or None
+            selector=str(r.get("selector") or "")
+            learned_key=anchor_key.get((iid or 0, selector, str(r.get("value_hash") or "")), "")
+            exact_path = selector == str(item.get("location") or "")
+            same_key = bool(learned_key) and _normalized_key(learned_key)==_normalized_key(str(item.get("key") or ""))
+            if exact_path or same_key:
+                add(item,"resolver",identity_id=iid,identity_name=identities.get(iid or 0,""),source_exchange_id=r.get("anchor_exchange_id"),match_reason="resolver path+value" if exact_path else "resolver key+value")
+        # CONTEXT
+        for r in context_rows:
+            if str(r.get("value_hash") or "") != str(item.get("value_hash") or ""):
+                continue
+            exact_path=str(r.get("location") or "")==str(item.get("location") or "")
+            same_key=_normalized_key(str(r.get("key_name") or ""))==_normalized_key(str(item.get("key") or ""))
+            if exact_path or same_key:
+                iid=int(r.get("identity_id") or 0) or None
+                add(item,"context",identity_id=iid,identity_name=str(r.get("identity_name") or identities.get(iid or 0,"")),source_exchange_id=r.get("exchange_id"),match_reason="context path+value" if exact_path else "context key+value")
+        # ENTITY
+        for er in entity_map.get((_normalized_key(str(item.get("key") or "")), str(item.get("value_hash") or "")), []):
+            add(item,"entity",object_type=str(er.get("object_type") or ""),match_reason="entity identifier key+value")
+    return out
+
+def _table_exists(conn, name: str) -> bool:
+    try:
+        return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+    except Exception:
+        return False
+
+def _annotation_label(a: dict[str, Any]) -> str:
+    cls=str(a.get("classification") or "").upper()
+    owner=str(a.get("identity_name") or a.get("object_type") or "").strip()
+    return f"{cls} · {owner}" if owner else cls
+
+def _span_ranges(text: str, a: dict[str, Any]) -> list[tuple[int,int]]:
+    """Locate an observation using its structural location when possible."""
+    value=str(a.get("value_raw") or a.get("value_preview") or "")
+    if not value: return []
+    loc=str(a.get("location") or ""); key=str(a.get("key_name") or "")
+    ranges=[]
+    # Headers: match the named header first, then the exact value within that line.
+    if "_header:" in loc:
+        target=loc.split(":",1)[1]
+        for m in re.finditer(rf"(?mi)^(?P<name>{re.escape(target)})\s*:\s*(?P<val>[^\r\n]*)\r?$", text):
+            lineval=m.group("val"); idx=lineval.find(value)
+            if idx>=0:
+                st=m.start("val")+idx; ranges.append((st,st+len(value)))
+        return ranges
+    # Cookies: constrain by cookie name.
+    if "_cookie:" in loc:
+        cname=loc.split(":",1)[1]
+        for m in re.finditer(rf"(?i)(?:^|[;,:]\s*){re.escape(cname)}\s*=\s*(?P<val>[^;\r\n]+)", text):
+            vv=m.group("val").strip(); idx=vv.find(value)
+            if idx>=0:
+                st=m.start("val") + (len(m.group("val"))-len(m.group("val").lstrip())) + idx; ranges.append((st,st+len(value)))
+        return ranges
+    # JSON/form/query: same semantic key plus value. This is conservative enough
+    # to avoid painting every equal scalar elsewhere in a large message.
+    if "_json:" in loc:
+        # JSON string or scalar. Locate key then the exact raw value after it.
+        for km in re.finditer(rf'(?s)"{re.escape(key)}"\s*:\s*', text):
+            window=text[km.end():km.end()+max(256,len(value)+32)]
+            vi=window.find(value)
+            if vi>=0:
+                st=km.end()+vi; ranges.append((st,st+len(value)))
+        return ranges
+    if "_query:" in loc or "_form:" in loc:
+        for m in re.finditer(rf"(?:^|[?&]){re.escape(key)}=(?P<val>[^&\s]*)", text):
+            vv=urllib.parse.unquote_plus(m.group("val"));
+            if vv==value:
+                ranges.append((m.start("val"),m.end("val")))
+        return ranges
+    # Fallback only when the exact value is unique in the message.
+    starts=[m.start() for m in re.finditer(re.escape(value), text)]
+    if len(starts)==1:
+        ranges=[(starts[0],starts[0]+len(value))]
+    return ranges
+
 def highlighted_html(text: str, annotations: list[dict[str, Any]], side: str) -> str:
-    # Highlight values conservatively. Longest first avoids highlighting a small ID
-    # inside a larger token. IGNORE remains unstyled but its decision is preserved.
-    raw = html.escape(text or "")
-    relevant = [a for a in annotations if a.get("side") == side and a.get("classification") != "ignore" and (a.get("value_raw") or a.get("value_preview"))]
-    relevant.sort(key=lambda a: len(str(a.get("value_raw") or a.get("value_preview") or "")), reverse=True)
-    for a in relevant[:100]:
-        value = str(a.get("value_raw") or a.get("value_preview") or "")
-        if not value or len(value) > 5000:
-            continue
-        escaped = html.escape(value)
-        css = annotation_css(str(a.get("classification") or ""))
-        label = html.escape(str(a.get("classification") or "").upper())
-        title = html.escape(f"{label} · {a.get('key_name') or ''}")
-        replacement = f'<mark class="http-annotation {css}" title="{title}">{escaped}</mark>'
-        raw = raw.replace(escaped, replacement)
-    return raw
+    """Render precise inline annotations without corrupting nested HTML replacements."""
+    text=str(text or "")
+    relevant=[a for a in annotations if str(a.get("side"))==side and str(a.get("classification"))!="ignore" and (a.get("value_raw") or a.get("value_preview"))]
+    spans=[]
+    occupied=[]
+    # Stronger/longer evidence wins overlapping ranges.
+    priority={"auth":4,"resolver":3,"entity":2,"context":1}
+    relevant.sort(key=lambda a:(priority.get(str(a.get("classification")),0),len(str(a.get("value_raw") or a.get("value_preview") or ""))),reverse=True)
+    for a in relevant[:250]:
+        for st,en in _span_ranges(text,a):
+            if st<0 or en<=st: continue
+            if any(not (en<=x or st>=y) for x,y in occupied): continue
+            occupied.append((st,en)); spans.append((st,en,a))
+    spans.sort(key=lambda x:x[0])
+    out=[]; pos=0
+    for st,en,a in spans:
+        out.append(html.escape(text[pos:st]))
+        css=annotation_css(str(a.get("classification") or "")); label=_annotation_label(a)
+        title=label
+        if a.get("match_reason"): title += f" · {a.get('match_reason')}"
+        if a.get("source_exchange_id"): title += f" · aprendido en Request #{a.get('source_exchange_id')}"
+        out.append(f'<span class="http-annotation {css}" data-label="{html.escape(label)}" title="{html.escape(title)}">{html.escape(text[st:en])}</span>')
+        pos=en
+    out.append(html.escape(text[pos:]))
+    return ''.join(out)
