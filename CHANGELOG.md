@@ -1,3 +1,10 @@
+# v0.47.3 · Identity source-of-truth + reliable projection
+
+- HTTP Inspector annotations are now projected directly into Workbench/Burp.
+- Identity page audits explicit AUTH/RESOLVER/CONTEXT teaching with HTTP provenance.
+- Rotated JWTs can be attributed via active JWT claim resolvers.
+- Bridge remains v0.36.0.
+
 # v0.47.2 · Shared HTTP Renderer + Burp Wrap
 - Workbench reuses the same learned annotation renderer as HTTP Inspector and exposes Identity/Object/Context toggles.
 - Negro Context in Burp uses a wrapping editor pane and soft-wrap hints so JWT/cookies no longer require horizontal scrolling.

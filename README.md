@@ -1,3 +1,6 @@
+## v0.47.3 · Identity source-of-truth + reliable projection
+El HTTP Inspector pasa a ser fuente directa de proyección para Workbench/Burp. La ficha Identity añade un auditor explícito de AUTH/RESOLVER/CONTEXT enseñados, con pivote al HTTP de origen. JWT rotados pueden inferirse como AUTH cuando un claim activo resuelve a la Identity. Bridge sigue en v0.36.0.
+
 ## v0.47.2 · Shared renderer + Burp wrap
 El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido. `Negro Context` en Burp hace wrap por defecto, incluido en JWT/cookies largos, y mantiene los badges inline. Bridge v0.36.0.
 

@@ -1079,6 +1079,25 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
     ).fetchall()]
     for ex in exchanges:
         ex["why"] = attribution_evidence(conn, int(ex["exchange_id"]), int(identity_id))
+    # Direct audit of what the researcher explicitly taught in HTTP Inspector.
+    # This is intentionally independent from derived auth_materials/resolvers so
+    # the Identity page can always answer: “what exactly identifies this actor?”
+    try:
+        taught = [dict(r) for r in conn.execute("""SELECT a.*,h.hostname,r.path,o.method
+            FROM http_value_annotations a
+            JOIN http_exchanges e ON e.id=a.exchange_id
+            JOIN resource_operations o ON o.id=e.operation_id
+            JOIN resources r ON r.id=o.resource_id
+            JOIN hosts h ON h.id=r.host_id
+            WHERE a.identity_id=? AND a.classification IN ('auth','resolver','context')
+            ORDER BY CASE a.classification WHEN 'auth' THEN 1 WHEN 'resolver' THEN 2 WHEN 'context' THEN 3 ELSE 9 END,a.updated_at DESC,a.id DESC""", (int(identity_id),)).fetchall()]
+    except Exception:
+        taught = []
+    taught_grouped={
+        "auth":[x for x in taught if str(x.get("classification"))=="auth"],
+        "resolver":[x for x in taught if str(x.get("classification"))=="resolver"],
+        "context":[x for x in taught if str(x.get("classification"))=="context"],
+    }
     grouped_evidence = {
         "auth": [m for m in materials if str(m.get("classification") or "auth") == "auth" and int(m.get("active") or 0)],
         "resolvers": [r for r in resolvers if str(r.get("classification") or "resolver") == "resolver" and int(r.get("enabled") or 0)],
@@ -1089,7 +1108,7 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
         "requests": request_count, "endpoints": endpoint_count, "flows": flow_count, "objects": object_count,
         "actions": actions, "pivots": pivots,
     }
-    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "grouped_evidence": grouped_evidence, "exchanges": exchanges, "activity": activity}
+    return {"identity": dict(identity), "contexts": ctx, "materials": materials, "resolvers": resolvers, "grouped_evidence": grouped_evidence, "taught_evidence": taught, "taught_grouped": taught_grouped, "exchanges": exchanges, "activity": activity}
 
 
 def assignment_context(conn, exchange_id: int) -> dict[str, Any] | None:

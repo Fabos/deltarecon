@@ -445,6 +445,19 @@ def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
         except Exception:
             pass
 
+    # Explicit HTTP Inspector decisions are the primary source of truth for
+    # projection across Workbench/Burp. Derived auth/resolver tables remain useful
+    # for replay/attribution, but a UI must never lose a researcher decision just
+    # because that secondary layer is stale.
+    explicit_rules = []
+    try:
+        explicit_rules = [dict(r) for r in conn.execute("""SELECT a.*,i.name identity_name
+            FROM http_value_annotations a LEFT JOIN identities i ON i.id=a.identity_id
+            WHERE a.classification IN ('auth','resolver','context','entity')
+            ORDER BY a.updated_at DESC,a.id DESC""").fetchall()]
+    except Exception:
+        explicit_rules = []
+
     # CONTEXT is annotation-led; project previously taught same path/key/value.
     context_rows = []
     try:
@@ -482,6 +495,49 @@ def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
         })
 
     for item in values:
+        # Direct projection from explicit Inspector teaching. This intentionally
+        # prefers same path+value, then same semantic key+value. AUTH may also match
+        # the exact secret value across locations (e.g. response token -> Bearer).
+        for r in explicit_rules:
+            cls=str(r.get("classification") or "")
+            if str(r.get("value_hash") or "") != str(item.get("value_hash") or ""):
+                continue
+            exact_path=str(r.get("location") or "")==str(item.get("location") or "")
+            same_key=_normalized_key(str(r.get("key_name") or ""))==_normalized_key(str(item.get("key") or ""))
+            auth_value = cls=="auth"
+            if exact_path or same_key or auth_value:
+                iid=int(r.get("identity_id") or 0) or None
+                add(item,cls,identity_id=iid,identity_name=str(r.get("identity_name") or identities.get(iid or 0,"")),
+                    object_type=str(r.get("object_type") or ""),source_exchange_id=r.get("exchange_id"),
+                    match_reason=("explicit auth value" if auth_value and not (exact_path or same_key) else ("explicit path+value" if exact_path else "explicit key+value")))
+
+        # If the value itself is a JWT, use an active jwt_claim resolver to infer
+        # the actor and annotate the whole token as AUTH. This makes rotated login
+        # tokens explainable in Workbench/Burp without requiring the exact token
+        # bytes to have been seen before.
+        parsed_jwt = jwt_parts(str(item.get("value") or ""))
+        if parsed_jwt and isinstance(parsed_jwt.get("claims"), dict):
+            claims=parsed_jwt.get("claims") or {}
+            for rr in resolver_rows:
+                selector=str(rr.get("selector") or "")
+                rtype=str(rr.get("resolver_type") or "")
+                # Claims taught from HTTP Inspector are stored as http_value with
+                # a selector ending in #jwt:<claim>. Older flows may use jwt_claim.
+                if rtype == "jwt_claim":
+                    claim_name=selector.split(".")[-1].split(":")[-1]
+                elif "#jwt:" in selector:
+                    claim_name=selector.rsplit("#jwt:",1)[1]
+                else:
+                    continue
+                if claim_name not in claims:
+                    continue
+                cv=str(claims.get(claim_name))
+                if sha(cv) != str(rr.get("value_hash") or ""):
+                    continue
+                iid=int(rr.get("identity_id") or 0) or None
+                add(item,"auth",identity_id=iid,identity_name=identities.get(iid or 0,""),
+                    source_exchange_id=rr.get("anchor_exchange_id"),match_reason=f"JWT claim {claim_name} resolver")
+
         # AUTH
         for fp in _auth_fingerprint_candidates(item):
             for r in auth_by_fp.get(fp, []):

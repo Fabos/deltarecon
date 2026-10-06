@@ -11,6 +11,19 @@
 {% if assigned_exchange %}<div class="callout success"><b>Request #{{ assigned_exchange }} asociada a {{ i.name }}.</b> Ahora puedes abrir su HTTP Inspector para decidir exactamente qué evidencia debe ser AUTH, RESOLVER, CONTEXT o IGNORE.</div>{% endif %}
 <div class="callout info"><b>Esta es la ficha viva de {{ i.name }}.</b> Aquí ves qué usa Negro para autenticar, reconocer y contextualizar al actor, y todos los endpoints/Requests relacionados. Cada relación conserva un pivote hacia la evidencia HTTP.</div>
 
+<section class="panel identity-taught-audit" id="identity-evidence">
+  <div class="panel-head"><div><p class="eyebrow">FUENTE DE VERDAD · HTTP INSPECTOR</p><h2>Lo que tú enseñaste que identifica a {{ i.name }}</h2><p class="muted">Estas son las decisiones explícitas guardadas desde Request/Response. Si aquí aparece un RESOLVER, Negro lo considera una pista para reconocer a {{ i.name }}; AUTH es material de sesión y CONTEXT describe rol/tenant.</p></div><span>{{ identity_detail.taught_evidence|length }}</span></div>
+  <div class="identity-taught-columns">
+    {% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT')] %}
+    <div class="identity-taught-column kind-{{ cls }}"><h3>{{ label }} · {{ identity_detail.taught_grouped[cls]|length }}</h3>
+      {% for x in identity_detail.taught_grouped[cls] %}
+      <article class="identity-taught-item"><div class="identity-taught-main"><b>{{ x.key_name }}</b><code>{{ x.value_raw or x.value_preview or '—' }}</code><small>{{ x.side|upper }} · {{ x.location }} · {{ x.method }} {{ x.path }}</small></div><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ x.exchange_id }}/inspect?identity_id={{ i.id }}">Ver evidencia HTTP</a></article>
+      {% else %}<p class="muted">Nada enseñado explícitamente como {{ label }}.</p>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
 <section class="identity-profile-grid">
   <article class="panel identity-role-panel role-auth">
     <div class="panel-head"><div><p class="eyebrow">AUTH</p><h2>Cómo se autentica {{ i.name }}</h2><p class="muted">Cookies, Bearer y headers que Negro puede reconocer/rotar como sesión.</p></div><span>{{ g.auth|length }}</span></div>
