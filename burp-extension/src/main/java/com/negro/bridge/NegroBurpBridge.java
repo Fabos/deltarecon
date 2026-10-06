@@ -52,7 +52,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.35.0
+ * Negro Burp Bridge v0.36.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -88,7 +88,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.35.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.36.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -271,12 +271,17 @@ public class NegroBurpBridge implements BurpExtension {
     }
 
     private JEditorPane contextPane() {
-        JEditorPane area = new JEditorPane();
+        // Force the HTML editor to track the viewport width. Plain JEditorPane can
+        // otherwise advertise its long-token preferred width and create a horizontal
+        // scrollbar for JWTs/cookies even when the HTML contains wrap opportunities.
+        JEditorPane area = new JEditorPane() {
+            @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        };
         area.setEditable(false);
         area.setContentType("text/html");
         area.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
         area.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        area.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        area.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
         area.addHyperlinkListener(ev -> {
             if (ev.getEventType() == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED && ev.getURL() != null) {
                 try { Desktop.getDesktop().browse(ev.getURL().toURI()); }
@@ -296,7 +301,7 @@ public class NegroBurpBridge implements BurpExtension {
                 @Override public HttpRequest getRequest() { return currentRequest; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
-                @Override public Component uiComponent() { return new JScrollPane(area); }
+                @Override public Component uiComponent() { JScrollPane sp = new JScrollPane(area); sp.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER); return sp; }
                 @Override public Selection selectedData() { String x=area.getSelectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
                 @Override public boolean isModified() { return false; }
             };
@@ -313,7 +318,7 @@ public class NegroBurpBridge implements BurpExtension {
                 @Override public HttpResponse getResponse() { return currentResponse; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
-                @Override public Component uiComponent() { return new JScrollPane(area); }
+                @Override public Component uiComponent() { JScrollPane sp = new JScrollPane(area); sp.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER); return sp; }
                 @Override public Selection selectedData() { String x=area.getSelectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
                 @Override public boolean isModified() { return false; }
             };
@@ -356,7 +361,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.35.0")
+                    .header("X-Negro-Bridge-Version", "0.36.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an

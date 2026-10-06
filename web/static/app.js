@@ -744,25 +744,31 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   });
 })();
 
-// v0.47 · persistent HTTP context visibility toggles
+// v0.47.2 · persistent HTTP context visibility toggles across every HTTP viewer
 (()=>{
-  const root=document.querySelector('[data-http-highlight-root]');
-  if(!root) return;
+  const roots=[...document.querySelectorAll('[data-http-highlight-root]')];
+  if(!roots.length) return;
+  const specs=[
+    ['[data-highlight-identity]','negro.http.identity',true,'hide-identity-highlights'],
+    ['[data-highlight-objects]','negro.http.objects',true,'hide-object-highlights'],
+    ['[data-highlight-context]','negro.http.context',false,'hide-context-highlights']
+  ];
+  const current=(key,def)=>{const saved=localStorage.getItem(key); return saved===null?def:saved==='on';};
   const apply=()=>{
-    const identity=document.querySelector('[data-highlight-identity]');
-    const objects=document.querySelector('[data-highlight-objects]');
-    const context=document.querySelector('[data-highlight-context]');
-    const identityOn=identity ? identity.checked : localStorage.getItem('negro.http.identity')!=='off';
-    const objectsOn=objects ? objects.checked : localStorage.getItem('negro.http.objects')!=='off';
-    const contextOn=context ? context.checked : localStorage.getItem('negro.http.context')==='on';
-    root.classList.toggle('hide-identity-highlights',!identityOn);
-    root.classList.toggle('hide-object-highlights',!objectsOn);
-    root.classList.toggle('hide-context-highlights',!contextOn);
+    specs.forEach(([sel,key,def,klass])=>{
+      const on=current(key,def);
+      document.querySelectorAll(sel).forEach(el=>{ if(el.checked!==on) el.checked=on; });
+      roots.forEach(root=>root.classList.toggle(klass,!on));
+    });
   };
-  [['[data-highlight-identity]','negro.http.identity',true],['[data-highlight-objects]','negro.http.objects',true],['[data-highlight-context]','negro.http.context',false]].forEach(([sel,key,def])=>{
-    const el=document.querySelector(sel); if(!el) return;
-    const saved=localStorage.getItem(key); el.checked=saved===null?def:saved==='on';
-    el.addEventListener('change',()=>{localStorage.setItem(key,el.checked?'on':'off');apply();});
+  specs.forEach(([sel,key,def])=>{
+    document.querySelectorAll(sel).forEach(el=>{
+      el.checked=current(key,def);
+      el.addEventListener('change',()=>{
+        localStorage.setItem(key,el.checked?'on':'off');
+        apply();
+      });
+    });
   });
   apply();
 })();

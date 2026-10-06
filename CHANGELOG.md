@@ -1,3 +1,8 @@
+# v0.47.2 · Shared HTTP Renderer + Burp Wrap
+- Workbench reuses the same learned annotation renderer as HTTP Inspector and exposes Identity/Object/Context toggles.
+- Negro Context in Burp uses a wrapping editor pane and soft-wrap hints so JWT/cookies no longer require horizontal scrolling.
+- Bridge v0.36.0.
+
 # v0.47.1 · Inline Context Rendering
 
 - HTTP Workbench e Inspector ahora proyectan evidencia aprendida de Identity/Object sobre Requests futuras, no sólo anotaciones guardadas en el exchange original.

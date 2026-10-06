@@ -59,6 +59,13 @@
         <span class="muted small">Última observación {{ o.last_seen_at or '—' }}{% if op.more_variants %} · mostrando las {{ op.exchanges|length }} variantes más recientes de {{ op.exchange_total }}{% endif %}</span>
       </div>
 
+      <div data-http-highlight-root>
+        <section class="http-context-toolbar workbench-context-toolbar">
+          <b>Resaltar contexto</b>
+          <label class="http-context-toggle"><input type="checkbox" data-highlight-identity> Identity · AUTH/RESOLVER</label>
+          <label class="http-context-toggle"><input type="checkbox" data-highlight-objects> Objects</label>
+          <label class="http-context-toggle"><input type="checkbox" data-highlight-context> Context</label>
+        </section>
       <div class="request-variant-list">
       {% for ex in op.exchanges %}
         {% if loop.index == 2 %}<details class="request-history-drawer" {% if ex.focused %}open{% endif %}><summary><b>Historial de variantes</b><span>{{ op.exchange_total - 1 }} variante{% if op.exchange_total - 1 != 1 %}s{% endif %} anterior{% if op.exchange_total - 1 != 1 %}es{% endif %}{% if op.more_variants %} · mostrando {{ op.exchanges|length - 1 }} recientes{% endif %}</span></summary><div class="request-history-body">{% endif %}
@@ -106,18 +113,19 @@
               <section class="http-pane" data-http-pane>
                 <div class="http-pane-head"><div><span class="http-label">REQUEST COMPLETA</span><small>{{ ex.request_size }} B</small></div><div class="http-pane-actions"><button type="button" class="mini-action" data-http-wrap>Ajustar líneas</button><button type="button" class="mini-action" data-http-copy>Copiar</button><button type="button" class="mini-action" data-http-expand>Pantalla completa</button></div></div>
                 <div class="http-search"><input type="search" placeholder="Buscar en Request…" data-http-search><span data-http-count>0 coincidencias</span><button type="button" class="mini-action" data-http-next>Siguiente</button></div>
-                <pre class="http-message http-message-full" data-http-content>{% if ex.annotations %}{{ ex.request_highlighted|safe }}{% else %}{{ ex.request_text or '[Request no almacenada]' }}{% endif %}</pre>
+                <pre class="http-message http-message-full" data-http-content>{{ ex.request_highlighted|safe }}</pre>
               </section>
               <section class="http-pane" data-http-pane>
                 <div class="http-pane-head"><div><span class="http-label">RESPONSE COMPLETA</span><small>{{ ex.response_size }} B</small></div><div class="http-pane-actions"><button type="button" class="mini-action" data-http-wrap>Ajustar líneas</button><button type="button" class="mini-action" data-http-copy>Copiar</button><button type="button" class="mini-action" data-http-expand>Pantalla completa</button></div></div>
                 <div class="http-search"><input type="search" placeholder="Buscar en Response…" data-http-search><span data-http-count>0 coincidencias</span><button type="button" class="mini-action" data-http-next>Siguiente</button></div>
-                <pre class="http-message http-message-full" data-http-content>{% if ex.annotations %}{{ ex.response_highlighted|safe }}{% else %}{{ ex.response_text or '[Response no almacenada]' }}{% endif %}</pre>
+                <pre class="http-message http-message-full" data-http-content>{{ ex.response_highlighted|safe }}</pre>
               </section>
             </div>
           </div>
         </details>
         {% if loop.last and not loop.first %}</div></details>{% endif %}
       {% else %}<div class="empty-state compact"><strong>Sin evidencia HTTP guardada para este método.</strong><span>Navega con Burp y aparecerá aquí.</span></div>{% endfor %}
+      </div>
       </div>
     </div>
   </details>

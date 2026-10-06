@@ -646,3 +646,6 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .http-ann-entity{background:rgba(190,128,62,.18);color:#ffe7c9;border:1px solid #9b6b3a}
 .http-ann-entity::after{color:#ffe7c9;border:1px solid #76502d;background:#261a10}
 .hide-identity-highlights .http-ann-auth::after,.hide-identity-highlights .http-ann-resolver::after,.hide-object-highlights .http-ann-entity::after,.hide-context-highlights .http-ann-context::after{display:none!important}
+
+/* v0.47.2 · shared HTTP context controls */
+.workbench-context-toolbar{margin:0 0 9px}

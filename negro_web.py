@@ -6311,10 +6311,29 @@ def create_app(default_domain: str, default_workspace: Path):
                     lines.append(f"  {r['name']} · {r['identifier_raw'] or r['identifier_preview'] or ''}")
         inspector_url=f"http://127.0.0.1:8765/t/{target_key}/exchange/{int(ex['id'])}/inspect"
         lines += ["", f"Abrir: {inspector_url}"]
-        css = """body{font-family:monospace;background:#101417;color:#d6dde1;margin:0;padding:10px} .meta{font-family:sans-serif;font-size:12px;color:#aab5bb;margin-bottom:10px}.meta b{color:#e8eef1} pre{white-space:pre-wrap;word-break:break-word;line-height:1.42;margin:0}.http-annotation{border-radius:3px;padding:0 1px;font-weight:700}.http-ann-auth{background:#38552e;color:#eaffdd;outline:1px solid #79b65f}.http-ann-resolver{background:#233f5a;color:#d8edff;text-decoration:underline 2px #78aee0}.http-ann-context{background:#403357;color:#f0e4ff;border-bottom:2px dashed #a982d0}.http-ann-entity{background:#553c22;color:#ffe8cb;border:1px solid #c7904f}.legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.pill{border:1px solid #40505a;border-radius:12px;padding:2px 6px;font-size:10px}.open{color:#b5f36b} """
+        def _burp_wrap_html(fragment: str) -> str:
+            # Swing's HTML renderer does not reliably implement CSS word-break/pre-wrap.
+            # Add invisible wrap opportunities only to long visible tokens and turn
+            # physical newlines into <br>, leaving annotation tags intact.
+            parts = re.split(r"(<[^>]+>)", str(fragment or ""))
+            rendered = []
+            long_token = re.compile(r"[A-Za-z0-9._~+/=-]{32,}")
+            for part in parts:
+                if not part:
+                    continue
+                if part.startswith("<") and part.endswith(">"):
+                    rendered.append(part)
+                    continue
+                def soften(m):
+                    token = m.group(0)
+                    return "&#8203;".join(token[i:i+28] for i in range(0, len(token), 28))
+                rendered.append(long_token.sub(soften, part).replace("\r\n", "\n").replace("\n", "<br>"))
+            return "".join(rendered)
+
+        css = """body{font-family:monospace;background:#101417;color:#d6dde1;margin:0;padding:12px}.meta{font-family:sans-serif;font-size:12px;color:#aab5bb;margin-bottom:12px;line-height:1.45}.meta b{color:#e8eef1}.http{font-family:monospace;line-height:1.42;margin:0;max-width:100%;overflow-wrap:anywhere}.http-annotation{border-radius:3px;padding:0 1px;font-weight:700}.http-ann-auth{background:#38552e;color:#eaffdd;outline:1px solid #79b65f}.http-ann-resolver{background:#233f5a;color:#d8edff;text-decoration:underline 2px #78aee0}.http-ann-context{background:#403357;color:#f0e4ff;border-bottom:2px dashed #a982d0}.http-ann-entity{background:#553c22;color:#ffe8cb;border:1px solid #c7904f}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:7px 0}.pill{display:inline-block;border:1px solid #40505a;border-radius:12px;padding:2px 6px;font-size:10px;margin-right:5px}.open{color:#b5f36b} """
         meta = f"<div class='meta'><b>Negro Context</b> · {html.escape(target_key)} · Request #{int(ex['id'])} · {html.escape(str(ex.get('environment') or 'UNKNOWN'))} · {html.escape(str(ex.get('burp_scope_status') or 'UNKNOWN'))}<div class='legend'><span class='pill'>AUTH</span><span class='pill'>RESOLVER</span><span class='pill'>CONTEXT</span><span class='pill'>ENTITY</span></div><div><a class='open' href='{html.escape(inspector_url)}'>Open in Negro Inspector</a></div></div>"
-        request_html=f"<html><head><style>{css}</style></head><body>{meta}<pre>{request_annotated}</pre></body></html>"
-        response_html=f"<html><head><style>{css}</style></head><body>{meta}<pre>{response_annotated or html.escape(response_text)}</pre></body></html>"
+        request_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(request_annotated)}</div></body></html>"
+        response_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(response_annotated or html.escape(response_text))}</div></body></html>"
         return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines), "request_html": request_html, "response_html": response_html, "inspector_url": inspector_url}
 
     @app.get("/api/ingest/health", response_class=JSONResponse)

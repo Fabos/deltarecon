@@ -1,3 +1,6 @@
+## v0.47.2 · Shared renderer + Burp wrap
+El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido. `Negro Context` en Burp hace wrap por defecto, incluido en JWT/cookies largos, y mantiene los badges inline. Bridge v0.36.0.
+
 > Current build: **v0.47.0** — HTTP focus mode, compact history, Objects-first UX and Burp Negro Context tabs.
 
 # Negro Recon 🐕 — v0.44.8
