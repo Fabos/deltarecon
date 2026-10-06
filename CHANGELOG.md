@@ -1,3 +1,12 @@
+# v0.47.5 · Native Burp Context UI
+
+- reemplaza el renderer HTML de `Negro Context` por Swing nativo;
+- muestra cabecera profesional con proyecto, Request, Identity, environment, scope y tipo de match;
+- resalta AUTH / RESOLVER / CONTEXT / ENTITY usando offsets exactos calculados por el mismo motor de HTTP Inspector;
+- inserta badges inline `⟦AUTH · Fabian⟧` junto al valor marcado;
+- mantiene wrap real y desactiva el scroll horizontal;
+- Bridge v0.37.0.
+
 # v0.47.4 · Shared HTTP renderer fix + Burp canonical match
 
 - corrige el Workbench HTTP: el JavaScript ya no destruye los `<span class="http-annotation">` generados por el backend antes de renderizar syntax highlighting; ahora usa las mismas anotaciones que HTTP Inspector;

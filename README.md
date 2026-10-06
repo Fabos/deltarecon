@@ -1,3 +1,7 @@
+## v0.47.5 · Native Burp Context UI
+
+`Negro Context` deja de depender del HTML limitado de Swing y usa componentes nativos: cabecera compacta, chips de proyecto/Request/Identity/Environment/Scope, botón Open in Negro y un `JTextPane` con wrap real y estilos sobre los rangos AUTH/RESOLVER/CONTEXT/ENTITY. El backend entrega texto crudo + offsets exactos para que Burp pinte la misma evidencia que HTTP Inspector. Bridge v0.37.0.
+
 ## v0.47.4 · Shared HTTP renderer fix + Burp canonical match
 
 El HTTP normal, HTTP Inspector y Burp `Negro Context` comparten la misma evidencia aprendida. La ficha de Identity muestra explícitamente qué AUTH/RESOLVER/CONTEXT identifica al actor y permite volver a la evidencia HTTP. Burp tolera diferencias de representación HTTP sin mezclar identidades: exact hash primero y fallback canónico conservador.

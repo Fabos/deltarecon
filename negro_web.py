@@ -6394,7 +6394,46 @@ def create_app(default_domain: str, default_workspace: Path):
         meta = f"<div class='meta'><b>Negro Context</b> · {html.escape(target_key)} · Request #{int(ex['id'])} · {html.escape(str(ex.get('environment') or 'UNKNOWN'))} · {html.escape(str(ex.get('burp_scope_status') or 'UNKNOWN'))} · {html.escape(str(ex.get('bridge_match_kind') or 'exact-bytes'))}<div class='legend'><span class='pill'>AUTH</span><span class='pill'>RESOLVER</span><span class='pill'>CONTEXT</span><span class='pill'>ENTITY</span></div><div><a class='open' href='{html.escape(inspector_url)}'>Open in Negro Inspector</a></div></div>"
         request_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(request_annotated)}</div></body></html>"
         response_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(response_annotated or html.escape(response_text))}</div></body></html>"
-        return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines), "request_html": request_html, "response_html": response_html, "inspector_url": inspector_url}
+
+        # Native Burp renderer payload. Swing's HTML support is intentionally limited,
+        # so the Bridge receives raw text plus exact annotation ranges and renders the
+        # UI with native Swing components/styles.
+        def _native_marks(side: str, message: str) -> str:
+            rows=[]
+            for ann in learned_anns:
+                if str(ann.get("side") or "") != side or str(ann.get("classification") or "") == "ignore":
+                    continue
+                for start,end in http_inspector._span_ranges(message, ann):
+                    label=http_inspector._annotation_label(ann)
+                    reason=str(ann.get("match_reason") or "")
+                    source=str(ann.get("source_exchange_id") or "")
+                    enc=lambda x: base64.urlsafe_b64encode(str(x).encode("utf-8")).decode("ascii")
+                    rows.append(f"{int(start)}|{int(end)}|{str(ann.get('classification') or '')}|{enc(label)}|{enc(reason)}|{source}")
+            return "\n".join(rows)
+
+        native_request_marks=_native_marks("request", request_text)
+        native_response_marks=_native_marks("response", response_text)
+        identity_summary=", ".join(sorted({str(r["name"]) for r in identity_rows if r["name"]})) if identity_rows else ""
+        return {
+            "found": True,
+            "target_key": target_key,
+            "exchange_id": int(ex["id"]),
+            "method": str(ex.get("method") or ""),
+            "path": str(ex.get("path") or ""),
+            "host": str(ex.get("hostname") or ""),
+            "environment": str(ex.get("environment") or "UNKNOWN"),
+            "scope": str(ex.get("burp_scope_status") or "UNKNOWN"),
+            "match_kind": str(ex.get("bridge_match_kind") or "exact-bytes"),
+            "identity_summary": identity_summary,
+            "text": "\n".join(lines),
+            "request_html": request_html,
+            "response_html": response_html,
+            "request_text_b64": base64.b64encode(request_text.encode("utf-8")).decode("ascii"),
+            "response_text_b64": base64.b64encode(response_text.encode("utf-8")).decode("ascii"),
+            "request_marks_b64": base64.b64encode(native_request_marks.encode("utf-8")).decode("ascii"),
+            "response_marks_b64": base64.b64encode(native_response_marks.encode("utf-8")).decode("ascii"),
+            "inspector_url": inspector_url,
+        }
 
     @app.get("/api/ingest/health", response_class=JSONResponse)
     def ingest_health():

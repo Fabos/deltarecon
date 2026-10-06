@@ -28,6 +28,11 @@ import burp.api.montoya.ui.editor.extension.HttpResponseEditorProvider;
 import javax.swing.*;
 import javax.swing.event.MenuEvent;
 import javax.swing.event.MenuListener;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.SimpleAttributeSet;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import java.awt.*;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -52,7 +57,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.36.0
+ * Negro Burp Bridge v0.37.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -88,7 +93,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.36.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.37.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -242,67 +247,264 @@ public class NegroBurpBridge implements BurpExtension {
                 });
     }
 
-    private void loadNegroContextAsync(HttpRequestResponse pair, JEditorPane area, String side) {
+    private record ContextMark(int start, int end, String kind, String label, String reason, String sourceExchangeId) {}
+
+    private Color uiColor(String key, Color fallback) {
+        Color c = UIManager.getColor(key);
+        return c == null ? fallback : c;
+    }
+
+    private String decodeB64(String value) {
+        if (value == null || value.isBlank()) return "";
+        try { return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8); }
+        catch (Exception ex) { return ""; }
+    }
+
+    private String decodeUrlB64(String value) {
+        if (value == null || value.isBlank()) return "";
+        try { return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8); }
+        catch (Exception ex) { return ""; }
+    }
+
+    private List<ContextMark> decodeContextMarks(String encoded) {
+        List<ContextMark> out = new ArrayList<>();
+        String raw = decodeB64(encoded);
+        if (raw.isBlank()) return out;
+        for (String line : raw.split("\\n")) {
+            if (line == null || line.isBlank()) continue;
+            String[] parts = line.split("\\|", -1);
+            if (parts.length < 6) continue;
+            try {
+                int start = Integer.parseInt(parts[0]);
+                int end = Integer.parseInt(parts[1]);
+                if (start < 0 || end <= start) continue;
+                out.add(new ContextMark(start, end, parts[2], decodeUrlB64(parts[3]), decodeUrlB64(parts[4]), parts[5]));
+            } catch (Exception ignored) {}
+        }
+        return out;
+    }
+
+    private final class NegroContextView extends JPanel {
+        private final JPanel header = new JPanel();
+        private final JPanel metaRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        private final JLabel endpoint = new JLabel(" ");
+        private final JButton openButton = new JButton("Open in Negro");
+        private final JTextPane http = new JTextPane() {
+            @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        };
+        private final JScrollPane scroll;
+        private String inspectorUrl = "";
+
+        NegroContextView() {
+            super(new BorderLayout());
+            setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
+
+            header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
+            header.setBorder(BorderFactory.createEmptyBorder(9, 11, 8, 11));
+
+            JPanel titleRow = new JPanel(new BorderLayout(8, 0));
+            JLabel title = new JLabel("Negro Context");
+            title.setFont(title.getFont().deriveFont(Font.BOLD, 14f));
+            titleRow.add(title, BorderLayout.WEST);
+            openButton.setFocusable(false);
+            openButton.setMargin(new Insets(3, 10, 3, 10));
+            openButton.setEnabled(false);
+            openButton.addActionListener(e -> {
+                if (inspectorUrl == null || inspectorUrl.isBlank()) return;
+                try { Desktop.getDesktop().browse(URI.create(inspectorUrl)); }
+                catch (Exception ex) { api.logging().logToError("Negro Context no pudo abrir Inspector: " + ex.getMessage()); }
+            });
+            titleRow.add(openButton, BorderLayout.EAST);
+            header.add(titleRow);
+            header.add(Box.createVerticalStrut(4));
+            endpoint.setFont(endpoint.getFont().deriveFont(Font.PLAIN, 11f));
+            endpoint.setForeground(uiColor("Label.disabledForeground", new Color(100, 108, 116)));
+            header.add(endpoint);
+            header.add(Box.createVerticalStrut(5));
+            metaRow.setOpaque(false);
+            header.add(metaRow);
+
+            http.setEditable(false);
+            http.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            http.setMargin(new Insets(10, 12, 14, 12));
+            http.setBorder(BorderFactory.createEmptyBorder());
+            http.setBackground(uiColor("TextPane.background", new Color(245, 247, 249)));
+            http.setForeground(uiColor("TextPane.foreground", new Color(28, 33, 38)));
+            scroll = new JScrollPane(http);
+            scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+            scroll.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, uiColor("Separator.foreground", new Color(210, 214, 218))));
+
+            add(header, BorderLayout.NORTH);
+            add(scroll, BorderLayout.CENTER);
+        }
+
+        private JLabel chip(String text, Color background, Color foreground) {
+            JLabel label = new JLabel(text == null ? "" : text);
+            label.setOpaque(true);
+            label.setBackground(background);
+            label.setForeground(foreground);
+            label.setFont(label.getFont().deriveFont(Font.BOLD, 10f));
+            label.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(background.darker(), 1, true),
+                    BorderFactory.createEmptyBorder(2, 7, 2, 7)));
+            return label;
+        }
+
+        private void resetMeta() {
+            metaRow.removeAll();
+            metaRow.revalidate();
+            metaRow.repaint();
+        }
+
+        void showLoading() {
+            inspectorUrl = "";
+            openButton.setEnabled(false);
+            endpoint.setText("Consultando evidencia aprendida…");
+            resetMeta();
+            setDocumentText("Cargando contexto de Negro…", List.of());
+        }
+
+        void showError(String message) {
+            inspectorUrl = "";
+            openButton.setEnabled(false);
+            endpoint.setText("No se pudo cargar el contexto");
+            resetMeta();
+            metaRow.add(chip("OFFLINE", new Color(248, 222, 222), new Color(128, 34, 34)));
+            setDocumentText(message == null ? "Negro no disponible." : message, List.of());
+        }
+
+        void showContext(String json, String side) {
+            String text = decodeB64(jsonString(json, "response".equals(side) ? "response_text_b64" : "request_text_b64"));
+            String marks = jsonString(json, "response".equals(side) ? "response_marks_b64" : "request_marks_b64");
+            List<ContextMark> decoded = decodeContextMarks(marks);
+            String project = jsonString(json, "target_key");
+            long exchangeId = jsonLong(json, "exchange_id");
+            String method = jsonString(json, "method");
+            String path = jsonString(json, "path");
+            String host = jsonString(json, "host");
+            String env = jsonString(json, "environment");
+            String scope = jsonString(json, "scope");
+            String match = jsonString(json, "match_kind");
+            String identities = jsonString(json, "identity_summary");
+            inspectorUrl = jsonString(json, "inspector_url");
+            openButton.setEnabled(inspectorUrl != null && !inspectorUrl.isBlank());
+
+            String endpointText = (method == null ? "" : method) + " " + (path == null ? "" : path);
+            if (host != null && !host.isBlank()) endpointText += "  ·  " + host;
+            endpoint.setText(endpointText.trim());
+            resetMeta();
+            metaRow.add(chip(project == null || project.isBlank() ? "PROJECT" : project, new Color(231, 235, 239), new Color(55, 62, 69)));
+            if (exchangeId > 0) metaRow.add(chip("Request #" + exchangeId, new Color(231, 235, 239), new Color(55, 62, 69)));
+            if (identities != null && !identities.isBlank()) metaRow.add(chip(identities, new Color(221, 236, 252), new Color(31, 74, 119)));
+            metaRow.add(chip(env == null ? "UNKNOWN" : env, new Color(236, 232, 248), new Color(73, 54, 116)));
+            boolean inScope = scope != null && scope.equalsIgnoreCase("IN_SCOPE");
+            metaRow.add(chip(scope == null ? "UNKNOWN" : scope,
+                    inScope ? new Color(223, 244, 228) : new Color(244, 232, 220),
+                    inScope ? new Color(30, 102, 51) : new Color(128, 78, 25)));
+            if (match != null && !match.isBlank() && !"exact-bytes".equalsIgnoreCase(match))
+                metaRow.add(chip("MATCH · " + match, new Color(238, 240, 242), new Color(82, 88, 94)));
+            setDocumentText(text, decoded);
+        }
+
+        private SimpleAttributeSet markStyle(String kind) {
+            String k = kind == null ? "" : kind.toLowerCase();
+            SimpleAttributeSet a = new SimpleAttributeSet();
+            StyleConstants.setBold(a, true);
+            switch (k) {
+                case "auth" -> {
+                    StyleConstants.setBackground(a, new Color(211, 239, 199));
+                    StyleConstants.setForeground(a, new Color(35, 82, 25));
+                }
+                case "resolver" -> {
+                    StyleConstants.setBackground(a, new Color(208, 231, 250));
+                    StyleConstants.setForeground(a, new Color(26, 75, 116));
+                    StyleConstants.setUnderline(a, true);
+                }
+                case "context" -> {
+                    StyleConstants.setBackground(a, new Color(231, 218, 247));
+                    StyleConstants.setForeground(a, new Color(83, 49, 123));
+                }
+                case "entity" -> {
+                    StyleConstants.setBackground(a, new Color(250, 226, 199));
+                    StyleConstants.setForeground(a, new Color(121, 70, 20));
+                }
+                default -> {
+                    StyleConstants.setBackground(a, new Color(231, 235, 239));
+                    StyleConstants.setForeground(a, new Color(55, 62, 69));
+                }
+            }
+            return a;
+        }
+
+        private SimpleAttributeSet badgeStyle(String kind) {
+            SimpleAttributeSet a = markStyle(kind);
+            StyleConstants.setFontSize(a, 9);
+            StyleConstants.setUnderline(a, false);
+            return a;
+        }
+
+        private void setDocumentText(String text, List<ContextMark> marks) {
+            StyledDocument doc = http.getStyledDocument();
+            try {
+                doc.remove(0, doc.getLength());
+                String safe = text == null ? "" : text;
+                doc.insertString(0, safe, null);
+                List<ContextMark> ordered = new ArrayList<>(marks == null ? List.of() : marks);
+                ordered.sort((a,b) -> Integer.compare(b.start(), a.start()));
+                for (ContextMark mark : ordered) {
+                    int start = Math.max(0, Math.min(mark.start(), safe.length()));
+                    int end = Math.max(start, Math.min(mark.end(), safe.length()));
+                    if (end <= start) continue;
+                    doc.setCharacterAttributes(start, end-start, markStyle(mark.kind()), false);
+                    String badge = "  ⟦" + (mark.label() == null || mark.label().isBlank() ? mark.kind().toUpperCase() : mark.label()) + "⟧";
+                    doc.insertString(end, badge, badgeStyle(mark.kind()));
+                }
+                http.setCaretPosition(0);
+            } catch (BadLocationException ex) {
+                http.setText(text == null ? "" : text);
+            }
+        }
+
+        String selectedText() { return http.getSelectedText(); }
+    }
+
+    private void loadNegroContextAsync(HttpRequestResponse pair, NegroContextView view, String side) {
         if (pair == null || pair.request() == null) {
-            area.setText("<html><body><b>Negro Context</b><br><br>Sin Request disponible.</body></html>");
+            view.showError("Sin Request disponible.");
             return;
         }
         HttpRequest req = pair.request();
         String requestB64 = Base64.getEncoder().encodeToString(req.toByteArray().getBytes());
         String body = req.url() + "\t" + req.method() + "\t" + requestB64;
-        area.setText("<html><body><b>Negro Context</b><br><br>Consultando contexto aprendido…</body></html>");
+        view.showLoading();
         java.net.http.HttpRequest httpReq = java.net.http.HttpRequest.newBuilder()
                 .uri(URI.create(negroBaseUrl + "/api/bridge/context"))
                 .timeout(Duration.ofSeconds(4))
                 .header("Content-Type", "text/plain; charset=utf-8")
                 .POST(BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
         client.sendAsync(httpReq, BodyHandlers.ofString(StandardCharsets.UTF_8))
-                .thenAccept(resp -> {
-                    String html = resp.statusCode() == 200 ? jsonString(resp.body(), "response".equals(side) ? "response_html" : "request_html") : null;
-                    String rendered = html == null || html.isBlank()
-                            ? "<html><body><b>Negro Context</b><br><br>Negro respondió HTTP " + resp.statusCode() + "</body></html>"
-                            : html;
-                    SwingUtilities.invokeLater(() -> { area.setText(rendered); area.setCaretPosition(0); });
-                })
+                .thenAccept(resp -> SwingUtilities.invokeLater(() -> {
+                    if (resp.statusCode() == 200 && jsonBoolean(resp.body(), "found", false)) view.showContext(resp.body(), side);
+                    else view.showError("Esta Request todavía no tiene evidencia compatible en Negro.");
+                }))
                 .exceptionally(ex -> {
-                    SwingUtilities.invokeLater(() -> area.setText("<html><body><b>Negro Context</b><br><br>Negro no disponible: " + ex.getClass().getSimpleName() + "</body></html>"));
+                    SwingUtilities.invokeLater(() -> view.showError("Negro no disponible: " + ex.getClass().getSimpleName()));
                     return null;
                 });
-    }
-
-    private JEditorPane contextPane() {
-        // Force the HTML editor to track the viewport width. Plain JEditorPane can
-        // otherwise advertise its long-token preferred width and create a horizontal
-        // scrollbar for JWTs/cookies even when the HTML contains wrap opportunities.
-        JEditorPane area = new JEditorPane() {
-            @Override public boolean getScrollableTracksViewportWidth() { return true; }
-        };
-        area.setEditable(false);
-        area.setContentType("text/html");
-        area.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
-        area.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        area.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        area.addHyperlinkListener(ev -> {
-            if (ev.getEventType() == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED && ev.getURL() != null) {
-                try { Desktop.getDesktop().browse(ev.getURL().toURI()); }
-                catch (Exception ex) { api.logging().logToError("Negro Context no pudo abrir Inspector: " + ex.getMessage()); }
-            }
-        });
-        return area;
     }
 
     private final class NegroContextRequestProvider implements HttpRequestEditorProvider {
         @Override
         public ExtensionProvidedHttpRequestEditor provideHttpRequestEditor(EditorCreationContext context) {
             return new ExtensionProvidedHttpRequestEditor() {
-                private final JEditorPane area = contextPane();
+                private final NegroContextView view = new NegroContextView();
                 private HttpRequest currentRequest;
-                @Override public void setRequestResponse(HttpRequestResponse pair) { currentRequest = pair == null ? null : pair.request(); loadNegroContextAsync(pair, area, "request"); }
+                @Override public void setRequestResponse(HttpRequestResponse pair) { currentRequest = pair == null ? null : pair.request(); loadNegroContextAsync(pair, view, "request"); }
                 @Override public HttpRequest getRequest() { return currentRequest; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
-                @Override public Component uiComponent() { JScrollPane sp = new JScrollPane(area); sp.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER); return sp; }
-                @Override public Selection selectedData() { String x=area.getSelectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
+                @Override public Component uiComponent() { return view; }
+                @Override public Selection selectedData() { String x=view.selectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
                 @Override public boolean isModified() { return false; }
             };
         }
@@ -312,14 +514,14 @@ public class NegroBurpBridge implements BurpExtension {
         @Override
         public ExtensionProvidedHttpResponseEditor provideHttpResponseEditor(EditorCreationContext context) {
             return new ExtensionProvidedHttpResponseEditor() {
-                private final JEditorPane area = contextPane();
+                private final NegroContextView view = new NegroContextView();
                 private HttpResponse currentResponse;
-                @Override public void setRequestResponse(HttpRequestResponse pair) { currentResponse = pair == null ? null : pair.response(); loadNegroContextAsync(pair, area, "response"); }
+                @Override public void setRequestResponse(HttpRequestResponse pair) { currentResponse = pair == null ? null : pair.response(); loadNegroContextAsync(pair, view, "response"); }
                 @Override public HttpResponse getResponse() { return currentResponse; }
                 @Override public boolean isEnabledFor(HttpRequestResponse pair) { return pair != null && pair.request() != null; }
                 @Override public String caption() { return "Negro Context"; }
-                @Override public Component uiComponent() { JScrollPane sp = new JScrollPane(area); sp.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER); return sp; }
-                @Override public Selection selectedData() { String x=area.getSelectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
+                @Override public Component uiComponent() { return view; }
+                @Override public Selection selectedData() { String x=view.selectedText(); return x == null ? null : Selection.selection(ByteArray.byteArray(x.getBytes(StandardCharsets.UTF_8))); }
                 @Override public boolean isModified() { return false; }
             };
         }
