@@ -111,22 +111,25 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_runner_run_requests_run ON runner_run_requests(run_id, id);
         """
     )
-    runner_cols={row["name"] for row in conn.execute("PRAGMA table_info(runners)")}
-    if "investigation_id" not in runner_cols:
-        conn.execute("ALTER TABLE runners ADD COLUMN investigation_id INTEGER")
-    runner_cols={row["name"] for row in conn.execute("PRAGMA table_info(runners)")}
+    def _safe_add_column(table: str, name: str, ddl: str) -> None:
+        cols={row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if name in cols:
+            return
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+    _safe_add_column("runners", "investigation_id", "INTEGER")
     for name,ddl in {
         "experiment_goal":"TEXT",
         "expected_support":"TEXT",
         "expected_refute":"TEXT"
     }.items():
-        if name not in runner_cols:
-            conn.execute(f"ALTER TABLE runners ADD COLUMN {name} {ddl}")
-    run_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_runs)")}
-    if "execution_class" not in run_cols:
-        conn.execute("ALTER TABLE runner_runs ADD COLUMN execution_class TEXT NOT NULL DEFAULT 'pending'")
-    if "counts_as_test" not in run_cols:
-        conn.execute("ALTER TABLE runner_runs ADD COLUMN counts_as_test INTEGER NOT NULL DEFAULT 0")
+        _safe_add_column("runners", name, ddl)
+    _safe_add_column("runner_runs", "execution_class", "TEXT NOT NULL DEFAULT 'pending'")
+    _safe_add_column("runner_runs", "counts_as_test", "INTEGER NOT NULL DEFAULT 0")
     # FastAPI can initialize Runner schema from more than one request/thread at
     # the same time.  SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
     # so two initializers can both observe a missing column and race.  Re-read

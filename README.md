@@ -455,3 +455,17 @@ Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente 
 ## Labs y benchmarks
 
 Los laboratorios Vagrant **no forman parte del código base de Negro**. Cuando se necesite un benchmark guiado, se distribuye como proyecto/ZIP separado para evitar mezclar targets vulnerables con la herramienta.
+
+## HTTP Inspector (v0.45)
+
+Cada Request puede abrirse en **HTTP Inspector**. La vista conserva el HTTP raw completo y, debajo, enumera los valores observados en Request y Response con su procedencia (`header`, `cookie`, `query`, `JSONPath`, `form`).
+
+El investigador decide qué significa cada valor:
+
+- `AUTH`: material usado para autenticación/sesión;
+- `RESOLVER`: identificador estable del actor/Identity;
+- `CONTEXT`: rol, tenant, scope u otro contexto de esa Identity;
+- `ENTITY`: identificador de un Business Object;
+- `IGNORE`: evidencia conservada que no debe crear relaciones.
+
+Los JWT se detectan aunque aparezcan en una Response y sus claims se pueden clasificar individualmente. Las decisiones se reflejan como highlights en el HTTP y alimentan los modelos existentes de Identity/Business Objects; Negro no crea un segundo motor de relaciones.

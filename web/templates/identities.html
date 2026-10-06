@@ -67,7 +67,7 @@
   <div class="panel-head"><div><p class="eyebrow">SIN RESOLVER</p><h2>Requests recientes sin identidad</h2><p class="muted">Asignar uno enseña a Negro los auth materials de esa sesión. Si el Bearer es JWT, también aprende claims estables como <code>sub</code>.</p></div><span>{{ recent_unknown|length }}</span></div>
   <div class="unknown-exchange-list">
     {% for e in recent_unknown %}
-    <div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.first_seen_at }}</small></div><div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">HTTP</a><a class="button secondary small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Revisar y asignar</a></div></div>
+    <div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.first_seen_at }}</small></div><div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ e.exchange_id }}/inspect">Inspector</a><a class="button secondary small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Revisar y asignar</a></div></div>
     {% else %}<div class="empty-state"><strong>No hay Requests recientes pendientes.</strong></div>{% endfor %}
   </div>
 </section>

@@ -111,7 +111,7 @@
         {% endif %}
 
         <div class="row-actions flow-step-actions">
-          <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/resource/{{ s.resource_id }}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}">HTTP</a>
+          <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect">Inspector</a>
           <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Buscar relacionados</a>
           {% if not loop.first %}<a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparación inteligente anterior</a>{% endif %}
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="button ghost small-button" type="submit">{{ 'Include' if not s.included else 'Ignore' }}</button></form>

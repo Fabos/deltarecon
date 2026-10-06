@@ -690,6 +690,22 @@ def resolve_exchange(conn, exchange_id: int, *, force: bool = False) -> dict[str
             return dict(current)
     materials = extract_auth_materials(conn, int(exchange_id))
     matches = _material_matches(conn, materials)
+    # Researcher-defined HTTP Inspector resolvers may live in Request or Response
+    # headers/cookies/query/JSON. Match exact location + value hash.
+    try:
+        import negro_http_inspector as http_inspector
+        observed = http_inspector.extract_exchange(conn, int(exchange_id))
+        seen_http = {(str(v.get("location") or ""), str(v.get("value_hash") or "")) for v in ((observed or {}).get("values") or [])}
+        if seen_http:
+            for row in conn.execute(
+                """SELECT id,identity_id,context_id,selector,value_hash FROM identity_resolvers
+                   WHERE enabled=1 AND classification='resolver' AND resolver_type='http_value'"""
+            ).fetchall():
+                if (str(row["selector"]), str(row["value_hash"])) in seen_http:
+                    matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, int(row["id"]), "http_value"))
+    except Exception:
+        pass
+
     # Parameter resolver, e.g. a stable /me id observed in this exchange.
     for row in conn.execute(
         """SELECT ir.id,ir.identity_id,ir.context_id FROM identity_resolvers ir

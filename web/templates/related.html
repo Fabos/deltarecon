@@ -40,7 +40,7 @@
         {% endif %}
         <p>{% for reason in r.reasons %}<span class="relation-reason">{{ reason }}</span>{% endfor %}</p>
       </div>
-      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/resource/{{ r.resource_id }}?exchange={{ r.id }}#exchange-{{ r.id }}">HTTP</a><a class="button secondary small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ r.id }}/inspect">Inspector</a><a class="button secondary small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
     </div>
   {% else %}<p class="empty">No encontré relaciones fuertes o medias con la evidencia estructurada actual.</p>{% endfor %}
   </div>
@@ -59,7 +59,7 @@
           {% if r.matches %}<div class="relation-match-list compact">{% for m in r.matches[:4] %}<div class="relation-match"><code>{{ m.value }}</code><span>{{ m.a_name }} ↔ {{ m.b_name }}</span></div>{% endfor %}</div>{% endif %}
           <p>{% for reason in r.reasons %}<span class="relation-reason">{{ reason }}</span>{% endfor %}</p>
         </div>
-        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/resource/{{ r.resource_id }}?exchange={{ r.id }}#exchange-{{ r.id }}">HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
+        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ r.id }}/inspect">Inspector</a><a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
       </div>
     {% endfor %}
     </div>

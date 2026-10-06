@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web workspace for Negro Recon v0.41.
+"""Local web workspace for Negro Recon v0.45.
 
 v0.8 adds a multi-target web workspace while keeping every target isolated in its
 own existing Negro workspace/SQLite database. The UI stays local-first and calls
@@ -27,6 +27,7 @@ import negro_core as core
 import negro_rules as rulebook
 import negro_environment as environment_tools
 import negro_scope as scope_tools
+import negro_http_inspector as http_inspector
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1587,6 +1588,7 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
     import negro_hunter as hunter
     import negro_objects as object_tools
     with _db(paths) as conn:
+        http_inspector.init_schema(conn)
         row = conn.execute(
             """SELECT r.*, h.hostname FROM resources r JOIN hosts h ON h.id=r.host_id WHERE r.id=?""",
             (resource_id,),
@@ -1639,6 +1641,13 @@ def _resource_detail(paths: dict[str, Path], resource_id: int, focus_exchange_id
                 exd["focused"] = bool(focus_exchange_id and int(ex["id"]) == int(focus_exchange_id))
                 exd["request_text"] = _decode_http_blob(ex["request_b64"])
                 exd["response_text"] = _decode_http_blob(ex["response_b64"])
+                exd["annotations"] = [dict(a) for a in conn.execute("SELECT * FROM http_value_annotations WHERE exchange_id=? ORDER BY id", (int(ex["id"]),)).fetchall()]
+                exd["annotation_counts"] = {}
+                for _a in exd["annotations"]:
+                    _cls = str(_a.get("classification") or "ignore")
+                    exd["annotation_counts"][_cls] = int(exd["annotation_counts"].get(_cls, 0)) + 1
+                exd["request_highlighted"] = http_inspector.highlighted_html(exd["request_text"], exd["annotations"], "request")
+                exd["response_highlighted"] = http_inspector.highlighted_html(exd["response_text"], exd["annotations"], "response")
                 exd["request_truncated"] = False
                 exd["response_truncated"] = False
                 exd["human_state"] = core.get_human_state(conn, "exchange", int(ex["id"]))
@@ -3318,6 +3327,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/findings|^/finding/", {"anchor":"findings","title":"Hallazgos","question":"¿Qué vulnerabilidad ya confirmé y con qué evidencia?","when":"Úsalo sólo después de reproducir el comportamiento y entender el impacto.","example":"Tras confirmar que Diego puede leer un Order de Ana, adjuntas las Requests, notas y retest al finding.","caution":"No promociones una mera diferencia de status o relación a finding sin validarla."}),
             (r"^/hosts$|^/tree", {"anchor":"inventory","title":"Inventario","question":"¿Qué superficie tengo y qué me falta revisar?","when":"Después del recon masivo, usa estados y filtros para no volver a nadar entre miles de recursos.","example":"Access Control Lab: app.accesslab.local y api.accesslab.local están in-scope; score.accesslab.local queda fuera. El inventario conserva qué revisaste y qué debes revisitar.","caution":"Revisado significa revisado con tu conocimiento actual, no 'seguro para siempre'."}),
             (r"^/host/", {"anchor":"enumeration","title":"Herramientas del host","question":"¿Qué nueva superficie puedo descubrir de forma controlada?","when":"Ejecuta sólo la herramienta que responde a una pregunta: DNS/TLS, robots/well-known, enlaces, JS, SAN, DNS pasivo, CORS o VHost.","example":"En el lab, Recon web descubre /.well-known/openid-configuration; eso amplía la superficie sin convertirlo en hallazgo.","caution":"No ejecutes módulos a ciegas: cada acción debe tener un objetivo y respetar el scope."}),
+            (r"^/exchange/\d+/inspect", {"anchor":"resources","title":"HTTP Inspector","question":"¿Qué significa cada key/value de esta Request y Response?","when":"Úsalo para enseñar a Negro qué valor autentica, identifica al actor, describe contexto, representa una Entity o es ruido.","example":"Marca accessToken como AUTH, jwt.sub como RESOLVER de Buyer A y orderId como Entity Order.","caution":"Negro sugiere tipos, pero la clasificación final es tu decisión."}),
             (r"^/resource/", {"anchor":"resources","title":"Recurso / endpoint","question":"¿Qué sé de esta ruta y qué pruebas ya hice?","when":"Úsalo como ficha persistente del endpoint: métodos, Requests, señales, cobertura y notas.","example":"/api/orders/123 puede tener GET, POST o variantes de método. Negro conserva cada operación y la evidencia asociada.","caution":"Un recurso 'revisado' puede volver a ser candidato cuando aprendes una técnica nueva."}),
             (r"^/search", {"anchor":"search","title":"Buscar","question":"¿Dónde aparece esta pista?","when":"Cuando ya tienes un valor, nombre de campo, header, host o fragmento de respuesta y quieres encontrar todas sus apariciones.","example":"Busca ownerId, 101, /api/orders o X-Original-URL para saltar desde una pista a todas las Requests relacionadas.","caution":"Search encuentra apariciones; no afirma que dos cosas tengan la misma semántica."}),
             (r"^/parameters/follow/", {"anchor":"follow-value","title":"Seguir valor","question":"¿Dónde reaparece exactamente este valor?","when":"Sigue un ID, email, UUID o token concreto aunque cambie de campo o de request/response.","example":"El valor 101 visto como /me.id puede reaparecer como ownerId=101 en un Order; eso conecta evidencia, pero ownerId no se vuelve identidad automáticamente.","caution":"Mismo valor no siempre significa mismo concepto."}),
@@ -5459,6 +5469,41 @@ def create_app(default_domain: str, default_workspace: Path):
                 raise HTTPException(status_code=400, detail=str(exc))
             resource_id = int(row["resource_id"])
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#operation-{operation_id}-coverage", status_code=303)
+
+    @app.get("/t/{target_key}/exchange/{exchange_id}/inspect", response_class=HTMLResponse)
+    def http_inspector_page(request: Request, target_key: str, exchange_id: int):
+        import negro_identity as identity_tools
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            inspector = http_inspector.extract_exchange(conn, int(exchange_id))
+            if not inspector:
+                raise HTTPException(status_code=404, detail="Request no encontrada")
+            identities = identity_tools.list_identities(conn)
+            anns = inspector.get("annotations") or []
+            request_highlighted = http_inspector.highlighted_html(inspector.get("request_text") or "", anns, "request")
+            response_highlighted = http_inspector.highlighted_html(inspector.get("response_text") or "", anns, "response")
+        return render(request, "http_inspector.html", target_key, domain, workspace,
+                      inspector=inspector, identities=identities,
+                      request_highlighted=request_highlighted, response_highlighted=response_highlighted,
+                      message=request.query_params.get("message", ""), error=request.query_params.get("error", ""))
+
+    @app.post("/t/{target_key}/exchange/{exchange_id}/annotate")
+    def http_inspector_annotate(target_key: str, exchange_id: int,
+                                side: str = Form(...), location: str = Form(...), key: str = Form(...), value: str = Form(""),
+                                classification: str = Form(...), identity_id: int | None = Form(None),
+                                object_type: str = Form(""), note: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                http_inspector.save_annotation(conn, int(exchange_id), side=side, location=location, key=key, value=value,
+                                               classification=classification, identity_id=identity_id,
+                                               object_type=object_type, note=note)
+        except Exception as exc:
+            msg = urllib.parse.quote(str(exc), safe="")
+            return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?error={msg}", status_code=303)
+        msg = urllib.parse.quote(f"{key} guardado como {classification.upper()}", safe="")
+        return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?message={msg}", status_code=303)
 
     @app.get("/t/{target_key}/findings", response_class=HTMLResponse)
     def findings(request: Request, target_key: str, status: str = "", severity: str = ""):

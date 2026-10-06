@@ -41,7 +41,7 @@
     <div class="timeline-item"><span class="timeline-dot"></span><div class="trace-card">
       <div><b>#{{ x.exchange_id }} · {{ x.method }} <code>{{ x.path }}</code></b><span class="badge">HTTP {{ x.status_code or '—' }}</span>{% if x.identity_name %}<span class="badge identity-badge">{{ x.identity_name }}</span>{% endif %}</div>
       <small>{{ x.hostname }} · key <code>{{ x.identifier_name }}</code> · {{ x.first_seen_at }}</small>
-      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}">Abrir Request</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ x.exchange_id }}">Buscar relacionados</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ x.exchange_id }}">Ver contexto</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ x.exchange_id }}/inspect">Abrir HTTP Inspector</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ x.exchange_id }}">Buscar relacionados</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ x.exchange_id }}">Ver contexto</a></div>
     </div></div>
   {% else %}<p class="empty">No hay Requests enlazadas a este valor.</p>{% endfor %}
   </div>

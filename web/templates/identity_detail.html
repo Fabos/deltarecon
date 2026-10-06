@@ -104,7 +104,7 @@
     {% for e in identity_detail.exchanges %}
     <div class="unknown-exchange-row">
       <div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · fuente {{ e.source }}{% if e.context_label %} · {{ e.context_label }}{% endif %}{% if e.notes %} · {{ e.notes }}{% endif %}</small></div>
-      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/resource/{{ e.resource_id }}?exchange={{ e.exchange_id }}#exchange-{{ e.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Buscar relacionados</a></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/exchange/{{ e.exchange_id }}/inspect">Abrir HTTP Inspector</a><a class="button ghost small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Reasignar</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Buscar relacionados</a></div>
     </div>
     {% else %}<p class="muted">Sin Requests asociadas.</p>{% endfor %}
   </div>

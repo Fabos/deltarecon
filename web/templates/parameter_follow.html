@@ -30,7 +30,7 @@
         <div><b>#{{ o.exchange_id }} · {{ o.method }} <code>{{ o.path }}</code></b><span class="badge">{{ o.location }}</span></div>
         <small>{{ o.hostname }} · HTTP {{ o.status_code or '—' }} · {{ o.exchange_seen_at }}</small>
         <p><code>{{ o.name }}</code> = <code>{{ o.value_raw or o.value_preview or '(vacío)' }}</code></p>
-        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/resource/{{ o.resource_id }}?exchange={{ o.exchange_id }}#exchange-{{ o.exchange_id }}">Abrir HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Buscar Requests relacionadas</a></div>
+        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ o.exchange_id }}/inspect">Abrir HTTP Inspector</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Buscar Requests relacionadas</a></div>
       </div>
     </div>
   {% endfor %}

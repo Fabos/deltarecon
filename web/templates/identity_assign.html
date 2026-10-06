@@ -8,7 +8,7 @@
     <p class="muted"><b>#{{ assignment.exchange.exchange_id }} · {{ assignment.exchange.method }}</b> {{ assignment.exchange.hostname }}<code>{{ assignment.exchange.path }}</code> · HTTP {{ assignment.exchange.status_code }}</p>
   </div>
   <div class="page-actions">
-    <a class="button ghost" href="{{ target_base }}/resource/{{ assignment.exchange.resource_id }}?exchange={{ assignment.exchange.exchange_id }}#exchange-{{ assignment.exchange.exchange_id }}">Abrir HTTP completo</a>
+    <a class="button ghost" href="{{ target_base }}/exchange/{{ assignment.exchange.exchange_id }}/inspect">Abrir HTTP Inspector</a>
     <a class="button ghost" href="{{ target_base }}/identities">← Identidades</a>
   </div>
 </section>

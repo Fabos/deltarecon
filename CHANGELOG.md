@@ -1864,3 +1864,17 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Retira el texto engañoso “Convertir en Investigación”; crear una Investigation desde una Hypothesis es una acción explícita y no una transformación de concepto.
 - Corrige compatibilidad para que una Hypothesis manual también pueda ser origen de una nueva Investigation.
 - Añade `labs/context-compound`: lab Vagrant local, sin dependencias Python externas, para validar Buyer A/B → Order → change-address → cancel → refund bloqueado → returnId → refund cross-account → estado final.
+
+## v0.45.0 · HTTP Inspector unificado + anotación Identity/Entity
+
+- nuevo **HTTP Inspector** por Request, accesible desde Request Workbench, Identity, Entity, Flow, Parameter Explorer y Related Requests;
+- muestra Request y Response completas junto con una tabla explícita `origen · key/path · valor`;
+- extrae escalares desde headers, cookies, query, JSON y form data en **Request y Response**;
+- detecta JWT en cualquier ubicación, incluida una Response JSON, y muestra header + claims;
+- cada valor puede clasificarse manualmente como `AUTH`, `RESOLVER`, `CONTEXT`, `ENTITY` o `IGNORE`;
+- `AUTH` JWT observado en una response se aprende como mecanismo Bearer para reconocer/replay futuro;
+- `RESOLVER` definido desde HTTP Inspector puede reconocer tráfico futuro por ubicación + valor exacto;
+- cambiar un Resolver a Ignore desactiva la relación derivada sin borrar la evidencia HTTP;
+- `ENTITY` reutiliza Business Objects/Parameter observations en lugar de crear un motor paralelo;
+- Request Workbench resalta decisiones conocidas y muestra contadores `AUTH / ID / ENT` en cada variante;
+- la evidencia completa siempre permanece disponible; los highlights representan decisiones humanas, no conclusiones automáticas.
