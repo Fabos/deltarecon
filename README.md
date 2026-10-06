@@ -1,3 +1,7 @@
+## v0.47.4 · Shared HTTP renderer fix + Burp canonical match
+
+El HTTP normal, HTTP Inspector y Burp `Negro Context` comparten la misma evidencia aprendida. La ficha de Identity muestra explícitamente qué AUTH/RESOLVER/CONTEXT identifica al actor y permite volver a la evidencia HTTP. Burp tolera diferencias de representación HTTP sin mezclar identidades: exact hash primero y fallback canónico conservador.
+
 ## v0.47.3 · Identity source-of-truth + reliable projection
 El HTTP Inspector pasa a ser fuente directa de proyección para Workbench/Burp. La ficha Identity añade un auditor explícito de AUTH/RESOLVER/CONTEXT enseñados, con pivote al HTTP de origen. JWT rotados pueden inferirse como AUTH cuando un claim activo resuelve a la Identity. Bridge sigue en v0.36.0.
 

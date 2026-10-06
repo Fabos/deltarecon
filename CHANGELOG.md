@@ -1,3 +1,10 @@
+# v0.47.4 · Shared HTTP renderer fix + Burp canonical match
+
+- corrige el Workbench HTTP: el JavaScript ya no destruye los `<span class="http-annotation">` generados por el backend antes de renderizar syntax highlighting; ahora usa las mismas anotaciones que HTTP Inspector;
+- Burp `Negro Context` intenta primero coincidencia byte-a-byte y, si la representación HTTP cambió (p. ej. HTTP/2/editor), usa un match canónico conservador por proyecto + host + método + path + headers relevantes/auth/cookies + body;
+- la ficha Identity hace explícita la sección **Qué identifica a <Identity>**, mostrando AUTH / RESOLVER / CONTEXT con key/path, valor, lado Request/Response, endpoint y pivote a la evidencia HTTP;
+- no cambia el Bridge Java: sigue siendo v0.36.0.
+
 # v0.47.3 · Identity source-of-truth + reliable projection
 
 - HTTP Inspector annotations are now projected directly into Workbench/Burp.

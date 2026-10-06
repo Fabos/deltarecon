@@ -613,7 +613,12 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     if (wrapDefault) pane.classList.add('wrap');
     else pane.classList.remove('wrap');
     if (wrap) wrap.textContent = pane.classList.contains('wrap') ? 'Líneas exactas' : 'Ajustar líneas';
-    if (content && content.dataset.rawHttp === undefined) content.dataset.rawHttp = content.textContent || '';
+    if (content && content.dataset.rawHttp === undefined) {
+      content.dataset.rawHttp = content.textContent || '';
+      if (content.querySelector('.http-annotation')) content.dataset.annotatedHtml = content.innerHTML;
+    } else if (content && !content.dataset.annotatedHtml && content.querySelector('.http-annotation')) {
+      content.dataset.annotatedHtml = content.innerHTML;
+    }
     renderHttp(pane, '');
 
     input?.addEventListener('input', () => {

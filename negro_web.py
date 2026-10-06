@@ -6217,6 +6217,37 @@ def create_app(default_domain: str, default_workspace: Path):
         if not request_bytes:
             return {"found": False, "text": "Negro Context\n\nRequest sin bytes disponibles."}
         req_hash=hashlib.sha256(request_bytes).hexdigest()
+
+        def _canonical_http_request(raw_bytes: bytes) -> tuple[str, str, str, str]:
+            """Return a tolerant signature for a Burp request.
+
+            Exact byte hashes remain the first choice. This fallback intentionally
+            ignores HTTP version/Host/Content-Length representation differences while
+            keeping authentication material, cookies, custom headers and body so two
+            identities hitting the same endpoint do not collapse into one match.
+            """
+            text=raw_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            head, sep, body=text.partition("\n\n")
+            lines=head.split("\n") if head else []
+            first=lines[0].strip() if lines else ""
+            parts=first.split()
+            method=(parts[0].upper() if parts else "")
+            target=(parts[1] if len(parts)>1 else "")
+            headers=[]
+            for line in lines[1:]:
+                if ":" not in line:
+                    continue
+                name,val=line.split(":",1)
+                lname=name.strip().lower()
+                if lname in {"host","content-length","connection","proxy-connection"}:
+                    continue
+                headers.append((lname," ".join(val.strip().split())))
+            headers.sort()
+            header_sig="\n".join(f"{k}:{v}" for k,v in headers)
+            body_sig=hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()
+            return method,target,header_sig,body_sig
+
+        incoming_canon=_canonical_http_request(request_bytes)
         best=None
         for target in core.list_targets():
             key=str(target.get("key") or "")
@@ -6231,15 +6262,43 @@ def create_app(default_domain: str, default_workspace: Path):
                     continue
                 with _db(paths) as conn:
                     row=conn.execute(
-                        """SELECT e.id,e.environment,e.burp_scope_status,e.last_seen_at,o.method,r.path,h.hostname
+                        """SELECT e.id,e.environment,e.burp_scope_status,e.last_seen_at,o.method,r.path,h.hostname,e.request_b64
                            FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
                            JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
                            WHERE e.request_hash=? ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 1""",
                         (req_hash,),
                     ).fetchone()
+                    match_kind="exact-bytes"
+                    if not row:
+                        # Burp may expose semantically identical HTTP with a different
+                        # wire/editor representation (notably HTTP/2). Fall back only
+                        # inside the same method+host+path and require a canonical
+                        # auth/cookie/custom-header/body signature match.
+                        try:
+                            parsed_url=urllib.parse.urlsplit(_url)
+                            in_host=(parsed_url.hostname or "").lower().rstrip(".")
+                            in_path=parsed_url.path or "/"
+                        except Exception:
+                            in_host=""; in_path="/"
+                        candidates=conn.execute(
+                            """SELECT e.id,e.environment,e.burp_scope_status,e.last_seen_at,o.method,r.path,h.hostname,e.request_b64
+                               FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                               JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+                               WHERE UPPER(o.method)=UPPER(?) AND lower(h.hostname)=lower(?) AND r.path=?
+                               ORDER BY e.last_seen_at DESC,e.id DESC LIMIT 80""",
+                            (_method,in_host,in_path),
+                        ).fetchall()
+                        for cr in candidates:
+                            try:
+                                persisted=base64.b64decode(cr["request_b64"] or "", validate=False)
+                            except Exception:
+                                persisted=b""
+                            if persisted and _canonical_http_request(persisted)==incoming_canon:
+                                row=cr; match_kind="canonical-request"; break
                     if not row:
                         continue
-                    candidate=(str(row["last_seen_at"] or ""), key, dict(row))
+                    rd=dict(row); rd["bridge_match_kind"]=match_kind
+                    candidate=(str(row["last_seen_at"] or ""), key, rd)
                     if best is None or candidate[0] > best[0]:
                         best=candidate
             except Exception:
@@ -6256,6 +6315,7 @@ def create_app(default_domain: str, default_workspace: Path):
             f"Request: #{ex['id']} · {ex.get('method') or ''} {ex.get('path') or ''}",
             f"Host: {ex.get('hostname') or ''}",
             f"Environment: {ex.get('environment') or 'UNKNOWN'} · Scope: {ex.get('burp_scope_status') or 'UNKNOWN'}",
+            f"Match: {ex.get('bridge_match_kind') or 'exact-bytes'}",
         ]
         with _db(paths) as conn:
             http_row = conn.execute("SELECT request_b64,response_b64 FROM http_exchanges WHERE id=?", (int(ex["id"]),)).fetchone()
@@ -6331,7 +6391,7 @@ def create_app(default_domain: str, default_workspace: Path):
             return "".join(rendered)
 
         css = """body{font-family:monospace;background:#101417;color:#d6dde1;margin:0;padding:12px}.meta{font-family:sans-serif;font-size:12px;color:#aab5bb;margin-bottom:12px;line-height:1.45}.meta b{color:#e8eef1}.http{font-family:monospace;line-height:1.42;margin:0;max-width:100%;overflow-wrap:anywhere}.http-annotation{border-radius:3px;padding:0 1px;font-weight:700}.http-ann-auth{background:#38552e;color:#eaffdd;outline:1px solid #79b65f}.http-ann-resolver{background:#233f5a;color:#d8edff;text-decoration:underline 2px #78aee0}.http-ann-context{background:#403357;color:#f0e4ff;border-bottom:2px dashed #a982d0}.http-ann-entity{background:#553c22;color:#ffe8cb;border:1px solid #c7904f}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:7px 0}.pill{display:inline-block;border:1px solid #40505a;border-radius:12px;padding:2px 6px;font-size:10px;margin-right:5px}.open{color:#b5f36b} """
-        meta = f"<div class='meta'><b>Negro Context</b> · {html.escape(target_key)} · Request #{int(ex['id'])} · {html.escape(str(ex.get('environment') or 'UNKNOWN'))} · {html.escape(str(ex.get('burp_scope_status') or 'UNKNOWN'))}<div class='legend'><span class='pill'>AUTH</span><span class='pill'>RESOLVER</span><span class='pill'>CONTEXT</span><span class='pill'>ENTITY</span></div><div><a class='open' href='{html.escape(inspector_url)}'>Open in Negro Inspector</a></div></div>"
+        meta = f"<div class='meta'><b>Negro Context</b> · {html.escape(target_key)} · Request #{int(ex['id'])} · {html.escape(str(ex.get('environment') or 'UNKNOWN'))} · {html.escape(str(ex.get('burp_scope_status') or 'UNKNOWN'))} · {html.escape(str(ex.get('bridge_match_kind') or 'exact-bytes'))}<div class='legend'><span class='pill'>AUTH</span><span class='pill'>RESOLVER</span><span class='pill'>CONTEXT</span><span class='pill'>ENTITY</span></div><div><a class='open' href='{html.escape(inspector_url)}'>Open in Negro Inspector</a></div></div>"
         request_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(request_annotated)}</div></body></html>"
         response_html=f"<html><head><style>{css}</style></head><body>{meta}<div class='http'>{_burp_wrap_html(response_annotated or html.escape(response_text))}</div></body></html>"
         return {"found": True, "target_key": target_key, "exchange_id": int(ex["id"]), "text": "\n".join(lines), "request_html": request_html, "response_html": response_html, "inspector_url": inspector_url}

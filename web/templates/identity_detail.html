@@ -12,7 +12,7 @@
 <div class="callout info"><b>Esta es la ficha viva de {{ i.name }}.</b> Aquí ves qué usa Negro para autenticar, reconocer y contextualizar al actor, y todos los endpoints/Requests relacionados. Cada relación conserva un pivote hacia la evidencia HTTP.</div>
 
 <section class="panel identity-taught-audit" id="identity-evidence">
-  <div class="panel-head"><div><p class="eyebrow">FUENTE DE VERDAD · HTTP INSPECTOR</p><h2>Lo que tú enseñaste que identifica a {{ i.name }}</h2><p class="muted">Estas son las decisiones explícitas guardadas desde Request/Response. Si aquí aparece un RESOLVER, Negro lo considera una pista para reconocer a {{ i.name }}; AUTH es material de sesión y CONTEXT describe rol/tenant.</p></div><span>{{ identity_detail.taught_evidence|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">QUÉ IDENTIFICA A {{ i.name|upper }}</p><h2>Parámetros y valores asociados a esta Identity</h2><p class="muted">Lo que tú enseñaste que identifica a {{ i.name }} aparece aquí de forma auditable. <b>AUTH</b> muestra material de sesión; <b>RESOLVER</b> muestra los valores concretos que hacen que Negro reconozca a {{ i.name }}; <b>CONTEXT</b> muestra rol, tenant u otros atributos. Cada dato conserva la Request/Response donde lo enseñaste.</p></div><span>{{ identity_detail.taught_evidence|length }}</span></div>
   <div class="identity-taught-columns">
     {% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT')] %}
     <div class="identity-taught-column kind-{{ cls }}"><h3>{{ label }} · {{ identity_detail.taught_grouped[cls]|length }}</h3>
