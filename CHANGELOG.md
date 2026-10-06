@@ -1,3 +1,13 @@
+# v0.44.4 — Identity Evidence Classification
+
+- al crear/actualizar una Identity desde Burp, cada cookie/header/token/claim se clasifica como `AUTH`, `RESOLVER`, `CONTEXT` o `IGNORE`;
+- cookies conocidas de analytics/tracking (`_ga`, `_gid`, `_fbp`, `__cf_bm`, TikTok, consent, etc.) parten en `IGNORE`;
+- JWT se expande en claims: `sub`/email/user IDs sugieren `RESOLVER`, role/tenant/scope sugieren `CONTEXT`, claims temporales sugieren `IGNORE`;
+- la página de detalle de Identity permite reclasificar evidencia después de creada;
+- `RESOLVER -> IGNORE` elimina atribuciones automáticas derivadas y reconstruye el índice usado por mapa/Follow Value, conservando anclas manuales;
+- la rotación automática sólo aprende familias de material que el investigador clasificó como `AUTH`, evitando reintroducir cookies de ruido;
+- Burp Bridge v0.30.0 añade el selector tipado de evidencia al crear/actualizar Identity.
+
 # v0.44.3 — Search migration hotfix
 
 - Corrige el orden de migración de `search_documents.environment` para bases existentes.

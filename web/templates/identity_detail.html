@@ -36,20 +36,42 @@
   </aside>
 </section>
 
-<section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">MATERIAL DE AUTENTICACIÓN</p><h2>Cookies/tokens que Negro vio para {{ i.name }}</h2><p class="muted">Valores completos visibles porque el espacio de trabajo es local. Un token nuevo no crea otra identidad: simplemente es otro material de autenticación de la misma cuenta.</p></div><span>{{ identity_detail.materials|length }}</span></div>
+<section class="panel" id="identity-evidence">
+  <div class="panel-head"><div><p class="eyebrow">EVIDENCIA DE IDENTIDAD</p><h2>Qué significa cada dato para {{ i.name }}</h2><p class="muted">Puedes reclasificar cualquier dato en cualquier momento. <b>AUTH</b> rota sesión/token; <b>RESOLVER</b> identifica al actor; <b>CONTEXT</b> aporta rol/tenant sin crear relaciones; <b>IGNORE</b> conserva la evidencia pero deja de participar en atribución, mapa y correlación por Identity.</p></div></div>
+
+  <h3>Cookies, tokens y headers observados</h3>
   <div class="identity-material-list">
-    {% for a in identity_detail.materials %}<div class="identity-material-row"><div><b>{{ a.material_type }} · {{ a.material_name }}</b><code class="raw-value">{{ a.raw_value or a.masked_preview or '(valor histórico no recuperable todavía)' }}</code></div><small>{{ a.source }} · first {{ a.first_seen_at }} · last {{ a.last_seen_at }}</small></div>{% else %}<p class="muted">Aún no se aprendieron credenciales.</p>{% endfor %}
+    {% for a in identity_detail.materials %}
+    <div class="identity-material-row">
+      <div><b>{{ a.material_type }} · {{ a.material_name }}</b><code class="raw-value">{{ a.raw_value or a.masked_preview or '(valor histórico no recuperable todavía)' }}</code><small>{{ a.source }} · first {{ a.first_seen_at }} · last {{ a.last_seen_at }}</small></div>
+      <form class="row-actions" action="{{ target_base }}/identities/view/{{ i.id }}/evidence/material/{{ a.id }}" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <select name="classification" aria-label="Clasificación de {{ a.material_name }}">
+          {% for c in ['auth','resolver','context','ignore'] %}<option value="{{ c }}" {% if (a.classification or 'auth') == c %}selected{% endif %}>{{ c|upper }}</option>{% endfor %}
+        </select>
+        <button class="button ghost small-button" type="submit">Aplicar</button>
+      </form>
+    </div>
+    {% else %}<p class="muted">Aún no hay material clasificado.</p>{% endfor %}
   </div>
-</section>
 
-<section class="panel" id="resolvers">
-  <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo puede reconocer Negro esta identidad</h2><p class="muted">Ejemplos válidos: <code>jwt:sub=101</code>, <code>/me.id=101</code> o <code>/me.email=ana@…</code>. Un <code>ownerId</code> describe propiedad del objeto y no identifica necesariamente al actor.</p></div><span>{{ identity_detail.resolvers|length }}</span></div>
+  <hr>
+  <h3>Claims JWT y resolvers observados</h3>
   <div class="identity-resolver-list">
-    {% for r in identity_detail.resolvers %}<div class="identity-resolver-row"><div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code></div><small>{{ r.source }} · {% if r.enabled %}activo{% else %}inactivo{% endif %}</small></div>{% else %}<p class="muted">Sin resolvers estables. Asigna una Request de identidad propia (por ejemplo <code>/me</code>) o usa Buscar sobre un identificador estable confirmado.</p>{% endfor %}
+    {% for r in identity_detail.resolvers %}
+    <div class="identity-resolver-row">
+      <div><b>{{ r.resolver_type }}</b><code>{{ r.selector }} = {{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code><small>{{ r.source }} · {% if r.enabled %}participa en atribución{% else %}no participa en atribución{% endif %}</small></div>
+      <form class="row-actions" action="{{ target_base }}/identities/view/{{ i.id }}/evidence/resolver/{{ r.id }}" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <select name="classification" aria-label="Clasificación de {{ r.selector }}">
+          {% for c in ['resolver','context','ignore'] %}<option value="{{ c }}" {% if (r.classification or 'resolver') == c %}selected{% endif %}>{{ c|upper }}</option>{% endfor %}
+        </select>
+        <button class="button ghost small-button" type="submit">Aplicar</button>
+      </form>
+    </div>
+    {% else %}<p class="muted">Sin claims/resolvers clasificados todavía.</p>{% endfor %}
   </div>
 </section>
-
 
 <section class="panel identity-activity-panel">
   <div class="panel-head"><div><p class="eyebrow">ACTIVIDAD CONOCIDA</p><h2>Todo lo que Negro relaciona con {{ i.name }}</h2><p class="muted">La atribución puede venir de una decisión manual o de cookies/tokens/resolvers que tú enseñaste. Negro conserva la fuente en cada Request.</p></div><a class="button ghost small-button" href="{{ target_base }}/graph?focus=identity:{{ i.id }}">Ver comportamiento en grafo</a></div>

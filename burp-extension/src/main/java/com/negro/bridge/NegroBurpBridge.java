@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.29.0
+ * Negro Burp Bridge v0.30.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -80,7 +80,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.29.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.30.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -259,7 +259,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.29.0")
+                    .header("X-Negro-Bridge-Version", "0.30.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -781,9 +781,11 @@ public class NegroBurpBridge implements BurpExtension {
         @Override public String toString() { return "#" + id + " · " + name + ("capturing".equals(captureStatus) ? " · ● capturando" : ""); }
     }
 
-    private record AuthMaterialChoice(String fingerprint, String type, String name, String preview) {
+    private record IdentityEvidenceChoice(String candidateId, String kind, String type, String name, String preview, String defaultClassification) {
         @Override public String toString() { return type + " · " + name + " · " + preview; }
     }
+
+    private record EvidenceDecision(String candidateId, String classification) {}
 
     private record InvestigationChoice(long id, String title, String status) {
         @Override public String toString() { return id <= 0 ? title : "#" + id + " · " + title + (status == null || status.isBlank() ? "" : " · " + status); }
@@ -1370,30 +1372,42 @@ public class NegroBurpBridge implements BurpExtension {
         } catch (Exception ex) { throw new IllegalStateException(ex); }
     }
 
-    private List<AuthMaterialChoice> authMaterialChoices(String targetKey, long exchangeId) {
+    private List<IdentityEvidenceChoice> identityEvidenceChoices(String targetKey, long exchangeId) {
         try {
             String json = getText("/api/bridge/auth-materials/" + targetKey + "/" + exchangeId);
-            List<AuthMaterialChoice> out = new ArrayList<>();
-            Pattern p = Pattern.compile("\\{\\\"fingerprint\\\":\\\"([^\\\"]+)\\\",\\\"material_type\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\",\\\"preview\\\":\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"\\}");
+            List<IdentityEvidenceChoice> out = new ArrayList<>();
+            Pattern p = Pattern.compile("\"candidate_id\":\"((?:\\\\.|[^\"\\\\])*)\".*?\"kind\":\"([^\"]+)\".*?\"material_type\":\"([^\"]+)\".*?\"name\":\"((?:\\\\.|[^\"\\\\])*)\".*?\"preview\":\"((?:\\\\.|[^\"\\\\])*)\".*?\"default_classification\":\"([^\"]+)\"", Pattern.DOTALL);
             Matcher m = p.matcher(json);
-            while (m.find()) out.add(new AuthMaterialChoice(m.group(1), m.group(2), unescapeJson(m.group(3)), unescapeJson(m.group(4))));
+            while (m.find()) out.add(new IdentityEvidenceChoice(unescapeJson(m.group(1)), m.group(2), m.group(3), unescapeJson(m.group(4)), unescapeJson(m.group(5)), m.group(6)));
             return out;
         } catch (Exception ex) { throw new IllegalStateException(ex); }
     }
 
-    private List<String> chooseAuthFingerprints(String targetKey, long exchangeId, String title) {
-        List<AuthMaterialChoice> materials = authMaterialChoices(targetKey, exchangeId);
-        if (materials.isEmpty()) { showMessage("Negro", "No detecté Authorization, cookies ni headers de auth conocidos en esta request.", JOptionPane.INFORMATION_MESSAGE); return null; }
-        JPanel panel = formPanel(); panel.add(new JLabel("Selecciona el material que pertenece a esta identidad:"));
-        List<JCheckBox> boxes = new ArrayList<>();
-        for (AuthMaterialChoice material : materials) {
-            JCheckBox box = new JCheckBox(material.toString(), true);
-            boxes.add(box); panel.add(box);
+    private List<EvidenceDecision> chooseIdentityEvidence(String targetKey, long exchangeId, String title) {
+        List<IdentityEvidenceChoice> candidates = identityEvidenceChoices(targetKey, exchangeId);
+        if (candidates.isEmpty()) { showMessage("Negro", "No detecté material de sesión/identidad en esta request.", JOptionPane.INFORMATION_MESSAGE); return null; }
+        JPanel panel = formPanel();
+        panel.add(new JLabel("Clasifica cada dato. Sólo AUTH/RESOLVER participan en atribución automática:"));
+        List<JComboBox<String>> combos = new ArrayList<>();
+        String[] options = new String[]{"AUTH", "RESOLVER", "CONTEXT", "IGNORE"};
+        for (IdentityEvidenceChoice candidate : candidates) {
+            panel.add(new JLabel(candidate.toString()));
+            JComboBox<String> combo = new JComboBox<>(options);
+            String wanted = candidate.defaultClassification().toUpperCase();
+            combo.setSelectedItem(wanted);
+            combos.add(combo); panel.add(combo);
         }
         if (confirmDialog(title, panel) != JOptionPane.OK_OPTION) return null;
-        List<String> out = new ArrayList<>();
-        for (int i = 0; i < boxes.size(); i++) if (boxes.get(i).isSelected()) out.add(materials.get(i).fingerprint());
+        List<EvidenceDecision> out = new ArrayList<>();
+        for (int i = 0; i < candidates.size(); i++) out.add(new EvidenceDecision(candidates.get(i).candidateId(), String.valueOf(combos.get(i).getSelectedItem()).toLowerCase()));
         return out;
+    }
+
+    private String encodeEvidenceDecisions(List<EvidenceDecision> decisions) {
+        if (decisions == null) return "";
+        List<String> parts = new ArrayList<>();
+        for (EvidenceDecision d : decisions) parts.add(d.candidateId() + "=" + d.classification());
+        return String.join("|", parts);
     }
 
     private void assignIdentityFromBurp(HttpRequestResponse rr, String tool) {
@@ -1408,14 +1422,14 @@ public class NegroBurpBridge implements BurpExtension {
 
     private void createIdentityFromBurp(HttpRequestResponse rr, String tool) {
         BridgeContext ctx = ingestContext(rr, tool);
-        List<String> fingerprints = chooseAuthFingerprints(ctx.targetKey(), ctx.exchangeId(), "Create Identity · auth material");
-        if (fingerprints == null) return;
+        List<EvidenceDecision> decisions = chooseIdentityEvidence(ctx.targetKey(), ctx.exchangeId(), "Create Identity · clasificar evidencia");
+        if (decisions == null) return;
         JTextField name = new JTextField(32);
         JPanel panel = formPanel(); panel.add(new JLabel("Nombre de la identidad")); panel.add(name);
         if (confirmDialog("Create Identity from this request", panel) != JOptionPane.OK_OPTION) return;
         String identityName = name.getText().trim(); if (identityName.isEmpty()) return;
         try {
-            String extra = kv("name", identityName) + "," + kv("material_fingerprints", String.join(",", fingerprints));
+            String extra = kv("name", identityName) + "," + kv("evidence_decisions", encodeEvidenceDecisions(decisions));
             String body = postBridgeAction(ctx, "identity_create", extra);
             long id = jsonLong(body, "identity_id");
             appendNegroNote(rr.annotations(), "NEGRO · IDENTITY · " + identityName);
@@ -1426,10 +1440,10 @@ public class NegroBurpBridge implements BurpExtension {
     private void updateIdentityAuthFromBurp(HttpRequestResponse rr, String tool) {
         BridgeContext ctx = ingestContext(rr, tool);
         IdentityChoice choice = chooseIdentity(ctx.targetKey(), "Update auth material", false); if (choice == null) return;
-        List<String> fingerprints = chooseAuthFingerprints(ctx.targetKey(), ctx.exchangeId(), "Auth actual de " + choice.label());
-        if (fingerprints == null || fingerprints.isEmpty()) return;
+        List<EvidenceDecision> decisions = chooseIdentityEvidence(ctx.targetKey(), ctx.exchangeId(), "Clasificar evidencia actual de " + choice.label());
+        if (decisions == null) return;
         try {
-            String extra = "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null") + "," + kv("material_fingerprints", String.join(",", fingerprints));
+            String extra = "\"identity_id\":" + choice.identityId() + ",\"context_id\":" + (choice.contextId() > 0 ? Long.toString(choice.contextId()) : "null") + "," + kv("evidence_decisions", encodeEvidenceDecisions(decisions));
             postBridgeAction(ctx, "identity_update_auth", extra);
             appendNegroNote(rr.annotations(), "NEGRO · AUTH UPDATED · " + choice.label());
             showMessage("Negro", "Auth actualizada para " + choice.label(), JOptionPane.INFORMATION_MESSAGE);

@@ -5010,6 +5010,19 @@ def create_app(default_domain: str, default_workspace: Path):
             identity_tools.create_context(conn, identity_id, label, role=role, tenant=tenant, notes=notes)
         return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}", status_code=303)
 
+    @app.post("/t/{target_key}/identities/view/{identity_id}/evidence/{evidence_kind}/{evidence_id}")
+    def identity_evidence_classify(request: Request, target_key: str, identity_id: int, evidence_kind: str, evidence_id: int, classification: str = Form(...), csrf: str = Form(...)):
+        import negro_identity as identity_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                identity_tools.set_evidence_classification(conn, identity_id, evidence_kind, evidence_id, classification)
+                _refresh_search(conn, knowledge=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/identities/view/{identity_id}#identity-evidence", status_code=303)
+
     @app.get("/t/{target_key}/identities/assign", response_class=HTMLResponse)
     def identity_assign_page(request: Request, target_key: str, exchange_id: int | None = None):
         import negro_identity as identity_tools
@@ -6249,10 +6262,8 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             if not conn.execute("SELECT id FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone():
                 raise HTTPException(status_code=404, detail="Request no encontrada")
-            mats = identity_tools.extract_auth_materials(conn, int(exchange_id))
-        return {"target_key": target_key, "exchange_id": int(exchange_id), "materials": [
-            {"fingerprint": m["fingerprint"], "material_type": m["material_type"], "name": m["name"], "preview": m["preview"]} for m in mats
-        ]}
+            candidates = identity_tools.identity_evidence_candidates(conn, int(exchange_id))
+        return {"target_key": target_key, "exchange_id": int(exchange_id), "candidates": candidates}
 
     @app.post("/api/bridge/action", response_class=JSONResponse)
     async def bridge_action(request: Request):
@@ -6399,8 +6410,14 @@ def create_app(default_domain: str, default_workspace: Path):
                         raise HTTPException(status_code=400, detail="Nombre de identidad requerido")
                     identity_id = identity_tools.create_identity(conn, name)
                     identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=None, learn_auth=False, source="burp")
-                    learned = identity_tools.learn_auth_materials(conn, exchange_id, identity_id, fingerprints=fingerprints, source="burp_create")
-                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"learned": len(learned or [])})
+                    decision_raw = str(payload.get("evidence_decisions") or "")
+                    decisions = {}
+                    for token in decision_raw.split("|"):
+                        if "=" not in token: continue
+                        cid, cls = token.rsplit("=", 1)
+                        if cid: decisions[cid] = cls
+                    learned = identity_tools.apply_evidence_decisions(conn, exchange_id, identity_id, decisions, source="burp_create")
+                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"learned": learned})
                     return {"ok": True, "action": action, "identity_id": identity_id, "exchange_id": exchange_id, "learned": learned, "web_path": f"/t/{target_key}/identities/view/{identity_id}"}
                 if action == "identity_assign":
                     if identity_id <= 0:
@@ -6411,9 +6428,15 @@ def create_app(default_domain: str, default_workspace: Path):
                 if action == "identity_update_auth":
                     if identity_id <= 0:
                         raise HTTPException(status_code=400, detail="Identidad requerida")
-                    learned = identity_tools.update_identity_auth_from_exchange(conn, exchange_id, identity_id, context_id=context_id, fingerprints=fingerprints, source="burp_update")
+                    decision_raw = str(payload.get("evidence_decisions") or "")
+                    decisions = {}
+                    for token in decision_raw.split("|"):
+                        if "=" not in token: continue
+                        cid, cls = token.rsplit("=", 1)
+                        if cid: decisions[cid] = cls
+                    learned = identity_tools.apply_evidence_decisions(conn, exchange_id, identity_id, decisions, context_id=context_id, source="burp_update")
                     identity_tools.assign_exchange(conn, exchange_id, identity_id, context_id=context_id, learn_auth=False, source="burp_update")
-                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id})
+                    _bridge_record_event(conn, exchange_id, action, target_type="identity", target_id=identity_id, extra={"context_id": context_id,"learned":learned})
                     return {"ok": True, "action": action, "identity_id": identity_id, "context_id": context_id, "exchange_id": exchange_id, "learned": learned}
                 # Send / Re-send as Identity. identity_id=0 is the virtual Anonymous context.
                 rewritten = identity_tools.rewrite_exchange_as_identity(conn, exchange_id, identity_id if identity_id > 0 else None, context_id=context_id)

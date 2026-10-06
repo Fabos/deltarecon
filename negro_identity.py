@@ -93,6 +93,10 @@ def init_schema(conn) -> None:
     auth_cols = {row["name"] for row in conn.execute("PRAGMA table_info(auth_materials)")}
     if "raw_value" not in auth_cols:
         conn.execute("ALTER TABLE auth_materials ADD COLUMN raw_value TEXT")
+        auth_cols.add("raw_value")
+    if "classification" not in auth_cols:
+        conn.execute("ALTER TABLE auth_materials ADD COLUMN classification TEXT NOT NULL DEFAULT 'auth'")
+        auth_cols.add("classification")
     resolver_cols = {row["name"] for row in conn.execute("PRAGMA table_info(identity_resolvers)")}
     if "value_raw" not in resolver_cols:
         conn.execute("ALTER TABLE identity_resolvers ADD COLUMN value_raw TEXT")
@@ -102,6 +106,9 @@ def init_schema(conn) -> None:
         resolver_cols.add("anchor_exchange_id")
     if "anchor_observation_id" not in resolver_cols:
         conn.execute("ALTER TABLE identity_resolvers ADD COLUMN anchor_observation_id INTEGER")
+        resolver_cols.add("anchor_observation_id")
+    if "classification" not in resolver_cols:
+        conn.execute("ALTER TABLE identity_resolvers ADD COLUMN classification TEXT NOT NULL DEFAULT 'resolver'")
 
 
 def _decode_b64(value: str | None) -> str:
@@ -150,6 +157,40 @@ def _jwt_payload(token: str) -> dict[str, Any]:
 
 def _material_preview(value: str) -> str:
     return hunter._mask_value(str(value or ""))
+
+
+def normalize_classification(value: str | None) -> str:
+    raw = str(value or "ignore").strip().lower()
+    return raw if raw in {"auth", "resolver", "context", "ignore"} else "ignore"
+
+
+TRACKING_COOKIE_NAMES = {
+    "__cf_bm", "_fbp", "_ga", "_gid", "_gcl_au", "_tt_enable_cookie", "_ttp",
+    "ttcsid", "dtcookie", "acceptedcookies", "aceptedcookies",
+}
+
+
+def default_material_classification(material: dict[str, Any]) -> str:
+    typ = str(material.get("material_type") or "").lower()
+    name = str(material.get("name") or "").lower()
+    if typ in {"bearer", "authorization", "header"}:
+        return "auth"
+    if typ == "cookie":
+        if name in TRACKING_COOKIE_NAMES or name.startswith(("_ga_", "ttcsid_")):
+            return "ignore"
+        if any(tok in name for tok in ("session", "sess", "auth", "token", "jwt", "sid", "sso")):
+            return "auth"
+        return "ignore"
+    return "ignore"
+
+
+def default_claim_classification(name: str) -> str:
+    key = str(name or "").lower()
+    if key in {"sub", "email", "user_id", "userid", "account_id", "accountid", "username", "login"}:
+        return "resolver"
+    if key in {"role", "roles", "tenant", "tenantid", "tenant_id", "scope", "scp", "aud"}:
+        return "context"
+    return "ignore"
 
 
 def extract_auth_materials(conn, exchange_id: int) -> list[dict[str, Any]]:
@@ -244,14 +285,16 @@ def _context_belongs(conn, identity_id: int, context_id: int | None) -> int | No
     return int(row["id"])
 
 
-def _learn_material(conn, identity_id: int, context_id: int | None, material: dict[str, Any], *, source: str) -> None:
+def _learn_material(conn, identity_id: int, context_id: int | None, material: dict[str, Any], *, source: str, classification: str = "auth") -> None:
+    classification = normalize_classification(classification)
     now = now_iso()
+    active = 1 if classification in {"auth", "resolver"} else 0
     conn.execute(
-        """INSERT INTO auth_materials(identity_id,context_id,material_type,material_name,fingerprint,masked_preview,raw_value,source,first_seen_at,last_seen_at,active)
-           VALUES(?,?,?,?,?,?,?,?,?,?,1)
+        """INSERT INTO auth_materials(identity_id,context_id,material_type,material_name,fingerprint,masked_preview,raw_value,source,first_seen_at,last_seen_at,active,classification)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(identity_id,context_id,material_type,material_name,fingerprint)
-           DO UPDATE SET last_seen_at=excluded.last_seen_at,active=1,masked_preview=excluded.masked_preview,raw_value=excluded.raw_value""",
-        (int(identity_id), context_id, material["material_type"], str(material["name"])[:160], material["fingerprint"], material["preview"], str(material.get("value") or ""), source, now, now),
+           DO UPDATE SET last_seen_at=excluded.last_seen_at,active=excluded.active,classification=excluded.classification,masked_preview=excluded.masked_preview,raw_value=excluded.raw_value,source=excluded.source""",
+        (int(identity_id), context_id, material["material_type"], str(material["name"])[:160], material["fingerprint"], material["preview"], str(material.get("value") or ""), source, now, now, active, classification),
     )
 
 
@@ -269,8 +312,8 @@ def _learn_stable_jwt_claims(conn, identity_id: int, context_id: int | None, mat
         selector = f"jwt:{key}"
         vh = _sha(value)
         conn.execute(
-            """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,1,?,?,?)
+            """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at,classification)
+               VALUES(?,?,?,?,?,?,?,1,?,?,?,'resolver')
                ON CONFLICT(identity_id,context_id,resolver_type,selector,value_hash)
                DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=1,updated_at=excluded.updated_at""",
             (int(identity_id), context_id, "jwt_claim", selector, vh, value[:120], value, source, now, now),
@@ -455,13 +498,13 @@ def current_auth_materials(conn, identity_id: int, *, context_id: int | None = N
     _backfill_raw_identity_values(conn, int(identity_id))
     if context_id is not None:
         rows = conn.execute(
-            """SELECT * FROM auth_materials WHERE identity_id=? AND active=1 AND (context_id=? OR context_id IS NULL)
+            """SELECT * FROM auth_materials WHERE identity_id=? AND active=1 AND classification='auth' AND (context_id=? OR context_id IS NULL)
                ORDER BY CASE WHEN context_id=? THEN 0 ELSE 1 END,last_seen_at DESC,id DESC""",
             (int(identity_id), context_id, context_id),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM auth_materials WHERE identity_id=? AND active=1 ORDER BY last_seen_at DESC,id DESC",
+            "SELECT * FROM auth_materials WHERE identity_id=? AND active=1 AND classification='auth' ORDER BY last_seen_at DESC,id DESC",
             (int(identity_id),),
         ).fetchall()
     out: list[dict[str, Any]] = []
@@ -478,13 +521,13 @@ def current_auth_materials(conn, identity_id: int, *, context_id: int | None = N
 
 def _known_auth_cookie_names(conn) -> set[str]:
     return {str(r["material_name"] or "").lower() for r in conn.execute(
-        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='cookie'"
+        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='cookie' AND classification='auth' AND active=1"
     ).fetchall() if str(r["material_name"] or "")}
 
 
 def _known_custom_auth_headers(conn) -> set[str]:
     return {str(r["material_name"] or "").lower() for r in conn.execute(
-        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='header'"
+        "SELECT DISTINCT material_name FROM auth_materials WHERE material_type='header' AND classification='auth' AND active=1"
     ).fetchall() if str(r["material_name"] or "")}
 
 
@@ -622,7 +665,7 @@ def _material_matches(conn, materials: list[dict[str, Any]]) -> list[tuple[int, 
     matches: list[tuple[int, int | None, int | None, str]] = []
     for material in materials:
         for row in conn.execute(
-            "SELECT id,identity_id,context_id FROM auth_materials WHERE fingerprint=? AND active=1",
+            "SELECT id,identity_id,context_id FROM auth_materials WHERE fingerprint=? AND active=1 AND classification IN ('auth','resolver')",
             (material["fingerprint"],),
         ).fetchall():
             matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, None, "auth_material"))
@@ -632,7 +675,7 @@ def _material_matches(conn, materials: list[dict[str, Any]]) -> list[tuple[int, 
                 selector = f"jwt:{key}"
                 vh = _sha(str(value))
                 for row in conn.execute(
-                    "SELECT id,identity_id,context_id FROM identity_resolvers WHERE enabled=1 AND resolver_type='jwt_claim' AND selector=? AND value_hash=?",
+                    "SELECT id,identity_id,context_id FROM identity_resolvers WHERE enabled=1 AND classification='resolver' AND resolver_type='jwt_claim' AND selector=? AND value_hash=?",
                     (selector, vh),
                 ).fetchall():
                     matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, int(row["id"]), "jwt_claim"))
@@ -651,7 +694,7 @@ def resolve_exchange(conn, exchange_id: int, *, force: bool = False) -> dict[str
     for row in conn.execute(
         """SELECT ir.id,ir.identity_id,ir.context_id FROM identity_resolvers ir
            JOIN parameter_observations p ON p.normalized_name=ir.selector AND p.value_hash=ir.value_hash
-           WHERE ir.enabled=1 AND ir.resolver_type='parameter' AND p.exchange_id=?""",
+           WHERE ir.enabled=1 AND ir.classification='resolver' AND ir.resolver_type='parameter' AND p.exchange_id=?""",
         (int(exchange_id),),
     ).fetchall():
         matches.append((int(row["identity_id"]), int(row["context_id"]) if row["context_id"] else None, int(row["id"]), "parameter"))
@@ -672,10 +715,17 @@ def resolve_exchange(conn, exchange_id: int, *, force: bool = False) -> dict[str
              confidence=excluded.confidence,resolver_id=excluded.resolver_id,assigned_at=excluded.assigned_at""",
         (int(exchange_id), identity_id, context_id, source, "high", resolver_id, now),
     )
-    # Important for rotating sessions: once a stable resolver identifies an exchange,
-    # remember the fresh token/cookie fingerprint for future requests in the same session.
+    # Rotate only material families the researcher explicitly classified as AUTH.
+    # This prevents analytics/tracking cookies from being re-learned just because a
+    # stable resolver recognized the actor on a later request.
     for material in materials:
-        _learn_material(conn, identity_id, context_id, material, source="resolver")
+        known = conn.execute(
+            """SELECT 1 FROM auth_materials WHERE identity_id=? AND context_id IS ?
+               AND material_type=? AND lower(material_name)=lower(?) AND classification='auth' LIMIT 1""",
+            (identity_id, context_id, material["material_type"], str(material["name"])),
+        ).fetchone()
+        if known:
+            _learn_material(conn, identity_id, context_id, material, source="resolver_rotation", classification="auth")
     return dict(conn.execute("SELECT * FROM exchange_identities WHERE exchange_id=?", (int(exchange_id),)).fetchone())
 
 
@@ -704,13 +754,115 @@ def resolve_all(conn, *, limit: int = 100000) -> dict[str, int]:
     return {"exchanges": len(ids), "resolved": resolved, "newly_resolved": len(newly_resolved)}
 
 
+def identity_evidence_candidates(conn, exchange_id: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for material in extract_auth_materials(conn, int(exchange_id)):
+        fp = str(material["fingerprint"])
+        out.append({
+            "candidate_id": f"material:{fp}", "kind": "material",
+            "material_type": material["material_type"], "name": material["name"],
+            "preview": material.get("preview") or "", "value": material.get("value") or "",
+            "default_classification": default_material_classification(material),
+        })
+        claims = material.get("claims") or {}
+        if isinstance(claims, dict):
+            for key, value in claims.items():
+                out.append({
+                    "candidate_id": f"claim:{fp}:{key}", "kind": "jwt_claim",
+                    "material_type": "jwt_claim", "name": str(key), "preview": str(value)[:180],
+                    "value": str(value), "parent_fingerprint": fp,
+                    "default_classification": default_claim_classification(str(key)),
+                })
+    return out
+
+
+def apply_evidence_decisions(conn, exchange_id: int, identity_id: int, decisions: dict[str, str], *, context_id: int | None = None, source: str = "manual") -> dict[str, int]:
+    init_schema(conn)
+    context_id = _context_belongs(conn, int(identity_id), context_id)
+    materials = {str(m["fingerprint"]): m for m in extract_auth_materials(conn, int(exchange_id))}
+    learned = {"auth": 0, "resolver": 0, "context": 0, "ignore": 0}
+    now = now_iso()
+    for cid, raw_class in (decisions or {}).items():
+        classification = normalize_classification(raw_class)
+        parts = str(cid).split(":", 2)
+        if len(parts) < 2:
+            continue
+        if parts[0] == "material":
+            material = materials.get(parts[1])
+            if not material:
+                continue
+            _learn_material(conn, identity_id, context_id, material, source=source, classification=classification)
+            learned[classification] += 1
+        elif parts[0] == "claim" and len(parts) == 3:
+            material = materials.get(parts[1])
+            if not material:
+                continue
+            claims = material.get("claims") or {}
+            key = parts[2]
+            if key not in claims:
+                continue
+            value = str(claims[key])
+            selector = f"jwt:{key}"
+            vh = _sha(value)
+            enabled = 1 if classification == "resolver" else 0
+            conn.execute(
+                """INSERT INTO identity_resolvers(identity_id,context_id,resolver_type,selector,value_hash,value_preview,value_raw,enabled,source,created_at,updated_at,classification)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(identity_id,context_id,resolver_type,selector,value_hash)
+                   DO UPDATE SET value_preview=excluded.value_preview,value_raw=excluded.value_raw,enabled=excluded.enabled,source=excluded.source,updated_at=excluded.updated_at,classification=excluded.classification""",
+                (identity_id, context_id, "jwt_claim", selector, vh, value[:120], value, enabled, source, now, now, classification),
+            )
+            learned[classification] += 1
+    recompute_identity_attribution(conn, identity_id)
+    return learned
+
+
+def set_evidence_classification(conn, identity_id: int, evidence_kind: str, evidence_id: int, classification: str) -> None:
+    init_schema(conn)
+    classification = normalize_classification(classification)
+    if evidence_kind == "material":
+        row = conn.execute("SELECT id FROM auth_materials WHERE id=? AND identity_id=?", (int(evidence_id), int(identity_id))).fetchone()
+        if not row:
+            raise ValueError("Material no encontrado")
+        active = 1 if classification in {"auth", "resolver"} else 0
+        conn.execute("UPDATE auth_materials SET classification=?,active=? WHERE id=?", (classification, active, int(evidence_id)))
+    elif evidence_kind == "resolver":
+        row = conn.execute("SELECT id FROM identity_resolvers WHERE id=? AND identity_id=?", (int(evidence_id), int(identity_id))).fetchone()
+        if not row:
+            raise ValueError("Resolver/claim no encontrado")
+        enabled = 1 if classification == "resolver" else 0
+        conn.execute("UPDATE identity_resolvers SET classification=?,enabled=?,updated_at=? WHERE id=?", (classification, enabled, now_iso(), int(evidence_id)))
+    else:
+        raise ValueError("Tipo de evidencia inválido")
+    recompute_identity_attribution(conn, int(identity_id))
+
+
+def recompute_identity_attribution(conn, identity_id: int) -> dict[str, int]:
+    """Rebuild automatic Identity edges while preserving explicit human assignments."""
+    init_schema(conn)
+    # Explicit/manual anchors remain. Derived rows are discarded and resolved again
+    # from the currently active AUTH/RESOLVER evidence only.
+    conn.execute(
+        """DELETE FROM exchange_identities WHERE identity_id=? AND source NOT IN
+           ('manual','burp','manual_assignment','parameter_resolver','burp_update')""",
+        (int(identity_id),),
+    )
+    result = resolve_all(conn)
+    try:
+        import negro_objects as object_tools
+        object_tools.rebuild_identifier_index(conn)
+    except Exception:
+        pass
+    return result
+
+
 def list_identities(conn) -> list[dict[str, Any]]:
     init_schema(conn)
     rows = conn.execute(
         """SELECT i.*,
                   (SELECT COUNT(*) FROM identity_contexts c WHERE c.identity_id=i.id) contexts,
-                  (SELECT COUNT(*) FROM auth_materials a WHERE a.identity_id=i.id AND a.active=1) auth_materials,
-                  (SELECT COUNT(*) FROM identity_resolvers r WHERE r.identity_id=i.id AND r.enabled=1) resolvers,
+                  (SELECT COUNT(*) FROM auth_materials a WHERE a.identity_id=i.id AND a.active=1 AND a.classification='auth') auth_materials,
+                  (SELECT COUNT(*) FROM identity_resolvers r WHERE r.identity_id=i.id AND r.enabled=1 AND r.classification='resolver') resolvers,
                   (SELECT COUNT(*) FROM exchange_identities e WHERE e.identity_id=i.id) exchanges
            FROM identities i ORDER BY lower(i.name)"""
     ).fetchall()

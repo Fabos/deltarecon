@@ -25,7 +25,7 @@ def capture(paths,path,method,status,*,token='',body='',response='{}'):
     return item
 
 def main():
-    assert core.VERSION=='0.44.1',core.VERSION
+    assert core.VERSION=='0.44.4',core.VERSION
     with tempfile.TemporaryDirectory(prefix='negro-v053-') as td:
         root=Path(td); ws=root/'workspace'; paths=core.ensure_workspace(ws,'shop.test')
         original=capture(paths,'/api/orders/123','GET',200,token='TOKEN_A',response='{"orderId":"123","ownerId":"user-a","status":"PAID"}')
@@ -102,14 +102,14 @@ def main():
             core.TARGETS_PATH=old
 
     java=(ROOT/'burp-extension/src/main/java/com/negro/bridge/NegroBurpBridge.java').read_text()
-    for text in ['v0.29.0','Replay as Identity','Compare Identity…','replay_prepare','replay_execute','Sin autenticación','Elegir / comparar…']:
+    for text in ['v0.30.0','Replay as Identity','Compare Identity…','replay_prepare','replay_execute','Sin autenticación','Elegir / comparar…']:
         assert text in java,text
     assert '"execute".equalsIgnoreCase(jobKind) || "replay_execute".equalsIgnoreCase(jobKind)' in java
-    assert '0.29.0' in (ROOT/'burp-extension/build-extension.sh').read_text()
+    assert '0.30.0' in (ROOT/'burp-extension/build-extension.sh').read_text()
     print('[OK] Replay swaps auth but preserves target object/path/body')
     print('[OK] Replay traffic is evidence outside normal discovery and Flow Capture')
     print('[OK] STATE INVALID stays inconclusive and keeps Hypothesis pending')
     print('[OK] Investigation timeline + Home memory include Authorization Replay context')
-    print('[OK] Burp Bridge v0.29 exposes manual Replay as Identity + Compare Identity')
+    print('[OK] Burp Bridge v0.30 exposes manual Replay as Identity + Compare Identity')
 
 if __name__=='__main__': main()

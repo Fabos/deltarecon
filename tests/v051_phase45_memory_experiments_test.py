@@ -21,7 +21,7 @@ def capture(paths,path,method,status,req_body='',resp_body='{}'):
     return core.upsert_http_observation(paths,'shop.negro.lab',url=f'http://shop.negro.lab{path}',method=method,source='burp_proxy',status_code=status,authenticated=True,tool='PROXY',response_content_type='application/json',request_b64=b64(req),response_b64=b64(resp))
 
 def main():
-    assert core.VERSION=='0.44.1'
+    assert core.VERSION=='0.44.4'
     with tempfile.TemporaryDirectory(prefix='negro-v051-') as td:
         root=Path(td); workspace=root/'workspace'; paths=core.ensure_workspace(workspace,'shop.negro.lab')
         a=capture(paths,'/api/orders','POST',201,'{"address":"A"}','{"orderId":"ORD-1001","ownerId":"buyer-a"}')
