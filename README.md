@@ -1,7 +1,13 @@
-# Negro Recon 🐕 — v0.44.2
+# Negro Recon 🐕 — v0.44.3
 
 
 
+
+## v0.44.3 — Search migration hotfix
+
+- Corrige la migración de `search_documents.environment` en workspaces existentes: la columna se añade antes de crear su índice.
+- Evita `Internal Server Error` al abrir Buscar después de actualizar desde v0.44.0/v0.44.1.
+- Versión interna alineada con el paquete.
 
 ## v0.44.2 — Project Environment Rules
 

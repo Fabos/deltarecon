@@ -1,3 +1,9 @@
+# v0.44.3 — Search migration hotfix
+
+- Corrige el orden de migración de `search_documents.environment` para bases existentes.
+- `Buscar` deja de fallar con `no such column: environment` durante `CREATE INDEX`.
+- La versión interna de Negro queda alineada en `0.44.3`.
+
 # v0.44.2 — Project Environment Rules
 
 - añade **Ajustes → Ambientes** con reglas globales por proyecto y wildcard de hostname;

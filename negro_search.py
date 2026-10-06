@@ -42,7 +42,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_search_documents_resource ON search_documents(resource_id);
         CREATE INDEX IF NOT EXISTS idx_search_documents_host ON search_documents(host_id, host);
         CREATE INDEX IF NOT EXISTS idx_search_documents_structured ON search_documents(method, status, human_state, signal_kind);
-        CREATE INDEX IF NOT EXISTS idx_search_documents_environment ON search_documents(environment);
 
         CREATE TABLE IF NOT EXISTS saved_searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
