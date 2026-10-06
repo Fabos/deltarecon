@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.32.0
+ * Negro Burp Bridge v0.33.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -82,7 +82,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.32.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.33.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -92,7 +92,9 @@ public class NegroBurpBridge implements BurpExtension {
         });
         api.http().registerHttpHandler(new BridgeHttpHandler());
         api.scope().registerScopeChangeHandler(change -> {
-            reconcileBurpScopeAsync("scope-change");
+            // Scope events do not carry the changed URL. Reconcile only the small set
+            // of configured project roots and inspect Site map for a new unassigned host.
+            bridgePoller.schedule(() -> reconcileBurpScope("scope-change"), 250, TimeUnit.MILLISECONDS);
             bridgePoller.schedule(this::promptUnassignedInScopeHosts, 500, TimeUnit.MILLISECONDS);
         });
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
@@ -223,7 +225,6 @@ public class NegroBurpBridge implements BurpExtension {
                 .thenAccept(r -> {
                     if (r.statusCode() == 200) {
                         markConnected("health OK");
-                        if (System.currentTimeMillis() - lastScopeReconcileMs.get() > 300000L) reconcileBurpScopeAsync("health-reconnect");
                     }
                     else SwingUtilities.invokeLater(() -> { if (statusLabel != null) statusLabel.setText("○ Negro respondió HTTP " + r.statusCode()); });
                 })
@@ -269,7 +270,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.32.0")
+                    .header("X-Negro-Bridge-Version", "0.33.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an

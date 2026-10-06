@@ -6094,25 +6094,19 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/api/bridge/scope/candidates")
     def bridge_scope_candidates():
-        """URLs already known by Negro that Burp should classify on bridge start/scope change."""
+        """Small reconciliation set: only configured project roots, never every captured URL."""
         lines = []
         for target in core.list_targets():
-            try:
-                domain = str(target["domain"])
-                paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
-                with _db(paths) as conn:
-                    scope_tools.init_schema(conn)
-                    for item in scope_tools.candidate_urls(conn, limit=20000):
-                        url = str(item.get("url") or "").replace("\t", "").replace("\n", "")
-                        if url:
-                            lines.append(f"{target['key']}\t{url}")
-            except Exception:
-                continue
+            target_key = str(target.get("key") or "")
+            for root in target.get("scopes") or []:
+                host = core.normalize_scope(root)
+                if host:
+                    lines.append(f"{target_key}\thttps://{host}/")
         return HTMLResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
     @app.post("/api/bridge/scope/sync", response_class=JSONResponse)
     async def bridge_scope_sync(request: Request):
-        """Apply Burp's current suite-scope classification to already captured evidence."""
+        """Apply Burp scope deltas by host using bulk SQL; never reindex exchange-by-exchange."""
         raw = (await request.body()).decode("utf-8", errors="replace")
         grouped = {}
         for line in raw.splitlines():
@@ -6120,33 +6114,26 @@ def create_app(default_domain: str, default_workspace: Path):
             if len(parts) != 3:
                 continue
             target_key, status, url = parts
-            grouped.setdefault(target_key, []).append((status, url))
+            try:
+                host = urllib.parse.urlsplit(url).hostname or url
+            except Exception:
+                host = url
+            host = str(host or "").strip().lower().rstrip(".")
+            if host:
+                grouped.setdefault(target_key, {})[host] = status
         changed = 0
-        touched = 0
-        for target_key, entries in grouped.items():
+        hosts_touched = 0
+        for target_key, host_states in grouped.items():
             try:
                 _, _, paths = _target_context(target_key)
             except Exception:
                 continue
             with _db(paths) as conn:
                 scope_tools.init_schema(conn)
-                reindex = set()
-                for status, url in entries:
-                    row = conn.execute("SELECT id FROM resources WHERE url=?", (url,)).fetchone()
-                    if not row:
-                        continue
-                    ids = scope_tools.set_resource_scope(conn, int(row["id"]), status)
-                    touched += len(ids)
-                    reindex.update(ids)
-                if reindex:
-                    try:
-                        import negro_search as search_index
-                        for exchange_id in reindex:
-                            search_index.index_exchange(conn, exchange_id)
-                    except Exception:
-                        pass
-                    changed += len(reindex)
-        return {"ok": True, "updated_exchanges": changed, "touched": touched}
+                for host, status in host_states.items():
+                    changed += scope_tools.set_host_scope(conn, host, status)
+                    hosts_touched += 1
+        return {"ok": True, "updated_exchanges": changed, "hosts_touched": hosts_touched}
 
     @app.get("/api/ingest/health", response_class=JSONResponse)
     def ingest_health():

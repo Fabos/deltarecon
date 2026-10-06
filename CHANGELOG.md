@@ -1,3 +1,11 @@
+# v0.44.7 — Scope performance + atomic workspace state hotfix
+
+- Scope Sync reconciles only project roots/hosts, not every captured URL.
+- Scope updates use bulk SQL and no longer reindex every exchange.
+- Health polling never triggers a scope reconciliation.
+- `state.json`, targets and current config are written atomically; partial/empty legacy state no longer crashes Settings.
+- Bridge v0.33.0.
+
 # v0.44.6 — Scope por proyecto + Runner migration hotfix
 
 - Corrige la carrera de migración de `runner_run_requests` que podía producir `duplicate column name: url` al abrir Runners.

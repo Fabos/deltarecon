@@ -1,4 +1,4 @@
-# Negro Recon 🐕 — v0.44.6
+# Negro Recon 🐕 — v0.44.7
 
 ## v0.44.6 — Scope por proyecto + Runner migration hotfix
 

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import threading
 import re
 import shutil
 import sqlite3
@@ -36,8 +38,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.44.6"
+VERSION = "0.44.7"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
+_WORKSPACE_INIT_LOCK = threading.RLock()
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"
 
 HOST_SOURCE_ORDER = [
@@ -178,6 +181,20 @@ def normalize_hosts(hosts: Iterable[str], domain: str, scopes: Iterable[str] | N
         if value:
             values.add(value)
     return sorted(values)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write small state/config files atomically so concurrent readers never see a partial JSON document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{threading.get_ident()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def write_lines(path: Path, lines: Iterable[str]) -> None:
@@ -864,7 +881,7 @@ def unreviewed_signal_count(conn: sqlite3.Connection, *, resource_id: int | None
     return int(conn.execute(sql, params).fetchone()["c"] or 0)
 
 
-def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | None = None, project_name: str | None = None) -> dict[str, Path]:
+def _ensure_workspace_unlocked(workspace: Path, domain: str, *, scopes: Iterable[str] | None = None, project_name: str | None = None) -> dict[str, Path]:
     paths = workspace_paths(workspace)
     for key in ("raw", "normalized", "delta", "inventory", "notes"):
         paths[key].mkdir(parents=True, exist_ok=True)
@@ -872,7 +889,15 @@ def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | No
     normalized_domain = normalize_scope(domain) or str(domain).strip().lower().rstrip(".")
     requested_scopes = normalize_scopes(scopes, normalized_domain)
     if paths["state_file"].exists():
-        state = json.loads(paths["state_file"].read_text(encoding="utf-8"))
+        # state.json is mutable metadata, not the source of truth. A stale/partial
+        # legacy file must never take down the UI. Atomic writes below prevent new
+        # partial files; this fallback repairs old/empty ones conservatively.
+        try:
+            state = json.loads(paths["state_file"].read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                state = {}
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            state = {}
         existing_domain = normalize_scope(state.get("domain") or "")
         existing_scopes = normalize_scopes(state.get("scopes") if isinstance(state.get("scopes"), list) else [], existing_domain or normalized_domain)
         if existing_domain and existing_domain != normalized_domain and normalized_domain not in existing_scopes:
@@ -886,7 +911,7 @@ def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | No
     state["project_name"] = str(project_name or state.get("project_name") or normalized_domain).strip()[:120]
     state["scopes"] = requested_scopes
     state["version"] = VERSION
-    paths["state_file"].write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(paths["state_file"], json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
     if not paths["inventory_file"].exists():
         paths["inventory_file"].write_text("", encoding="utf-8")
@@ -899,6 +924,15 @@ def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | No
         conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('scopes_json',?)", (json.dumps(requested_scopes),))
     migrate_existing_workspace(paths, normalized_domain)
     return paths
+
+
+
+def ensure_workspace(workspace: Path, domain: str, *, scopes: Iterable[str] | None = None, project_name: str | None = None) -> dict[str, Path]:
+    # FastAPI serves sync endpoints in worker threads while Burp can ingest in
+    # parallel. Workspace initialization includes additive SQLite migrations, so
+    # serialize it per process to avoid duplicate-column races.
+    with _WORKSPACE_INIT_LOCK:
+        return _ensure_workspace_unlocked(workspace, domain, scopes=scopes, project_name=project_name)
 
 
 def source_host_file(paths: dict[str, Path], source: str) -> Path:
@@ -3177,7 +3211,7 @@ def targets_load() -> dict:
 
 def targets_save(data: dict) -> None:
     TARGETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TARGETS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(TARGETS_PATH, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
 def register_target(domain: str, workspace: Path, make_current: bool = True, *, name: str | None = None, scopes: Iterable[str] | None = None) -> str:
@@ -3200,7 +3234,7 @@ def register_target(domain: str, workspace: Path, make_current: bool = True, *, 
     targets_save(data)
     if make_current:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(data["targets"][key], indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        atomic_write_text(CONFIG_PATH, json.dumps(data["targets"][key], indent=2, ensure_ascii=False) + "\n")
     return key
 
 
@@ -3221,7 +3255,7 @@ def update_target_project(key: str, *, name: str | None = None, scopes: Iterable
     ensure_workspace(workspace, target["domain"], scopes=roots, project_name=target["name"])
     if data.get("last_target") == key:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(target, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        atomic_write_text(CONFIG_PATH, json.dumps(target, indent=2, ensure_ascii=False) + "\n")
     return dict(target)
 
 
@@ -3233,7 +3267,7 @@ def set_current_target(key: str) -> None:
     data["last_target"] = key
     targets_save(data)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(target, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(CONFIG_PATH, json.dumps(target, indent=2, ensure_ascii=False) + "\n")
 
 
 def get_target(key: str) -> dict | None:
@@ -3297,7 +3331,7 @@ def delete_target(key: str, *, delete_workspace: bool = True) -> dict:
     if data.get("last_target"):
         current = data["targets"][data["last_target"]]
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     else:
         CONFIG_PATH.unlink(missing_ok=True)
     return {"key": key, "domain": domain, "workspace": str(workspace), "workspace_deleted": deleted_workspace, "remaining": len(remaining), "next_target": data.get("last_target")}

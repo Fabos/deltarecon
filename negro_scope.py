@@ -67,3 +67,41 @@ def candidate_urls(conn: sqlite3.Connection, limit: int = 10000) -> list[dict]:
         (max(1, min(int(limit), 50000)),),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_host_scope(conn: sqlite3.Connection, hostname: str, status: str | bool | None, *, at: str | None = None) -> int:
+    """Update all observed exchanges for one host in a single SQL statement."""
+    init_schema(conn)
+    normalized = normalize_status(status)
+    ts = at or now_iso()
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return 0
+    row = conn.execute("SELECT id FROM hosts WHERE lower(hostname)=?", (host,)).fetchone()
+    if not row:
+        return 0
+    host_id = int(row["id"])
+    count = conn.execute(
+        """SELECT COUNT(*) c FROM http_exchanges e
+           JOIN resource_operations o ON o.id=e.operation_id
+           JOIN resources r ON r.id=o.resource_id
+           WHERE r.host_id=? AND COALESCE(e.burp_scope_status,'UNKNOWN')<>?""",
+        (host_id, normalized),
+    ).fetchone()["c"]
+    conn.execute(
+        """UPDATE http_exchanges SET burp_scope_status=?,burp_scope_updated_at=?
+           WHERE operation_id IN (SELECT o.id FROM resource_operations o JOIN resources r ON r.id=o.resource_id WHERE r.host_id=?)""",
+        (normalized, ts, host_id),
+    )
+    # Keep search_documents in sync in bulk. Older DBs may not have the column yet.
+    try:
+        conn.execute(
+            """UPDATE search_documents SET burp_scope_status=? WHERE exchange_id IN (
+                   SELECT e.id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                   JOIN resources r ON r.id=o.resource_id WHERE r.host_id=?
+               )""",
+            (normalized, host_id),
+        )
+    except sqlite3.OperationalError:
+        pass
+    return int(count or 0)
