@@ -4,13 +4,19 @@
 <section class="page-head"><div><p class="eyebrow">AJUSTES</p><h1>Proyecto e integraciones</h1><p class="muted">La configuración general vive aquí. Las Reglas de señales tienen su propia pantalla para que sea claro qué observa Negro y qué produjo cada Señal.</p></div></section>
 
 <div class="grid two settings-grid">
-  <section class="panel project-settings-card">
-    <div class="panel-head"><div><p class="eyebrow">PROYECTO</p><h2>{{ project.name }}</h2></div><span class="badge class-informational">{{ project.scopes|length }} alcance(s)</span></div>
-    <p class="muted small">Un proyecto agrupa todos los dominios/raíces que pertenecen a la misma prueba. Burp, mapa, hipótesis y CORS comparten este contexto.</p>
+  <section class="panel project-settings-card" id="scopes">
+    <div class="panel-head"><div><p class="eyebrow">ALCANCES DEL PROYECTO</p><h2>{{ project.name }}</h2></div><span class="badge class-informational">{{ project.scopes|length }} alcance(s)</span></div>
+    <p class="muted small">Estas raíces deciden a qué proyecto pertenece cada host. Desde Burp usa <b>Negro → Scope → Añadir a Burp + Negro…</b>: eliges el proyecto y la raíz aparece aquí inmediatamente. Excluirla después del scope activo de Burp no la elimina del proyecto ni borra evidencia.</p>
+    <div class="scope-chip-row">{% for s in project.scopes %}<span class="chip">{{ s }}</span>{% endfor %}</div>
+    <div class="scope-project-status">
+      {% for item in project_scope_rows %}
+      <div class="kv"><span><code>{{ item.root }}</code></span><span><b>{{ item.IN_SCOPE }}</b> in scope · <b>{{ item.EXCLUDED }}</b> excluidas · <b>{{ item.UNKNOWN }}</b> sin clasificar</span></div>
+      {% endfor %}
+    </div>
     <form class="project-settings-form" action="{{ target_base }}/project" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>Nombre del proyecto<input name="name" value="{{ project.name }}" required></label>
-      <label>Alcances <small>uno por línea; un alcance incluye sus subdominios</small><textarea name="scopes" rows="5" required>{% for s in project.scopes %}{{ s }}{% if not loop.last %}
+      <label>Alcances del proyecto <small>uno por línea; un alcance incluye sus subdominios</small><textarea name="scopes" rows="5" required>{% for s in project.scopes %}{{ s }}{% if not loop.last %}
 {% endif %}{% endfor %}</textarea></label>
       <button class="button" type="submit">Guardar proyecto y alcances</button>
     </form>

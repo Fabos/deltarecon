@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.31.0
+ * Negro Burp Bridge v0.32.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -75,13 +75,14 @@ public class NegroBurpBridge implements BurpExtension {
     private final String bridgeInstanceId = UUID.randomUUID().toString();
     private final AtomicBoolean unloading = new AtomicBoolean(false);
     private final Set<String> runnerBridgeInFlight = ConcurrentHashMap.newKeySet();
+    private final Set<String> scopeHostsAlreadyPrompted = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService bridgePoller = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "negro-repeater-bridge"); t.setDaemon(true); return t; });
 
     @Override
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.31.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.32.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -90,7 +91,10 @@ public class NegroBurpBridge implements BurpExtension {
             }
         });
         api.http().registerHttpHandler(new BridgeHttpHandler());
-        api.scope().registerScopeChangeHandler(change -> reconcileBurpScopeAsync("scope-change"));
+        api.scope().registerScopeChangeHandler(change -> {
+            reconcileBurpScopeAsync("scope-change");
+            bridgePoller.schedule(this::promptUnassignedInScopeHosts, 500, TimeUnit.MILLISECONDS);
+        });
         api.userInterface().registerContextMenuItemsProvider(new NegroContextMenu());
         api.userInterface().registerSuiteTab("Negro", buildPanel());
         healthCheck();
@@ -265,7 +269,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.31.0")
+                    .header("X-Negro-Bridge-Version", "0.32.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -866,7 +870,7 @@ public class NegroBurpBridge implements BurpExtension {
             JMenu scopeMenu = new JMenu("Scope");
             JMenuItem scopeStatus = new JMenuItem(api.scope().isInScope(selected.get(0).request().url()) ? "Estado: IN_SCOPE" : "Estado: EXCLUDED");
             scopeStatus.setEnabled(false);
-            JMenuItem scopeInclude = new JMenuItem("Añadir host a Burp scope");
+            JMenuItem scopeInclude = new JMenuItem("Añadir a Burp + Negro…");
             JMenuItem scopeExclude = new JMenuItem("Excluir host de Burp scope");
             scopeMenu.add(scopeStatus); scopeMenu.addSeparator(); scopeMenu.add(scopeInclude); scopeMenu.add(scopeExclude);
 
@@ -939,7 +943,7 @@ public class NegroBurpBridge implements BurpExtension {
             flowAdd.addActionListener(e -> runContextAction("flow-add", () -> addToFlowFromBurp(selected.get(0), tool)));
             flowEnd.addActionListener(e -> runContextAction("flow-end", () -> endFlowFromBurp(selected.get(0), tool)));
             flowSelected.addActionListener(e -> runContextAction("flow-selected", () -> createFlowFromSelection(selected, tool)));
-            scopeInclude.addActionListener(e -> runContextAction("scope-include", () -> setHostBurpScope(selected.get(0).request().url(), true)));
+            scopeInclude.addActionListener(e -> runContextAction("scope-include", () -> addHostToBurpAndNegro(selected.get(0).request().url())));
             scopeExclude.addActionListener(e -> runContextAction("scope-exclude", () -> setHostBurpScope(selected.get(0).request().url(), false)));
             assignIdentity.addActionListener(e -> runContextAction("identity-assign", () -> assignIdentityFromBurp(selected.get(0), tool)));
             createIdentity.addActionListener(e -> runContextAction("identity-create", () -> createIdentityFromBurp(selected.get(0), tool)));
@@ -951,6 +955,143 @@ public class NegroBurpBridge implements BurpExtension {
             retest.addActionListener(e -> runContextAction("retest", () -> attachRetestFromBurp(selected.get(0), tool)));
             menu.add(open); menu.add(replayMenu); menu.add(compareIdentity); menu.addSeparator(); menu.add(contextMenu); menu.add(flowMenu); menu.add(identityMenu); menu.add(scopeMenu); menu.add(stateMenu); menu.add(findingMenu);
             return List.of(menu);
+        }
+    }
+
+    private record NegroProject(String key, String name, List<String> scopes) {
+        @Override public String toString() {
+            String roots = scopes == null || scopes.isEmpty() ? "sin alcances" : String.join(", ", scopes);
+            return name + "  [" + roots + "]";
+        }
+    }
+
+    private List<NegroProject> loadNegroProjects() {
+        try {
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(negroBaseUrl + "/api/bridge/projects"))
+                    .timeout(Duration.ofSeconds(10)).header("Accept", "text/plain").GET().build();
+            java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() != 200) throw new IllegalStateException("Negro projects HTTP " + resp.statusCode());
+            List<NegroProject> result = new ArrayList<>();
+            for (String line : resp.body().split("\\R")) {
+                if (line.isBlank()) continue;
+                String[] parts = line.split("\\t", -1);
+                if (parts.length < 2) continue;
+                List<String> roots = new ArrayList<>();
+                if (parts.length >= 3 && !parts[2].isBlank()) {
+                    for (String root : parts[2].split(",")) if (!root.isBlank()) roots.add(root.trim().toLowerCase());
+                }
+                result.add(new NegroProject(parts[0].trim(), parts[1].trim(), roots));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("No pude cargar los proyectos de Negro: " + ex.getMessage(), ex);
+        }
+    }
+
+    private NegroProject chooseNegroProject(String host, List<NegroProject> projects) {
+        if (projects == null || projects.isEmpty()) throw new IllegalStateException("No hay proyectos creados en Negro");
+        final NegroProject[] selected = new NegroProject[1];
+        Runnable chooser = () -> {
+            Object value = JOptionPane.showInputDialog(
+                    null,
+                    "¿A qué proyecto de Negro pertenece " + host + "?",
+                    "Negro · Asignar alcance",
+                    JOptionPane.QUESTION_MESSAGE,
+                    null,
+                    projects.toArray(),
+                    projects.get(0));
+            if (value instanceof NegroProject p) selected[0] = p;
+        };
+        try {
+            if (SwingUtilities.isEventDispatchThread()) chooser.run(); else SwingUtilities.invokeAndWait(chooser);
+        } catch (Exception ex) {
+            throw new IllegalStateException("No pude abrir el selector de proyecto", ex);
+        }
+        return selected[0];
+    }
+
+    private String hostFromUrl(String observedUrl) {
+        try {
+            URI u = URI.create(observedUrl);
+            return u.getHost() == null ? "" : u.getHost().toLowerCase();
+        } catch (Exception ex) { return ""; }
+    }
+
+    private boolean hostMatchesProjectScope(String host, String root) {
+        String h = host == null ? "" : host.toLowerCase().replaceAll("\\.$", "");
+        String r = root == null ? "" : root.toLowerCase().replaceAll("^https?://", "").replaceAll("/.*$", "").replaceAll("\\.$", "");
+        return !h.isBlank() && !r.isBlank() && (h.equals(r) || h.endsWith("." + r));
+    }
+
+    private void assignHostToNegroProject(String host, NegroProject project) {
+        try {
+            String payload = project.key() + "\t" + host;
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(negroBaseUrl + "/api/bridge/project-scope"))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .POST(BodyPublishers.ofString(payload, StandardCharsets.UTF_8)).build();
+            java.net.http.HttpResponse<String> resp = client.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                throw new IllegalStateException("Negro respondió HTTP " + resp.statusCode() + " · " + resp.body());
+            }
+            api.logging().logToOutput("Negro scope → " + host + " asignado a proyecto " + project.name());
+        } catch (Exception ex) {
+            throw new IllegalStateException("No pude agregar el alcance al proyecto Negro: " + ex.getMessage(), ex);
+        }
+    }
+
+    private void addHostToBurpAndNegro(String observedUrl) {
+        String host = hostFromUrl(observedUrl);
+        if (host.isBlank()) throw new IllegalStateException("No pude determinar el host seleccionado");
+        List<NegroProject> projects = loadNegroProjects();
+        NegroProject project = chooseNegroProject(host, projects);
+        if (project == null) return; // investigator cancelled
+        assignHostToNegroProject(host, project);
+        setHostBurpScope(observedUrl, true);
+        showMessage("Negro", host + " quedó IN_SCOPE en Burp y asociado a " + project.name() + ".", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void promptUnassignedInScopeHosts() {
+        if (unloading.get()) return;
+        try {
+            List<NegroProject> projects = loadNegroProjects();
+            if (projects.isEmpty()) return;
+            Set<String> inScopeHosts = new java.util.LinkedHashSet<>();
+            for (HttpRequestResponse rr : api.siteMap().requestResponses()) {
+                if (rr == null || rr.request() == null) continue;
+                String url = rr.request().url();
+                if (url == null || url.isBlank() || isNegroBridgeTraffic(url)) continue;
+                try {
+                    if (!api.scope().isInScope(url)) continue;
+                } catch (Exception ex) { continue; }
+                String host = hostFromUrl(url);
+                if (!host.isBlank()) inScopeHosts.add(host);
+            }
+            List<String> unknown = new ArrayList<>();
+            for (String host : inScopeHosts) {
+                boolean assigned = false;
+                for (NegroProject p : projects) {
+                    for (String root : p.scopes()) {
+                        if (hostMatchesProjectScope(host, root)) { assigned = true; break; }
+                    }
+                    if (assigned) break;
+                }
+                if (!assigned && scopeHostsAlreadyPrompted.add(host)) unknown.add(host);
+            }
+            if (unknown.isEmpty()) return;
+            if (unknown.size() > 5) {
+                showMessage("Negro · Scope", unknown.size() + " hosts quedaron in-scope en Burp sin proyecto Negro. Usa clic derecho → Negro → Scope → Añadir a Burp + Negro… para asignarlos.", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            for (String host : unknown) {
+                NegroProject project = chooseNegroProject(host, projects);
+                if (project != null) assignHostToNegroProject(host, project);
+            }
+            reconcileBurpScope("native-scope-assignment");
+        } catch (Throwable ex) {
+            api.logging().logToError("Negro scope project chooser: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
         }
     }
 

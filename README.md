@@ -1,6 +1,6 @@
-# Negro Recon 🐕 — v0.44.5
+# Negro Recon 🐕 — v0.44.6
 
-## v0.44.5 — Burp Scope Sync
+## v0.44.6 — Scope por proyecto + Runner migration hotfix
 
 - Burp es la fuente de verdad del scope activo. Negro conserva el tráfico excluido como evidencia y lo etiqueta `EXCLUDED`.
 - Bridge v0.31.0 sincroniza cambios de Scope desde Site map/Target Scope y reconcilia el histórico al arrancar.

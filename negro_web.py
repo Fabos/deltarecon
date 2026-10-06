@@ -3538,6 +3538,25 @@ def create_app(default_domain: str, default_workspace: Path):
             environment_rules_text = environment_tools.rules_as_text(conn)
             environment_default = environment_tools.get_default_environment(conn)
             environment_counts = {str(r["environment"]): int(r["c"] or 0) for r in conn.execute("SELECT environment,COUNT(*) c FROM http_exchanges GROUP BY environment").fetchall()}
+            project_scope_rows=[]
+            project_meta=core.get_target(target_key) or {"scopes":[domain]}
+            for scope_root in project_meta.get("scopes") or [domain]:
+                root=str(scope_root or "").strip().lower().rstrip(".")
+                counts={"IN_SCOPE":0,"EXCLUDED":0,"UNKNOWN":0}
+                if root:
+                    rows=conn.execute(
+                        """SELECT COALESCE(e.burp_scope_status,'UNKNOWN') status, COUNT(DISTINCT e.id) c
+                           FROM hosts h JOIN resources r ON r.host_id=h.id
+                           JOIN resource_operations o ON o.resource_id=r.id
+                           JOIN http_exchanges e ON e.operation_id=o.id
+                           WHERE h.hostname=? OR h.hostname LIKE ?
+                           GROUP BY COALESCE(e.burp_scope_status,'UNKNOWN')""",
+                        (root, "%."+root),
+                    ).fetchall()
+                    for sr in rows:
+                        status=str(sr["status"] or "UNKNOWN").upper()
+                        counts[status if status in counts else "UNKNOWN"] += int(sr["c"] or 0)
+                project_scope_rows.append({"root":root, **counts})
             row=conn.execute("SELECT value FROM meta WHERE key='detector_rules_json'").fetchone()
             try: project_rules=json.loads(row["value"]) if row and row["value"] else {}
             except Exception: project_rules={}
@@ -3561,7 +3580,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     "enabled":bool(effective.get("enabled",True)), "rule_count":list_count+condition_count,
                     "personal_count":personal_count, "project_count":project_count,
                 })
-        return render(request, "settings.html", target_key, domain, workspace, settings=settings, detector_rows=detector_rows, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH), environment_rules_text=environment_rules_text, environment_default=environment_default, environment_counts=environment_counts)
+        return render(request, "settings.html", target_key, domain, workspace, settings=settings, detector_rows=detector_rows, secret_status=intel.secret_status(), secrets_path=str(intel.SECRETS_PATH), environment_rules_text=environment_rules_text, environment_default=environment_default, environment_counts=environment_counts, project_scope_rows=project_scope_rows)
 
     @app.post("/t/{target_key}/settings/environments")
     def environment_settings_save(request: Request, target_key: str, environment_rules: str = Form(""), environment_default: str = Form("PROD"), csrf: str = Form(...)):
@@ -6040,6 +6059,38 @@ def create_app(default_domain: str, default_workspace: Path):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+
+    @app.get("/api/bridge/projects")
+    def bridge_projects():
+        """Small TSV catalog used by the Burp Bridge project chooser."""
+        lines=[]
+        for target in core.list_targets():
+            key=str(target.get("key") or "").replace("\t", " ").replace("\n", " ")
+            name=str(target.get("name") or target.get("domain") or key).replace("\t", " ").replace("\n", " ")
+            scopes=",".join(str(x).strip() for x in (target.get("scopes") or []) if str(x).strip())
+            if key:
+                lines.append(f"{key}\t{name}\t{scopes}")
+        return HTMLResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
+
+    @app.post("/api/bridge/project-scope", response_class=JSONResponse)
+    async def bridge_project_scope(request: Request):
+        """Associate one host/root selected in Burp with a concrete Negro project."""
+        raw=(await request.body()).decode("utf-8", errors="replace").strip()
+        parts=raw.split("\t", 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail="Formato esperado: target_key<TAB>scope")
+        target_key, requested_scope = parts[0].strip(), parts[1].strip().lower().rstrip(".")
+        target=core.get_target(target_key)
+        if not target:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        # Burp sends a hostname/root, not a URL. Keep project routing intentionally
+        # host-based; path-specific Burp exclusions remain Burp scope state only.
+        normalized=core.normalize_scope(requested_scope)
+        if not normalized or not DOMAIN_RE.fullmatch(normalized):
+            raise HTTPException(status_code=400, detail=f"Alcance inválido: {requested_scope}")
+        roots=core.normalize_scopes([*(target.get("scopes") or []), normalized], target.get("domain"))
+        updated=core.update_target_project(target_key, name=target.get("name"), scopes=roots)
+        return {"ok": True, "target_key": target_key, "scope": normalized, "scopes": updated.get("scopes") or roots}
 
     @app.get("/api/bridge/scope/candidates")
     def bridge_scope_candidates():

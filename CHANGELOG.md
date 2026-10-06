@@ -1,3 +1,10 @@
+# v0.44.6 — Scope por proyecto + Runner migration hotfix
+
+- Corrige la carrera de migración de `runner_run_requests` que podía producir `duplicate column name: url` al abrir Runners.
+- Bridge v0.32.0: `Negro → Scope → Añadir a Burp + Negro…` pide el proyecto y actualiza ambos scopes.
+- Si usas el `Add to scope` nativo de Burp, el Bridge detecta hosts in-scope sin proyecto y solicita asignación cuando el conjunto es manejable.
+- `Ajustes → Alcances` muestra las raíces del proyecto; excluir en Burp no elimina la pertenencia al proyecto ni borra evidencia.
+
 # v0.44.5 — Burp Scope Sync
 
 - Burp es la fuente de verdad del scope activo: Negro guarda `IN_SCOPE`, `EXCLUDED` o `UNKNOWN` por Request sin borrar evidencia.

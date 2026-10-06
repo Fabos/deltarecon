@@ -8,6 +8,7 @@ import urllib.parse
 import os
 import socket
 import ssl
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -126,7 +127,11 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE runner_runs ADD COLUMN execution_class TEXT NOT NULL DEFAULT 'pending'")
     if "counts_as_test" not in run_cols:
         conn.execute("ALTER TABLE runner_runs ADD COLUMN counts_as_test INTEGER NOT NULL DEFAULT 0")
-    req_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_run_requests)")}
+    # FastAPI can initialize Runner schema from more than one request/thread at
+    # the same time.  SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
+    # so two initializers can both observe a missing column and race.  Re-read
+    # the schema for every column and tolerate only the benign duplicate-column
+    # race; any other OperationalError must still surface.
     for name,ddl in {
         "execution_class":"TEXT NOT NULL DEFAULT 'pending'",
         "method":"TEXT",
@@ -135,8 +140,14 @@ def init_schema(conn) -> None:
         "response_b64":"TEXT",
         "transport_detail_json":"TEXT"
     }.items():
-        if name not in req_cols:
+        req_cols={row["name"] for row in conn.execute("PRAGMA table_info(runner_run_requests)")}
+        if name in req_cols:
+            continue
+        try:
             conn.execute(f"ALTER TABLE runner_run_requests ADD COLUMN {name} {ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
     # Contexto compuesto · Fase 1: older v0.40 workspaces may already have
     # runners.investigation_id values. Mirror them once into investigation_links
