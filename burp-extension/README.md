@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.37.0
+# Negro Burp Bridge v0.38.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.36.0.jar
+build/libs/negro-burp-bridge-0.38.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,7 +42,7 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.36.0.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.38.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
@@ -93,7 +93,7 @@ Las acciones contextuales añaden notas `INV`, `HYP`, `ENTITY`, `WATCH`, `FIND` 
 
 > Las acciones contextuales v0.28 requieren Bridge v0.28+. El transporte del Runner mantiene compatibilidad con v0.27+.
 
-## v0.37.0 · Negro Context en editores HTTP
+## v0.38.0 · Negro Context en editores HTTP
 
 Burp añade una pestaña de solo lectura `Negro Context` tanto en Request como Response. Consulta de forma asíncrona el contexto exacto ya aprendido en Negro (Identity, AUTH/RESOLVER/CONTEXT, Objects, Environment y Scope). Si no hay evidencia exacta, la pestaña lo indica sin bloquear el editor. La clasificación se sigue editando únicamente en HTTP Inspector.
 

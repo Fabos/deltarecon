@@ -1,3 +1,7 @@
+## v0.47.6 · Burp Semantic HTTP
+
+`Negro Context` ahora separa visualmente keys y values, resalta de forma discreta headers de interés de seguridad y añade navegación anterior/siguiente entre AUTH, Identity, Objects y Security headers. La evidencia aprendida por Negro sigue siendo la capa visual más fuerte. Bridge v0.38.0.
+
 ## v0.47.5 · Native Burp Context UI
 
 `Negro Context` deja de depender del HTML limitado de Swing y usa componentes nativos: cabecera compacta, chips de proyecto/Request/Identity/Environment/Scope, botón Open in Negro y un `JTextPane` con wrap real y estilos sobre los rangos AUTH/RESOLVER/CONTEXT/ENTITY. El backend entrega texto crudo + offsets exactos para que Burp pinte la misma evidencia que HTTP Inspector. Bridge v0.37.0.

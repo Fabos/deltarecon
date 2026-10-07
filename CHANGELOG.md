@@ -1,3 +1,12 @@
+# v0.47.6 · Burp Semantic HTTP
+
+- `Negro Context` añade syntax highlighting semántico nativo: header keys/values y JSON keys/strings/primitivos se diferencian visualmente.
+- Headers relevantes para pentesting (Authorization, Cookie, Origin, Referer, X-Forwarded-*, X-Original-URL, CORS, Location, API keys, CSRF, etc.) reciben énfasis discreto sin competir con AUTH/RESOLVER/CONTEXT/ENTITY.
+- Barra de navegación contextual: Todo / AUTH / Identity / Objects / Security headers, con anterior/siguiente y contador. No oculta el HTTP; salta entre puntos interesantes.
+- Las anotaciones aprendidas de Negro conservan la prioridad visual más alta.
+- Wrap horizontal continúa activo por defecto.
+- Bridge v0.38.0.
+
 # v0.47.5 · Native Burp Context UI
 
 - reemplaza el renderer HTML de `Negro Context` por Swing nativo;

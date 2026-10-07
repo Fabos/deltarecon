@@ -57,7 +57,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.37.0
+ * Negro Burp Bridge v0.38.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -93,7 +93,7 @@ public class NegroBurpBridge implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.37.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.38.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -294,6 +294,20 @@ public class NegroBurpBridge implements BurpExtension {
         };
         private final JScrollPane scroll;
         private String inspectorUrl = "";
+        private final JPanel navRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 1));
+        private final JLabel navStatus = new JLabel("0 elementos");
+        private final JButton navPrev = new JButton("‹");
+        private final JButton navNext = new JButton("›");
+        private final List<Integer> navAnchors = new ArrayList<>();
+        private String navFilter = "ALL";
+        private int navIndex = -1;
+        private static final Set<String> SECURITY_HEADERS = Set.of(
+                "authorization", "proxy-authorization", "cookie", "set-cookie", "origin", "referer", "host",
+                "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-original-url", "x-rewrite-url",
+                "x-http-method-override", "x-method-override", "content-type", "location", "www-authenticate",
+                "access-control-allow-origin", "access-control-allow-credentials", "access-control-request-method",
+                "access-control-request-headers", "x-api-key", "api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token"
+        );
 
         NegroContextView() {
             super(new BorderLayout());
@@ -323,6 +337,30 @@ public class NegroBurpBridge implements BurpExtension {
             header.add(Box.createVerticalStrut(5));
             metaRow.setOpaque(false);
             header.add(metaRow);
+            header.add(Box.createVerticalStrut(5));
+
+            navRow.setOpaque(false);
+            ButtonGroup navGroup = new ButtonGroup();
+            navRow.add(navToggle("Todo", "ALL", true, navGroup));
+            navRow.add(navToggle("AUTH", "AUTH", false, navGroup));
+            navRow.add(navToggle("Identity", "IDENTITY", false, navGroup));
+            navRow.add(navToggle("Objects", "OBJECTS", false, navGroup));
+            navRow.add(navToggle("Security headers", "SECURITY", false, navGroup));
+            navPrev.setFocusable(false);
+            navNext.setFocusable(false);
+            navPrev.setMargin(new Insets(1, 7, 1, 7));
+            navNext.setMargin(new Insets(1, 7, 1, 7));
+            navPrev.setToolTipText("Elemento interesante anterior");
+            navNext.setToolTipText("Siguiente elemento interesante");
+            navPrev.addActionListener(e -> navigate(-1));
+            navNext.addActionListener(e -> navigate(1));
+            navStatus.setFont(navStatus.getFont().deriveFont(Font.PLAIN, 10f));
+            navStatus.setForeground(uiColor("Label.disabledForeground", new Color(100, 108, 116)));
+            navRow.add(Box.createHorizontalStrut(4));
+            navRow.add(navPrev);
+            navRow.add(navNext);
+            navRow.add(navStatus);
+            header.add(navRow);
 
             http.setEditable(false);
             http.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
@@ -336,6 +374,70 @@ public class NegroBurpBridge implements BurpExtension {
 
             add(header, BorderLayout.NORTH);
             add(scroll, BorderLayout.CENTER);
+        }
+
+        private JToggleButton navToggle(String text, String filter, boolean selected, ButtonGroup group) {
+            JToggleButton b = new JToggleButton(text, selected);
+            b.setFocusable(false);
+            b.setMargin(new Insets(1, 7, 1, 7));
+            b.setFont(b.getFont().deriveFont(Font.PLAIN, 10f));
+            group.add(b);
+            b.addActionListener(e -> {
+                navFilter = filter;
+                rebuildNavigation();
+            });
+            return b;
+        }
+
+        private void navigate(int delta) {
+            if (navAnchors.isEmpty()) return;
+            if (navIndex < 0) navIndex = delta >= 0 ? 0 : navAnchors.size() - 1;
+            else navIndex = Math.floorMod(navIndex + delta, navAnchors.size());
+            int pos = navAnchors.get(navIndex);
+            http.setCaretPosition(Math.max(0, Math.min(pos, http.getDocument().getLength())));
+            try {
+                Rectangle r = http.modelToView(pos);
+                if (r != null) http.scrollRectToVisible(new Rectangle(0, Math.max(0, r.y - 30), Math.max(1, http.getWidth()), r.height + 60));
+            } catch (Exception ignored) {}
+            updateNavStatus();
+        }
+
+        private void updateNavStatus() {
+            if (navAnchors.isEmpty()) navStatus.setText("0 elementos");
+            else if (navIndex < 0) navStatus.setText(navAnchors.size() + " elementos");
+            else navStatus.setText((navIndex + 1) + " / " + navAnchors.size());
+            navPrev.setEnabled(!navAnchors.isEmpty());
+            navNext.setEnabled(!navAnchors.isEmpty());
+        }
+
+        private void rebuildNavigation() {
+            navAnchors.clear();
+            navIndex = -1;
+            try {
+                String rendered = http.getDocument().getText(0, http.getDocument().getLength());
+                if (!"SECURITY".equals(navFilter)) {
+                    Pattern badgePattern = switch (navFilter) {
+                        case "AUTH" -> Pattern.compile("⟦AUTH(?:\\s|\\u00b7|[^⟧])*⟧", Pattern.CASE_INSENSITIVE);
+                        case "IDENTITY" -> Pattern.compile("⟦(?:AUTH|RESOLVER|CONTEXT)(?:\\s|\\u00b7|[^⟧])*⟧", Pattern.CASE_INSENSITIVE);
+                        case "OBJECTS" -> Pattern.compile("⟦ENTITY(?:\\s|\\u00b7|[^⟧])*⟧", Pattern.CASE_INSENSITIVE);
+                        default -> Pattern.compile("⟦(?:AUTH|RESOLVER|CONTEXT|ENTITY)(?:\\s|\\u00b7|[^⟧])*⟧", Pattern.CASE_INSENSITIVE);
+                    };
+                    Matcher bm = badgePattern.matcher(rendered);
+                    while (bm.find()) navAnchors.add(bm.start());
+                }
+                if ("ALL".equals(navFilter) || "SECURITY".equals(navFilter)) {
+                    Matcher hm = Pattern.compile("(?m)^([!#$%&'*+.^_`|~0-9A-Za-z-]+):").matcher(rendered);
+                    while (hm.find()) {
+                        String name = hm.group(1).toLowerCase();
+                        if (SECURITY_HEADERS.contains(name)) navAnchors.add(hm.start(1));
+                    }
+                }
+                navAnchors.sort(Integer::compareTo);
+                for (int i = navAnchors.size() - 1; i > 0; i--) {
+                    if (Math.abs(navAnchors.get(i) - navAnchors.get(i - 1)) < 3) navAnchors.remove(i);
+                }
+            } catch (Exception ignored) {}
+            updateNavStatus();
         }
 
         private JLabel chip(String text, Color background, Color foreground) {
@@ -443,12 +545,78 @@ public class NegroBurpBridge implements BurpExtension {
             return a;
         }
 
+        private SimpleAttributeSet style(Color foreground, Color background, boolean bold) {
+            SimpleAttributeSet a = new SimpleAttributeSet();
+            if (foreground != null) StyleConstants.setForeground(a, foreground);
+            if (background != null) StyleConstants.setBackground(a, background);
+            StyleConstants.setBold(a, bold);
+            return a;
+        }
+
+        private int bodyStart(String text) {
+            int crlf = text.indexOf("\r\n\r\n");
+            if (crlf >= 0) return crlf + 4;
+            int lf = text.indexOf("\n\n");
+            return lf >= 0 ? lf + 2 : text.length();
+        }
+
+        private void applyHttpSyntax(StyledDocument doc, String text) {
+            if (text == null || text.isEmpty()) return;
+            int body = bodyStart(text);
+            SimpleAttributeSet startLine = style(new Color(48, 58, 68), null, true);
+            SimpleAttributeSet headerKey = style(new Color(91, 68, 157), null, true);
+            SimpleAttributeSet headerValue = style(new Color(66, 73, 80), null, false);
+            SimpleAttributeSet securityLine = style(null, new Color(255, 249, 226), false);
+            SimpleAttributeSet securityKey = style(new Color(164, 96, 16), new Color(255, 243, 204), true);
+            SimpleAttributeSet jsonString = style(new Color(157, 105, 24), null, false);
+            SimpleAttributeSet jsonKey = style(new Color(33, 112, 72), null, true);
+            SimpleAttributeSet jsonPrimitive = style(new Color(72, 91, 165), null, true);
+
+            int firstNl = text.indexOf('\n');
+            if (firstNl < 0) firstNl = Math.min(text.length(), body);
+            if (firstNl > 0) doc.setCharacterAttributes(0, firstNl, startLine, false);
+
+            Matcher headers = Pattern.compile("(?m)^([!#$%&'*+.^_`|~0-9A-Za-z-]+):(.*)$").matcher(text.substring(0, body));
+            while (headers.find()) {
+                int lineStart = headers.start();
+                int lineEnd = headers.end();
+                int keyStart = headers.start(1);
+                int keyEnd = headers.end(1);
+                int valueStart = headers.start(2);
+                String name = headers.group(1).toLowerCase();
+                if (SECURITY_HEADERS.contains(name)) {
+                    doc.setCharacterAttributes(lineStart, Math.max(0, lineEnd - lineStart), securityLine, false);
+                    doc.setCharacterAttributes(keyStart, keyEnd - keyStart, securityKey, false);
+                } else {
+                    doc.setCharacterAttributes(keyStart, keyEnd - keyStart, headerKey, false);
+                }
+                if (lineEnd > valueStart) doc.setCharacterAttributes(valueStart, lineEnd - valueStart, headerValue, false);
+            }
+
+            if (body < text.length()) {
+                String bodyText = text.substring(body);
+                Matcher strings = Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"").matcher(bodyText);
+                while (strings.find()) {
+                    doc.setCharacterAttributes(body + strings.start(), strings.end() - strings.start(), jsonString, false);
+                }
+                Matcher keys = Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"(?=\\s*:)").matcher(bodyText);
+                while (keys.find()) {
+                    doc.setCharacterAttributes(body + keys.start(), keys.end() - keys.start(), jsonKey, false);
+                }
+                Matcher primitives = Pattern.compile("(?<![A-Za-z0-9_])(?:true|false|null|-?\\d+(?:\\.\\d+)?)(?![A-Za-z0-9_])", Pattern.CASE_INSENSITIVE).matcher(bodyText);
+                while (primitives.find()) {
+                    doc.setCharacterAttributes(body + primitives.start(), primitives.end() - primitives.start(), jsonPrimitive, false);
+                }
+            }
+        }
+
         private void setDocumentText(String text, List<ContextMark> marks) {
             StyledDocument doc = http.getStyledDocument();
             try {
                 doc.remove(0, doc.getLength());
                 String safe = text == null ? "" : text;
                 doc.insertString(0, safe, null);
+                applyHttpSyntax(doc, safe);
                 List<ContextMark> ordered = new ArrayList<>(marks == null ? List.of() : marks);
                 ordered.sort((a,b) -> Integer.compare(b.start(), a.start()));
                 for (ContextMark mark : ordered) {
@@ -459,9 +627,11 @@ public class NegroBurpBridge implements BurpExtension {
                     String badge = "  ⟦" + (mark.label() == null || mark.label().isBlank() ? mark.kind().toUpperCase() : mark.label()) + "⟧";
                     doc.insertString(end, badge, badgeStyle(mark.kind()));
                 }
+                rebuildNavigation();
                 http.setCaretPosition(0);
             } catch (BadLocationException ex) {
                 http.setText(text == null ? "" : text);
+                rebuildNavigation();
             }
         }
 
@@ -563,7 +733,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.36.0")
+                    .header("X-Negro-Bridge-Version", "0.38.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
