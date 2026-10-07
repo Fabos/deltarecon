@@ -1,3 +1,10 @@
+# v0.47.7 · Burp Pretty JSON + Visible Navigation
+
+- `Negro Context` usa Pretty JSON por defecto para bodies JSON válidos, con toggle `Pretty / Raw`.
+- Pretty conserva la relación de offsets de AUTH/RESOLVER/CONTEXT/ENTITY para que las anotaciones sigan apuntando al valor correcto.
+- Navegación `‹ / ›` ahora centra el elemento en el viewport y aplica un highlight temporal visible.
+- Bridge v0.39.0.
+
 # v0.47.6 · Burp Semantic HTTP
 
 - `Negro Context` añade syntax highlighting semántico nativo: header keys/values y JSON keys/strings/primitivos se diferencian visualmente.
@@ -366,7 +373,7 @@ En v0.39 el camino de captura y el de Runner eran distintos: Burp capturaba `bro
 - Cada Run produce un Flow resultante para reutilizar Flow Compare contra el baseline.
 - Añade regresión `v039_flow_runner_ai_test.py`.
 
-# v0.38.0 — Request Workbench + catálogo mínimo de Reglas
+# v0.39.0 — Request Workbench + catálogo mínimo de Reglas
 
 - Reduce las Reglas integradas visibles a una sola muestra de alta señal: **Errores con detalles internos**.
 - Añade controles directos para activar/desactivar/eliminar/restaurar la Regla integrada y activar/desactivar/eliminar Reglas propias.

@@ -1,3 +1,7 @@
+## v0.47.7 · Burp Pretty JSON + Visible Navigation
+
+`Negro Context` formatea automáticamente bodies JSON para lectura humana sin alterar la evidencia RAW. El usuario puede alternar `Pretty / Raw`. Los botones `‹ / ›` ahora desplazan el viewport y marcan temporalmente el elemento seleccionado. Bridge v0.39.0.
+
 ## v0.47.6 · Burp Semantic HTTP
 
 `Negro Context` ahora separa visualmente keys y values, resalta de forma discreta headers de interés de seguridad y añade navegación anterior/siguiente entre AUTH, Identity, Objects y Security headers. La evidencia aprendida por Negro sigue siendo la capa visual más fuerte. Bridge v0.38.0.
@@ -16,7 +20,7 @@ El HTTP Inspector pasa a ser fuente directa de proyección para Workbench/Burp. 
 ## v0.47.2 · Shared renderer + Burp wrap
 El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido. `Negro Context` en Burp hace wrap por defecto, incluido en JWT/cookies largos, y mantiene los badges inline. Bridge v0.36.0.
 
-> Current build: **v0.47.0** — HTTP focus mode, compact history, Objects-first UX and Burp Negro Context tabs.
+> Current build: **v0.47.7** — HTTP focus mode, compact history, Objects-first UX and Burp Negro Context tabs.
 
 # Negro Recon 🐕 — v0.44.8
 
@@ -226,7 +230,7 @@ La IA sólo propone preguntas y borradores. El investigador decide si guarda una
 Cada Run es secuencial y deliberadamente acotado (30 Requests por defecto, 100 máximo; 20 repeticiones máximas por paso; sin concurrencia). Cada Request/Response resultante vuelve a Negro como evidencia normal y alimenta Signals, Objetos, memoria y Search. Además, cada Run genera un **Flujo resultante** que puede compararse con el baseline usando Flow Compare. Runner no pretende reemplazar Intruder, fuzzers ni scanners: automatiza experimentos de proceso tediosos y contextuales.
 
 
-## v0.38.0 — Reglas mínimas + Request Workbench
+## v0.39.0 — Reglas mínimas + Request Workbench
 
 Esta versión reduce deliberadamente el ruido. Negro incluye **una sola Regla integrada de ejemplo** (`Errores con detalles internos`) y deja las demás técnicas para Reglas creadas por el investigador a medida que aprende o las necesita. Las Reglas propias se pueden activar, pausar y eliminar; la Regla integrada se puede activar/desactivar y quitar/restaurar por proyecto.
 
