@@ -1,4 +1,4 @@
-# Negro v0.48.0 · Executable Flow MVP
+# Negro v0.48.1 · Executable Flow MVP
 
 ## Arquitectura
 
@@ -113,4 +113,4 @@ Todavía no se implementan:
 - grafo visual grande producer→consumers;
 - ejecución asíncrona/polling de Flows largos.
 
-La prioridad de v0.48.0 es que los dos benchmarks básicos sean modelables sin romper Flow/Runner existentes: OTP pause/resume + JWT chaining, y override de Identity en un único Step con restauración automática.
+La prioridad de v0.48.1 es que los dos benchmarks básicos sean modelables sin romper Flow/Runner existentes: OTP pause/resume + JWT chaining, y override de Identity en un único Step con restauración automática.

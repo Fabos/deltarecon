@@ -212,6 +212,21 @@ def delete_variable(conn, flow_id: int, variable_id: int) -> None:
     conn.execute("DELETE FROM flow_variables WHERE id=? AND flow_id=?", (int(variable_id), int(flow_id)))
 
 
+def update_variable(conn, flow_id: int, variable_id: int, *, description: str = "", prompt: str = "",
+                    required: bool = True, sensitive: bool = False, exported: bool = False) -> None:
+    init_schema(conn)
+    row = conn.execute("SELECT id,source_type,name FROM flow_variables WHERE id=? AND flow_id=?", (int(variable_id), int(flow_id))).fetchone()
+    if not row:
+        raise ValueError("Variable no encontrada")
+    if str(row["source_type"]).upper() == "MANUAL_INPUT" and not str(prompt or "").strip():
+        prompt = str(row["name"] or "")
+    conn.execute(
+        """UPDATE flow_variables SET description=?,prompt=?,required=?,sensitive=?,exported=?,updated_at=? WHERE id=? AND flow_id=?""",
+        (str(description or "")[:1000], str(prompt or "")[:500], 1 if required else 0, 1 if sensitive else 0,
+         1 if exported else 0, now_iso(), int(variable_id), int(flow_id)),
+    )
+
+
 def add_binding(conn, flow_id: int, step_id: int, variable_id: int, *, target_value: str, target_name: str = "", target_location: str = "") -> int:
     init_schema(conn)
     s = conn.execute("SELECT flow_id FROM flow_steps WHERE id=?", (int(step_id),)).fetchone()
@@ -280,9 +295,40 @@ def flow_runtime_data(conn, flow_id: int) -> dict[str, Any]:
     consumers: dict[int, list[int]] = {}
     for b in bindings:
         consumers.setdefault(int(b["variable_id"]), []).append(int(b["step_position"]))
+
+    source_labels = {
+        "MANUAL_INPUT": "Te lo pide Negro al ejecutar",
+        "PREVIOUS_RESPONSE": "Sale automáticamente de una respuesta anterior",
+        "IDENTITY": "Lo toma de una Identity",
+        "OBJECT": "Lo toma de un Object",
+        "CONSTANT": "Valor fijo",
+        "GENERATED": "Lo genera Negro",
+    }
+    step_inputs: dict[int, list[dict[str, Any]]] = {}
+    step_outputs: dict[int, list[dict[str, Any]]] = {}
+    by_var = {int(v["id"]): v for v in variables}
+    for b in bindings:
+        v = by_var.get(int(b["variable_id"]))
+        if not v:
+            continue
+        item = {
+            "id": int(v["id"]), "name": v["name"], "source_type": v["source_type"],
+            "source_label": source_labels.get(str(v["source_type"]), str(v["source_type"])),
+            "sensitive": bool(v.get("sensitive")), "target_name": b.get("target_name") or "",
+            "target_location": b.get("target_location") or "",
+        }
+        step_inputs.setdefault(int(b["flow_step_id"]), []).append(item)
     for v in variables:
         v["consumers"] = consumers.get(int(v["id"]), [])
-    return {"variables": variables, "bindings": bindings, "prerequisites": prereqs, "runs": runs}
+        v["source_label"] = source_labels.get(str(v["source_type"]), str(v["source_type"]))
+        if v.get("producer_step_id"):
+            step_outputs.setdefault(int(v["producer_step_id"]), []).append({
+                "id": int(v["id"]), "name": v["name"], "source_type": v["source_type"],
+                "source_label": v["source_label"], "sensitive": bool(v.get("sensitive")),
+                "extraction_type": v.get("extraction_type") or "", "extraction_expr": v.get("extraction_expr") or "",
+            })
+    return {"variables": variables, "bindings": bindings, "prerequisites": prereqs, "runs": runs,
+            "step_inputs": step_inputs, "step_outputs": step_outputs, "source_labels": source_labels}
 
 
 def _mask(value: str) -> str:

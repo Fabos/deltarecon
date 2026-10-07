@@ -1,5 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ flow_data.flow.name }} · Flow · Negro{% endblock %}
+{% block title %}{{ flow_data.flow.name }} · Flow · Negro
+<script>
+(() => {
+  const form=document.querySelector('[data-simple-source-form]'); if(!form) return;
+  const source=form.querySelector('[data-flow-source]');
+  const fields=[...form.querySelectorAll('[data-source-field]')];
+  const refresh=()=>{ const v=source.value; fields.forEach(el=>{ el.hidden=el.dataset.sourceField!==v; el.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=el.hidden); }); };
+  source.addEventListener('change',refresh); refresh();
+})();
+</script>
+{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
   <div><p class="eyebrow">FLUJO #{{ flow_data.flow.id }}</p><h1>{{ flow_data.flow.name }}</h1><p class="muted">{{ flow_data.flow.description or 'Secuencia observada de Requests.' }}</p><div class="hero-meta">{% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}<span class="badge">{{ flow_data.included_steps|length }}/{{ flow_data.steps|length }} incluidos</span>{% for i in flow_investigations %}<a class="badge class-interesting" href="{{ target_base }}/investigations/{{ i.id }}">Investigation #{{ i.id }} · {{ i.title }}</a>{% endfor %}{% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● Ventana de captura abierta</span>{% endif %}</div></div>
@@ -18,9 +28,9 @@
 <section class="panel flow-runtime" id="flow-runtime">
   <div class="panel-head flow-runtime-head">
     <div>
-      <p class="eyebrow">FLOW ENGINE · MVP</p>
-      <h2>Proceso reproducible</h2>
-      <p class="muted">Este Flow puede producir y consumir variables, pausar por inputs humanos y reutilizar otros Flows como requisitos. El Flow base nunca se modifica durante un Run.</p>
+      <p class="eyebrow">FLOW · MODO SIMPLE</p>
+      <h2>Enséñale el proceso a Negro</h2>
+      <p class="muted">Tú defines qué cambia y de dónde sale. Negro se ocupa de la mecánica: pedir valores, extraer respuestas, reutilizar login y ejecutar los pasos.</p>
     </div>
     <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -30,12 +40,12 @@
 
   <div class="runtime-grid">
     <article class="runtime-card">
-      <div class="runtime-card-head"><div><p class="eyebrow">REQUISITOS</p><h3>Flows reutilizables</h3></div><span class="badge">{{ flow_runtime.prerequisites|length }}</span></div>
-      <p class="muted small">Se ejecutan antes de este Flow. Sólo sus variables marcadas como <b>Export</b> pasan al contexto del Flow actual.</p>
+      <div class="runtime-card-head"><div><p class="eyebrow">ANTES DE EJECUTAR</p><h3>Flows que este necesita</h3></div><span class="badge">{{ flow_runtime.prerequisites|length }}</span></div>
+      <p class="muted small">Ejemplo: “Consultar puntos” puede ejecutar primero “Login Vive Terpel” y recibir su JWT sin copiar los pasos del login.</p>
       {% for p in flow_runtime.prerequisites %}
         <div class="runtime-row"><div><b>{{ loop.index }}. {{ p.prerequisite_name }}</b><small>Flow #{{ p.prerequisite_flow_id }}</small></div><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites/{{ p.prerequisite_flow_id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button">Quitar</button></form></div>
       {% else %}<div class="empty-state compact"><strong>Sin requisitos.</strong><span>Ejemplo: este Flow puede requerir primero “Login Vive Terpel”.</span></div>{% endfor %}
-      {% if reusable_flows %}<details class="inline-create"><summary>+ Añadir Flow requisito</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Flow<select name="prerequisite_flow_id">{% for f in reusable_flows %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.name }}</option>{% endfor %}</select></label><button class="button secondary">Añadir requisito</button></form></details>{% endif %}
+      {% if reusable_flows %}<details class="inline-create"><summary>+ Este Flow necesita otro Flow antes</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Flow<select name="prerequisite_flow_id">{% for f in reusable_flows %}<option value="{{ f.id }}">#{{ f.id }} · {{ f.name }}</option>{% endfor %}</select></label><button class="button secondary">Añadir requisito</button></form></details>{% endif %}
     </article>
 
     <article class="runtime-card">
@@ -44,56 +54,78 @@
     </article>
   </div>
 
-  <div class="runtime-section-head"><div><p class="eyebrow">VARIABLES</p><h3>Producer → Variable → Consumers</h3><p class="muted small">La definición describe de dónde sale el valor. El valor real vive dentro de cada Run.</p></div><span>{{ flow_runtime.variables|length }} variables</span></div>
-  <div class="flow-variable-grid">
+  <div class="runtime-section-head"><div><p class="eyebrow">VALORES DINÁMICOS</p><h3>Qué cambia durante el Flow</h3><p class="muted small">En modo normal sólo necesitas entender qué valor es, de dónde sale y dónde se usa. Los detalles técnicos quedan en “Opciones avanzadas”.</p></div><span>{{ flow_runtime.variables|length }} configurado{{ '' if flow_runtime.variables|length == 1 else 's' }}</span></div>
+  <div class="flow-variable-grid simple-variable-grid">
     {% for v in flow_runtime.variables %}
-      <article class="flow-variable-card source-{{ v.source_type|lower }}">
-        <div class="flow-variable-title"><div><code>{{ '{{' }}{{ v.name }}{{ '}}' }}</code><div class="badges"><span class="badge">{{ v.source_type }}</span>{% if v.sensitive %}<span class="badge">Sensitive</span>{% endif %}{% if v.exported %}<span class="badge class-interesting">Export</span>{% endif %}</div></div><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables/{{ v.id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button danger" title="Eliminar">×</button></form></div>
-        {% if v.description %}<p>{{ v.description }}</p>{% endif %}
-        <dl class="runtime-kv">
-          <div><dt>Source</dt><dd>{% if v.source_type=='PREVIOUS_RESPONSE' %}Step {{ v.producer_position }} · {{ v.extraction_type }}: <code>{{ v.extraction_expr }}</code>{% elif v.source_type=='MANUAL_INPUT' %}Human · {{ v.prompt or v.name }}{% elif v.source_type=='IDENTITY' %}{{ v.identity_name or 'Identity' }} · <code>{{ v.identity_field or 'auth default' }}</code>{% elif v.source_type=='OBJECT' %}{{ v.object_type or 'Object' }} · <code>{{ v.object_preview or '—' }}</code>{% else %}<code>{{ v.default_value if not v.sensitive else '••••••' }}</code>{% endif %}</dd></div>
-          <div><dt>Consumers</dt><dd>{% if v.consumers %}{% for c in v.consumers %}<span class="badge">Step {{ c }}</span>{% endfor %}{% else %}<span class="muted">ninguno todavía</span>{% endif %}</dd></div>
-        </dl>
+      <article class="flow-variable-card simple-variable-card source-{{ v.source_type|lower }}">
+        <div class="simple-variable-main">
+          <div class="simple-variable-icon">{% if v.source_type=='MANUAL_INPUT' %}🟣{% elif v.source_type=='PREVIOUS_RESPONSE' %}🔵{% elif v.source_type=='IDENTITY' %}🟢{% elif v.source_type=='OBJECT' %}🟠{% else %}⚪{% endif %}</div>
+          <div class="simple-variable-copy">
+            <div class="simple-variable-title-row"><h4>{{ v.name }}</h4>{% if v.sensitive %}<span class="badge">Sensitive</span>{% endif %}{% if v.exported %}<span class="badge class-interesting">Disponible para otros Flows</span>{% endif %}</div>
+            <p class="simple-variable-source"><b>{{ v.source_label }}</b>{% if v.source_type=='MANUAL_INPUT' %} · “{{ v.prompt or v.name }}”{% elif v.source_type=='PREVIOUS_RESPONSE' %} · Step {{ v.producer_position }} → <code>{{ v.extraction_expr }}</code>{% elif v.source_type=='IDENTITY' %} · {{ v.identity_name or 'Identity' }}{% elif v.source_type=='OBJECT' %} · {{ v.object_type or 'Object' }}{% endif %}</p>
+            <div class="simple-variable-uses"><span>Se usa en:</span>{% if v.consumers %}{% for c in v.consumers %}<a href="#flow-step-pos-{{ c }}" class="badge">Step {{ c }}</a>{% endfor %}{% else %}<span class="muted">todavía no se usa</span>{% endif %}</div>
+          </div>
+        </div>
+        <div class="simple-variable-actions">
+          <details class="variable-edit"><summary>Editar</summary>
+            <form class="stack-form compact-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables/{{ v.id }}/update" method="post">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <label><span>Descripción</span><input name="description" value="{{ v.description or '' }}" placeholder="Para qué sirve"></label>
+              {% if v.source_type=='MANUAL_INPUT' %}<label><span>Qué debe preguntarte Negro</span><input name="prompt" value="{{ v.prompt or v.name }}"></label>{% else %}<input type="hidden" name="prompt" value="{{ v.prompt or '' }}">{% endif %}
+              <div class="checkbox-row"><label><input type="checkbox" name="required" value="1" {% if v.required %}checked{% endif %}> Obligatorio</label><label><input type="checkbox" name="sensitive" value="1" {% if v.sensitive %}checked{% endif %}> Ocultar valor</label><label><input type="checkbox" name="exported" value="1" {% if v.exported %}checked{% endif %}> Compartir con Flows dependientes</label></div>
+              <button class="button secondary" type="submit">Guardar</button>
+            </form>
+          </details>
+          <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables/{{ v.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar {{ v.name }}?')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button danger" title="Eliminar">×</button></form>
+        </div>
       </article>
-    {% else %}<div class="empty-state"><strong>Este Flow todavía no tiene variables.</strong><span>Crea primero <code>otp</code> como Manual Input o <code>jwt</code> como Previous Response.</span></div>{% endfor %}
+    {% else %}<div class="empty-state"><strong>Todavía no hay valores dinámicos.</strong><span>La forma más fácil es abrir un Step, entrar a su Inspector y marcar el valor que cambia.</span></div>{% endfor %}
   </div>
 
-  <details class="runtime-builder" {% if not flow_runtime.variables %}open{% endif %}>
-    <summary>+ Crear Flow Variable</summary>
-    <form class="runtime-variable-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables" method="post">
+  <details class="runtime-builder simple-builder" {% if not flow_runtime.variables %}open{% endif %}>
+    <summary>+ Añadir valor dinámico</summary>
+    <form class="runtime-variable-form simple-source-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables" method="post" data-simple-source-form>
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label><span>Name</span><input name="name" placeholder="jwt / otp / userId" required></label>
-      <label><span>Source</span><select name="source_type" data-flow-source><option>MANUAL_INPUT</option><option>PREVIOUS_RESPONSE</option><option>IDENTITY</option><option>OBJECT</option><option>CONSTANT</option><option>GENERATED</option></select></label>
-      <label class="wide"><span>Description</span><input name="description" placeholder="Para qué existe esta variable"></label>
-      <label><span>Prompt manual</span><input name="prompt" placeholder="Código OTP recibido"></label>
-      <label><span>Default / Constant</span><input name="default_value" placeholder="CO"></label>
-      <label><span>Producer Step</span><select name="producer_step_id"><option value="">—</option>{% for s in flow_data.included_steps %}<option value="{{ s.id }}">Step {{ s.position }} · {{ s.method }} {{ s.path }}</option>{% endfor %}</select></label>
-      <label><span>Extractor</span><select name="extraction_type"><option value="json">JSON path</option><option value="header">Header</option><option value="cookie">Set-Cookie</option><option value="location">Location</option><option value="regex">Regex</option></select></label>
-      <label class="wide"><span>Extraction expression</span><input name="extraction_expr" placeholder="$.accessToken / Authorization / session"></label>
-      <label><span>Identity</span><select name="identity_id"><option value="">—</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-      <label><span>Identity field</span><input name="identity_field" placeholder="auth:Authorization / resolver:sub"></label>
-      <label><span>Object</span><select name="object_id"><option value="">—</option>{% for o in business_objects %}<option value="{{ o.id }}">{{ o.object_type }} · {{ o.object_value }}</option>{% endfor %}</select></label>
-      <label><span>Generated</span><select name="generated_type"><option value="token">Random token</option><option value="uuid">UUID</option><option value="email">Unique email</option></select></label>
-      <label class="check-label"><input type="checkbox" name="required" value="1" checked> Required</label><label class="check-label"><input type="checkbox" name="sensitive" value="1"> Sensitive</label><label class="check-label"><input type="checkbox" name="exported" value="1"> Export to dependent Flows</label>
-      <button class="button secondary" type="submit">Crear variable</button>
+      <label><span>¿Cómo obtiene Negro este valor?</span><select name="source_type" data-flow-source>
+        <option value="MANUAL_INPUT">Pedírmelo cuando ejecute</option>
+        <option value="PREVIOUS_RESPONSE">Tomarlo de una respuesta anterior</option>
+        <option value="IDENTITY">Tomarlo de una Identity</option>
+        <option value="OBJECT">Tomarlo de un Object</option>
+        <option value="CONSTANT">Mantener un valor fijo</option>
+        <option value="GENERATED">Generarlo automáticamente</option>
+      </select></label>
+      <label><span>Nombre corto</span><input name="name" placeholder="otp / jwt / orderId" required></label>
+      <label class="wide"><span>Descripción <small>(opcional)</small></span><input name="description" placeholder="Ej. OTP para validar el login"></label>
+
+      <label data-source-field="MANUAL_INPUT"><span>¿Qué debe preguntarte Negro?</span><input name="prompt" placeholder="Código OTP recibido"></label>
+      <label data-source-field="CONSTANT"><span>Valor</span><input name="default_value" placeholder="CO"></label>
+      <label data-source-field="PREVIOUS_RESPONSE"><span>¿Qué Step lo produce?</span><select name="producer_step_id"><option value="">Selecciona…</option>{% for s in flow_data.included_steps %}<option value="{{ s.id }}">Step {{ s.position }} · {{ s.method }} {{ s.path }}</option>{% endfor %}</select></label>
+      <label data-source-field="PREVIOUS_RESPONSE"><span>¿Dónde aparece?</span><select name="extraction_type"><option value="json">JSON</option><option value="header">Header</option><option value="cookie">Cookie</option><option value="location">Location</option><option value="regex">Texto / Regex</option></select></label>
+      <label class="wide" data-source-field="PREVIOUS_RESPONSE"><span>Campo a extraer</span><input name="extraction_expr" placeholder="$.accessToken"></label>
+      <label data-source-field="IDENTITY"><span>Identity</span><select name="identity_id"><option value="">Selecciona…</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
+      <label data-source-field="IDENTITY"><span>Dato de la Identity</span><input name="identity_field" placeholder="auth:Authorization"></label>
+      <label data-source-field="OBJECT"><span>Object</span><select name="object_id"><option value="">Selecciona…</option>{% for o in business_objects %}<option value="{{ o.id }}">{{ o.object_type }} · {{ o.object_value }}</option>{% endfor %}</select></label>
+      <label data-source-field="GENERATED"><span>Generar</span><select name="generated_type"><option value="token">Token aleatorio</option><option value="uuid">UUID</option><option value="email">Email único</option></select></label>
+      <div class="wide checkbox-row"><label><input type="checkbox" name="required" value="1" checked> Obligatorio</label><label><input type="checkbox" name="sensitive" value="1"> Ocultar valor</label><label><input type="checkbox" name="exported" value="1"> Compartir con Flows que dependan de este</label></div>
+      <button class="button" type="submit">Guardar valor</button>
     </form>
+    <details class="advanced-context"><summary>Opciones avanzadas</summary><p class="muted small">Los detalles internos como location, baseline y binding se gestionan al asociar el valor a un Step. Normalmente no necesitas escribirlos a mano.</p></details>
   </details>
 
-  {% if flow_runtime.variables %}
-  <details class="runtime-builder">
-    <summary>+ Marcar un valor de un Step como variable</summary>
-    <form class="runtime-variable-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/bindings" method="post">
+  <details class="runtime-builder advanced-binding-builder">
+    <summary>Opciones avanzadas · asociar manualmente a un Step</summary>
+    <p class="muted small">Úsalo sólo si el modo visual no puede detectar el valor automáticamente.</p>
+    <form class="runtime-binding-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/bindings" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label><span>Step</span><select name="step_id">{% for s in flow_data.included_steps %}<option value="{{ s.id }}">Step {{ s.position }} · {{ s.method }} {{ s.path }}</option>{% endfor %}</select></label>
       <label><span>Variable</span><select name="variable_id">{% for v in flow_runtime.variables %}<option value="{{ v.id }}">{{ '{{' }}{{ v.name }}{{ '}}' }}</option>{% endfor %}</select></label>
       <label class="wide"><span>Valor actual a reemplazar</span><input name="target_value" placeholder="482931 / eyJ... / 12345" required></label>
       <label><span>Key (opcional)</span><input name="target_name" placeholder="otp / Authorization / orderId"></label>
       <label><span>Location</span><input name="target_location" placeholder="request_json / header / path"></label>
-      <button class="button secondary" type="submit">Usar variable en Step</button>
+      <button class="button secondary" type="submit">Asociar</button>
     </form>
-    <p class="muted small">MVP: puedes pegar aquí el valor seleccionado. El siguiente ajuste puede conectar esta misma acción directamente con una selección del HTTP Inspector/Burp.</p>
   </details>
-  {% endif %}
+
 </section>
 
 <section class="panel flow-investigation-link"><div class="panel-head"><div><p class="eyebrow">CONTEXTO</p><h2>Investigation</h2><p class="muted small">Adjuntar el Flujo hace que sus ideas IA, Runners y evidencia aparezcan en ese workspace.</p></div></div>{% if flow_investigations %}<div class="badges">{% for i in flow_investigations %}<a class="badge" href="{{ target_base }}/investigations/{{ i.id }}">Abrir #{{ i.id }} · {{ i.title }} ↗</a>{% endfor %}</div>{% endif %}{% if active_investigations %}<details class="inline-create"><summary>+ Adjuntar a Investigation</summary><form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/investigation" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="investigation_id">{% for i in active_investigations %}<option value="{{ i.id }}">#{{ i.id }} · {{ i.title }}</option>{% endfor %}</select><button class="button secondary">Adjuntar</button></form></details>{% elif not flow_investigations %}<p class="muted small">Todavía no tienes una Investigation activa.</p>{% endif %}</section>
@@ -158,6 +190,13 @@
       <div class="flow-step-index">{{ s.position }}</div>
       <div class="flow-step-main">
         <div class="flow-step-head"><div><h3>{{ s.method }} <code>{{ s.path }}</code></h3><small>#{{ s.exchange_id }} · {{ s.hostname }} · HTTP {{ s.status_code or '—' }} · {{ s.first_seen_at }}</small></div><div>{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if not s.included %}<span class="badge">Ignored</span>{% elif s.noise_suggested %}<span class="badge noise-badge" title="{{ s.noise_reason }}">possible background</span>{% endif %}</div></div>
+        <div class="step-story" id="flow-step-pos-{{ s.position }}">
+          {% set needs = flow_runtime.step_inputs.get(s.id, []) %}{% set produces = flow_runtime.step_outputs.get(s.id, []) %}
+          {% if needs or produces %}
+            {% if needs %}<div class="step-story-group"><span class="step-story-label">NECESITA</span>{% for x in needs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}🟣{% elif x.source_type=='IDENTITY' %}🟢{% elif x.source_type=='OBJECT' %}🟠{% else %}🔵{% endif %} {{ x.name }} <small>· {{ x.source_label }}</small></span>{% endfor %}</div>{% endif %}
+            {% if produces %}<div class="step-story-group"><span class="step-story-label">PRODUCE</span>{% for x in produces %}<span class="story-chip source-{{ x.source_type|lower }}">🔵 {{ x.name }}{% if x.extraction_expr %} <small>· {{ x.extraction_expr }}</small>{% endif %}</span>{% endfor %}</div>{% endif %}
+          {% endif %}
+        </div>
         {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
 
         {% if s.identifier_values %}
@@ -193,7 +232,7 @@
         {% endif %}
 
         <div class="row-actions flow-step-actions">
-          <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect">Inspector</a>
+          <a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect?flow_id={{ flow_data.flow.id }}&flow_step_id={{ s.id }}">Ver HTTP</a>
           <a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Buscar relacionados</a>
           {% if not loop.first %}<a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparación inteligente anterior</a>{% endif %}
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="button ghost small-button" type="submit">{{ 'Include' if not s.included else 'Ignore' }}</button></form>
@@ -206,4 +245,14 @@
   {% else %}<p class="empty">Este flujo todavía no tiene Requests.{% if flow_data.flow.capture_status == 'capturing' %} Navega en el objetivo y pulsa Detener Flujo al terminar.{% endif %}</p>{% endfor %}
   </div>
 </section>
+
+<script>
+(() => {
+  const form=document.querySelector('[data-simple-source-form]'); if(!form) return;
+  const source=form.querySelector('[data-flow-source]');
+  const fields=[...form.querySelectorAll('[data-source-field]')];
+  const refresh=()=>{ const v=source.value; fields.forEach(el=>{ el.hidden=el.dataset.sourceField!==v; el.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=el.hidden); }); };
+  source.addEventListener('change',refresh); refresh();
+})();
+</script>
 {% endblock %}

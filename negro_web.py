@@ -4668,6 +4668,20 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn: rt.delete_variable(conn,int(flow_id),int(variable_id))
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
 
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/variables/{variable_id}/update")
+    def flow_runtime_variable_update(target_key: str, flow_id: int, variable_id: int, description: str = Form(""),
+                                     prompt: str = Form(""), required: str = Form("0"), sensitive: str = Form("0"),
+                                     exported: str = Form("0"), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                rt.update_variable(conn,int(flow_id),int(variable_id),description=description,prompt=prompt,
+                                   required=str(required)=="1",sensitive=str(sensitive)=="1",exported=str(exported)=="1")
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
     @app.post("/t/{target_key}/flows/{flow_id}/runtime/bindings")
     def flow_runtime_binding_create(target_key: str, flow_id: int, step_id: int = Form(...), variable_id: int = Form(...),
                                     target_value: str = Form(...), target_name: str = Form(""), target_location: str = Form(""), csrf: str = Form(...)):
@@ -5597,9 +5611,12 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/resource/{resource_id}#operation-{operation_id}-coverage", status_code=303)
 
     @app.get("/t/{target_key}/exchange/{exchange_id}/inspect", response_class=HTMLResponse)
-    def http_inspector_page(request: Request, target_key: str, exchange_id: int, identity_id: int = 0, identity_setup: int = 0):
+    def http_inspector_page(request: Request, target_key: str, exchange_id: int, identity_id: int = 0, identity_setup: int = 0, flow_id: int = 0, flow_step_id: int = 0):
         import negro_identity as identity_tools
+        import negro_flow_runtime as flow_runtime_tools
         domain, workspace, paths = _target_context(target_key)
+        flow_context = None
+        flow_variables = []
         with _db(paths) as conn:
             inspector = http_inspector.extract_exchange(conn, int(exchange_id))
             if not inspector:
@@ -5608,10 +5625,82 @@ def create_app(default_domain: str, default_workspace: Path):
             anns = http_inspector.learned_annotations(conn, int(exchange_id))
             request_highlighted = http_inspector.highlighted_html(inspector.get("request_text") or "", anns, "request")
             response_highlighted = http_inspector.highlighted_html(inspector.get("response_text") or "", anns, "response")
+            if int(flow_id or 0) and int(flow_step_id or 0):
+                flow_runtime_tools.init_schema(conn)
+                row = conn.execute("""SELECT fs.id,fs.flow_id,fs.position,fs.exchange_id,f.name flow_name
+                                    FROM flow_steps fs JOIN flows f ON f.id=fs.flow_id
+                                    WHERE fs.id=? AND fs.flow_id=?""", (int(flow_step_id), int(flow_id))).fetchone()
+                if row and int(row["exchange_id"] or 0) == int(exchange_id):
+                    flow_context = dict(row)
+                    flow_variables = flow_runtime_tools.flow_runtime_data(conn, int(flow_id)).get("variables", [])
         return render(request, "http_inspector.html", target_key, domain, workspace,
-                      inspector=inspector, identities=identities,
+                      inspector=inspector, identities=identities, flow_context=flow_context, flow_variables=flow_variables,
                       request_highlighted=request_highlighted, response_highlighted=response_highlighted,
                       message=request.query_params.get("message", ""), error=request.query_params.get("error", ""), selected_identity_id=int(identity_id or 0), identity_setup=bool(identity_setup))
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/quick-bind")
+    def flow_runtime_quick_bind(target_key: str, flow_id: int, exchange_id: int = Form(...), step_id: int = Form(...),
+                                variable_id: str = Form(""), name: str = Form(""), prompt: str = Form(""),
+                                target_value: str = Form(...), target_name: str = Form(""), target_location: str = Form(""),
+                                sensitive: str = Form("0"), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                step=conn.execute("SELECT id,flow_id,exchange_id FROM flow_steps WHERE id=?",(int(step_id),)).fetchone()
+                if not step or int(step["flow_id"])!=int(flow_id) or int(step["exchange_id"] or 0)!=int(exchange_id):
+                    raise ValueError("El Step no coincide con esta Request")
+                vid=int(variable_id) if str(variable_id or "").isdigit() else 0
+                if not vid:
+                    clean_name=str(name or target_name or "value").strip()
+                    existing=conn.execute("SELECT id FROM flow_variables WHERE flow_id=? AND lower(name)=lower(?)",(int(flow_id),clean_name)).fetchone()
+                    if existing:
+                        vid=int(existing["id"])
+                    else:
+                        vid=rt.create_variable(conn,int(flow_id),name=clean_name,source_type="MANUAL_INPUT",
+                                               description=f"Valor dinámico para {target_name or clean_name}",
+                                               prompt=str(prompt or f"Introduce {target_name or clean_name}"),required=True,
+                                               sensitive=str(sensitive)=="1")
+                rt.add_binding(conn,int(flow_id),int(step_id),vid,target_value=target_value,target_name=target_name,target_location=target_location)
+        except ValueError as exc:
+            msg=urllib.parse.quote(str(exc),safe="")
+            return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&error={msg}",status_code=303)
+        msg=urllib.parse.quote("Listo: Negro ya sabe qué valor debe sustituir en este Step",safe="")
+        return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&message={msg}",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/quick-extract")
+    def flow_runtime_quick_extract(target_key: str, flow_id: int, exchange_id: int = Form(...), step_id: int = Form(...),
+                                   name: str = Form(...), location: str = Form(...), key: str = Form(""),
+                                   sensitive: str = Form("0"), exported: str = Form("0"), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        loc=str(location or "")
+        et="json"; expr=""
+        if loc.startswith("response_json:"):
+            et="json"; expr=loc.split(":",1)[1]
+        elif loc.startswith("response_cookie:"):
+            et="cookie"; expr=loc.split(":",1)[1]
+        elif loc.startswith("response_header:"):
+            expr=loc.split(":",1)[1]; et="location" if expr.lower()=="location" else "header"
+        else:
+            et="regex"; expr=re.escape(str(key or name)) + r"[^\r\n]{0,80}?([^\s,;]+)"
+        try:
+            with _db(paths) as conn:
+                step=conn.execute("SELECT id,flow_id,exchange_id FROM flow_steps WHERE id=?",(int(step_id),)).fetchone()
+                if not step or int(step["flow_id"])!=int(flow_id) or int(step["exchange_id"] or 0)!=int(exchange_id):
+                    raise ValueError("El Step no coincide con esta Response")
+                existing=conn.execute("SELECT id FROM flow_variables WHERE flow_id=? AND lower(name)=lower(?)",(int(flow_id),str(name).strip())).fetchone()
+                if existing:
+                    raise ValueError("Ya existe una variable con ese nombre")
+                rt.create_variable(conn,int(flow_id),name=name,source_type="PREVIOUS_RESPONSE",
+                                   description=f"Extraído automáticamente de Step {step_id}",required=True,
+                                   sensitive=str(sensitive)=="1",exported=str(exported)=="1",producer_step_id=int(step_id),
+                                   extraction_type=et,extraction_expr=expr)
+        except ValueError as exc:
+            msg=urllib.parse.quote(str(exc),safe="")
+            return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&error={msg}",status_code=303)
+        msg=urllib.parse.quote(f"Listo: {name} se extraerá automáticamente de esta Response",safe="")
+        return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&message={msg}",status_code=303)
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/annotate")
     def http_inspector_annotate(target_key: str, exchange_id: int,

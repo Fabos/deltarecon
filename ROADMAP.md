@@ -1,4 +1,4 @@
-## v0.48.0 · Flow Runtime foundation
+## v0.48.1 · Flow Runtime foundation
 
 Implementado MVP: Flow Variables, Manual Input pause/resume, response extraction, chaining, per-Step Run override, Identity/Object sources, Run Context y reusable Flow prerequisites con explicit exports.
 

@@ -1,4 +1,15 @@
-# v0.48.0 · Executable Flow MVP
+# v0.48.1 · Flow Simple UX
+
+- Flow pasa a modo simple por defecto: lenguaje humano, valores dinámicos y Steps que explican qué necesitan/producen.
+- El formulario de variables muestra sólo los campos relevantes según la fuente elegida.
+- Las variables ahora se pueden editar sin borrarlas/recrearlas.
+- El binding manual queda oculto en Opciones avanzadas.
+- HTTP Inspector abierto desde un Flow permite configurar directamente valores de Request como Manual Input o reutilizar una variable existente.
+- Valores de Response pueden convertirse en variables extraídas automáticamente (JSON/header/cookie/Location) desde el propio Inspector.
+- Los Steps muestran chips NECESITA / PRODUCE para entender el proceso de un vistazo.
+- Los Flow prerequisitos se explican como “Flows que este necesita”, manteniendo exports y reutilización sin duplicar Steps.
+
+# v0.48.1 · Executable Flow MVP
 
 - Nuevo modelo persistente `flow_variables`: CONSTANT, MANUAL_INPUT, PREVIOUS_RESPONSE, IDENTITY, OBJECT y GENERATED.
 - `flow_step_variable_bindings` separa el valor observado del binding dinámico; el Flow guardado no se destruye al ejecutar.
