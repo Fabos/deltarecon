@@ -12,6 +12,7 @@ required_files=(
   "negro_rules.py"
   "negro_web.py"
   "negro_http_inspector.py"
+  "negro_flow_runtime.py"
   "requirements.txt"
   "web/static/app.js"
   "web/static/style.css"
@@ -24,6 +25,8 @@ required_files=(
   "web/templates/target_error.html"
   "web/templates/tree.html"
   "web/templates/intelligence.html"
+  "web/templates/flow_detail.html"
+  "web/templates/flow_run_detail.html"
 )
 
 missing=()
@@ -74,7 +77,7 @@ PY
 
 echo "[+] Verificando Python y templates..."
 "$ROOT/.venv/bin/python" -m py_compile \
-  "$ROOT/negro.py" "$ROOT/negro_core.py" "$ROOT/negro_intel.py" "$ROOT/negro_hunter.py" "$ROOT/negro_rules.py" "$ROOT/negro_web.py" "$ROOT/negro_http_inspector.py"
+  "$ROOT/negro.py" "$ROOT/negro_core.py" "$ROOT/negro_intel.py" "$ROOT/negro_hunter.py" "$ROOT/negro_rules.py" "$ROOT/negro_web.py" "$ROOT/negro_http_inspector.py" "$ROOT/negro_flow_runtime.py"
 
 ROOT="$ROOT" "$ROOT/.venv/bin/python" - <<'PY'
 import os

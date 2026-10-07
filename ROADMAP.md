@@ -1,3 +1,9 @@
+## v0.48.0 · Flow Runtime foundation
+
+Implementado MVP: Flow Variables, Manual Input pause/resume, response extraction, chaining, per-Step Run override, Identity/Object sources, Run Context y reusable Flow prerequisites con explicit exports.
+
+Siguiente: selección directa de rangos desde HTTP Inspector/Burp para crear bindings/extractors; guardar un conjunto de Run Overrides como Variant; fallback manual sobre extractor fallido; editor visual de producer→consumers; ejecución asíncrona/polling para Flows largos.
+
 ## Estado v0.44.1 — Contexto compuesto + Environment Context
 
 Las Fases 1–7 tienen ya una base funcional integrada. A partir de esta versión Negro entra en **dogfooding / bounty real**: la prioridad deja de ser añadir módulos por anticipación y pasa a ser corregir fricción observada, reforzar estabilidad y añadir reglas/Signals sólo cuando representen patrones repetibles y defendibles.

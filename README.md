@@ -1,3 +1,9 @@
+## v0.48.0 · Executable Flow MVP
+
+Flow deja de ser sólo una secuencia observada y gana un runtime reproducible sobre el transporte existente de Runner: variables por Run, Manual Input con pause/resume, extracción desde response (JSON/header/cookie/Location/regex), chaining, bindings por Step, overrides quirúrgicos por Run/Step desde Identity/Object/constant, evidencia de valores usados/producidos y Flows reutilizables como prerequisites con exports explícitos. El Flow base no se muta durante una prueba. Burp Bridge permanece en v0.39.0.
+
+> Current build: **v0.48.0** — Executable Flow MVP + reusable prerequisites, conservando HTTP/Identity/Burp Context de v0.47.x.
+
 ## v0.47.7 · Burp Pretty JSON + Visible Navigation
 
 `Negro Context` formatea automáticamente bodies JSON para lectura humana sin alterar la evidencia RAW. El usuario puede alternar `Pretty / Raw`. Los botones `‹ / ›` ahora desplazan el viewport y marcan temporalmente el elemento seleccionado. Bridge v0.39.0.
@@ -20,7 +26,6 @@ El HTTP Inspector pasa a ser fuente directa de proyección para Workbench/Burp. 
 ## v0.47.2 · Shared renderer + Burp wrap
 El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido. `Negro Context` en Burp hace wrap por defecto, incluido en JWT/cookies largos, y mantiene los badges inline. Bridge v0.36.0.
 
-> Current build: **v0.47.7** — HTTP focus mode, compact history, Objects-first UX and Burp Negro Context tabs.
 
 # Negro Recon 🐕 — v0.44.8
 

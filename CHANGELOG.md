@@ -1,3 +1,17 @@
+# v0.48.0 · Executable Flow MVP
+
+- Nuevo modelo persistente `flow_variables`: CONSTANT, MANUAL_INPUT, PREVIOUS_RESPONSE, IDENTITY, OBJECT y GENERATED.
+- `flow_step_variable_bindings` separa el valor observado del binding dinámico; el Flow guardado no se destruye al ejecutar.
+- `flow_runs` mantiene contexto aislado por ejecución y soporta `waiting_input` / resume sin reiniciar Steps ya completados.
+- Extractores MVP: JSON path, header, Set-Cookie, Location y regex.
+- `flow_run_overrides` permite reemplazar una variable en un único Step con Identity, Object o valor constante. El siguiente Step vuelve al valor normal del Run.
+- `flow_prerequisites` permite que un Flow guardado requiera otro Flow guardado. Sólo variables marcadas `Export` pasan del prerequisite al padre.
+- El runtime reutiliza el transporte/diagnóstico de `negro_runners` y registra respuestas válidas de vuelta en la evidencia canónica de Negro.
+- Nueva UX en Flow: panel Variables, producer/consumers, requisitos reutilizables, Runs y editor de bindings.
+- Nueva vista de Run: pause por OTP/input, contexto, exports, overrides y evidencia Used/Produced por Step.
+- Test benchmark: OTP pause/resume → challenge/JWT extraction → JWT chaining; override Identity B en un Step y restauración automática; prerequisite Login → Flow dependiente.
+- Bridge Java sin cambios: v0.39.0.
+
 # v0.47.7 · Burp Pretty JSON + Visible Navigation
 
 - `Negro Context` usa Pretty JSON por defecto para bodies JSON válidos, con toggle `Pretty / Raw`.

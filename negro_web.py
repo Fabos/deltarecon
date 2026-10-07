@@ -4622,10 +4622,133 @@ def create_app(default_domain: str, default_workspace: Path):
                 """SELECT i.* FROM investigations i JOIN investigation_links l ON l.investigation_id=i.id
                    WHERE l.entity_type='flow' AND l.entity_id=? ORDER BY i.updated_at DESC""",(int(flow_id),)).fetchall()]
             active_investigations=[dict(x) for x in conn.execute("SELECT id,title,status FROM investigations WHERE status!='closed' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+            import negro_flow_runtime as flow_runtime
+            flow_runtime.init_schema(conn)
+            runtime=flow_runtime.flow_runtime_data(conn,int(flow_id))
+            reusable_flows=[dict(x) for x in conn.execute("SELECT id,name FROM flows WHERE id<>? ORDER BY updated_at DESC,id DESC LIMIT 300",(int(flow_id),)).fetchall()]
+            identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
+            try:
+                business_objects=[dict(x) for x in conn.execute(
+                    """SELECT bo.id,bot.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview) object_value
+                       FROM business_objects bo JOIN business_object_types bot ON bot.id=bo.object_type_id
+                       ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 300""").fetchall()]
+            except Exception:
+                business_objects=[]
         return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data,
                       flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, logic_ai_batches=logic_ai_batches,
-                      flow_investigations=flow_investigations, active_investigations=active_investigations, settings=intel.load_settings())
+                      flow_investigations=flow_investigations, active_investigations=active_investigations, settings=intel.load_settings(),
+                      flow_runtime=runtime,reusable_flows=reusable_flows,identities=identities,business_objects=business_objects)
 
+
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/variables")
+    def flow_runtime_variable_create(target_key: str, flow_id: int, name: str = Form(...), source_type: str = Form(...),
+                                     description: str = Form(""), default_value: str = Form(""), prompt: str = Form(""),
+                                     required: str = Form("0"), sensitive: str = Form("0"), exported: str = Form("0"),
+                                     producer_step_id: str = Form(""), extraction_type: str = Form(""), extraction_expr: str = Form(""),
+                                     identity_id: str = Form(""), identity_field: str = Form(""), object_id: str = Form(""), generated_type: str = Form(""), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        def _int(v):
+            return int(v) if str(v or "").isdigit() else None
+        try:
+            with _db(paths) as conn:
+                rt.create_variable(conn,int(flow_id),name=name,source_type=source_type,description=description,default_value=default_value,prompt=prompt,
+                                   required=str(required)=="1",sensitive=str(sensitive)=="1",exported=str(exported)=="1",
+                                   producer_step_id=_int(producer_step_id),extraction_type=extraction_type,extraction_expr=extraction_expr,
+                                   identity_id=_int(identity_id),identity_field=identity_field,object_id=_int(object_id),generated_type=generated_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/variables/{variable_id}/delete")
+    def flow_runtime_variable_delete(target_key: str, flow_id: int, variable_id: int, csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn: rt.delete_variable(conn,int(flow_id),int(variable_id))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/bindings")
+    def flow_runtime_binding_create(target_key: str, flow_id: int, step_id: int = Form(...), variable_id: int = Form(...),
+                                    target_value: str = Form(...), target_name: str = Form(""), target_location: str = Form(""), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn: rt.add_binding(conn,int(flow_id),int(step_id),int(variable_id),target_value=target_value,target_name=target_name,target_location=target_location)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/prerequisites")
+    def flow_runtime_prerequisite_create(target_key: str, flow_id: int, prerequisite_flow_id: int = Form(...), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn: rt.add_prerequisite(conn,int(flow_id),int(prerequisite_flow_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/prerequisites/{prerequisite_flow_id}/delete")
+    def flow_runtime_prerequisite_delete(target_key: str, flow_id: int, prerequisite_flow_id: int, csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn: rt.remove_prerequisite(conn,int(flow_id),int(prerequisite_flow_id))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/run")
+    def flow_runtime_run_start(target_key: str, flow_id: int, csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); domain,_,paths=_target_context(target_key)
+        with _db(paths) as conn: run_id=rt.create_run(conn,int(flow_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+
+    @app.get("/t/{target_key}/flow-runs/{run_id}", response_class=HTMLResponse)
+    def flow_runtime_run_page(request: Request, target_key: str, run_id: int):
+        import negro_flow_runtime as rt
+        domain,workspace,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            data=rt.get_run(conn,int(run_id))
+            if not data: raise HTTPException(status_code=404,detail="Flow Run no encontrado")
+            run=data["run"]
+            runtime=rt.flow_runtime_data(conn,int(run["flow_id"]))
+            identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
+            try:
+                objects=[dict(x) for x in conn.execute("""SELECT bo.id,bot.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview) object_value
+                                                          FROM business_objects bo JOIN business_object_types bot ON bot.id=bo.object_type_id ORDER BY bo.last_seen_at DESC LIMIT 300""").fetchall()]
+            except Exception: objects=[]
+            steps=[dict(x) for x in conn.execute("SELECT id,position,label FROM flow_steps WHERE flow_id=? AND included=1 ORDER BY position,id",(int(run["flow_id"]),)).fetchall()]
+        return render(request,"flow_run_detail.html",target_key,domain,workspace,run_data=data,runtime=runtime,identities=identities,business_objects=objects,flow_steps=steps)
+
+
+    @app.post("/t/{target_key}/flow-runs/{run_id}/continue")
+    def flow_runtime_run_continue(target_key: str, run_id: int, csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); domain,_,paths=_target_context(target_key)
+        rt.advance_run(paths,domain,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+
+    @app.post("/t/{target_key}/flow-runs/{run_id}/input")
+    def flow_runtime_run_input(target_key: str, run_id: int, variable_id: int = Form(...), value: str = Form(...), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); domain,_,paths=_target_context(target_key)
+        with _db(paths) as conn: rt.provide_input(conn,int(run_id),int(variable_id),value)
+        rt.advance_run(paths,domain,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+
+    @app.post("/t/{target_key}/flow-runs/{run_id}/override")
+    def flow_runtime_run_override(target_key: str, run_id: int, step_id: int = Form(...), variable_id: int = Form(...),
+                                  source_type: str = Form("CONSTANT"), value: str = Form(""), identity_id: str = Form(""),
+                                  identity_field: str = Form(""), object_id: str = Form(""), csrf: str = Form(...)):
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        def _int(v): return int(v) if str(v or "").isdigit() else None
+        try:
+            with _db(paths) as conn:
+                rt.set_override(conn,int(run_id),int(step_id),int(variable_id),source_type=source_type,value=value,identity_id=_int(identity_id),identity_field=identity_field,object_id=_int(object_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}#overrides",status_code=303)
 
     @app.get("/t/{target_key}/runners", response_class=HTMLResponse)
     def runners_page(request: Request, target_key: str):
