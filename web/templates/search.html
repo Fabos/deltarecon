@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Buscar · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero search-hero">
+  <div>
+    <p class="eyebrow">SEARCH · v{{ version }}</p>
+    <h1>Buscar en todo el proyecto</h1>
+    <p class="muted">Una sola entrada para encontrar tráfico, valores, parámetros, hosts, Señales, notas, hipótesis, investigaciones y hallazgos.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button ghost" href="{{ target_base }}/parameters">Índice de parámetros</a>
+    <form action="{{ target_base }}/search/reindex" method="post" data-job-form data-job-label="Actualizando índice">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary" type="submit">↻ Actualizar datos</button>
+    </form>
+  </div>
+</section>
+
+<section class="search-shell panel">
+  <form class="search-main-form" method="get">
+    <label>
+      <span>Consulta</span>
+      <input name="q" value="{{ q }}" placeholder='Ej. ownerId · env:QA · host:api.example.com method:POST' autofocus autocomplete="off">
+    </label>
+    <button class="button" type="submit">Buscar</button>
+  </form>
+  <div class="search-index-meta">
+    <span><b>{{ search_stats.documents }}</b> documentos</span>
+    <span><b>{{ search_stats.http_exchanges }}</b> Requests HTTP</span>
+    <span>{% if search_stats.rebuilt_at %}Datos actualizados {{ search_stats.rebuilt_at }}{% else %}Sin indexado histórico completo{% endif %}</span>
+  </div>
+  {% if search_stats.needs_reindex %}<div class="callout warning"><b>Índice anterior detectado.</b> Pulsa “Actualizar datos” una vez para reconstruir búsqueda y valores estructurados del historial.</div>{% endif %}
+  {% if search_result.error %}<div class="callout warning">{{ search_result.error }}</div>{% endif %}
+</section>
+
+<section class="search-layout">
+  <aside class="panel search-help">
+    <p class="eyebrow">REFERENCIA</p>
+    <h2>Cómo buscar</h2>
+    <p class="muted small">El texto libre busca fragmentos. <code>1223</code> puede encontrar <code>3001112233</code>; <code>AIza</code> puede encontrar una key más larga que contenga ese fragmento.</p>
+    <div class="search-syntax">
+      <code>host:</code><span>host</span><code>env:</code><span>ambiente</span>
+      <code>method:</code><span>método HTTP</span>
+      <code>status:</code><span>código HTTP</span>
+      <code>state:</code><span>estado humano</span>
+      <code>signal:</code><span>Señal</span>
+      <code>param:</code><span>nombre de parámetro</span>
+      <code>cookie:</code><span>cookie</span>
+      <code>header:</code><span>header</span>
+      <code>request:</code><span>request</span>
+      <code>response:</code><span>response</span>
+      <code>path:</code><span>URL/path</span>
+      <code>type:</code><span>tipo de entidad</span>
+    </div>
+    <p class="muted small">Puedes combinar filtros: <code>env:QA host:api.example.com method:GET ownerId</code>.</p>
+  </aside>
+
+  <div class="search-results-area">
+    {% if q %}
+    <section class="section-heading search-results-head">
+      <div><p class="eyebrow">RESULTADOS</p><h2>{{ search_result.count }} documentos · {{ parameter_hits|length }} coincidencias estructuradas{% if identifier_memory %} · {{ identifier_memory|length }} recuerdos de identificadores{% endif %}</h2><p class="muted">Consulta: <code>{{ q }}</code></p></div>
+      <form class="saved-search-inline" action="{{ target_base }}/search/save" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="query" value="{{ q }}">
+        <input name="name" placeholder="Nombre de esta búsqueda" required>
+        <button class="btn-secondary" type="submit">Guardar búsqueda</button>
+      </form>
+    </section>
+
+    {% if identifier_memory %}
+    <section class="panel identifier-memory-search">
+      <div class="panel-head"><div><p class="eyebrow">MEMORIA DE IDENTIFICADORES</p><h2>Negro recuerda dónde apareció</h2><p class="muted">Agrupa la misma key/valor entre Requests, hosts, Flujos e identidades. Esto es contexto, no una vulnerabilidad.</p></div><span>{{ identifier_memory|length }}</span></div>
+      <div class="identifier-memory-grid">
+        {% for m in identifier_memory %}
+        <article class="identifier-memory-card">
+          <div><code>{{ m.normalized_name }}</code><b>{{ m.value or 'valor observado' }}</b></div>
+          <div class="badges"><span class="badge">{{ m.requests }} Requests</span><span class="badge">{{ m.hosts }} hosts</span><span class="badge">{{ m.flows }} Flujos</span><span class="badge">{{ m.identities }} identidades</span>{% if m.signals %}<span class="badge correlation-badge">⚡ {{ m.signals }} Señales</span>{% endif %}</div>
+          <div class="memory-direction"><span>Salida · {{ m.output_observations }}</span><span>Entrada · {{ m.input_observations }}</span></div>
+          <div class="row-actions"><a class="btn-secondary" href="{{ target_base }}/parameters/{{ m.normalized_name|urlencode }}">Ver key</a>{% if m.value %}<a class="btn-secondary" href="{{ target_base }}/search?q={{ m.value|urlencode }}">Buscar valor</a>{% endif %}</div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if parameter_hits %}
+    <section class="panel unified-parameter-results">
+      <div class="panel-head"><div><p class="eyebrow">VALORES Y PARÁMETROS</p><h2>Coincidencias que Negro puede seguir</h2><p class="muted">Estas coincidencias vienen del índice estructurado y permiten Seguir valor, relaciones e identidad.</p></div><span>{{ parameter_hits|length }}</span></div>
+      <div class="parameter-hit-list">
+        {% for p in parameter_hits %}
+        <article class="parameter-hit-card">
+          <div class="parameter-hit-main">
+            <div class="badges"><span class="badge">{{ p.location }}</span><span class="badge">{{ p.method }}</span><span class="badge">HTTP {{ p.status_code }}</span></div>
+            <h3><code>{{ p.name }}</code> <span>=</span> <code>{{ p.value_raw or p.value_preview or '—' }}</code></h3>
+            <p><b>{{ p.hostname }}</b><code>{{ p.path }}</code> · Request #{{ p.exchange_id }} · {{ p.value_occurrences }} apariciones del mismo valor</p>
+          </div>
+          <div class="row-actions parameter-hit-actions">
+            <a class="button ghost small-button" href="{{ p.http_href }}">HTTP</a>
+            <a class="button secondary small-button" href="{{ p.follow_href }}">Seguir valor</a>
+            <a class="button ghost small-button" href="{{ p.parameter_href }}">Explorar parámetro</a>
+            <a class="button ghost small-button" href="{{ p.related_href }}">Buscar Requests relacionadas</a>
+            <a class="button ghost small-button" href="{{ p.diff_href }}">Comparación inteligente</a>
+            {% if p.identity_resolver_allowed %}<a class="button ghost small-button" href="{{ p.identity_resolver_href }}">Usar para identidad</a>{% elif p.identity_resolver_kind == 'object_or_context' %}<span class="badge" title="{{ p.identity_resolver_reason }}">Objeto/contexto · no actor</span>{% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="search-result-list">
+      {% for r in search_rows %}
+      <article class="search-result-card">
+        <div class="search-result-top">
+          <div class="badges"><span class="badge">{{ ui_label(r.entity_type) }}</span>{% if r.method %}<span class="badge">{{ r.method }}</span>{% endif %}{% if r.status %}<span class="badge">HTTP {{ r.status }}</span>{% endif %}{% if r.identity %}<span class="badge identity-badge">{{ r.identity.identity_name }}{% if r.identity.context_label %} · {{ r.identity.context_label }}{% endif %}</span>{% endif %}{% if r.human_state and r.human_state!='normal' %}<span class="badge state-chip">{{ ui_label(r.human_state) }}</span>{% endif %}</div>
+          <small>{{ r.updated_at }}</small>
+        </div>
+        <a class="search-result-primary" href="{{ r.href }}">
+          <h3>{% if r.host %}{{ r.host }}{% endif %}{% if r.path %}<code>{{ r.path }}</code>{% elif not r.host %}{{ r.doc_key }}{% endif %}</h3>
+          {% if r.signal_kind %}<div class="search-result-signals">🩵 {{ r.signal_kind }}</div>{% endif %}
+          {% if r.preview %}<p>{{ r.preview }}</p>{% endif %}
+        </a>
+        {% if r.parameter_matches %}
+        <div class="search-param-inline">
+          {% for p in r.parameter_matches %}
+          <a href="{{ target_base }}/parameters/follow/{{ p.id }}"><code>{{ p.name }}={{ p.value_raw or p.value_preview }}</code><small>{{ p.location }}</small></a>
+          {% endfor %}
+        </div>
+        {% endif %}
+        <div class="search-result-meta"><span>{{ r.doc_key }}</span>{% if r.exchange_id %}<span>Request #{{ r.exchange_id }}</span>{% endif %}</div>
+        {% if r.exchange_id %}
+        <div class="row-actions search-result-actions">
+          <a class="button ghost small-button" href="{{ r.href }}">Abrir HTTP</a>
+          <a class="button ghost small-button" href="{{ r.related_href }}">Buscar Requests relacionadas</a>
+          <a class="button ghost small-button" href="{{ r.diff_href }}">Comparación inteligente</a>
+          <a class="button ghost small-button" href="{{ r.identity_href }}">Asignar identidad</a>
+        </div>
+        {% endif %}
+      </article>
+      {% else %}
+        {% if not parameter_hits %}<div class="panel empty-state"><strong>No encontré coincidencias.</strong><span>Prueba otro fragmento, quita filtros o actualiza el índice.</span></div>{% endif %}
+      {% endfor %}
+    </section>
+    {% else %}
+    <section class="panel search-onboarding">
+      <p class="eyebrow">BÚSQUEDA</p>
+      <h2>Escribe lo que recuerdas</h2>
+      <p>Puede ser un ID, parte de una key, un nombre de parámetro, una URL o una combinación de filtros. Si el resultado corresponde a un valor estructurado, desde aquí puedes seguirlo sin cambiar de módulo.</p>
+    </section>
+    {% endif %}
+
+    {% if saved_searches %}
+    <section class="panel saved-searches">
+      <div class="panel-head"><div><p class="eyebrow">BÚSQUEDAS GUARDADAS</p><h2>Consultas que quieres repetir</h2></div><span>{{ saved_searches|length }}</span></div>
+      <div class="saved-search-list">
+        {% for s in saved_searches %}
+        <div class="saved-search-row"><a href="{{ target_base }}/search?q={{ s.query|urlencode }}"><b>{{ s.name }}</b><code>{{ s.query }}</code></a><form action="{{ target_base }}/search/saved/{{ s.id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" type="submit" title="Eliminar búsqueda guardada">×</button></form></div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

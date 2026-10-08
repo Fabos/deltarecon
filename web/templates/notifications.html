@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Notificaciones · {{ domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero notifications-hero"><div><p class="eyebrow">ALERTAS PASIVAS</p><h1>Notificaciones de inteligencia</h1><p class="muted">Pistas extraídas del tráfico que Burp ya observó. Una alerta no confirma una vulnerabilidad: te dice exactamente dónde mirar.</p></div>
+<form action="{{ target_base }}/notifications/read" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="all_items" value="yes"><button class="button ghost" type="submit">Marcar todo como leído</button></form></section>
+<section class="notification-list">
+{% for n in notifications %}
+<article class="notification-card severity-{{ n.severity }} {% if not n.read_at %}unread{% endif %}">
+  <div class="notification-icon">{% if n.severity in ['critical','high'] %}!{% elif n.severity=='medium' %}•{% else %}·{% endif %}</div>
+  <div class="notification-copy"><div class="notification-title-row"><h2>{{ n.title }}</h2><span class="badge severity-{{ n.severity }}">{{ ui_label(n.severity) }}</span>{% if n.occurrences>1 %}<span class="badge">{{ n.occurrences }}×</span>{% endif %}</div>
+  <p>{{ n.message }}</p><small>{{ ui_label(n.source) }} · {{ n.last_seen_at }}</small>
+  {% if n.data.parameter %}<div class="notification-context"><span>Parámetro</span><code>{{ n.data.parameter }}</code>{% if n.data.locations %}<span>Ubicación</span><code>{{ n.data.locations|join(', ') }}</code>{% endif %}</div>{% endif %}
+  {% if n.data.json_path %}<div class="notification-context"><span>Campo</span><code>{{ n.data.json_path }}</code></div>{% endif %}
+  {% if n.data.interesting_routes %}<div class="notification-context"><span>Rutas</span><code>{{ n.data.interesting_routes[:5]|join(', ') }}</code>{% if n.data.interesting_routes|length > 5 %}<span>Más</span><code>+{{ n.data.interesting_routes|length - 5 }}</code>{% endif %}</div>{% endif %}
+  <div class="notification-actions">{% if n.href %}<a class="button small-button" href="{{ target_base }}/{{ n.href }}">Abrir evidencia →</a>{% endif %}{% if n.data.lead_id %}<a class="button ghost small-button" href="{{ target_base }}/hypotheses#hypothesis-{{ n.data.lead_id }}">Abrir investigación</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=lead:{{ n.data.lead_id }}">Ver en mapa</a>{% elif n.data.graph_focus %}<a class="button ghost small-button" href="{{ target_base }}/graph?focus={{ n.data.graph_focus }}">Ver en mapa</a>{% endif %}<a class="button ghost small-button" href="{{ target_base }}/intelligence#leads">Ver señales</a>
+  {% if not n.read_at %}<form action="{{ target_base }}/notifications/read" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="notification_id" value="{{ n.id }}"><button class="btn-secondary" type="submit">Marcar leída</button></form>{% endif %}</div></div>
+</article>
+{% else %}<div class="empty-state"><strong>Sin alertas todavía.</strong><span>Cuando Burp vea parámetros de redirección, secretos/config, credenciales en respuestas u otras señales de alto valor aparecerán aquí.</span></div>{% endfor %}
+</section>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ identity_detail.identity.name }} · Identity · Negro{% endblock %}
+{% block content %}
+{% set i=identity_detail.identity %}
+{% set g=identity_detail.grouped_evidence %}
+<section class="hero identity-detail-hero">
+  <div><p class="eyebrow">IDENTITY #{{ i.id }}</p><h1>{{ i.name }}</h1><p class="muted">{{ i.notes or 'Cuenta / actor estable conocido por Negro.' }}</p></div>
+  <div class="page-actions"><a class="button" href="{{ target_base }}/graph?focus=identity:{{ i.id }}">Ver relaciones en mapa</a><a class="button ghost" href="{{ target_base }}/identities/matrix?a={{ i.id }}">Authorization Matrix</a><a class="button ghost" href="{{ target_base }}/identities">← Identidades</a></div>
+</section>
+
+{% if assigned_exchange %}<div class="callout success"><b>Request #{{ assigned_exchange }} asociada a {{ i.name }}.</b> Ahora puedes abrir su HTTP Inspector para decidir exactamente qué evidencia debe ser AUTH, RESOLVER, CONTEXT o IGNORE.</div>{% endif %}
+<div class="callout info"><b>Esta es la ficha viva de {{ i.name }}.</b> Aquí ves qué usa Negro para autenticar, reconocer y contextualizar al actor, y todos los endpoints/Requests relacionados. Cada relación conserva un pivote hacia la evidencia HTTP.</div>
+
+<section class="panel identity-taught-audit" id="identity-evidence">
+  <div class="panel-head"><div><p class="eyebrow">QUÉ IDENTIFICA A {{ i.name|upper }}</p><h2>Parámetros y valores asociados a esta Identity</h2><p class="muted">Lo que tú enseñaste que identifica a {{ i.name }} aparece aquí de forma auditable. <b>AUTH</b> muestra material de sesión; <b>RESOLVER</b> muestra los valores concretos que hacen que Negro reconozca a {{ i.name }}; <b>CONTEXT</b> muestra rol, tenant u otros atributos. Cada dato conserva la Request/Response donde lo enseñaste.</p></div><span>{{ identity_detail.taught_evidence|length }}</span></div>
+  <div class="identity-taught-columns">
+    {% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT')] %}
+    <div class="identity-taught-column kind-{{ cls }}"><h3>{{ label }} · {{ identity_detail.taught_grouped[cls]|length }}</h3>
+      {% for x in identity_detail.taught_grouped[cls] %}
+      <article class="identity-taught-item"><div class="identity-taught-main"><b>{{ x.key_name }}</b><code>{{ x.value_raw or x.value_preview or '—' }}</code><small>{{ x.side|upper }} · {{ x.location }} · {{ x.method }} {{ x.path }}</small></div><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ x.exchange_id }}/inspect?identity_id={{ i.id }}">Ver evidencia HTTP</a></article>
+      {% else %}<p class="muted">Nada enseñado explícitamente como {{ label }}.</p>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="identity-profile-grid">
+  <article class="panel identity-role-panel role-auth">
+    <div class="panel-head"><div><p class="eyebrow">AUTH</p><h2>Cómo se autentica {{ i.name }}</h2><p class="muted">Cookies, Bearer y headers que Negro puede reconocer/rotar como sesión.</p></div><span>{{ g.auth|length }}</span></div>
+    <div class="identity-evidence-cards">
+      {% for a in g.auth %}<article class="identity-evidence-card"><div><b>{{ a.material_type }} · {{ a.material_name }}</b><code>{{ a.raw_value or a.masked_preview or '(valor histórico)' }}</code><small>{{ a.source }} · visto {{ a.last_seen_at }}</small></div><div class="row-actions">{% if a.evidence_exchange_id %}<a class="button ghost small-button" href="{{ target_base }}/exchange/{{ a.evidence_exchange_id }}/inspect?identity_id={{ i.id }}">Ver HTTP</a>{% endif %}<form action="{{ target_base }}/identities/view/{{ i.id }}/evidence/material/{{ a.id }}" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="classification"><option value="auth" selected>AUTH</option><option value="resolver">RESOLVER</option><option value="context">CONTEXT</option><option value="ignore">IGNORE</option></select><button class="mini-action" type="submit">Cambiar</button></form></div></article>{% else %}<p class="muted">Todavía no has enseñado material AUTH para esta Identity.</p>{% endfor %}
+    </div>
+  </article>
+
+  <article class="panel identity-role-panel role-resolver">
+    <div class="panel-head"><div><p class="eyebrow">RESOLVERS</p><h2>Cómo reconoce Negro a {{ i.name }}</h2><p class="muted">Valores estables: si vuelven a aparecer, pueden atribuir tráfico a esta misma Identity.</p></div><span>{{ g.resolvers|length }}</span></div>
+    <div class="identity-evidence-cards">
+      {% for r in g.resolvers %}<article class="identity-evidence-card"><div><b>{{ r.selector }}</b><code>{{ r.value_raw or r.value_preview or 'valor histórico por hash' }}</code><small>{{ r.resolver_type }} · {{ r.source }}</small></div><div class="row-actions">{% if r.evidence_exchange_id %}<a class="button ghost small-button" href="{{ target_base }}/exchange/{{ r.evidence_exchange_id }}/inspect?identity_id={{ i.id }}">Ver origen</a>{% endif %}<form action="{{ target_base }}/identities/view/{{ i.id }}/evidence/resolver/{{ r.id }}" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="classification"><option value="resolver" selected>RESOLVER</option><option value="context">CONTEXT</option><option value="ignore">IGNORE</option></select><button class="mini-action" type="submit">Cambiar</button></form></div></article>{% else %}<p class="muted">Sin resolvers activos. Abre una Request conocida en HTTP Inspector y enseña uno.</p>{% endfor %}
+    </div>
+  </article>
+
+  <article class="panel identity-role-panel role-context">
+    <div class="panel-head"><div><p class="eyebrow">CONTEXT</p><h2>Rol, tenant y atributos</h2><p class="muted">Describen cómo actúa {{ i.name }} sin usarse para reconocerlo por sí solos.</p></div><span>{{ g.context|length + identity_detail.contexts|length }}</span></div>
+    <div class="identity-context-list">{% for c in identity_detail.contexts %}<div class="identity-context-card"><b>{{ c.label }}</b><span>role: {{ c.role or '—' }}</span><span>tenant: {{ c.tenant or '—' }}</span>{% if c.notes %}<small>{{ c.notes }}</small>{% endif %}</div>{% endfor %}</div>
+    <div class="identity-evidence-cards">{% for x in g.context %}<article class="identity-evidence-card"><div><b>{{ x.selector or x.material_name or x.material_type }}</b><code>{{ x.value_raw or x.raw_value or x.value_preview or x.masked_preview or '—' }}</code><small>{{ x.source }}</small></div>{% if x.evidence_exchange_id %}<a class="button ghost small-button" href="{{ target_base }}/exchange/{{ x.evidence_exchange_id }}/inspect?identity_id={{ i.id }}">Ver HTTP</a>{% endif %}</article>{% else %}{% if not identity_detail.contexts %}<p class="muted">Sin contexto clasificado todavía.</p>{% endif %}{% endfor %}</div>
+  </article>
+</section>
+
+<section class="panel identity-activity-panel">
+  <div class="panel-head"><div><p class="eyebrow">RELACIONES OBSERVADAS</p><h2>Todo lo que Negro relaciona con {{ i.name }}</h2><p class="muted">Haz clic en un endpoint para abrir su mapa o en una Request para ver exactamente qué AUTH/RESOLVER/CONTEXT justificó la relación.</p></div><a class="button ghost small-button" href="{{ target_base }}/graph?focus=identity:{{ i.id }}">Abrir mapa centrado en {{ i.name }}</a></div>
+  <div class="identity-activity-metrics"><div><b>{{ identity_detail.activity.requests }}</b><span>Requests</span></div><div><b>{{ identity_detail.activity.endpoints }}</b><span>endpoints</span></div><div><b>{{ identity_detail.activity.flows }}</b><span>Flows</span></div><div><b>{{ identity_detail.activity.objects }}</b><span>Entities</span></div></div>
+  <div class="identity-activity-grid">
+    <div><p class="eyebrow">ENDPOINTS</p><div class="identity-action-list">{% for a in identity_detail.activity.actions %}<a class="identity-action-link" href="{{ target_base }}/graph?focus=resource:{{ a.resource_id }}"><code>{{ a.method }} {{ a.path }}</code><span>{{ a.requests }} Request{% if a.requests != 1 %}s{% endif %} · HTTP {{ a.statuses or '—' }}</span>{% if a.why and a.why.summary %}<small>Por qué: {{ a.why.summary }}</small>{% endif %}</a>{% else %}<p class="muted">Aún no hay actividad atribuida.</p>{% endfor %}</div></div>
+    <div><p class="eyebrow">PIVOTES</p><p class="muted compact-copy">Identificadores observados junto a {{ i.name }}. Síguelos para ver en qué otros endpoints/objetos aparecen.</p><div class="identity-pivot-list">{% for p in identity_detail.activity.pivots %}<a href="{{ target_base }}/graph?discover={{ p.value|urlencode }}"><code>{{ p.value }}</code><span>{{ p.keys }} · {{ p.requests }} Requests · {{ p.endpoints }} endpoints</span></a>{% else %}<p class="muted">Sin pivotes todavía.</p>{% endfor %}</div></div>
+  </div>
+</section>
+
+<section class="panel" id="traffic">
+  <div class="panel-head"><div><p class="eyebrow">TRÁFICO ASOCIADO</p><h2>Requests atribuidas a {{ i.name }}</h2><p class="muted">Cada fila explica la razón de atribución y permite saltar directamente a la evidencia.</p></div><span>{{ identity_detail.exchanges|length }}</span></div>
+  <div class="unknown-exchange-list">{% for e in identity_detail.exchanges %}<div class="unknown-exchange-row identity-attribution-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.source }}</small>{% if e.why %}<div class="identity-why"><strong>Por qué está relacionada:</strong> {{ e.why.summary }}{% for reason in e.why.reasons[:3] %}<span class="identity-reason kind-{{ reason.kind }}">{{ reason.label }}{% if reason.selector %} · <code>{{ reason.selector }}{% if reason.value %}={{ reason.value }}</code>{% endif %}{% endif %}</span>{% endfor %}</div>{% endif %}</div><div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ e.exchange_id }}">Mapa</a><a class="button secondary small-button" href="{{ target_base }}/exchange/{{ e.exchange_id }}/inspect?identity_id={{ i.id }}">Ver evidencia HTTP</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ e.exchange_id }}">Pivotes</a></div></div>{% else %}<p class="muted">Sin Requests asociadas.</p>{% endfor %}</div>
+</section>
+
+{% if g.ignored %}<details class="panel identity-ignored"><summary>IGNORED · {{ g.ignored|length }} datos conservados como evidencia</summary><p class="muted">No participan en atribución ni mapa, pero puedes recuperarlos después.</p><div class="identity-evidence-cards">{% for x in g.ignored %}<article class="identity-evidence-card"><div><b>{{ x.selector or x.material_name or x.material_type }}</b><code>{{ x.value_raw or x.raw_value or x.value_preview or x.masked_preview or '—' }}</code><small>{{ x.source }}</small></div></article>{% endfor %}</div></details>{% endif %}
+{% endblock %}

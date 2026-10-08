@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Inteligencia · {{ domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><p class="eyebrow">RECON E INTELIGENCIA</p><h1>Recolectar y reinterpretar evidencia</h1><p class="muted">Esta pantalla amplía la superficie y muestra señales pasivas. Si ya sabes qué quieres probar, ve a <b>Investigación</b>.</p></div>
+  <div class="page-actions"><a class="button" href="{{ target_base }}/hypotheses">Ir a Investigación</a><a class="button secondary" href="{{ target_base }}/tree">Ver superficie</a></div>
+</section>
+
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">POLÍTICA</p><h2>{{ policy.label }}</h2></div><span class="badge">{{ policy.profile }}</span></div>
+  <p class="muted">{{ policy.description }}</p>
+  <div class="kv"><span>DNS activo máx.</span><code>{{ policy.active_dns_max_candidates }}</code><span>VHost máx.</span><code>{{ policy.vhost_max_candidates }}</code><span>Crawler</span><code>{{ policy.crawl_max_urls }} URLs · profundidad {{ policy.crawl_max_depth }}</code><span>Formularios</span><code>sin envío automático</code></div>
+  <form action="{{ target_base }}/policy" method="post" class="inline-state"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="profile"><option value="conservative" {% if policy.profile=='conservative' %}selected{% endif %}>Conservador / bounty</option><option value="mercadolibre" {% if policy.profile=='mercadolibre' %}selected{% endif %}>Mercado Libre / bajo impacto</option><option value="lab" {% if policy.profile=='lab' %}selected{% endif %}>Lab autorizado</option></select><button class="button small-button" type="submit">Cambiar perfil</button></form>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">PLAN DE RECON</p><h2>Acciones globales</h2></div><span class="muted small">explícitas</span></div>
+  <div class="scan-grid">
+    <form action="{{ target_base }}/intel/dns" method="post" data-job-form data-job-label="Infraestructura DNS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Recon DNS</button></form>
+    <form action="{{ target_base }}/intel/axfr" method="post" data-job-form data-job-label="AXFR"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Comprobar AXFR</button></form>
+    <form action="{{ target_base }}/intel/active-dns" method="post" data-job-form data-job-label="DNS inteligente"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">DNS inteligente</button></form>
+    <form action="{{ target_base }}/intel/leads" method="post" data-job-form data-job-label="Motor de correlación"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button scan" type="submit">Generar señales</button></form>
+  </div>
+  <p class="muted small">DNS inteligente usa nombres observados + detección de comodín y respeta el máximo del perfil. No ejecuta listas masivas.</p>
+</section>
+</div>
+
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">TRANSPARENCIA DE CERTIFICADOS</p><h2>Historial CT</h2></div><span>{{ ct.total }} hosts</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Nombres con comodín</span><strong>{{ ct.comodíns }}</strong></div></div>
+  {% for h in ct.hosts[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.hostname }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.certificate_count }} certs{% if h.wildcard %} · comodín{% endif %}</small>{% if h.issuers %}<small>{{ h.issuers[0] }}</small>{% endif %}</div></div>{% else %}<p class="empty">Ejecuta crt.sh para poblar historia de certificados.</p>{% endfor %}
+</section>
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">BÚSQUEDAS</p><h2>Consultas sugeridas</h2></div><span>{{ search.queries|length }}</span></div>
+  {% for q in search.queries %}<div class="timeline-item"><span class="timeline-dot"></span><div><strong>{{ q.label }}</strong><code class="break">{{ q.query }}</code></div></div>{% else %}<p class="empty">Sin consultas.</p>{% endfor %}
+  <p class="muted small">Negro las genera; no automatiza búsquedas masivas en Google.</p>
+</section>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Historial web</h2></div><span>{{ historical.total }} recursos</span></div>
+  <div class="stats compact-stats"><div class="stat"><span>Sólo histórico</span><strong>{{ historical.historical_only_count }}</strong></div></div>
+  {% for h in historical.resources[:12] %}<div class="timeline-item"><span class="timeline-dot"></span><div><code class="break">{{ h.url }}</code><small>{{ h.first_seen or '—' }} → {{ h.last_seen or '—' }} · {{ h.captures }} capturas {% if h.historical_only %}· sólo histórico{% endif %}</small></div></div>{% else %}<p class="empty">Ejecuta Wayback CDX para poblar historia.</p>{% endfor %}
+</section>
+
+<section class="panel passive-intel-panel">
+  <div class="panel-head"><div><p class="eyebrow">BURP · INTELIGENCIA PASIVA</p><h2>Señales detectadas mientras navegas</h2></div><a href="{{ target_base }}/notifications">Ver notificaciones{% if notifications_unread %} · {{ notifications_unread }} nuevas{% endif %} →</a></div>
+  <p class="muted small">Negro analiza únicamente las requests/responses que Burp ya capturó. Busca parámetros de redirección/URL, secretos o client config, credenciales/campos sensibles en respuestas, CORS observado, source maps, documentación API y errores internos. No ejecuta explotación automática.</p>
+  {% if notifications %}<div class="passive-intel-list">{% for n in notifications[:6] %}<a href="{% if n.href %}{{ target_base }}/{{ n.href }}{% else %}{{ target_base }}/notifications{% endif %}" class="passive-intel-item severity-{{ n.severity }}"><span></span><div><strong>{{ n.title }}</strong><small>{{ n.message }}</small></div><em>{{ ui_label(n.severity) }}</em></a>{% endfor %}</div>{% else %}<p class="empty">Todavía no hay señales pasivas. Navega el proyecto con Burp y Negro irá correlacionando el tráfico.</p>{% endif %}
+</section>
+
+<section class="panel" id="ai-target">
+  <div class="panel-head"><div><p class="eyebrow">TRIAGE CON IA</p><h2>Mano derecha sobre evidencia correlacionada</h2></div><span class="muted small">caché por hash de evidencia</span></div>
+  {% if not secret_status.OPENAI_API_KEY %}<div class="callout warning">OPENAI_API_KEY no configurada. La parte determinística sigue funcionando.</div>{% endif %}
+  <div class="ai-box" data-ai-box data-estimate-url="/api/t/{{ target_key }}/ai-target-estimate" data-run-url="{{ target_base }}/ai-target-run">
+    <div class="ai-controls"><label>Modelo<select data-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select></label><button class="button ghost small-button" type="button" data-ai-estimate>Estimar IA</button></div>
+    <div class="ai-estimate muted small" data-ai-estimate-output>Primero estima. Verás tokens y costo máximo en COP/USD antes de enviar evidencia.</div>
+    <form method="post" data-ai-run-form hidden><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" data-ai-run-model><input type="hidden" name="confirm_cost" value="yes"><button class="button small-button" type="submit">Confirmar costo y analizar proyecto</button></form>
+  </div>
+  {% if latest_ai %}
+  <div class="ai-result"><div class="panel-head"><strong>{{ latest_ai.row.model }}</strong><small>{{ latest_ai.row.created_at }}{% if latest_ai.usage.actual_cost_cop is defined %} · costo real ≈ COP {{ '%.2f'|format(latest_ai.usage.actual_cost_cop) }}{% endif %}</small></div>
+    <p>{{ latest_ai.result.summary }}</p>
+    {% for l in latest_ai.result.top_leads or [] %}<article class="mini-note"><strong>{{ l.title }}</strong><p>{{ l.assessment }}</p><p><b>Por qué:</b> {{ l.why }}</p><p><b>Prueba:</b> {{ l.manual_test }}</p><p><b>Confirma si:</b> {{ l.confirm_if }}</p><p><b>Descarta si:</b> {{ l.discard_if }}</p></article>{% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel" id="leads">
+  <div class="panel-head"><div><p class="eyebrow">MOTOR DE CORRELACIÓN</p><h2>Señales accionables</h2></div><span>{{ leads|length }}</span></div>
+  {% for l in leads %}
+  <details class="resource-card" {% if loop.index <= 5 %}open{% endif %}>
+    <summary><span><strong>{{ l.title }}</strong>{% if l.hostname %}<small> · {{ l.hostname }}</small>{% endif %}</span><span class="badges"><span class="badge priority-{{ l.review_priority }}">{{ ui_label(l.review_priority) }}</span><span class="badge">confianza {{ l.confianza }}</span><span class="badge">{{ l.lead_type }}</span></span></summary>
+    <div class="resource-body">
+      {% if l.resource_url %}<code class="break">{{ l.resource_url }}</code>{% endif %}
+      <p><b>Por qué importa:</b> {{ l.why_interesting }}</p>
+      <p><b>Siguiente prueba:</b> {{ l.next_test }}</p>
+      <p><b>Confirma si:</b> {{ l.confirm_if }}</p>
+      <p><b>Descarta si:</b> {{ l.discard_if }}</p>
+      <details><summary>Evidencia</summary><pre>{{ l.evidence | tojson(indent=2) }}</pre></details>
+    </div>
+  </details>
+  {% else %}<p class="empty">Aún no hay señales correlacionadas. Ejecuta <b>Generar señales</b> después de recolectar evidencia.</p>{% endfor %}
+</section>
+{% endblock %}

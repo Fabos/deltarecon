@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Buscar relacionados · #{{ related.base.id }} · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">FIND RELATED EXCHANGE</p>
+    <h1>Request #{{ related.base.id }}</h1>
+    <p class="muted">{{ related.base.method }} {{ related.base.hostname }}<code>{{ related.base.path }}</code>. Negro toma la Request completa (request + response), extrae valores observados y busca otras Requests donde reaparezcan. Una coincidencia es contexto, no una vulnerabilidad.</p>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#find-related">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/resource/{{ related.base.resource_id }}?exchange={{ related.base.id }}#exchange-{{ related.base.id }}">Abrir origen</a></div>
+</section>
+
+<section class="callout info module-explainer">
+  <b>Qué pregunta responde:</b> “¿Qué otras Requests comparten valores con esta Request?” · <b>Seguir valor</b> sigue un solo valor; <b>Buscar relacionados</b> usa todos los valores útiles de la Request.
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div><p class="eyebrow">RELACIONES ÚTILES</p><h2>{{ related.groups.strong|length + related.groups.medium|length }} principales</h2></div>
+    <small>“Fuerte / media / débil” describe la calidad de la correlación, no severidad ni probabilidad de vulnerabilidad.</small>
+  </div>
+  <div class="related-list">
+  {% for r in related.groups.strong + related.groups.medium %}
+    <div class="related-row">
+      <div class="related-score"><b>{{ r.strength_label }}</b><small>{{ r.primary }}</small></div>
+      <div>
+        <b>#{{ r.id }} · {{ r.method }} <code>{{ r.path }}</code></b>
+        <small>{{ r.hostname }} · HTTP {{ r.status_code or '—' }} · {{ r.first_seen_at }}</small>
+        {% if r.matches %}
+          <div class="relation-match-list">
+          {% for m in r.matches %}
+            <div class="relation-match {% if m.alias_candidate %}alias-match{% endif %}">
+              <code>{{ m.value }}</code>
+              <span>A · <code>{{ m.a_location }}</code> · {{ m.a_name }}</span>
+              <span>B · <code>{{ m.b_location }}</code> · {{ m.b_name }}</span>
+              {% if m.alias_candidate %}<em>mismo valor, nombre/ruta distinta</em>{% endif %}
+            </div>
+          {% endfor %}
+          </div>
+        {% endif %}
+        <p>{% for reason in r.reasons %}<span class="relation-reason">{{ reason }}</span>{% endfor %}</p>
+      </div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ r.id }}/inspect">Inspector</a><a class="button secondary small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
+    </div>
+  {% else %}<p class="empty">No encontré relaciones fuertes o medias con la evidencia estructurada actual.</p>{% endfor %}
+  </div>
+</section>
+
+{% if related.groups.weak %}
+<section class="panel">
+  <details>
+    <summary><b>Relaciones débiles ({{ related.groups.weak|length }})</b> · ampliar contexto</summary>
+    <div class="related-list">
+    {% for r in related.groups.weak %}
+      <div class="related-row">
+        <div class="related-score"><b>{{ r.strength_label }}</b><small>{{ r.primary }}</small></div>
+        <div>
+          <b>#{{ r.id }} · {{ r.method }} <code>{{ r.path }}</code></b><small>{{ r.hostname }} · HTTP {{ r.status_code or '—' }}</small>
+          {% if r.matches %}<div class="relation-match-list compact">{% for m in r.matches[:4] %}<div class="relation-match"><code>{{ m.value }}</code><span>{{ m.a_name }} ↔ {{ m.b_name }}</span></div>{% endfor %}</div>{% endif %}
+          <p>{% for reason in r.reasons %}<span class="relation-reason">{{ reason }}</span>{% endfor %}</p>
+        </div>
+        <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ r.id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ r.id }}/inspect">Inspector</a><a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ related.base.id }}&b={{ r.id }}">Comparación inteligente</a></div>
+      </div>
+    {% endfor %}
+    </div>
+  </details>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,74 @@
+<span class="sr-only">Identity, sesión o resolver</span>
+{% extends "base.html" %}
+{% block title %}Identidades · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero identity-hero">
+  <div>
+    <p class="eyebrow">IDENTITY CONTEXTS</p>
+    <h1>Quién hizo cada Request</h1>
+    <p class="muted">La identidad es la cuenta estable. Cuando enseñas una cookie/token/resolver, Negro atribuye automáticamente tráfico histórico compatible y nuevas Requests; “Recalcular” queda sólo como respaldo manual.</p>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#identities">¿Cómo funciona?</a><a class="button" href="{{ target_base }}/identities/matrix">Authorization Matrix</a>
+    <form action="{{ target_base }}/identities/resolve-history" method="post" data-job-form data-job-label="Resolviendo identidades históricas">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary" type="submit">↻ Recalcular atribución</button>
+    </form>
+  </div>
+</section>
+
+<details class="panel identity-concept-panel compact-learning">
+  <summary><b>¿Identidad, sesión o resolver? Ver conceptos</b><span>Cuenta estable ≠ token actual</span></summary>
+  <div class="identity-concept-grid">
+    <div><b>Identidad</b><span>Cuenta estable que tú defines.</span></div>
+    <div><b>Contexto</b><span>Rol/tenant opcional de esa cuenta.</span></div>
+    <div><b>Auth Material</b><span>Cookie, Bearer o JWT observado ahora.</span></div>
+    <div><b>Resolver</b><span>Valor estable que permite reconocerla después.</span></div>
+  </div>
+</details>
+
+<section class="metric-grid identity-metrics">
+  <div class="metric"><b>{{ identity_stats.identities }}</b><span>identidades</span></div>
+  <div class="metric"><b>{{ identity_stats.contexts }}</b><span>contextos</span></div>
+  <div class="metric"><b>{{ identity_stats.assigned }}</b><span>Requests asignadas</span></div>
+  <div class="metric"><b>{{ identity_stats.unknown }}</b><span>sin identidad</span></div>
+</section>
+
+<section class="identity-layout">
+  <div class="panel">
+    <div class="panel-head"><div><p class="eyebrow">IDENTIDADES</p><h2>Personas/cuentas que tú conoces</h2></div></div>
+    <div class="identity-list">
+      {% for i in identities %}
+      <a class="identity-card" href="{{ target_base }}/identities/view/{{ i.id }}">
+        <div><h3>{{ i.name }}</h3><span>{{ i.kind }}</span></div>
+        <div class="identity-card-stats"><span>{{ i.contexts }} contextos</span><span>{{ i.auth_materials }} credenciales observadas</span><span>{{ i.exchanges }} Requests</span><span>{{ i.resolvers }} resolvers</span></div>
+      </a>
+      {% else %}
+      <div class="empty-state"><strong>Aún no hay identidades.</strong><span>Crea las identidades que existan en tu prueba. Negro no presupone roles: tú defines sus nombres y contexto.</span></div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <aside class="panel identity-create-panel">
+    <p class="eyebrow">NUEVA IDENTIDAD</p>
+    <h2>Crear identidad</h2>
+    <form class="stack-form" action="{{ target_base }}/identities/create" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label><span>Nombre</span><input name="name" placeholder="Cuenta principal" required></label>
+      <label><span>Tipo</span><select name="kind"><option value="account">Cuenta</option><option value="user">Usuario</option><option value="service">Servicio</option><option value="anonymous">Anónimo</option></select></label>
+      <label><span>Notas</span><textarea name="notes" placeholder="Cuenta de prueba propia, seller sandbox…"></textarea></label>
+      <button class="button" type="submit">Crear identidad</button>
+    </form>
+  </aside>
+</section>
+
+<div class="callout info"><b>Atribución automática:</b> asigna una Request fiable una sola vez y deja marcado el aprendizaje de autenticación. Negro intentará reconocer retrospectivamente el historial compatible y también el tráfico nuevo. Lo ambiguo permanece sin identidad.</div>
+
+<section class="panel identity-unknown-panel">
+  <div class="panel-head"><div><p class="eyebrow">SIN RESOLVER</p><h2>Requests recientes sin identidad</h2><p class="muted">Asignar uno enseña a Negro los auth materials de esa sesión. Si el Bearer es JWT, también aprende claims estables como <code>sub</code>.</p></div><span>{{ recent_unknown|length }}</span></div>
+  <div class="unknown-exchange-list">
+    {% for e in recent_unknown %}
+    <div class="unknown-exchange-row"><div><b>#{{ e.exchange_id }} · {{ e.method }} {{ e.path }}</b><small>{{ e.hostname }} · HTTP {{ e.status_code }} · {{ e.first_seen_at }}</small></div><div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ e.exchange_id }}/inspect">Inspector</a><a class="button secondary small-button" href="{{ target_base }}/identities/assign?exchange_id={{ e.exchange_id }}">Revisar y asignar</a></div></div>
+    {% else %}<div class="empty-state"><strong>No hay Requests recientes pendientes.</strong></div>{% endfor %}
+  </div>
+</section>
+{% endblock %}

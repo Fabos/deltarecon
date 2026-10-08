@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Objetos · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <span class="sr-only">Access Control Lab</span>
+  <div>
+    <p class="eyebrow">OBJETOS DE NEGOCIO · v{{ version }}</p>
+    <h1>Sigue una cosa del negocio</h1>
+    <p class="muted">Ejemplo: <code>Order 123</code>. Negro reúne dónde apareció, qué Requests lo tocaron, qué identidades lo vieron y qué estados observó.</p>
+  </div>
+  <div class="page-actions">
+    <form action="{{ target_base }}/objects/refresh" method="post" data-job-form data-job-label="Reconstruyendo Objetos de negocio"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">↻ Reconstruir</button></form>
+    <a class="button ghost" href="{{ target_base }}/guide#objects">¿Qué es un objeto?</a>
+  </div>
+</section>
+
+<details class="panel object-onboarding compact-learning">
+  <summary><b>¿Identidad, Objeto o propiedad? Ver ejemplo rápido</b><span>Ana → Order 123 → ownerId=101</span></summary>
+  <div class="object-concept-demo">
+    <div><span>IDENTIDAD · QUIÉN</span><b>Ana</b><small>actor / cuenta</small></div>
+    <strong>actúa sobre</strong>
+    <div><span>OBJETO · QUÉ</span><b>Order 123</b><small>misma cosa en varias Requests</small></div>
+    <strong>tiene</strong>
+    <div><span>PROPIEDAD</span><b>ownerId=101</b><small>dato del Order</small></div>
+  </div>
+  <p class="muted small">Enseña objetos sólo cuando el nombre tenga significado estable. <code>orderId → Order</code> sí; <code>id → Object</code> normalmente no.</p>
+  <a href="{{ target_base }}/guide#lab">Ver ejemplo completo →</a>
+</details>
+
+<details class="panel compact-metrics-details">
+  <summary>Ver métricas técnicas</summary>
+  <section class="metric-grid parameter-metrics">
+    <div class="metric"><b>{{ objects_data.stats.types }}</b><span>tipos enseñados</span></div>
+    <div class="metric"><b>{{ objects_data.stats.identifiers }}</b><span>campos / aliases</span></div>
+    <div class="metric"><b>{{ objects_data.stats.objects }}</b><span>instancias</span></div>
+    <div class="metric"><b>{{ objects_data.stats.cross_host_objects }}</b><span>entre hosts</span></div>
+    <div class="metric"><b>{{ objects_data.stats.relation_observations }}</b><span>co-observaciones</span></div>
+  </section>
+</details>
+
+
+{% if not objects_data.types %}
+<section class="panel objects-empty-primary">
+  <p class="eyebrow">EMPIEZA POR EVIDENCIA REAL</p>
+  <h2>Todavía no has definido ningún Objeto de negocio</h2>
+  <p>Un <b>Identity</b> es <b>quién</b> actúa (Fabian). Un <b>Object</b> es <b>qué cosa</b> toca (Order 123, Payment 551, Vehicle ABC123).</p>
+  <p class="muted small">La forma recomendada es abrir una Request en <b>HTTP Inspector</b> y clasificar un identificador estable como <code>ENTITY</code>. Negro reconstruirá las instancias históricas automáticamente.</p>
+  <div class="page-actions"><a class="button secondary" href="{{ target_base }}/hosts">Ir al Inventario</a><a class="button ghost" href="{{ target_base }}/guide#objects">Ver ejemplo Identity vs Object</a></div>
+</section>
+{% endif %}
+{% if tracked %}<section class="panel callout success"><b>Objeto aprendido.</b> Negro reconstruyó el historial que usa ese identificador. Recuerda: la relación encontrada es evidencia observada, no una vulnerabilidad.</section>{% endif %}
+
+{% if objects_data.types %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">TIPOS ENSEÑADOS</p><h2>{{ objects_data.types|length }} tipos</h2></div><small>Un tipo puede reconocer varios nombres de campo.</small></div>
+  <div class="object-type-grid">
+    {% for t in objects_data.types if t.ui_quality != 'ambiguous' %}
+    <a class="object-type-card" href="{{ target_base }}/objects?type_id={{ t.id }}">
+      <div><b>{{ t.name }}</b><small>{{ t.identifier_count }} campo{% if t.identifier_count != 1 %}s{% endif %} · {{ t.object_count }} instancia{% if t.object_count != 1 %}s{% endif %}</small></div>
+      <div><span class="badge">{{ t.host_count }} hosts</span>{% if t.cross_host_objects %}<span class="badge state-chip">{{ t.cross_host_objects }} entre hosts</span>{% endif %}</div>
+    </a>
+    {% else %}<div class="empty-state friendly"><b>Todavía no has enseñado ningún tipo.</b><span>Empieza con algo inequívoco, por ejemplo <code>orderId → Order</code>. Las sugerencias de abajo son candidatos, no decisiones automáticas.</span><a href="{{ target_base }}/guide#objects">Ver ejemplo →</a></div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">INSTANCIAS</p><h2>Objetos correlacionados</h2></div><small>Una instancia = tipo + valor exacto.</small></div>
+  <form class="parameter-filters object-filter-form" method="get" action="{{ target_base }}/objects">
+    <label><span>Buscar instancia</span><input name="q" value="{{ q }}" placeholder="Ej. 123, PAY-551, Order"></label>
+    <label><span>Filtrar por tipo</span><select name="type_id"><option value="">Todos los tipos</option>{% for t in objects_data.types %}<option value="{{ t.id }}" {% if type_id|string == t.id|string %}selected{% endif %}>{{ t.name }}</option>{% endfor %}</select></label>
+    <div class="filter-actions"><button class="button" type="submit">Filtrar</button>{% if q or type_id %}<a class="button ghost" href="{{ target_base }}/objects">Limpiar</a>{% endif %}</div>
+  </form>
+  <p class="form-help">Ejemplo: si enseñaste <code>Order</code>, buscar <code>123</code> muestra la instancia <code>Order 123</code>. El filtro vacío ya no intenta convertirse en un número.</p>
+  <div class="parameter-table-wrap">
+    <table class="parameter-table object-table">
+      <thead><tr><th>Objeto</th><th>Observaciones</th><th>Hosts</th><th>Identidades</th><th>Relaciones</th><th>Último</th></tr></thead>
+      <tbody>
+      {% set object_rows = objects_data.objects if q or type_id else objects_data.meaningful_objects %}
+      {% for o in object_rows %}
+        <tr>
+          <td><a href="{{ target_base }}/objects/{{ o.id }}"><b>{{ o.object_type }}</b> <code>{{ o.identifier_raw or o.identifier_preview }}</code>{% if o.identifier_field %}<small>key: {{ o.identifier_field }}</small>{% endif %}{% if o.cross_host %}<small>↔ visto en varios hosts</small>{% endif %}</a></td>
+          <td>{{ o.observation_count }}</td><td>{{ o.host_count }}</td><td>{{ o.identity_count }}</td><td>{{ o.relation_count }}</td><td>{{ o.last_seen_at }}</td>
+        </tr>
+      {% else %}<tr><td colspan="6"><div class="empty-state friendly"><b>No hay objetos claros con este filtro.</b><span>{% if not objects_data.types %}Primero enseña un tipo abajo.{% elif objects_data.ambiguous_objects and not q and not type_id %}Hay {{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos para no generar ruido.{% else %}Prueba limpiar el texto/tipo o confirma que el identificador fue observado.{% endif %}</span>{% if q or type_id %}<a href="{{ target_base }}/objects">Limpiar filtros</a>{% endif %}</div></td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% endif %}
+
+{% if objects_data.ambiguous_objects and not q and not type_id %}
+<details class="panel noisy-evidence-details">
+  <summary><b>{{ objects_data.ambiguous_objects|length }} objetos ambiguos ocultos</b><span>Se conservan como evidencia, pero no aparecen en la vista principal.</span></summary>
+  <p class="muted small">Úsalos sólo si ya sabes qué representan. Ejemplos de ruido: tipos numéricos, <code>Object</code>, <code>id</code> o <code>reference</code> sin contexto.</p>
+  <div class="parameter-table-wrap"><table class="parameter-table"><thead><tr><th>Objeto</th><th>Por qué está oculto</th><th>Requests</th></tr></thead><tbody>
+  {% for o in objects_data.ambiguous_objects[:80] %}<tr><td><a href="{{ target_base }}/objects/{{ o.id }}"><code>{{ o.identifier_field or 'identifier' }}={{ o.identifier_raw or o.identifier_preview }}</code><small>tipo interno: {{ o.object_type }}</small></a></td><td>{{ o.ui_quality_reason }} Negro conserva dónde apareció este valor, pero no le asigna significado de negocio.</td><td>{{ o.observation_count }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</details>
+{% endif %}
+
+{% if objects_data.anomaly_cards %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">ANOMALÍAS DE PATRÓN</p><h2>Diferencias frente a patrones repetidos</h2></div><a href="{{ target_base }}/guide#objects">¿Cómo leer esto?</a></div>
+  <div class="pattern-anomaly-list">
+  {% for card in objects_data.anomaly_cards %}
+    <article class="pattern-anomaly-card">
+      <div class="panel-head"><div><b>{{ card.object.object_type }} <code>{{ card.object.identifier_raw or card.object.identifier_preview }}</code></b></div><a class="button ghost small-button" href="{{ target_base }}/objects/{{ card.object.id }}">Abrir evidencia</a></div>
+      {% for a in card.items %}<div class="pattern-anomaly-row"><span class="badge">{{ a.kind }}</span><div><b>{{ a.title }}</b><p>{{ a.message }}</p></div></div>{% endfor %}
+    </article>
+  {% endfor %}
+  </div>
+  <p class="muted small">Negro sólo señala una diferencia frente a un patrón repetido. Puede ser completamente válida.</p>
+</section>
+{% endif %}
+
+<details class="panel objects-candidates-secondary">
+  <summary><b>Candidatos sugeridos · {{ objects_data.candidates|length }}</b><span>Secundario: ábrelo sólo cuando quieras explorar campos todavía no enseñados.</span></summary>
+  <div class="panel-head"><div><p class="eyebrow">CANDIDATOS</p><h2>Campos que podrían identificar objetos</h2><p class="muted">Negro sólo los sugiere. <b>No los actives a ciegas.</b> Primero mira la evidencia HTTP y pregúntate: “¿este valor identifica una cosa estable del negocio que quiero seguir?”</p></div><a href="{{ target_base }}/guide#objects">Guía de decisión →</a></div>
+  <div class="candidate-object-grid">
+  {% for c in objects_data.candidates %}
+    <form class="candidate-object-card" action="{{ target_base }}/objects/track" method="post" data-object-candidate>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="observation_id" value="{{ c.sample_observation_id }}">
+      <div class="candidate-object-main">
+        <div class="candidate-field"><span>CAMPO OBSERVADO</span><code>{{ c.name }}</code></div>
+        <div class="candidate-metrics"><span class="badge candidate-{{ c.candidate_quality }}">{% if c.candidate_quality=='strong' %}Buen candidato{% elif c.candidate_quality=='identity' %}Posible Identity{% elif c.candidate_quality=='generic' %}Genérico{% else %}Revisar contexto{% endif %}</span><span class="badge">{{ c.distinct_values }} valores</span><span class="badge">{{ c.exchanges }} Requests</span><span class="badge">{{ c.hosts }} hosts</span></div>
+        <p>{{ c.candidate_guidance }}</p>{% if c.sample_exchange_id %}<a class="small" href="{{ target_base }}/resource/{{ c.sample_resource_id }}?exchange={{ c.sample_exchange_id }}#exchange-{{ c.sample_exchange_id }}">Ver evidencia · {{ c.sample_method }} {{ c.sample_path }} · Request #{{ c.sample_exchange_id }} →</a>{% endif %}
+      </div>
+      <div class="candidate-object-action">
+        <label><span>Tipo de objeto</span><input name="object_type" value="" placeholder="Ej. {{ c.suggested_type }}" required autocomplete="off" data-object-type-input></label>
+        <button class="suggestion-chip" type="button" data-fill-object-type="{{ c.suggested_type }}">Usar sugerencia: {{ c.suggested_type }}</button>
+      </div>
+      <button class="button ghost small-button" type="submit">Enseñar objeto</button>
+    </form>
+  {% else %}<div class="empty-state friendly"><b>No hay candidatos nuevos.</b><span>Los identificadores que ya enseñaste siguen correlacionándose automáticamente.</span></div>{% endfor %}
+  </div>
+</details>
+{% endblock %}

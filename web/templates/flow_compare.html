@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Comparar Flujos · Negro{% endblock %}
+{% block content %}
+<span class="sr-only">FLOW COMPARE</span>
+<section class="hero compact-hero"><div><p class="eyebrow">COMPARAR FLUJOS</p><h1>Compara dos recorridos de negocio</h1><p class="muted">Primero mira qué Requests faltan, sobran o cambiaron. Los detalles técnicos quedan detrás de cada diferencia.</p></div><div class="page-actions"><a class="button ghost" href="{{ target_base }}/guide#flows">¿Cómo funciona?</a><a class="button ghost" href="{{ target_base }}/flows">← Flujos</a></div></section>
+<section class="panel"><form class="flow-compare-form" method="get"><label>Flujo A<select name="a" required><option value="">—</option>{% for f in flows %}<option value="{{ f.id }}" {% if a|string == f.id|string %}selected{% endif %}>{{ f.name }}</option>{% endfor %}</select></label><label>Flujo B<select name="b" required><option value="">—</option>{% for f in flows %}<option value="{{ f.id }}" {% if b|string == f.id|string %}selected{% endif %}>{{ f.name }}</option>{% endfor %}</select></label><button class="button" type="submit">Comparar flujos</button></form>{% if flow_error %}<div class="callout warning">{{ flow_error }}</div>{% endif %}</section>
+
+{% if comparison %}
+<section class="diff-summary-grid"><a class="panel" href="{{ target_base }}/flows/{{ comparison.a.flow.id }}"><p class="eyebrow">A</p><h3>{{ comparison.a.flow.name }}</h3><small>{{ comparison.a.included_steps|length }} Requests incluidas</small></a><a class="panel" href="{{ target_base }}/flows/{{ comparison.b.flow.id }}"><p class="eyebrow">B</p><h3>{{ comparison.b.flow.name }}</h3><small>{{ comparison.b.included_steps|length }} Requests incluidas</small></a></section>
+
+<section class="panel"><div class="panel-head"><div><p class="eyebrow">DIFERENCIA PRINCIPAL</p><h2>Qué pasó distinto, paso por paso</h2><p class="muted">Método + endpoint + HTTP status primero. Missing/extra/changed son diferencias observadas, no conclusiones de seguridad.</p></div><small>{{ comparison.aligned|length }} posiciones alineadas</small></div><div class="flow-compare-list">
+{% for row in comparison.aligned %}
+  <article class="flow-compare-row kind-{{ row.kind }}">
+    <div class="flow-side">{% if row.a %}<b>A · {{ row.a.method }} <code>{{ row.a.path }}</code></b><small>Request #{{ row.a.exchange_id }} · HTTP {{ row.a.status_code or '—' }}{% if row.a.identity_name %} · {{ row.a.identity_name }}{% endif %}</small>{% else %}<span class="empty-side">— no observado en A —</span>{% endif %}</div>
+    <div class="flow-align-kind"><span>{{ row.kind }}</span></div>
+    <div class="flow-side">{% if row.b %}<b>B · {{ row.b.method }} <code>{{ row.b.path }}</code></b><small>Request #{{ row.b.exchange_id }} · HTTP {{ row.b.status_code or '—' }}{% if row.b.identity_name %} · {{ row.b.identity_name }}{% endif %}</small>{% else %}<span class="empty-side">— no observado en B —</span>{% endif %}</div>
+    {% if row.a and row.b %}<div class="flow-row-insight">
+      {% if row.identity_changed %}<span class="business-chip state-chip">Identidad: {{ row.a.identity_name or 'Desconocida' }} → {{ row.b.identity_name or 'Desconocida' }}</span>{% endif %}
+      {% if row.status_changed %}<span class="business-chip">HTTP: {{ row.a.status_code or '—' }} → {{ row.b.status_code or '—' }}</span>{% endif %}
+      {% if row.correlations %}<div><strong>Valores iguales que ayudan a correlacionar</strong>{% for c in row.correlations %}<span class="business-chip"><code>{{ c.a_name }}</code> ↔ <code>{{ c.b_name }}</code> = <code>{{ c.value }}</code></span>{% endfor %}</div>{% endif %}
+      {% if row.business_changes %}<div><strong>Campos de negocio que cambiaron</strong>{% for c in row.business_changes %}<span class="business-chip state-chip"><code>{{ c.key }}</code>: {{ c.a or '∅' }} → {{ c.b or '∅' }}</span>{% endfor %}</div>{% endif %}
+      <a class="button ghost small-button" href="{{ target_base }}/parameters/diff?a={{ row.a.exchange_id }}&b={{ row.b.exchange_id }}">Abrir comparación inteligente completa</a>
+    </div>{% endif %}
+  </article>
+{% endfor %}
+</div></section>
+
+{% if comparison.state_changes %}
+<section class="panel"><div class="panel-head"><div><p class="eyebrow">ESTADOS</p><h2>Secuencias observadas diferentes</h2></div><small>Útil cuando el mismo proceso llega a estados distintos o salta estados observados.</small></div>
+<div class="flow-state-compare">{% for sc in comparison.state_changes %}<article class="state-timeline-card"><b>{{ sc.object_type }}.{{ sc.state_field }}</b><div class="state-compare-row"><span>A</span><code>{{ sc.a_sequence|join(' → ') if sc.a_sequence else '— no observado —' }}</code></div><div class="state-compare-row"><span>B</span><code>{{ sc.b_sequence|join(' → ') if sc.b_sequence else '— no observado —' }}</code></div></article>{% endfor %}</div>
+<p class="muted small">Negro no afirma bypass ni vulnerabilidad; sólo muestra que la secuencia observada no coincide.</p>
+</section>
+{% endif %}
+
+{% if comparison.object_type_changes or comparison.object_type_changes_hidden %}
+<details class="panel noisy-evidence-details flow-object-advanced">
+  <summary><b>Contexto de objetos · avanzado</b><span>Úsalo sólo si ya enseñaste tipos claros como Order, Payment o Shipment.</span></summary>
+  {% if comparison.object_type_changes %}
+  <p class="muted small">Estas diferencias sólo comparan cuántas instancias de cada <b>tipo con significado</b> aparecieron en cada Flujo. No comparan ownership ni equivalencia de IDs.</p>
+  <div class="flow-state-compare">{% for oc in comparison.object_type_changes %}<article class="state-timeline-card"><b>{{ oc.object_type }}</b><div class="state-compare-row"><span>A</span><code>{{ oc.a_count }} instancia(s)</code></div><div class="state-compare-row"><span>B</span><code>{{ oc.b_count }} instancia(s)</code></div></article>{% endfor %}</div>
+  {% else %}
+  <p class="muted">No hay diferencias de objetos con significado suficiente para mostrar.</p>
+  {% endif %}
+  {% if comparison.object_type_changes_hidden %}<p class="muted small">Negro ocultó {{ comparison.object_type_changes_hidden|length }} diferencia(s) de tipos ambiguos como números, <code>Object</code>, <code>owner</code> o <code>reference</code> porque sólo agregaban ruido.</p>{% endif %}
+</details>
+{% endif %}
+{% endif %}
+{% endblock %}
