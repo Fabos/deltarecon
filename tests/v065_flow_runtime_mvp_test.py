@@ -122,7 +122,7 @@ def main():
             key=core.register_target(domain,root/'ws',make_current=True,name='Flow Runtime Lab',scopes=[domain,'api.flow.local'])
             client=TestClient(create_app(domain,root/'ws'))
             page=client.get(f'/t/{key}/flows/{login}')
-            assert page.status_code==200 and 'Enséñale el proceso a Negro' in page.text and 'Flows que este necesita' in page.text
+            assert page.status_code==200 and 'Así funciona el proceso' in page.text and 'Cómo se ejecuta este Flow' in page.text
             run_page=client.get(f'/t/{key}/flow-runs/{rid}')
             assert run_page.status_code==200 and 'SECURITY OVERRIDES' in run_page.text and 'EVIDENCIA DEL RUN' in run_page.text
         finally:

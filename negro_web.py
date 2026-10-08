@@ -3340,7 +3340,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/parameters$", {"anchor":"parameters","title":"Explorador de parámetros","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
             (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Matriz de autorización","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
             (r"^/identities", {"anchor":"identities","title":"Contextos de identidad","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
-            (r"^/runners", {"anchor":"runners","title":"Runners","question":"¿Cómo automatizo una pregunta sobre un Flujo sin repetir trabajo manual?","when":"Crea un Runner cuando una hipótesis requiere repetir, omitir o variar pasos de un proceso observado.","example":"Checkout · sin Payment omite sólo ese paso; Cupón · reutilización repite /coupon varias veces manteniendo el resto del Flujo.","caution":"Runner automatiza una prueba que tú configuraste; no es Intruder, fuzzer ni scanner y nunca se ejecuta solo."}),
+            (r"^/runners", {"anchor":"runners","title":"Escenarios","question":"¿Cómo preparo o modifico un proceso sin tocar el Flow base?","when":"Crea un Escenario desde uno o varios Flows cuando quieras reproducir el proceso y cambiar sólo lo interesante para tu prueba.","example":"Compra completa → Escenario “Vendedor B acepta Order A” → cambia Identity sólo en el Step objetivo.","caution":"Escenario reutiliza el Flow; Run es una ejecución concreta. Una Hipótesis es contexto opcional, no un requisito."}),
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
@@ -4630,6 +4630,7 @@ def create_app(default_domain: str, default_workspace: Path):
             runtime=flow_runtime.flow_runtime_data(conn,int(flow_id))
             reusable_flows=[dict(x) for x in conn.execute("SELECT id,name FROM flows WHERE id<>? ORDER BY updated_at DESC,id DESC LIMIT 300",(int(flow_id),)).fetchall()]
             identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
+            hypotheses=[dict(x) for x in conn.execute("SELECT id,title,status FROM leads_v2 ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()]
             try:
                 business_objects=[dict(x) for x in conn.execute(
                     """SELECT bo.id,bot.name object_type,COALESCE(bo.identifier_raw,bo.identifier_preview) object_value
@@ -4640,7 +4641,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data,
                       flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, logic_ai_batches=logic_ai_batches,
                       flow_investigations=flow_investigations, active_investigations=active_investigations, settings=intel.load_settings(),
-                      flow_runtime=runtime,reusable_flows=reusable_flows,identities=identities,business_objects=business_objects)
+                      flow_runtime=runtime,reusable_flows=reusable_flows,identities=identities,hypotheses=hypotheses,business_objects=business_objects)
 
 
 
@@ -4797,6 +4798,8 @@ def create_app(default_domain: str, default_workspace: Path):
                 raise HTTPException(status_code=404, detail="Runner no encontrado")
             identities = identity_tools.list_identities(conn)
             hypotheses=[dict(x) for x in conn.execute("SELECT id,title,status FROM leads_v2 ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()]
+            source_ids={int(x.get("flow_id") or 0) for x in data.get("source_flows",[])}
+            available_flows=[dict(x) for x in conn.execute("SELECT id,name,description FROM flows ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall() if int(x["id"]) not in source_ids]
         planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
         active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
         now_ts=datetime.now(timezone.utc).timestamp()
@@ -4813,7 +4816,7 @@ def create_app(default_domain: str, default_workspace: Path):
             "last_seen_seconds_ago": round(max(0.0,now_ts-bridge_seen),2) if bridge_id else None,
         }
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
-                      hypotheses=hypotheses, planned_requests=planned, active_steps=active_steps, job=job,
+                      hypotheses=hypotheses, available_flows=available_flows, planned_requests=planned, active_steps=active_steps, job=job,
                       transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
     @app.post("/t/{target_key}/investigations/{investigation_id}/runner")
@@ -4856,12 +4859,16 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/investigations/{int(investigation_id)}",status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/runners/create")
-    def runner_create_manual(request: Request, target_key: str, flow_id: int, alias: str = Form(...), description: str = Form(""), csrf: str = Form(...)):
+    def runner_create_manual(request: Request, target_key: str, flow_id: int, alias: str = Form(...), description: str = Form(""),
+                             hypothesis_id: str = Form(""), identity_id: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
+        hid=int(hypothesis_id) if str(hypothesis_id).isdigit() else None
+        iid=int(identity_id) if str(identity_id).isdigit() else None
         with _db(paths) as conn:
-            runner_id = runner_tools.create_runner_from_flow(conn, int(flow_id), alias=alias, description=description, origin="manual")
+            runner_id = runner_tools.create_runner_from_flow(conn, int(flow_id), alias=alias, description=description,
+                                                              hypothesis_id=hid, identity_id=iid, origin="manual")
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
 
     @app.post("/t/{target_key}/ai-ideas/{idea_id}/state")
@@ -4993,6 +5000,28 @@ def create_app(default_domain: str, default_workspace: Path):
         try: return runner_tools.diagnose_transport(str(row["url"]))
         except Exception as exc: raise HTTPException(status_code=400,detail=str(exc))
 
+    @app.post("/t/{target_key}/runners/{runner_id}/flows/add")
+    def runner_flow_add(target_key: str, runner_id: int, flow_id: int = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                runner_tools.add_flow_source(conn,int(runner_id),int(flow_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}#scenario-flows",status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/flows/{flow_id}/remove")
+    def runner_flow_remove(target_key: str, runner_id: int, flow_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                runner_tools.remove_flow_source(conn,int(runner_id),int(flow_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}#scenario-flows",status_code=303)
+
     @app.post("/t/{target_key}/runners/{runner_id}/update")
     def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""),
                       hypothesis_id: str = Form(""), target_flow_step_id: str = Form(""), max_requests: int = Form(30),
@@ -5026,12 +5055,13 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}",status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/update")
-    def runner_step_update(request: Request, target_key: str, runner_id: int, runner_step_id: int, action: str = Form("keep"), repeat_count: int = Form(1), notes: str = Form(""), csrf: str = Form(...)):
+    def runner_step_update(request: Request, target_key: str, runner_id: int, runner_step_id: int, action: str = Form("keep"), repeat_count: int = Form(1), notes: str = Form(""), alias_label: str = Form(""), role_label: str = Form(""), identity_id: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
-            runner_tools.update_runner_step(conn, int(runner_id), int(runner_step_id), action=action, repeat_count=repeat_count, notes=notes)
+            iid=int(identity_id) if str(identity_id).isdigit() else None
+            runner_tools.update_runner_step(conn, int(runner_id), int(runner_step_id), action=action, repeat_count=repeat_count, notes=notes, alias_label=alias_label, role_label=role_label, identity_id=iid)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/variables/add")

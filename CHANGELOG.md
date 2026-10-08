@@ -1,3 +1,18 @@
+# v0.50.0 · Minimal Flow + Scenarios UX
+
+- Flow detail is now process-first: alias/role/note, method/path/status and existing `USA / PRODUCE` dependencies are the primary surface.
+- Always-visible capture/evidence controls were moved under collapsed **Editar captura y herramientas**.
+- Object/business-state teaching controls were removed from Flow primary UX; those concepts remain in Objects/HTTP Inspector.
+- `Runner` remains the internal compatible model, but the UI now calls it **Escenario**.
+- A Scenario can compose multiple existing Flows through `runner_flow_sources` without duplicating Flow records.
+- Scenario Steps can override alias, role and Identity for only that Step; the existing execution engine applies the effective Identity at runtime.
+- Scenario detail keeps composition/context visible and moves transport/legacy variables/Hypothesis management to advanced sections.
+- Flow HTTP Inspector now shows Request/Response first; **Valores dinámicos del Step** is collapsed by default and keeps the search field.
+- General Identity/Object classification is also collapsed when the Inspector was opened from a Flow, reducing cognitive load while preserving all functionality.
+- Run history and Run Inspector remain the source of truth for what was actually executed.
+- Added regression coverage for multi-Flow scenarios, per-Step Identity execution, minimal Flow UI and HTTP-first variable UX.
+- No Burp Bridge change; existing Bridge v0.39.0 remains compatible.
+
 # v0.49.0 · Human Flow + Reusable Runner Context
 
 - Flow Steps ahora reutilizan `label` + `notes` como nombre/explicación humana y añaden `role_label` + `checkpoint_label` como metadata opcional.

@@ -1,23 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Run #{{ run_data.run.id }} · Runner · Negro{% endblock %}
+{% block title %}Run #{{ run_data.run.id }} · Escenario · Negro{% endblock %}
 {% block content %}
 {% set run=run_data.run %}{% set ctx=run.context or {} %}
 <section class="hero compact-hero">
   <div>
     <p class="eyebrow">RUN INSPECTOR</p>
     <h1>Run #{{ run.id }}</h1>
-    <p class="muted">Evidencia exacta de una ejecución. Esta vista conserva el contexto que existía cuando se lanzó el Runner.</p>
-    <div class="hero-meta"><a class="badge" href="{{ target_base }}/runners/{{ run.runner_id }}">Runner · {{ ctx.runner.alias or run.runner_alias }}</a><a class="badge" href="{{ target_base }}/flows/{{ ctx.flow.id or run.flow_id }}">Flow · {{ ctx.flow.name or run.flow_name }}</a>{% if ctx.identity %}<span class="badge identity-badge">{{ ctx.identity.name }}</span>{% endif %}{% if ctx.investigation %}<a class="badge class-interesting" href="{{ target_base }}/investigations/{{ ctx.investigation.id }}">Investigation · {{ ctx.investigation.title or ('#' ~ ctx.investigation.id) }}</a>{% endif %}<span class="badge execution-chip execution-{{ run.execution_class }}">{{ run.execution_class }}</span>{% if run.counts_as_test %}<span class="badge class-interesting">Cuenta como prueba</span>{% endif %}</div>
+    <p class="muted">Evidencia exacta de una ejecución. Esta vista conserva el contexto que existía cuando se lanzó el Escenario.</p>
+    <div class="hero-meta"><a class="badge" href="{{ target_base }}/runners/{{ run.runner_id }}">Escenario · {{ ctx.runner.alias or run.runner_alias }}</a><a class="badge" href="{{ target_base }}/flows/{{ ctx.flow.id or run.flow_id }}">Flow · {{ ctx.flow.name or run.flow_name }}</a>{% if ctx.identity %}<span class="badge identity-badge">{{ ctx.identity.name }}</span>{% endif %}{% if ctx.investigation %}<a class="badge class-interesting" href="{{ target_base }}/investigations/{{ ctx.investigation.id }}">Investigation · {{ ctx.investigation.title or ('#' ~ ctx.investigation.id) }}</a>{% endif %}<span class="badge execution-chip execution-{{ run.execution_class }}">{{ run.execution_class }}</span>{% if run.counts_as_test %}<span class="badge class-interesting">Cuenta como prueba</span>{% endif %}</div>
   </div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners/{{ run.runner_id }}#runner-history">← Runner</a></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners/{{ run.runner_id }}#runner-history">← Escenario</a></div>
 </section>
 
 <section class="panel run-intent-panel">
-  <div class="panel-head"><div><p class="eyebrow">INTENCIÓN HISTÓRICA</p><h2>Qué estaba ocurriendo en este Run</h2><p class="muted">Aunque después cambies el Runner o la Hipótesis, esta fotografía no cambia.</p></div></div>
+  <div class="panel-head"><div><p class="eyebrow">INTENCIÓN HISTÓRICA</p><h2>Qué estaba ocurriendo en este Run</h2><p class="muted">Aunque después cambies el Escenario o la Hipótesis, esta fotografía no cambia.</p></div></div>
   <div class="run-intent-grid">
-    <article><small>RUNNER</small><b>{{ ctx.runner.alias or run.runner_alias }}</b><span>{{ ctx.runner.description or 'Sin descripción.' }}</span></article>
+    <article><small>ESCENARIO</small><b>{{ ctx.runner.alias or run.runner_alias }}</b><span>{{ ctx.runner.description or 'Sin descripción.' }}</span></article>
     <article><small>HYPOTHESIS</small>{% if ctx.hypothesis %}<b>◆ {{ ctx.hypothesis.title }}</b><span>{{ ctx.hypothesis.why_interesting or ctx.hypothesis.next_test or '' }}</span>{% else %}<b>Sin Hypothesis</b><span>Este Run preparó/reprodujo estado sin una pregunta obligatoria.</span>{% endif %}</article>
-    <article><small>STEP BAJO PRUEBA</small>{% if ctx.target_step %}<b>🎯 Step {{ ctx.target_step.position }} · {{ ctx.target_step.name }}</b><span>{{ ctx.target_step.method }} {{ ctx.target_step.path }}</span>{% else %}<b>Ninguno</b><span>Todo el Runner se trató como preparación/replay.</span>{% endif %}</article>
+    <article><small>STEP BAJO PRUEBA</small>{% if ctx.target_step %}<b>🎯 Step {{ ctx.target_step.position }} · {{ ctx.target_step.name }}</b><span>{{ ctx.target_step.method }} {{ ctx.target_step.path }}</span>{% else %}<b>Ninguno</b><span>Todo el Escenario se trató como preparación/replay.</span>{% endif %}</article>
     <article><small>IDENTITY</small><b>{{ ctx.identity.name if ctx.identity else (run.identity_name or 'Auth del Flow') }}</b><span>Identity usada como actor normal de esta ejecución.</span></article>
   </div>
   {% if ctx.experiment_goal %}<div class="callout"><b>Objetivo</b><span>{{ ctx.experiment_goal }}</span></div>{% endif %}
@@ -31,8 +31,8 @@
     <article class="run-inspector-step {% if is_target %}runner-target-step{% endif %}">
       <div class="run-inspector-step-head">
         <div class="run-step-index">{{ a.position }}</div>
-        <div class="grow"><div class="human-step-kicker">STEP {{ a.position }}{% if a.role_label %} · {{ a.role_label|upper }}{% endif %}{% if is_target %} · 🎯 BAJO PRUEBA{% endif %}</div><h3>{{ a.flow_label or (a.flow_method ~ ' ' ~ a.flow_path) }}</h3><small>{{ a.method or a.flow_method }} <code>{{ a.url or a.flow_path }}</code>{% if a.checkpoint_label %} · ◆ {{ a.checkpoint_label }}{% endif %}</small></div>
-        <div class="badges">{% if a.status_code %}<span class="badge {% if a.status_code>=400 %}warning-badge{% endif %}">HTTP {{ a.status_code }}</span>{% endif %}<span class="badge">{{ a.elapsed_ms or 0 }} ms</span><span class="badge">{{ a.execution_class }}</span></div>
+        <div class="grow"><div class="human-step-kicker">STEP {{ a.position }}{% if a.role_label_override or a.role_label %} · {{ (a.role_label_override or a.role_label)|upper }}{% endif %}{% if is_target %} · 🎯 BAJO PRUEBA{% endif %}</div><h3>{{ a.alias_label or a.flow_label or (a.flow_method ~ ' ' ~ a.flow_path) }}</h3><small>{{ a.method or a.flow_method }} <code>{{ a.url or a.flow_path }}</code>{% if a.checkpoint_label %} · ◆ {{ a.checkpoint_label }}{% endif %}</small></div>
+        <div class="badges">{% if a.identity_name %}<span class="badge identity-badge">{{ a.identity_name }}</span>{% endif %}{% if a.status_code %}<span class="badge {% if a.status_code>=400 %}warning-badge{% endif %}">HTTP {{ a.status_code }}</span>{% endif %}<span class="badge">{{ a.elapsed_ms or 0 }} ms</span><span class="badge">{{ a.execution_class }}</span></div>
       </div>
       {% if a.resolved_variables or a.extracted_values %}<div class="run-step-data-grid">{% if a.resolved_variables %}<div><b>Usó</b>{% for v in a.resolved_variables %}<span class="story-chip">← {{ v.name }} = <code>{{ v.value_preview }}</code></span>{% endfor %}</div>{% endif %}{% if a.extracted_values %}<div><b>Produjo</b>{% for v in a.extracted_values %}<span class="story-chip source-previous_response">→ {{ v.name }} = <code>{{ v.value_preview }}</code></span>{% endfor %}</div>{% endif %}</div>{% endif %}
       {% if a.error %}<div class="callout warning"><b>Error de ejecución</b><span>{{ a.error }}</span></div>{% endif %}

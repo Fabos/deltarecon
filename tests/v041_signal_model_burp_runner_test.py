@@ -105,7 +105,7 @@ def main():
         assert attempt and attempt['execution_class']=='application_response' and int(attempt['status_code'])==200
 
       rp=client.get(f'/t/{key}/runners/{rr}')
-      assert rp.status_code==200 and 'Burp Bridge · recomendado' in rp.text and 'Cuenta como prueba' in rp.text and 'Ver diagnóstico de ejecución' in rp.text
+      assert rp.status_code==200 and 'Opciones avanzadas' in rp.text and 'Burp Bridge' in rp.text and 'Abrir Run' in rp.text
 
       # Protocol guard: an old Bridge must never claim Runner execute jobs.
       with core.db_connect(paths) as conn:

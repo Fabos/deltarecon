@@ -1,6 +1,21 @@
-## v0.49.0 · Human Flow + Reusable Runner Context
+## v0.50.0 · Minimal Flow + Scenarios UX
 
-> Current build: **v0.49.0** — Steps legibles (nombre/rol/nota/checkpoint), Runner reutilizable sin Hypothesis obligatoria, Hypotheses M:N, target Step opcional y Run Inspector con snapshot histórico + HTTP final.
+> Current build: **v0.50.0** — Flow vuelve a ser una lectura simple del proceso; `Runner` se conserva internamente pero la interfaz lo presenta como **Escenario**: una prueba reutilizable basada en uno o varios Flows, con alias/Identity por Step y Runs inspeccionables.
+
+### UX principal
+
+- **Flow** responde sólo “¿cómo funciona este proceso?”: secuencia limpia, alias/rol/nota, `USA / PRODUCE`, `Ver HTTP` y menú `⋯`.
+- La captura/edición de evidencia, variables manuales, IA, mapa, comparaciones y demás herramientas quedan colapsadas o dentro de menús secundarios.
+- La acción de seguir IDs como Objects desaparece del Flow: Objects sigue viviendo en su módulo y en HTTP Inspector.
+- **Escenario** es el nombre visible de Runner. Un Escenario puede usar uno o varios Flows sin copiar físicamente esos Flows.
+- Cada Step del Escenario puede tener alias, rol, nota, Identity sólo para ese Step y acción keep/omit/repeat.
+- **Run** sigue siendo la ejecución concreta y conserva Request/Response/evidencia.
+- En `Ver HTTP` se muestra primero Request/Response. **Valores dinámicos del Step** queda colapsado por defecto y conserva el buscador.
+- Hypothesis sigue siendo opcional: se puede crear/ejecutar un Escenario sólo para preparar estado.
+
+### Compatibilidad
+
+No se crean motores paralelos: el backend sigue usando Flow Runtime, Runner, Variables, Identity Contexts y Runs existentes. `Runner` permanece como nombre técnico/DB para no romper workspaces actuales; sólo cambia el lenguaje y la composición visual. Burp Bridge no cambia en esta versión.
 
 ## v0.47.7 · Burp Pretty JSON + Visible Navigation
 

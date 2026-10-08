@@ -50,6 +50,17 @@ def init_schema(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_runner_hypotheses_hypothesis ON runner_hypotheses(hypothesis_id,runner_id);
 
+        CREATE TABLE IF NOT EXISTS runner_flow_sources (
+            runner_id INTEGER NOT NULL,
+            flow_id INTEGER NOT NULL,
+            sequence INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(runner_id,flow_id),
+            FOREIGN KEY(runner_id) REFERENCES runners(id) ON DELETE CASCADE,
+            FOREIGN KEY(flow_id) REFERENCES flows(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_runner_flow_sources_runner ON runner_flow_sources(runner_id,sequence,flow_id);
+
         CREATE TABLE IF NOT EXISTS runner_steps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             runner_id INTEGER NOT NULL,
@@ -133,6 +144,9 @@ def init_schema(conn) -> None:
 
     _safe_add_column("runners", "investigation_id", "INTEGER")
     _safe_add_column("runners", "target_flow_step_id", "INTEGER")
+    _safe_add_column("runner_steps", "alias_label", "TEXT")
+    _safe_add_column("runner_steps", "role_label_override", "TEXT")
+    _safe_add_column("runner_steps", "identity_id", "INTEGER")
     for name,ddl in {
         "experiment_goal":"TEXT",
         "expected_support":"TEXT",
@@ -184,6 +198,16 @@ def init_schema(conn) -> None:
         conn.execute(
             """INSERT OR IGNORE INTO runner_hypotheses(runner_id,hypothesis_id,created_at)
                SELECT id,hypothesis_id,COALESCE(created_at,?) FROM runners WHERE hypothesis_id IS NOT NULL""",
+            (now_iso(),),
+        )
+    except Exception:
+        pass
+    # v0.50: every existing Runner/Scenario has at least its original Flow as
+    # source #1.  Additional Flows can be appended without duplicating the Flow.
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO runner_flow_sources(runner_id,flow_id,sequence,created_at)
+               SELECT id,flow_id,1,COALESCE(created_at,?) FROM runners""",
             (now_iso(),),
         )
     except Exception:
@@ -260,6 +284,10 @@ def create_runner_from_flow(conn, flow_id: int, *, alias: str, description: str 
          json.dumps(ai_idea,ensure_ascii=False) if ai_idea else None,now,now),
     )
     runner_id=int(cur.lastrowid)
+    conn.execute(
+        "INSERT OR IGNORE INTO runner_flow_sources(runner_id,flow_id,sequence,created_at) VALUES(?,?,1,?)",
+        (runner_id,int(flow_id),now),
+    )
     if hypothesis_id is not None:
         conn.execute(
             "INSERT OR IGNORE INTO runner_hypotheses(runner_id,hypothesis_id,created_at) VALUES(?,?,?)",
@@ -337,11 +365,12 @@ def list_runners(conn, *, flow_id: int | None = None, limit: int = 100) -> list[
     params=[]
     where=""
     if flow_id is not None:
-        where="WHERE ru.flow_id=?"; params.append(int(flow_id))
+        where="WHERE EXISTS (SELECT 1 FROM runner_flow_sources rfs WHERE rfs.runner_id=ru.id AND rfs.flow_id=?)"; params.append(int(flow_id))
     rows=conn.execute(
         f"""SELECT ru.*,f.name flow_name,i.name identity_name,h.title hypothesis_title,
                     (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id) run_count,
                     (SELECT COUNT(*) FROM runner_hypotheses rh WHERE rh.runner_id=ru.id) hypothesis_count,
+                    (SELECT COUNT(*) FROM runner_flow_sources rfs WHERE rfs.runner_id=ru.id) source_flow_count,
                     (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='interesting' AND COALESCE(rr.counts_as_test,0)=1) interesting_runs,
                     (SELECT COUNT(*) FROM runner_runs rr WHERE rr.runner_id=ru.id AND rr.outcome='negative' AND COALESCE(rr.counts_as_test,0)=1) negative_runs
              FROM runners ru JOIN flows f ON f.id=ru.flow_id
@@ -365,9 +394,10 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
     runner=dict(row)
     steps=[]
     for s in conn.execute(
-        """SELECT rs.*,fs.exchange_id,fs.label flow_label,fs.notes flow_notes,fs.role_label,fs.checkpoint_label,e.status_code,o.method,r.id resource_id,r.url,r.path,h.hostname
-           FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id JOIN http_exchanges e ON e.id=fs.exchange_id
+        """SELECT rs.*,fs.flow_id,fs.exchange_id,fs.label flow_label,fs.notes flow_notes,fs.role_label,fs.checkpoint_label,e.status_code,o.method,r.id resource_id,r.url,r.path,h.hostname,f.name source_flow_name,si.name step_identity_name
+           FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id JOIN flows f ON f.id=fs.flow_id JOIN http_exchanges e ON e.id=fs.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+           LEFT JOIN identities si ON si.id=rs.identity_id
            WHERE rs.runner_id=? ORDER BY rs.position,rs.id""",
         (int(runner_id),),
     ).fetchall():
@@ -380,18 +410,31 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
         item=dict(v); item["values"]=_load_json(item.get("values_json"),[])
         if int(item["target_runner_step_id"]) in by_id:
             by_id[int(item["target_runner_step_id"])]["variables"].append(item)
-    # Reuse Flow runtime definitions for readable dependencies. Runner does not
-    # create a parallel variable model: these are the same Flow bindings.
+    # Reuse Flow runtime definitions for readable dependencies. A Scenario may
+    # now contain Steps from several Flows, but still reuses each Flow's own
+    # variables/bindings instead of inventing a second dependency system.
     try:
         import negro_flow_runtime as flow_runtime
-        runtime=flow_runtime.flow_runtime_data(conn,int(runner["flow_id"]))
+        runtimes={}
+        for flow_id in sorted({int(s.get("flow_id") or runner["flow_id"]) for s in steps}):
+            runtimes[flow_id]=flow_runtime.flow_runtime_data(conn,flow_id)
         for s in steps:
+            flow_id=int(s.get("flow_id") or runner["flow_id"])
+            runtime=runtimes.get(flow_id,{})
             fid=int(s["flow_step_id"])
             s["flow_inputs"]=runtime.get("step_inputs",{}).get(fid,[])
             s["flow_outputs"]=runtime.get("step_outputs",{}).get(fid,[])
     except Exception:
         for s in steps:
             s["flow_inputs"]=[]; s["flow_outputs"]=[]
+    source_flows=[dict(x) for x in conn.execute(
+        """SELECT rfs.flow_id,rfs.sequence,f.name,f.description,
+                  (SELECT COUNT(*) FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
+                   WHERE rs.runner_id=rfs.runner_id AND fs.flow_id=rfs.flow_id) step_count
+           FROM runner_flow_sources rfs JOIN flows f ON f.id=rfs.flow_id
+           WHERE rfs.runner_id=? ORDER BY rfs.sequence,rfs.flow_id""",
+        (int(runner_id),),
+    ).fetchall()]
     linked_hypotheses=[dict(x) for x in conn.execute(
         """SELECT h.id,h.title,h.status,h.review_priority
            FROM runner_hypotheses rh JOIN leads_v2 h ON h.id=rh.hypothesis_id
@@ -421,7 +464,57 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
         item["attempts"]=attempts
         runs.append(item)
     return {"runner":runner,"steps":steps,"runs":runs,"linked_hypotheses":linked_hypotheses,
-            "ai_idea":_load_json(runner.get("ai_idea_json"),{})}
+            "source_flows":source_flows,"ai_idea":_load_json(runner.get("ai_idea_json"),{})}
+
+
+def add_flow_source(conn, runner_id: int, flow_id: int) -> None:
+    """Append one Flow to an existing Scenario without copying the Flow itself.
+
+    Only runner_steps are materialized as the editable execution plan; the source
+    Flow remains canonical and is recorded in runner_flow_sources.
+    """
+    init_schema(conn)
+    if not conn.execute("SELECT 1 FROM runners WHERE id=?",(int(runner_id),)).fetchone():
+        raise ValueError("Escenario no encontrado")
+    if not conn.execute("SELECT 1 FROM flows WHERE id=?",(int(flow_id),)).fetchone():
+        raise ValueError("Flow no encontrado")
+    if conn.execute("SELECT 1 FROM runner_flow_sources WHERE runner_id=? AND flow_id=?",(int(runner_id),int(flow_id))).fetchone():
+        raise ValueError("Ese Flow ya forma parte del Escenario")
+    seq=int(conn.execute("SELECT COALESCE(MAX(sequence),0)+1 n FROM runner_flow_sources WHERE runner_id=?",(int(runner_id),)).fetchone()["n"] or 1)
+    pos=int(conn.execute("SELECT COALESCE(MAX(position),0) n FROM runner_steps WHERE runner_id=?",(int(runner_id),)).fetchone()["n"] or 0)
+    now=now_iso()
+    conn.execute("INSERT INTO runner_flow_sources(runner_id,flow_id,sequence,created_at) VALUES(?,?,?,?)",(int(runner_id),int(flow_id),seq,now))
+    for step in _flow_steps(conn,int(flow_id)):
+        pos+=1
+        conn.execute(
+            """INSERT OR IGNORE INTO runner_steps(runner_id,flow_step_id,position,action,repeat_count,notes,created_at,updated_at)
+               VALUES(?,?,?,'keep',1,'',?,?)""",
+            (int(runner_id),int(step["flow_step_id"]),pos,now,now),
+        )
+    conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now,int(runner_id)))
+
+
+def remove_flow_source(conn, runner_id: int, flow_id: int) -> None:
+    init_schema(conn)
+    base=conn.execute("SELECT flow_id FROM runners WHERE id=?",(int(runner_id),)).fetchone()
+    if not base:
+        raise ValueError("Escenario no encontrado")
+    if int(base["flow_id"])==int(flow_id):
+        raise ValueError("El Flow base no se puede quitar del Escenario")
+    step_ids=[int(r["id"]) for r in conn.execute(
+        """SELECT rs.id FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
+           WHERE rs.runner_id=? AND fs.flow_id=?""",(int(runner_id),int(flow_id))).fetchall()]
+    if step_ids:
+        q=','.join('?'*len(step_ids))
+        conn.execute(f"DELETE FROM runner_variables WHERE target_runner_step_id IN ({q}) OR source_runner_step_id IN ({q})",tuple(step_ids+step_ids))
+        conn.execute(f"DELETE FROM runner_steps WHERE id IN ({q})",tuple(step_ids))
+    conn.execute("DELETE FROM runner_flow_sources WHERE runner_id=? AND flow_id=?",(int(runner_id),int(flow_id)))
+    # Keep display/execution order compact after removing a source Flow.
+    rows=conn.execute("SELECT id FROM runner_steps WHERE runner_id=? ORDER BY position,id",(int(runner_id),)).fetchall()
+    for idx,row in enumerate(rows,1):
+        conn.execute("UPDATE runner_steps SET position=?,updated_at=? WHERE id=?",(idx,now_iso(),int(row["id"])))
+    conn.execute("UPDATE runners SET target_flow_step_id=NULL WHERE id=? AND target_flow_step_id NOT IN (SELECT flow_step_id FROM runner_steps WHERE runner_id=?)",(int(runner_id),int(runner_id)))
+    conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
 
 
 def update_runner(conn, runner_id: int, *, alias: str, description: str, identity_id: int | None, max_requests: int = 30,
@@ -436,10 +529,12 @@ def update_runner(conn, runner_id: int, *, alias: str, description: str, identit
     support=current["expected_support"] if expected_support is None else str(expected_support or "")[:5000]
     refute=current["expected_refute"] if expected_refute is None else str(expected_refute or "")[:5000]
     if target_flow_step_id is not None:
-        row=conn.execute("SELECT flow_id FROM runners WHERE id=?",(int(runner_id),)).fetchone()
-        valid=conn.execute("SELECT 1 FROM flow_steps WHERE id=? AND flow_id=?",(int(target_flow_step_id),int(row["flow_id"]))).fetchone() if row else None
+        valid=conn.execute(
+            """SELECT 1 FROM runner_steps rs WHERE rs.runner_id=? AND rs.flow_step_id=?""",
+            (int(runner_id),int(target_flow_step_id)),
+        ).fetchone()
         if not valid:
-            raise ValueError("Step objetivo no pertenece al Flow del Runner")
+            raise ValueError("Step objetivo no pertenece al Escenario")
     if hypothesis_id is not None:
         if not conn.execute("SELECT 1 FROM leads_v2 WHERE id=?",(int(hypothesis_id),)).fetchone():
             raise ValueError("Hipótesis no encontrada")
@@ -467,13 +562,15 @@ def unlink_hypothesis(conn, runner_id: int, hypothesis_id: int) -> None:
     conn.execute("UPDATE runners SET hypothesis_id=NULL WHERE id=? AND hypothesis_id=?",(int(runner_id),int(hypothesis_id)))
 
 
-def update_runner_step(conn, runner_id: int, runner_step_id: int, *, action: str, repeat_count: int = 1, notes: str = "") -> None:
+def update_runner_step(conn, runner_id: int, runner_step_id: int, *, action: str, repeat_count: int = 1, notes: str = "", alias_label: str = "", role_label: str = "", identity_id: int | None = None) -> None:
     init_schema(conn)
     action=str(action or "keep").lower()
     if action not in {"keep","omit","repeat"}: raise ValueError("Acción inválida")
     repeat=max(1,min(20,int(repeat_count)))
-    cur=conn.execute("UPDATE runner_steps SET action=?,repeat_count=?,notes=?,updated_at=? WHERE id=? AND runner_id=?",
-                     (action,repeat,str(notes or "")[:1000],now_iso(),int(runner_step_id),int(runner_id)))
+    if identity_id is not None and not conn.execute("SELECT 1 FROM identities WHERE id=?",(int(identity_id),)).fetchone():
+        raise ValueError("Identity no encontrada")
+    cur=conn.execute("UPDATE runner_steps SET action=?,repeat_count=?,notes=?,alias_label=?,role_label_override=?,identity_id=?,updated_at=? WHERE id=? AND runner_id=?",
+                     (action,repeat,str(notes or "")[:1000],str(alias_label or "")[:180],str(role_label or "")[:100],identity_id,now_iso(),int(runner_step_id),int(runner_id)))
     if cur.rowcount != 1: raise ValueError("Paso del Runner no encontrado")
     conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
 
@@ -532,7 +629,7 @@ def _run_context_snapshot(conn, runner: dict[str,Any], steps: list[dict[str,Any]
         for s in steps:
             if int(s.get("flow_step_id") or 0)==int(target_flow_step_id):
                 target={"flow_step_id":int(target_flow_step_id),"position":int(s.get("position") or 0),
-                        "name":str(s.get("flow_label") or s.get("method") or "Step"),"method":s.get("method"),"path":s.get("path")}
+                        "name":str(s.get("alias_label") or s.get("flow_label") or s.get("method") or "Step"),"method":s.get("method"),"path":s.get("path")}
                 break
     variable_rows=[]
     for v in conn.execute("SELECT * FROM runner_variables WHERE runner_id=? ORDER BY id",(int(runner["id"]),)).fetchall():
@@ -541,9 +638,16 @@ def _run_context_snapshot(conn, runner: dict[str,Any], steps: list[dict[str,Any]
         variable_rows.append({"target_name":item.get("target_name"),"mode":item.get("mode"),
                               "values":[_value_preview(str(item.get("target_name") or ""),x) for x in vals[:5]],
                               "source_name":item.get("source_name"),"source_runner_step_id":item.get("source_runner_step_id")})
+    seen_flows=[]
+    for s in steps:
+        fid=int(s.get("flow_id") or runner["flow_id"])
+        if any(int(x["id"])==fid for x in seen_flows):
+            continue
+        seen_flows.append({"id":fid,"name":s.get("source_flow_name") or (runner.get("flow_name") if fid==int(runner["flow_id"]) else f"Flow #{fid}")})
     return {
         "runner":{"id":int(runner["id"]),"alias":runner.get("alias"),"description":runner.get("description")},
         "flow":{"id":int(runner["flow_id"]),"name":runner.get("flow_name")},
+        "flows":seen_flows,
         "investigation":{"id":int(runner["investigation_id"]),"title":runner.get("investigation_title")} if runner.get("investigation_id") else None,
         "hypothesis":hypothesis,
         "identity":identity,
@@ -552,7 +656,8 @@ def _run_context_snapshot(conn, runner: dict[str,Any], steps: list[dict[str,Any]
         "expected_support":runner.get("expected_support") or "",
         "expected_refute":runner.get("expected_refute") or "",
         "step_plan":[{"position":int(s.get("position") or 0),"flow_step_id":int(s.get("flow_step_id") or 0),
-                      "name":s.get("flow_label") or "","role":s.get("role_label") or "","action":s.get("action"),
+                      "name":s.get("alias_label") or s.get("flow_label") or "","role":s.get("role_label_override") or s.get("role_label") or "","action":s.get("action"),
+                      "identity_id":s.get("identity_id"),"identity_name":s.get("step_identity_name") or "",
                       "repeat_count":int(s.get("repeat_count") or 1)} for s in steps],
         "runner_variables":variable_rows,
         "captured_at":now_iso(),
@@ -573,10 +678,11 @@ def get_runner_run(conn, run_id: int) -> dict[str,Any] | None:
     run["context"]=_load_json(run.get("context_snapshot_json"),{})
     attempts=[]
     for ar in conn.execute(
-        """SELECT rrr.*,rs.position,rs.flow_step_id,fs.label flow_label,fs.role_label,fs.checkpoint_label,o.method flow_method,r.path flow_path
+        """SELECT rrr.*,rs.position,rs.flow_step_id,rs.alias_label,rs.role_label_override,fs.label flow_label,fs.role_label,fs.checkpoint_label,o.method flow_method,r.path flow_path,ii.name identity_name
            FROM runner_run_requests rrr JOIN runner_steps rs ON rs.id=rrr.runner_step_id
            JOIN flow_steps fs ON fs.id=rs.flow_step_id JOIN http_exchanges e ON e.id=fs.exchange_id
            JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
+           LEFT JOIN identities ii ON ii.id=rrr.identity_id
            WHERE rrr.run_id=? ORDER BY rrr.id""",(int(run_id),)
     ).fetchall():
         item=dict(ar)
@@ -1063,7 +1169,8 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                 if stop_after_transport_error:
                     break
                 with core.db_connect(paths) as conn:
-                    raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),runner.get("identity_id"))
+                    effective_identity_id=step.get("identity_id") or runner.get("identity_id")
+                    raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),effective_identity_id)
                     vars_for_step=[dict(v) for v in conn.execute("SELECT * FROM runner_variables WHERE target_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall()]
                     resolved_for_request=[]
                     for var in vars_for_step:
@@ -1210,7 +1317,7 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (run_id,int(step["id"]),rep_idx,exid,status,elapsed,error,exec_class,method,url,canonical_request_b64,response_b64,
                          json.dumps(transport_detail,ensure_ascii=False),json.dumps(resolved_for_request,ensure_ascii=False),
-                         json.dumps(extracted_for_request,ensure_ascii=False),runner.get("identity_id"),now_iso()))
+                         json.dumps(extracted_for_request,ensure_ascii=False),effective_identity_id,now_iso()))
 
         app_count=sum(1 for c in execution_classes if c=="application_response")
         failure_classes=[c for c in execution_classes if c!="application_response"]

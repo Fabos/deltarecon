@@ -97,14 +97,14 @@ def main():
             client=TestClient(create_app(domain,workspace))
             flow_page=client.get(f'/t/{key}/flows/{fid}')
             assert flow_page.status_code==200
-            assert 'Explorar lógica de este Flujo' in flow_page.text
+            assert 'Explorar lógica de este Flow' in flow_page.text
             assert 'Cupón · reutilización' in flow_page.text
             runner_page=client.get(f'/t/{key}/runners/{rid}')
             assert runner_page.status_code==200
-            assert 'PLAN DEL RUNNER' in runner_page.text and 'EJECUCIÓN EXPLÍCITA' in runner_page.text
-            assert 'Variables dinámicas'.lower() in runner_page.text.lower()
+            assert 'Qué hará este escenario' in runner_page.text and 'Ejecutar escenario' in runner_page.text
+            assert 'Variables manuales del escenario'.lower() in runner_page.text.lower()
             listing=client.get(f'/t/{key}/runners')
-            assert listing.status_code==200 and 'Experimentos reproducibles' in listing.text
+            assert listing.status_code==200 and 'Pruebas reutilizables' in listing.text
         finally:
             requests.Session=old_session; core.TARGETS_PATH=old_targets; intel.CONFIG_DIR=old_cfg_dir; intel.SETTINGS_PATH=old_settings
     print('[OK] Flow Intelligence context includes real sanitized HTTP plus prior Runner memory')

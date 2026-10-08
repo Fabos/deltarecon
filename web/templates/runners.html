@@ -1,26 +1,26 @@
 {% extends "base.html" %}
-{% block title %}Runners · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block title %}Escenarios · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">RUNNERS</p><h1>Estados y Experimentos reproducibles</h1><p class="muted">Un Runner reutiliza un Flow para preparar estado o manipularlo de forma controlada. Puede existir solo; una Hipótesis es contexto opcional cuando estás comprobando una pregunta concreta.</p></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows">Ver Flujos</a><a class="button ghost" href="{{ target_base }}/hypotheses">Investigación</a></div>
+  <div><p class="eyebrow">ESCENARIOS</p><h1>Pruebas reutilizables</h1><p class="muted">Un Escenario parte de uno o varios Flows y guarda sólo tus cambios: Identity, Step objetivo, repeticiones, omisiones o variables. Ejecutarlo crea un Run.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows">Ver Flows</a></div>
 </section>
 
-<section class="runner-principle panel">
-  <div class="runner-model-strip"><span><b>Flow</b><small>así funciona</small></span><i>→</i><span class="active"><b>Runner</b><small>así lo reproduzco</small></span><i>→</i><span><b>Run</b><small>qué ocurrió</small></span><span class="runner-model-optional"><b>◆ Hypothesis</b><small>opcional · qué quiero comprobar</small></span></div>
+<section class="scenario-model-strip">
+  <span><b>Flow</b><small>cómo funciona</small></span><i>→</i><span class="active"><b>Escenario</b><small>qué modifico o preparo</small></span><i>→</i><span><b>Run</b><small>qué ocurrió</small></span><span class="scenario-hypothesis-note"><b>◆ Hypothesis</b><small>opcional</small></span>
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">BIBLIOTECA</p><h2>{{ runners|length }} Runners</h2></div><small>Alias claros para no perder qué estabas intentando probar.</small></div>
-  <div class="runner-grid">
+  <div class="panel-head"><div><p class="eyebrow">BIBLIOTECA</p><h2>{{ runners|length }} escenario{{ '' if runners|length == 1 else 's' }}</h2><p class="muted small">Los creas desde un Flow. No duplican el Flow: guardan una receta de cambios sobre él.</p></div></div>
+  <div class="runner-grid scenario-grid">
   {% for r in runners %}
-    <a class="runner-card" href="{{ target_base }}/runners/{{ r.id }}">
-      <div class="runner-card-head"><span class="runner-play">▶</span><div><b>{{ r.alias }}</b><small>{{ r.flow_name }}</small></div><span class="badge">{{ ui_label(r.status) }}</span></div>
-      <p>{{ r.description or 'Sin descripción.' }}</p>
-      <div class="runner-card-meta"><span>{{ r.run_count }} run(s)</span>{% if r.hypothesis_count %}<span>◆ {{ r.hypothesis_count }} Hypothesis</span>{% endif %}{% if r.interesting_runs %}<span class="intel-hot">{{ r.interesting_runs }} interesante(s)</span>{% endif %}{% if r.negative_runs %}<span>{{ r.negative_runs }} negativo(s)</span>{% endif %}{% if r.identity_name %}<span>{{ r.identity_name }}</span>{% endif %}</div>
+    <a class="runner-card scenario-card" href="{{ target_base }}/runners/{{ r.id }}">
+      <div class="runner-card-head"><span class="runner-play">▶</span><div><b>{{ r.alias }}</b><small>{{ r.flow_name }}{% if r.source_flow_count and r.source_flow_count>1 %} + {{ r.source_flow_count-1 }} Flow(s){% endif %}</small></div></div>
+      {% if r.description %}<p>{{ r.description }}</p>{% endif %}
+      <div class="runner-card-meta"><span>{{ r.run_count }} run(s)</span>{% if r.identity_name %}<span>{{ r.identity_name }}</span>{% endif %}{% if r.hypothesis_count %}<span>◆ {{ r.hypothesis_count }} Hypothesis</span>{% endif %}{% if r.interesting_runs %}<span class="intel-hot">{{ r.interesting_runs }} interesante(s)</span>{% endif %}</div>
     </a>
   {% else %}
-    <div class="empty-state"><strong>Aún no tienes Runners.</strong><span>Abre un Flow y crea un Runner para reproducir un estado, preparar una compra o probar una variación. Si luego existe una Hipótesis, puedes asociarla sin duplicar el Runner.</span></div>
+    <div class="empty-state"><strong>Todavía no tienes escenarios.</strong><span>Abre un Flow y pulsa <b>Crear escenario</b>. Empieza con un nombre y modifica sólo lo que quieras probar.</span><a class="button" href="{{ target_base }}/flows">Ir a Flows</a></div>
   {% endfor %}
   </div>
 </section>
