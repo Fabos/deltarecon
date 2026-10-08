@@ -1,3 +1,23 @@
+# v0.49.0 · Human Flow + Reusable Runner Context
+
+- Flow Steps ahora reutilizan `label` + `notes` como nombre/explicación humana y añaden `role_label` + `checkpoint_label` como metadata opcional.
+- Las cards del Flow muestran Nombre, Rol, Nota, Checkpoint y las dependencias `USA / PRODUCE` derivadas del runtime existente; no se creó un segundo sistema de variables.
+- Runner ya se presenta como receta reutilizable de estado/prueba y no exige Hypothesis.
+- Se añadió relación M:N `runner_hypotheses`; `runners.hypothesis_id` se conserva como puntero default/legacy para compatibilidad.
+- Runner puede guardar un `target_flow_step_id` opcional sin convertir los Steps en tipos rígidos Setup/Test.
+- Cada ejecución puede elegir Hypothesis + target Step y persiste un `context_snapshot_json` histórico.
+- Nuevo Run Inspector para abrir Request final, Response, status, duración, variables resueltas, extractores producidos y contexto histórico.
+- `runner_run_requests` conserva previews de variables/extractores y la Identity usada; el raw HTTP sigue siendo la evidencia exacta.
+- No se reemplazó Flow Runtime, Runner engine, Identity Contexts, Variables ni Investigations: la versión adapta lo existente.
+
+# v0.48.2 · Flow Execution Polish
+
+- Preserva `Bearer ` cuando una Flow Variable sustituye el valor completo de `Authorization`.
+- Cada Step ejecutado enlaza a su Request/Response real e HTTP Inspector.
+- Buscador rápido en el selector de valores de Flow dentro de HTTP Inspector.
+- Identity por defecto editable a nivel Flow. Si un Step ya contiene `Authorization` y no tiene un binding explícito, Negro refresca ese header desde la Identity normal.
+- Variables explícitas y overrides por Step conservan prioridad sobre la Identity por defecto.
+
 # v0.48.1 · Flow Simple UX
 
 - Flow pasa a modo simple por defecto: lenguaje humano, valores dinámicos y Steps que explican qué necesitan/producen.

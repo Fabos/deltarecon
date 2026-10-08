@@ -315,7 +315,8 @@ def flow_runtime_data(conn, flow_id: int) -> dict[str, Any]:
             "id": int(v["id"]), "name": v["name"], "source_type": v["source_type"],
             "source_label": source_labels.get(str(v["source_type"]), str(v["source_type"])),
             "sensitive": bool(v.get("sensitive")), "target_name": b.get("target_name") or "",
-            "target_location": b.get("target_location") or "",
+            "target_location": b.get("target_location") or "", "identity_name": v.get("identity_name") or "",
+            "object_type": v.get("object_type") or "", "producer_position": v.get("producer_position"),
         }
         step_inputs.setdefault(int(b["flow_step_id"]), []).append(item)
     for v in variables:
@@ -326,6 +327,7 @@ def flow_runtime_data(conn, flow_id: int) -> dict[str, Any]:
                 "id": int(v["id"]), "name": v["name"], "source_type": v["source_type"],
                 "source_label": v["source_label"], "sensitive": bool(v.get("sensitive")),
                 "extraction_type": v.get("extraction_type") or "", "extraction_expr": v.get("extraction_expr") or "",
+                "consumers": v["consumers"],
             })
     return {"variables": variables, "bindings": bindings, "prerequisites": prereqs, "runs": runs,
             "step_inputs": step_inputs, "step_outputs": step_outputs, "source_labels": source_labels}
@@ -449,7 +451,7 @@ def _bindings_for_step(conn, step_id: int) -> list[dict[str, Any]]:
                                             WHERE b.flow_step_id=? ORDER BY b.id""", (int(step_id),)).fetchall()]
 
 
-def _resolve_variable(conn, variable: dict[str, Any], context: dict[str, str], *, override: dict[str, Any] | None = None) -> str | None:
+def _resolve_variable(conn, variable: dict[str, Any], context: dict[str, str], *, override: dict[str, Any] | None = None, default_identity_id: int | None = None) -> str | None:
     if override:
         st = str(override.get("source_type") or "CONSTANT").upper()
         if st == "IDENTITY":
@@ -464,7 +466,7 @@ def _resolve_variable(conn, variable: dict[str, Any], context: dict[str, str], *
     if st == "CONSTANT":
         return str(variable.get("default_value") or "")
     if st == "IDENTITY":
-        return _resolve_identity_value(conn, variable.get("identity_id"), str(variable.get("identity_field") or ""))
+        return _resolve_identity_value(conn, variable.get("identity_id") or default_identity_id, str(variable.get("identity_field") or ""))
     if st == "OBJECT":
         return _resolve_object_value(conn, variable.get("object_id"))
     if st == "GENERATED":
@@ -560,7 +562,7 @@ def _run_one_step(paths: dict[str, Any], domain: str, run: dict[str, Any], step:
             override = dict(override_row) if override_row else None
             if override and str(override.get("source_type") or "").upper() == "IDENTITY" and override.get("identity_id"):
                 step_identity_id = int(override["identity_id"])
-            value = _resolve_variable(conn, variable, context, override=override)
+            value = _resolve_variable(conn, variable, context, override=override, default_identity_id=step_identity_id)
             if value is None and int(variable.get("required") or 0):
                 if str(variable.get("source_type") or "").upper() == "MANUAL_INPUT" and not override:
                     return {"waiting_variable": variable, "used": used}, context
@@ -574,9 +576,28 @@ def _run_one_step(paths: dict[str, Any], domain: str, run: dict[str, Any], step:
             # portion inside Authorization, avoid producing "Bearer Bearer ...".
             if str(binding.get("target_name") or "").lower() == "authorization":
                 old = str(binding.get("target_value") or "")
-                if replacement.lower().startswith("bearer ") and not old.lower().startswith("bearer "):
+                old_bearer = old.lower().startswith("bearer ")
+                new_bearer = replacement.lower().startswith("bearer ")
+                # The quick HTTP picker can bind either the complete Authorization
+                # value ("Bearer <token>") or only the token range. Preserve the
+                # scheme that existed in the captured request instead of forcing
+                # researchers to reason about string boundaries.
+                if old_bearer and not new_bearer:
+                    replacement = "Bearer " + replacement
+                elif new_bearer and not old_bearer:
                     replacement = replacement.split(" ", 1)[1]
             raw = _replace_all(raw, str(binding["target_value"] or ""), replacement)
+
+        # Flow-level Identity is the normal actor. If the captured Step already
+        # has Authorization and the Step did not explicitly bind Authorization
+        # to a Flow variable, refresh that header from the current Identity.
+        # This removes the need to configure the same JWT on every Step while
+        # keeping generated Flow JWTs and surgical overrides authoritative.
+        explicit_auth_binding = any(str(b.get("target_name") or "").lower() == "authorization" for b in bindings)
+        if step_identity_id and not explicit_auth_binding:
+            identity_auth = _resolve_identity_value(conn, step_identity_id, "auth:Authorization")
+            if identity_auth:
+                raw = re.sub(r"(?im)^(Authorization\s*:\s*)[^\r\n]*$", lambda m: m.group(1) + str(identity_auth), raw)
         method, url, headers, body = rt._split_raw_request(raw, base_url)
 
     session = requests.Session(); session.trust_env = False
@@ -785,7 +806,7 @@ def get_run(conn, run_id: int) -> dict[str, Any] | None:
     for key, value in run["exported_context"].items():
         meta = variable_meta.get(str(key), {})
         run["exported_context_display"][str(key)] = _mask(str(value)) if int(meta.get("sensitive") or 0) else str(value)
-    steps = [dict(r) for r in conn.execute("""SELECT rs.*,fs.label,o.method,r.path FROM flow_run_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
+    steps = [dict(r) for r in conn.execute("""SELECT rs.*,fs.label,o.method,r.id resource_id,r.path FROM flow_run_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
                                               JOIN http_exchanges e ON e.id=fs.exchange_id JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id
                                               WHERE rs.run_id=? ORDER BY rs.position,rs.id""", (int(run_id),)).fetchall()]
     for s in steps:

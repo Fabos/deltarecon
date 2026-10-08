@@ -3940,11 +3940,13 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/t/{target_key}/hypotheses", response_class=HTMLResponse)
     def hypotheses_page(request: Request, target_key: str, q: str = "", status: str = "", source: str = "", kind: str = "", validity: str = "current"):
         import negro_identity as identity_tools
+        import negro_runners as runner_tools
         domain, workspace, paths = _target_context(target_key)
         validity = validity if validity in {"current","inactive","all"} else "current"
         rows = _hypothesis_rows(paths, q=q, status=status, source=source, kind=kind, validity=validity)
         signals = _pending_signal_rows(paths, 120)
         with _db(paths) as conn:
+            runner_tools.init_schema(conn)
             state_counts = {str(r["state"]): int(r["c"] or 0) for r in conn.execute(
                 "SELECT state,COUNT(*) c FROM entity_states GROUP BY state"
             ).fetchall()}
@@ -3955,10 +3957,11 @@ def create_app(default_domain: str, default_workspace: Path):
                    ORDER BY c DESC, category LIMIT 12"""
             ).fetchall()]
             identities = identity_tools.list_identities(conn)
+            reusable_runners = runner_tools.list_runners(conn, limit=300)
         kinds=sorted({str(x.get('lead_type') or '') for x in rows if x.get('lead_type')})
         return render(request, "hypotheses.html", target_key, domain, workspace, hypotheses=rows, signals=signals,
                       state_counts=state_counts, learning_backlog=learning_backlog,
-                      identities=identities,
+                      identities=identities, reusable_runners=reusable_runners,
                       q=q, hypothesis_status=status, hypothesis_source=source, hypothesis_kind=kind,
                       hypothesis_kinds=kinds, hypothesis_validity=validity)
 
@@ -4750,6 +4753,16 @@ def create_app(default_domain: str, default_workspace: Path):
         rt.advance_run(paths,domain,int(run_id))
         return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
 
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/default-identity")
+    def flow_runtime_default_identity(target_key: str, flow_id: int, identity_id: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        iid = int(identity_id) if str(identity_id or "").isdigit() else None
+        with _db(paths) as conn:
+            if iid and not conn.execute("SELECT 1 FROM identities WHERE id=?", (iid,)).fetchone():
+                raise HTTPException(status_code=400, detail="Identity no encontrada")
+            conn.execute("UPDATE flows SET identity_id=?,updated_at=? WHERE id=?", (iid, datetime.now(timezone.utc).isoformat(timespec="seconds"), int(flow_id)))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-runtime", status_code=303)
+
     @app.post("/t/{target_key}/flow-runs/{run_id}/override")
     def flow_runtime_run_override(target_key: str, run_id: int, step_id: int = Form(...), variable_id: int = Form(...),
                                   source_type: str = Form("CONSTANT"), value: str = Form(""), identity_id: str = Form(""),
@@ -4783,6 +4796,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if not data:
                 raise HTTPException(status_code=404, detail="Runner no encontrado")
             identities = identity_tools.list_identities(conn)
+            hypotheses=[dict(x) for x in conn.execute("SELECT id,title,status FROM leads_v2 ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()]
         planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
         active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
         now_ts=datetime.now(timezone.utc).timestamp()
@@ -4799,7 +4813,8 @@ def create_app(default_domain: str, default_workspace: Path):
             "last_seen_seconds_ago": round(max(0.0,now_ts-bridge_seen),2) if bridge_id else None,
         }
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
-                      planned_requests=planned, active_steps=active_steps, job=job, transport=runner_tools.transport_settings(), bridge_status=bridge_status)
+                      hypotheses=hypotheses, planned_requests=planned, active_steps=active_steps, job=job,
+                      transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
     @app.post("/t/{target_key}/investigations/{investigation_id}/runner")
     def investigation_create_runner(target_key: str, investigation_id: int, flow_id: int = Form(...), hypothesis_id: str = Form(""), alias: str = Form(...), description: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
@@ -4922,6 +4937,16 @@ def create_app(default_domain: str, default_workspace: Path):
             )
         return RedirectResponse(url=f"/t/{target_key}/runners/{rid}",status_code=303)
 
+    @app.post("/t/{target_key}/hypothesis/{lead_id}/runner/link")
+    def hypothesis_link_runner(target_key: str, lead_id: int, runner_id: int = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            if not conn.execute("SELECT 1 FROM leads_v2 WHERE id=?",(int(lead_id),)).fetchone():
+                raise HTTPException(status_code=404,detail="Hipótesis no encontrada")
+            runner_tools.link_hypothesis(conn,int(runner_id),int(lead_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{int(runner_id)}",status_code=303)
+
     @app.post("/t/{target_key}/runners/{runner_id}/transport")
     def runner_transport_update(target_key: str, runner_id: int, mode: str = Form("direct"), proxy_url: str = Form(""), verify_tls: str = Form("1"), ca_bundle: str = Form(""), timeout_seconds: int = Form(20), csrf: str = Form(...)):
         import negro_intel as intel
@@ -4969,14 +4994,36 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc: raise HTTPException(status_code=400,detail=str(exc))
 
     @app.post("/t/{target_key}/runners/{runner_id}/update")
-    def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""), max_requests: int = Form(30), experiment_goal: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
+    def runner_update(request: Request, target_key: str, runner_id: int, alias: str = Form(...), description: str = Form(""), identity_id: str = Form(""),
+                      hypothesis_id: str = Form(""), target_flow_step_id: str = Form(""), max_requests: int = Form(30),
+                      experiment_goal: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         iid = int(identity_id) if str(identity_id).isdigit() else None
+        hid = int(hypothesis_id) if str(hypothesis_id).isdigit() else None
+        tid = int(target_flow_step_id) if str(target_flow_step_id).isdigit() else None
         with _db(paths) as conn:
-            runner_tools.update_runner(conn, int(runner_id), alias=alias, description=description, identity_id=iid, max_requests=max_requests, experiment_goal=experiment_goal, expected_support=expected_support, expected_refute=expected_refute)
+            runner_tools.update_runner(conn, int(runner_id), alias=alias, description=description, identity_id=iid, hypothesis_id=hid,
+                                       target_flow_step_id=tid, max_requests=max_requests, experiment_goal=experiment_goal,
+                                       expected_support=expected_support, expected_refute=expected_refute)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/hypotheses/link")
+    def runner_hypothesis_link(target_key: str, runner_id: int, hypothesis_id: int = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.link_hypothesis(conn,int(runner_id),int(hypothesis_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}",status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/hypotheses/{hypothesis_id}/unlink")
+    def runner_hypothesis_unlink(target_key: str, runner_id: int, hypothesis_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.unlink_hypothesis(conn,int(runner_id),int(hypothesis_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}",status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/update")
     def runner_step_update(request: Request, target_key: str, runner_id: int, runner_step_id: int, action: str = Form("keep"), repeat_count: int = Form(1), notes: str = Form(""), csrf: str = Form(...)):
@@ -5015,7 +5062,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/execute")
-    def runner_execute(request: Request, target_key: str, runner_id: int, csrf: str = Form(...)):
+    def runner_execute(request: Request, target_key: str, runner_id: int, hypothesis_id: str = Form(""), target_flow_step_id: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
@@ -5024,8 +5071,20 @@ def create_app(default_domain: str, default_workspace: Path):
             if not data:
                 raise HTTPException(status_code=404, detail="Runner no encontrado")
             alias = str(data["runner"]["alias"])
-        job_id = _start_job(f"Runner · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id))
+        hid=int(hypothesis_id) if str(hypothesis_id).isdigit() else None
+        tid=int(target_flow_step_id) if str(target_flow_step_id).isdigit() else None
+        job_id = _start_job(f"Runner · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id), hid, tid)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?job={job_id}", status_code=303)
+
+    @app.get("/t/{target_key}/runners/runs/{run_id}", response_class=HTMLResponse)
+    def runner_run_detail_page(request: Request, target_key: str, run_id: int):
+        import negro_runners as runner_tools
+        domain,workspace,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            data=runner_tools.get_runner_run(conn,int(run_id))
+            if not data:
+                raise HTTPException(status_code=404,detail="Run no encontrado")
+        return render(request,"runner_run_detail.html",target_key,domain,workspace,run_data=data)
 
     @app.post("/t/{target_key}/runners/runs/{run_id}/outcome")
     def runner_run_outcome(request: Request, target_key: str, run_id: int, outcome: str = Form(...), csrf: str = Form(...)):
@@ -5084,12 +5143,14 @@ def create_app(default_domain: str, default_workspace: Path):
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/update")
-    def flow_step_update(request: Request, target_key: str, flow_id: int, step_id: int, label: str = Form(""), state_label: str = Form(""), notes: str = Form(""), csrf: str = Form(...)):
+    def flow_step_update(request: Request, target_key: str, flow_id: int, step_id: int, label: str = Form(""), state_label: str = Form(""), notes: str = Form(""),
+                         role_label: str = Form(""), checkpoint_label: str = Form(""), csrf: str = Form(...)):
         import negro_flows as flow_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         with _db(paths) as conn:
-            flow_tools.update_step(conn, int(flow_id), int(step_id), label=label, state_label=state_label, notes=notes)
+            flow_tools.update_step(conn, int(flow_id), int(step_id), label=label, state_label=state_label, notes=notes,
+                                   role_label=role_label, checkpoint_label=checkpoint_label)
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/remove")

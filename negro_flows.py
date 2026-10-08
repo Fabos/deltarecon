@@ -133,6 +133,8 @@ def init_schema(conn) -> None:
         "candidate": "INTEGER NOT NULL DEFAULT 0",
         "noise_suggested": "INTEGER NOT NULL DEFAULT 0",
         "noise_reason": "TEXT",
+        "role_label": "TEXT",
+        "checkpoint_label": "TEXT",
     }
     for name, ddl in step_migrations.items():
         if name not in step_cols:
@@ -162,15 +164,17 @@ def init_schema(conn) -> None:
                 candidate INTEGER NOT NULL DEFAULT 0,
                 noise_suggested INTEGER NOT NULL DEFAULT 0,
                 noise_reason TEXT,
+                role_label TEXT,
+                checkpoint_label TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(flow_id) REFERENCES flows(id) ON DELETE CASCADE,
                 FOREIGN KEY(exchange_id) REFERENCES http_exchanges(id) ON DELETE CASCADE
             );
             INSERT INTO flow_steps_v026(
-                id,flow_id,position,exchange_id,label,state_label,notes,included,candidate,noise_suggested,noise_reason,created_at,updated_at
+                id,flow_id,position,exchange_id,label,state_label,notes,included,candidate,noise_suggested,noise_reason,role_label,checkpoint_label,created_at,updated_at
             )
-            SELECT id,flow_id,position,exchange_id,label,state_label,notes,included,candidate,noise_suggested,noise_reason,created_at,updated_at
+            SELECT id,flow_id,position,exchange_id,label,state_label,notes,included,candidate,noise_suggested,noise_reason,role_label,checkpoint_label,created_at,updated_at
             FROM flow_steps;
             DROP TABLE flow_steps;
             ALTER TABLE flow_steps_v026 RENAME TO flow_steps;
@@ -372,12 +376,14 @@ def remove_step(conn, flow_id: int, step_id: int) -> None:
     conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now_iso(), int(flow_id)))
 
 
-def update_step(conn, flow_id: int, step_id: int, *, label: str = "", state_label: str = "", notes: str = "") -> None:
+def update_step(conn, flow_id: int, step_id: int, *, label: str = "", state_label: str = "", notes: str = "",
+                role_label: str = "", checkpoint_label: str = "") -> None:
     init_schema(conn)
     now = now_iso()
     conn.execute(
-        "UPDATE flow_steps SET label=?,state_label=?,notes=?,updated_at=? WHERE id=? AND flow_id=?",
-        (str(label or "")[:200], str(state_label or "")[:160], str(notes or "")[:3000], now, int(step_id), int(flow_id)),
+        "UPDATE flow_steps SET label=?,state_label=?,notes=?,role_label=?,checkpoint_label=?,updated_at=? WHERE id=? AND flow_id=?",
+        (str(label or "")[:200], str(state_label or "")[:160], str(notes or "")[:3000],
+         str(role_label or "")[:120], str(checkpoint_label or "")[:180], now, int(step_id), int(flow_id)),
     )
     conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now, int(flow_id)))
 

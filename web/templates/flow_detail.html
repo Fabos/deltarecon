@@ -39,6 +39,15 @@
   </div>
 
   <div class="runtime-grid">
+    <article class="runtime-card default-identity-card">
+      <div class="runtime-card-head"><div><p class="eyebrow">ACTOR NORMAL</p><h3>Identity por defecto</h3></div>{% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}</div>
+      <p class="muted small">Si un Step ya trae <code>Authorization</code>, Negro puede refrescarlo automáticamente con esta Identity. No tienes que configurar el mismo JWT Step por Step. Las variables explícitas del Flow y los overrides quirúrgicos siguen teniendo prioridad.</p>
+      <form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/default-identity" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <select name="identity_id"><option value="">Sin Identity por defecto</option>{% for i in identities %}<option value="{{ i.id }}" {% if flow_data.flow.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select>
+        <button class="button secondary" type="submit">Guardar Identity</button>
+      </form>
+    </article>
     <article class="runtime-card">
       <div class="runtime-card-head"><div><p class="eyebrow">ANTES DE EJECUTAR</p><h3>Flows que este necesita</h3></div><span class="badge">{{ flow_runtime.prerequisites|length }}</span></div>
       <p class="muted small">Ejemplo: “Consultar puntos” puede ejecutar primero “Login Vive Terpel” y recibir su JWT sin copiar los pasos del login.</p>
@@ -132,13 +141,13 @@
 
 <section class="panel flow-logic-panel" data-flow-logic data-flow-id="{{ flow_data.flow.id }}" data-estimate-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-estimate" data-run-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-run">
   <div class="panel-head flow-logic-head">
-    <div><p class="eyebrow">COPILOTO DE LÓGICA</p><h2>🧠 Explorar lógica de este Flujo</h2><p class="muted">La IA ve la secuencia, Requests/Responses sanitizadas, parámetros, Signals, estados y los Runners que ya probaste, incluyendo outcomes y muestras HTTP de Runs recientes. Propone Ideas IA; tú decides cuáles merecen convertirse en Hipótesis. El Runner aparece después, cuando decides cómo probar una Hipótesis.</p></div>
+    <div><p class="eyebrow">COPILOTO DE LÓGICA</p><h2>🧠 Explorar lógica de este Flujo</h2><p class="muted">La IA ve la secuencia, Requests/Responses sanitizadas, parámetros, Signals, estados y los Runners que ya probaste, incluyendo outcomes y muestras HTTP de Runs recientes. Propone Ideas IA; tú decides cuáles merecen convertirse en Hipótesis. Los Runners son reutilizables: pueden preparar estado por sí solos y, cuando estés probando una pregunta, asociarse a una Hipótesis.</p></div>
     <div class="flow-logic-actions"><select data-flow-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select><button class="btn-secondary" type="button" data-flow-ai-estimate>Estimar costo</button><button class="button" type="button" data-flow-ai-run hidden>Dame ideas</button></div>
   </div>
   <div class="flow-logic-status" data-flow-ai-status>Negro no ejecuta nada: primero analiza y te propone preguntas sobre el proceso.</div>
   <div class="flow-logic-results" data-flow-ai-results></div>
   {% if flow_runners %}<details class="runner-existing"><summary>Runners ya creados · {{ flow_runners|length }}</summary><div class="runner-mini-grid">{% for r in flow_runners %}<a href="{{ target_base }}/runners/{{ r.id }}"><b>▶ {{ r.alias }}</b><small>{{ r.run_count }} run(s){% if r.negative_runs %} · {{ r.negative_runs }} negativa(s){% endif %}{% if r.interesting_runs %} · {{ r.interesting_runs }} interesante(s){% endif %}</small></a>{% endfor %}</div></details>{% endif %}
-  <details class="runner-manual-create" id="runner-manual"><summary>+ Crear Runner manual desde este Flujo</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Alias<input name="alias" placeholder="Checkout · sin Payment" required></label><label>Descripción<textarea name="description" placeholder="Qué pregunta quieres probar"></textarea></label><button class="button secondary" type="submit">Crear borrador</button></form></details>
+  <details class="runner-manual-create" id="runner-manual"><summary>+ Crear Runner reutilizable desde este Flow</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Alias<input name="alias" placeholder="Checkout · sin Payment" required></label><label>Descripción<textarea name="description" placeholder="Qué estado prepara o qué variación reproduce"></textarea></label><button class="button secondary" type="submit">Crear borrador</button></form></details>
   <script type="application/json" data-flow-ai-initial>{{ logic_ai_latest|tojson }}</script>
 </section>
 
@@ -189,12 +198,20 @@
     <article class="flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}">
       <div class="flow-step-index">{{ s.position }}</div>
       <div class="flow-step-main">
-        <div class="flow-step-head"><div><h3>{{ s.method }} <code>{{ s.path }}</code></h3><small>#{{ s.exchange_id }} · {{ s.hostname }} · HTTP {{ s.status_code or '—' }} · {{ s.first_seen_at }}</small></div><div>{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if not s.included %}<span class="badge">Ignored</span>{% elif s.noise_suggested %}<span class="badge noise-badge" title="{{ s.noise_reason }}">possible background</span>{% endif %}</div></div>
+        <div class="flow-step-head human-step-head">
+          <div class="human-step-copy">
+            <div class="human-step-kicker">STEP {{ s.position }}{% if s.role_label %} · {{ s.role_label|upper }}{% endif %}</div>
+            <h3>{{ s.label or (s.method ~ ' ' ~ s.path) }}</h3>
+            {% if s.notes %}<p class="human-step-note" title="{{ s.notes }}">{{ s.notes }}</p>{% endif %}
+            <small><b>{{ s.method }}</b> <code>{{ s.path }}</code> · #{{ s.exchange_id }} · HTTP {{ s.status_code or '—' }}</small>
+          </div>
+          <div class="badges">{% if s.checkpoint_label %}<span class="badge checkpoint-badge">◆ {{ s.checkpoint_label }}</span>{% endif %}{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if not s.included %}<span class="badge">Ignored</span>{% elif s.noise_suggested %}<span class="badge noise-badge" title="{{ s.noise_reason }}">possible background</span>{% endif %}</div>
+        </div>
         <div class="step-story" id="flow-step-pos-{{ s.position }}">
           {% set needs = flow_runtime.step_inputs.get(s.id, []) %}{% set produces = flow_runtime.step_outputs.get(s.id, []) %}
           {% if needs or produces %}
-            {% if needs %}<div class="step-story-group"><span class="step-story-label">NECESITA</span>{% for x in needs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}🟣{% elif x.source_type=='IDENTITY' %}🟢{% elif x.source_type=='OBJECT' %}🟠{% else %}🔵{% endif %} {{ x.name }} <small>· {{ x.source_label }}</small></span>{% endfor %}</div>{% endif %}
-            {% if produces %}<div class="step-story-group"><span class="step-story-label">PRODUCE</span>{% for x in produces %}<span class="story-chip source-{{ x.source_type|lower }}">🔵 {{ x.name }}{% if x.extraction_expr %} <small>· {{ x.extraction_expr }}</small>{% endif %}</span>{% endfor %}</div>{% endif %}
+            {% if needs %}<div class="step-story-group"><span class="step-story-label">NECESITA</span>{% for x in needs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}🟣{% elif x.source_type=='IDENTITY' %}🟢{% elif x.source_type=='OBJECT' %}🟠{% else %}🔵{% endif %} {{ x.name }} <small>· {% if x.source_type=='IDENTITY' and x.identity_name %}Identity {{ x.identity_name }}{% elif x.source_type=='PREVIOUS_RESPONSE' and x.producer_position %}Step {{ x.producer_position }}{% elif x.source_type=='OBJECT' and x.object_type %}Object {{ x.object_type }}{% else %}{{ x.source_label }}{% endif %}</small></span>{% endfor %}</div>{% endif %}
+            {% if produces %}<div class="step-story-group"><span class="step-story-label">PRODUCE</span>{% for x in produces %}<span class="story-chip source-{{ x.source_type|lower }}">🔵 {{ x.name }}{% if x.extraction_expr %} <small>· {{ x.extraction_expr }}</small>{% endif %}{% if x.consumers %} <small>→ Step {{ x.consumers|join(', ') }}</small>{% endif %}</span>{% endfor %}</div>{% endif %}
           {% endif %}
         </div>
         {% if s.business_values %}<div class="business-chip-list">{% for v in s.business_values[:12] %}<span class="business-chip {% if v.is_state %}state-chip{% endif %}"><b>{{ v.normalized_name }}</b>=<code>{{ v.value }}</code></span>{% endfor %}</div>{% endif %}
@@ -239,7 +256,7 @@
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="start"><button class="button ghost small-button" type="submit">Set as Start</button></form>
           <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="end"><button class="button ghost small-button" type="submit">Set as End</button></form>
         </div>
-        <details class="flow-step-edit"><summary>Etiqueta / estado manual / nota</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Etiqueta</span><input name="label" value="{{ s.label or '' }}" placeholder="Confirmar pago"></label><label><span>Estado manual</span><input name="state_label" value="{{ s.state_label or '' }}" placeholder="PAID / CANCELLED / ..."></label><label><span>Nota</span><textarea name="notes">{{ s.notes or '' }}</textarea></label><button class="button ghost" type="submit">Guardar paso</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger ghost" type="submit">Quitar definitivamente del flow</button></form></details>
+        <details class="flow-step-edit human-step-edit"><summary>Editar contexto del Step</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Nombre humano</span><input name="label" value="{{ s.label or '' }}" placeholder="Cliente crea la orden"></label><label><span>Rol</span><input name="role_label" value="{{ s.role_label or '' }}" placeholder="Cliente / Vendedor / Admin / Sistema"></label><label><span>Nota corta</span><textarea name="notes" rows="2" placeholder="Qué ocurre aquí y por qué importa">{{ s.notes or '' }}</textarea></label><label><span>Checkpoint opcional</span><input name="checkpoint_label" value="{{ s.checkpoint_label or '' }}" placeholder="Orden pagada"></label><details class="advanced-context"><summary>Opciones avanzadas</summary><label><span>Estado manual</span><input name="state_label" value="{{ s.state_label or '' }}" placeholder="PAID / CANCELLED / ..."></label></details><button class="button ghost" type="submit">Guardar contexto</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger ghost" type="submit">Quitar definitivamente del flow</button></form></details>
       </div>
     </article>
   {% else %}<p class="empty">Este flujo todavía no tiene Requests.{% if flow_data.flow.capture_status == 'capturing' %} Navega en el objetivo y pulsa Detener Flujo al terminar.{% endif %}</p>{% endfor %}
