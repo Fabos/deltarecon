@@ -5767,7 +5767,9 @@ def create_app(default_domain: str, default_workspace: Path):
             if not inspector:
                 raise HTTPException(status_code=404, detail="Request no encontrada")
             identities = identity_tools.list_identities(conn)
+            auto_jwt = http_inspector.auto_learn_jwt_auth(conn, int(exchange_id))
             anns = http_inspector.learned_annotations(conn, int(exchange_id))
+            identity_learning_summary = http_inspector.decorate_inspector_identity_state(conn, inspector, anns, auto_jwt)
             request_highlighted = http_inspector.highlighted_html(inspector.get("request_text") or "", anns, "request")
             response_highlighted = http_inspector.highlighted_html(inspector.get("response_text") or "", anns, "response")
             if int(flow_id or 0) and int(flow_step_id or 0):
@@ -5780,6 +5782,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     flow_variables = flow_runtime_tools.flow_runtime_data(conn, int(flow_id)).get("variables", [])
         return render(request, "http_inspector.html", target_key, domain, workspace,
                       inspector=inspector, identities=identities, flow_context=flow_context, flow_variables=flow_variables,
+                      identity_learning_summary=identity_learning_summary,
                       request_highlighted=request_highlighted, response_highlighted=response_highlighted,
                       message=request.query_params.get("message", ""), error=request.query_params.get("error", ""), selected_identity_id=int(identity_id or 0), identity_setup=bool(identity_setup))
 
@@ -6863,6 +6866,13 @@ def create_app(default_domain: str, default_workspace: Path):
                 try:
                     import negro_identity as identity_tools
                     identity_tools.resolve_exchange(conn, int(result["exchange_id"]))
+                    # A freshly issued/rotated JWT can identify itself through strong
+                    # claims that match confirmed resolvers. Learn it immediately as
+                    # AUTH so the user never has to teach every token generation.
+                    try:
+                        http_inspector.auto_learn_jwt_auth(conn, int(result["exchange_id"]))
+                    except Exception as jwt_identity_exc:
+                        print(f"[identity-jwt] exchange={result.get('exchange_id')} error={type(jwt_identity_exc).__name__}: {str(jwt_identity_exc)[:160]}")
                 except Exception as identity_exc:
                     print(f"[identity] exchange={result.get('exchange_id')} error={type(identity_exc).__name__}: {str(identity_exc)[:160]}")
                 try:

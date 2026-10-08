@@ -242,6 +242,16 @@ def extract_exchange(conn, exchange_id: int) -> dict[str, Any] | None:
     amap = {(a["side"], a["location"], a["key_name"], a["value_hash"]): a for a in anns}
     for item in values:
         item["annotation"] = amap.get((item["side"], item["location"], item["key"], item["value_hash"]))
+        # Claims are first-class observations too.  Keep their explicit teaching
+        # attached to the JWT row so the Inspector can distinguish confirmed
+        # evidence from suggestions/default heuristics after a reload.
+        for claim in item.get("jwt_claims") or []:
+            claim_loc = f"{item['location']}#jwt:{claim['key']}"
+            claim_key = f"jwt.{claim['key']}"
+            claim_hash = sha(str(claim.get("value") or ""))
+            claim["location"] = claim_loc
+            claim["value_hash"] = claim_hash
+            claim["annotation"] = amap.get((item["side"], claim_loc, claim_key, claim_hash)) or amap.get((item["side"], claim_loc, str(claim["key"]), claim_hash))
     return {"exchange": ex, "request_text": request_text, "response_text": response_text, "values": values, "annotations": anns}
 
 
@@ -393,6 +403,227 @@ def _auth_fingerprint_candidates(item: dict[str, Any]) -> set[str]:
         out.add(sha(value[7:].strip()))
     return {x for x in out if x}
 
+STRONG_JWT_IDENTITY_CLAIMS = {
+    "sub", "subject", "user_id", "userid", "account_id", "accountid",
+    "member_id", "memberid", "customer_id", "customerid", "email", "username", "login",
+}
+
+
+def _resolver_claim_name(row: dict[str, Any]) -> str:
+    selector = str(row.get("selector") or "")
+    resolver_type = str(row.get("resolver_type") or "")
+    if resolver_type == "jwt_claim" and selector.startswith("jwt:"):
+        return selector.split(":", 1)[1]
+    if "#jwt:" in selector:
+        return selector.rsplit("#jwt:", 1)[1]
+    return ""
+
+
+def _jwt_identity_matches(claims: dict[str, Any], resolver_rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """Return confirmed Identity resolver evidence that supports one JWT.
+
+    A claim-specific resolver is strongest.  For strong actor claims such as sub or
+    email, a unique value match against another confirmed resolver is also useful: it
+    lets a freshly rotated JWT be attributed without teaching every token again.
+    """
+    out: dict[int, list[dict[str, Any]]] = {}
+    for raw_claim, raw_value in (claims or {}).items():
+        claim = _normalized_key(str(raw_claim))
+        if claim not in STRONG_JWT_IDENTITY_CLAIMS:
+            continue
+        vh = sha(str(raw_value))
+        for rr in resolver_rows:
+            if str(rr.get("value_hash") or "") != vh:
+                continue
+            learned_claim = _normalized_key(_resolver_claim_name(rr))
+            # If the resolver was explicitly a JWT claim, do not cross claim names.
+            if learned_claim and learned_claim != claim:
+                continue
+            iid = int(rr.get("identity_id") or 0)
+            if not iid:
+                continue
+            out.setdefault(iid, []).append({
+                "claim": str(raw_claim), "value": str(raw_value),
+                "resolver_id": rr.get("id"), "selector": rr.get("selector"),
+                "anchor_exchange_id": rr.get("anchor_exchange_id"),
+            })
+    return out
+
+
+def auto_learn_jwt_auth(conn, exchange_id: int) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """Persist rotated JWTs as AUTH when confirmed resolvers identify one actor.
+
+    This is intentionally conservative: ambiguous/conflicting resolver matches are
+    never auto-bound.  The returned map is also used by the Inspector UI.
+    """
+    init_schema(conn)
+    try:
+        import negro_identity as identity_tools
+        identity_tools.init_schema(conn)
+    except Exception:
+        return {}
+    payload = extract_exchange(conn, int(exchange_id))
+    if not payload:
+        return {}
+    resolver_rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM identity_resolvers WHERE enabled=1 AND COALESCE(classification,'resolver')='resolver'"
+    ).fetchall()]
+    identities = {int(r["id"]): str(r["name"]) for r in conn.execute("SELECT id,name FROM identities").fetchall()}
+    result: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for item in payload.get("values") or []:
+        parsed = item.get("jwt") or jwt_parts(str(item.get("value") or ""))
+        if not parsed or not isinstance(parsed.get("claims"), dict):
+            continue
+        matches = _jwt_identity_matches(parsed.get("claims") or {}, resolver_rows)
+        key = (str(item.get("side")), str(item.get("location")), str(item.get("key")), str(item.get("value_hash")))
+        if len(matches) != 1:
+            if len(matches) > 1:
+                result[key] = {"state": "conflict", "identity_ids": sorted(matches), "reason": "JWT claims point to more than one Identity"}
+            continue
+        iid, evidence = next(iter(matches.items()))
+        token = str(parsed.get("token") or item.get("value") or "")
+        material = {
+            "material_type": "bearer", "name": "Bearer", "value": token,
+            "fingerprint": sha(token), "preview": token[:120], "claims": parsed.get("claims") or {},
+        }
+        identity_tools._learn_material(conn, iid, None, material, source="jwt_resolver_auto", classification="auth")
+        existing = conn.execute("SELECT identity_id FROM exchange_identities WHERE exchange_id=?", (int(exchange_id),)).fetchone()
+        if not existing:
+            try:
+                identity_tools.assign_exchange(conn, int(exchange_id), iid, learn_auth=False, source="jwt_resolver_auto", notes=f"JWT auto-attributed by confirmed resolver claim {evidence[0]['claim']}")
+            except Exception:
+                pass
+        result[key] = {
+            "state": "auto_auth", "identity_id": iid, "identity_name": identities.get(iid, ""),
+            "reason": f"JWT claim {evidence[0]['claim']} matched a confirmed resolver",
+            "evidence": evidence,
+        }
+    return result
+
+
+def resolver_value_suggestions(conn, exchange_id: int) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """Suggest a new resolver key when a known resolver value appears under a new key.
+
+    Recognition by value is useful, but the new key is never promoted permanently
+    without human confirmation.  Conflicting Identity matches are surfaced instead.
+    """
+    init_schema(conn)
+    payload = extract_exchange(conn, int(exchange_id))
+    if not payload or not _table_exists(conn, "identity_resolvers"):
+        return {}
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM identity_resolvers WHERE enabled=1 AND COALESCE(classification,'resolver')='resolver'"
+    ).fetchall()]
+    identities = {int(r["id"]): str(r["name"]) for r in conn.execute("SELECT id,name FROM identities").fetchall()} if _table_exists(conn, "identities") else {}
+    explicit = {(str(a.get("side")), str(a.get("location")), str(a.get("key_name")), str(a.get("value_hash"))) for a in payload.get("annotations") or []}
+    out: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for item in payload.get("values") or []:
+        ikey = (str(item.get("side")), str(item.get("location")), str(item.get("key")), str(item.get("value_hash")))
+        if ikey in explicit or item.get("jwt"):
+            continue
+        matches = [r for r in rows if str(r.get("value_hash") or "") == str(item.get("value_hash") or "")]
+        by_identity: dict[int, list[dict[str, Any]]] = {}
+        for rr in matches:
+            iid = int(rr.get("identity_id") or 0)
+            if iid:
+                by_identity.setdefault(iid, []).append(rr)
+        if len(by_identity) == 1:
+            iid, evidence = next(iter(by_identity.items()))
+            # Same key/path is already known resolver behavior, not a new suggestion.
+            current_key = _normalized_key(str(item.get("key") or ""))
+            already_known = False
+            for rr in evidence:
+                selector = str(rr.get("selector") or "")
+                if selector == str(item.get("location") or ""):
+                    already_known = True; break
+                anchor = conn.execute(
+                    "SELECT key_name FROM http_value_annotations WHERE identity_id=? AND classification='resolver' AND value_hash=? AND location=? ORDER BY id DESC LIMIT 1",
+                    (iid, str(rr.get("value_hash") or ""), selector),
+                ).fetchone()
+                if anchor and _normalized_key(str(anchor["key_name"] or "")) == current_key:
+                    already_known = True; break
+            if not already_known:
+                out[ikey] = {
+                    "state": "suggested_resolver", "identity_id": iid, "identity_name": identities.get(iid, ""),
+                    "reason": "Same confirmed resolver value appeared under a new key",
+                    "known_selectors": [str(x.get("selector") or "") for x in evidence[:4]],
+                }
+        elif len(by_identity) > 1:
+            out[ikey] = {
+                "state": "conflict", "identity_ids": sorted(by_identity),
+                "identity_names": [identities.get(i, str(i)) for i in sorted(by_identity)],
+                "reason": "This value is a resolver for more than one Identity",
+            }
+    return out
+
+
+def decorate_inspector_identity_state(conn, inspector: dict[str, Any], learned: list[dict[str, Any]] | None = None, auto_jwt: dict | None = None) -> dict[str, int]:
+    """Attach UI-only state: confirmed, recognized, suggested, pending, conflict."""
+    learned = list(learned or [])
+    auto_jwt = auto_jwt or {}
+    suggestions = resolver_value_suggestions(conn, int(inspector["exchange"]["id"]))
+    by_obs: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for a in learned:
+        key = (str(a.get("side")), str(a.get("location")), str(a.get("key_name")), str(a.get("value_hash")))
+        by_obs.setdefault(key, []).append(a)
+    counts = {"confirmed": 0, "recognized": 0, "suggested": 0, "pending": 0, "conflict": 0}
+    for item in inspector.get("values") or []:
+        key = (str(item.get("side")), str(item.get("location")), str(item.get("key")), str(item.get("value_hash")))
+        explicit = item.get("annotation")
+        learned_here = [a for a in by_obs.get(key, []) if not a.get("id")]
+        auto = auto_jwt.get(key)
+        suggestion = suggestions.get(key)
+        item["learned_annotations"] = learned_here
+        item["identity_suggestion"] = suggestion
+        item["auto_jwt"] = auto
+        if explicit:
+            item["ui_state"] = "confirmed"
+            item["ui_label"] = f"{str(explicit.get('classification') or '').upper()} confirmed"
+        elif auto and auto.get("state") == "conflict":
+            item["ui_state"] = "conflict"; item["ui_label"] = "Identity conflict"
+        elif auto and auto.get("state") == "auto_auth":
+            item["ui_state"] = "recognized"; item["ui_label"] = f"AUTH · {auto.get('identity_name') or ''}"
+        elif learned_here:
+            top = sorted(learned_here, key=lambda a: {"auth":4,"resolver":3,"entity":2,"context":1}.get(str(a.get("classification")),0), reverse=True)[0]
+            item["ui_state"] = "recognized"; item["ui_label"] = _annotation_label(top)
+            item["recognized_annotation"] = top
+        elif suggestion and suggestion.get("state") == "conflict":
+            item["ui_state"] = "conflict"; item["ui_label"] = "Resolver conflict"
+        elif suggestion:
+            item["ui_state"] = "suggested"; item["ui_label"] = f"MATCH · {suggestion.get('identity_name') or ''}"
+        else:
+            item["ui_state"] = "pending"; item["ui_label"] = "Pending"
+        counts[item["ui_state"]] = counts.get(item["ui_state"], 0) + 1
+
+        # Claims: explicit annotations are authoritative; otherwise show confirmed
+        # claim resolvers when they match this Identity/value.
+        for claim in item.get("jwt_claims") or []:
+            ann = claim.get("annotation")
+            if ann:
+                claim["ui_state"] = "confirmed"
+                iid = int(ann.get("identity_id") or 0)
+                name = conn.execute("SELECT name FROM identities WHERE id=?", (iid,)).fetchone() if iid else None
+                claim["identity_name"] = str(name["name"]) if name else ""
+                continue
+            cvh = str(claim.get("value_hash") or sha(str(claim.get("value") or "")))
+            claim_key = _normalized_key(str(claim.get("key") or ""))
+            matches = []
+            for rr in conn.execute("SELECT * FROM identity_resolvers WHERE enabled=1 AND COALESCE(classification,'resolver')='resolver' AND value_hash=?", (cvh,)).fetchall() if _table_exists(conn, "identity_resolvers") else []:
+                rd = dict(rr); known_claim = _normalized_key(_resolver_claim_name(rd))
+                if known_claim and known_claim != claim_key:
+                    continue
+                matches.append(rd)
+            ids = sorted({int(x.get("identity_id") or 0) for x in matches if int(x.get("identity_id") or 0)})
+            if len(ids) == 1:
+                name = conn.execute("SELECT name FROM identities WHERE id=?", (ids[0],)).fetchone()
+                claim["ui_state"] = "recognized"; claim["identity_id"] = ids[0]; claim["identity_name"] = str(name["name"]) if name else ""
+            elif len(ids) > 1:
+                claim["ui_state"] = "conflict"
+            else:
+                claim["ui_state"] = "pending"
+    return counts
+
+
 def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
     """Return explicit + learned annotations applicable to one exchange.
 
@@ -406,6 +637,13 @@ def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
         import negro_identity as identity_tools
         import negro_objects as object_tools
         identity_tools.init_schema(conn); object_tools.init_schema(conn)
+    except Exception:
+        pass
+    # Rotated JWTs are learned as AUTH as soon as a confirmed resolver claim
+    # identifies exactly one actor. This is idempotent and deliberately refuses
+    # ambiguous Identity matches.
+    try:
+        auto_learn_jwt_auth(conn, int(exchange_id))
     except Exception:
         pass
     payload = extract_exchange(conn, int(exchange_id))

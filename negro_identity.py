@@ -1098,8 +1098,24 @@ def identity_detail(conn, identity_id: int) -> dict[str, Any] | None:
         "resolver":[x for x in taught if str(x.get("classification"))=="resolver"],
         "context":[x for x in taught if str(x.get("classification"))=="context"],
     }
+    # Keep rotating AUTH readable: show the most recently seen value for each
+    # mechanism/name in the main dossier while preserving every historical token
+    # in materials/evidence. This prevents automatic JWT rotation from flooding UI.
+    active_auth = [m for m in materials if str(m.get("classification") or "auth") == "auth" and int(m.get("active") or 0)]
+    auth_current = []
+    auth_family_counts: dict[tuple[str, str, int], int] = {}
+    seen_auth_families: set[tuple[str, str, int]] = set()
+    for m in active_auth:
+        fam = (str(m.get("material_type") or ""), str(m.get("material_name") or "").lower(), int(m.get("context_id") or 0))
+        auth_family_counts[fam] = auth_family_counts.get(fam, 0) + 1
+        if fam not in seen_auth_families:
+            seen_auth_families.add(fam)
+            auth_current.append(m)
+    for m in auth_current:
+        fam = (str(m.get("material_type") or ""), str(m.get("material_name") or "").lower(), int(m.get("context_id") or 0))
+        m["history_count"] = max(0, auth_family_counts.get(fam, 1) - 1)
     grouped_evidence = {
-        "auth": [m for m in materials if str(m.get("classification") or "auth") == "auth" and int(m.get("active") or 0)],
+        "auth": auth_current,
         "resolvers": [r for r in resolvers if str(r.get("classification") or "resolver") == "resolver" and int(r.get("enabled") or 0)],
         "context": [m for m in materials if str(m.get("classification") or "") == "context"] + [r for r in resolvers if str(r.get("classification") or "") == "context"],
         "ignored": [m for m in materials if str(m.get("classification") or "") == "ignore"] + [r for r in resolvers if str(r.get("classification") or "") == "ignore"],

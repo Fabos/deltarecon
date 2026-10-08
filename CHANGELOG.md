@@ -1,3 +1,13 @@
+# v0.52.0 · Identity Learning UX + JWT Rotation
+
+- HTTP Inspector separa **Por revisar** de **Ya marcados / reconocidos** para que enseñar una Identity no obligue a revisar una y otra vez el mismo tráfico.
+- El buscador del Inspector ahora filtra por todo el contenido visible de la fila: key/path, valor, Identity, clasificación, estado y claims JWT. Buscar `Fabian`, `jwt.sub`, `Authorization` o un valor concreto funciona sobre pendientes y conocidos.
+- Un valor Resolver conocido visto bajo una **key nueva** ya no se promueve silenciosamente. Negro muestra `MATCH · Identity` y ofrece **Confirmar RESOLVER**; sólo la confirmación humana convierte esa nueva key en Resolver permanente.
+- Claims JWT conservan sus decisiones explícitas después de recargar y usan un layout vertical/responsive para evitar que key y valor se monten con zoom alto.
+- JWT nuevos/rotados se aprenden automáticamente como **AUTH** cuando un claim fuerte (`sub`, user/account/member/customer id, email, username/login) coincide de forma inequívoca con resolvers confirmados. Conflictos entre Identities se muestran y no se auto-aprenden.
+- La ficha Identity mantiene el AUTH rotatorio legible: muestra el material más reciente por familia y conserva el número de tokens anteriores como historial sin inundar la vista.
+- Sin cambios al Bridge de Burp.
+
 # v0.51.0 · Scenario Lab + Run Compare
 
 - Flow permanece canónico: las pruebas ya no necesitan deformar el HTTP del Flow base.

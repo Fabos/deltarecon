@@ -1,13 +1,16 @@
-## v0.51.0 · Scenario Lab + Run Compare
+## v0.52.0 · Identity Learning UX + JWT Rotation
 
-> Current build: **v0.51.0** — Flow queda como blueprint normal; **Escenario** concentra las mutaciones HTTP/Identity/secuencia sin tocar el Flow; **Run** conserva evidencia inmutable y ahora puede fijarse como baseline y compararse contra otra prueba reutilizando Smart Compare.
+> Current build: **v0.52.0** — HTTP Inspector separa lo pendiente de lo ya conocido, su buscador filtra también Identity/clasificación/claims, una key nueva con un valor Resolver conocido aparece como sugerencia `MATCH` sin aprenderse sola, y JWT rotados se atribuyen automáticamente como AUTH cuando claims fuertes coinciden de forma inequívoca con una Identity.
 
 ### Lo nuevo
-- Cada Step del Escenario tiene **Editar HTTP**. Puedes cambiar/agregar/quitar headers, query params, JSON, cookies y form fields, o hacer reemplazo textual exacto.
-- Las modificaciones se guardan como deltas del Escenario; el HTTP original del Flow permanece intacto.
-- Los Runs pueden marcarse como **★ baseline**.
-- **Compare Runs** prioriza el Step objetivo y compara Identity, status, duración, variables y cambios HTTP usando el Smart Compare existente.
-- La composición de Flows queda colapsada para reducir ruido; el foco visual del Escenario son sus Steps, modificaciones y resultados.
+- HTTP Inspector separa **Por revisar** de **Ya marcados / reconocidos**.
+- Buscar ahora encuentra por key/path, valor, Identity, clasificación y claims JWT.
+- Una key nueva que repite un valor Resolver conocido aparece como `MATCH · Identity`; Negro la reconoce, pero no aprende la nueva key hasta que confirmes **RESOLVER**.
+- JWT rotados se marcan como **AUTH** automáticamente cuando claims fuertes coinciden con una sola Identity conocida.
+- Conflictos de Identity nunca se auto-confirman.
+- Claims JWT usan una composición responsive donde key y valor no se montan.
+- La ficha de Identity muestra el AUTH rotatorio actual y conserva el historial sin listar decenas de JWT como si fueran mecanismos distintos.
+- Todo Scenario Lab + Run Compare de v0.51.0 se conserva.
 
 ## v0.50.0 · Minimal Flow + Scenarios UX
 
