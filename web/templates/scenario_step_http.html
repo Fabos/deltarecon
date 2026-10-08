@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Editar HTTP · {{ scenario_http.runner.alias }} · Negro{% endblock %}
+{% block content %}
+{% set r=scenario_http.runner %}{% set s=scenario_http.step %}
+<section class="hero compact-hero scenario-http-hero">
+  <div>
+    <p class="eyebrow">ESCENARIO · STEP {{ s.position }}</p>
+    <h1>{{ s.alias_label or s.flow_label or (s.method ~ ' ' ~ s.path) }}</h1>
+    <p class="muted">Modifica solamente este Escenario. El Flow original permanece intacto.</p>
+    <div class="hero-meta"><span class="badge">{{ s.source_flow_name }}</span>{% if s.step_identity_name %}<span class="badge identity-badge">{{ s.step_identity_name }}</span>{% endif %}<span class="badge">{{ s.method }} {{ s.path }}</span></div>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners/{{ r.id }}#scenario-step-{{ s.id }}">← Escenario</a></div>
+</section>
+
+<section class="scenario-http-layout">
+  <article class="panel scenario-http-main">
+    <div class="panel-head"><div><p class="eyebrow">PREVIEW</p><h2>HTTP del Escenario</h2><p class="muted small">Esto es lo que saldrá después de aplicar tus modificaciones guardadas.</p></div><span>{{ scenario_http.patches|length }} cambio(s)</span></div>
+    <pre class="run-http-raw scenario-http-preview">{{ scenario_http.preview_raw }}</pre>
+    <details class="advanced-context scenario-original-http"><summary>Ver HTTP original del Flow</summary><pre class="run-http-raw">{{ scenario_http.original_raw }}</pre></details>
+  </article>
+
+  <aside class="panel scenario-http-editor">
+    <div class="panel-head"><div><p class="eyebrow">MODIFICACIONES</p><h2>Cambia sólo lo necesario</h2><p class="muted small">Agregar, cambiar o quitar valores aquí no modifica el Flow.</p></div></div>
+    {% if scenario_http.patches %}
+    <div class="scenario-patch-list">
+      {% for p in scenario_http.patches %}
+      <article class="scenario-patch-row"><div><b>{{ {'header':'Header','query':'Query','json':'JSON','cookie':'Cookie','form':'Form','text':'Texto'}.get(p.location,p.location) }} · {{ {'set':'Cambiar/agregar','remove':'Quitar','replace':'Reemplazar'}.get(p.operation,p.operation) }}</b><code>{{ p.key_name }}</code>{% if p.operation!='remove' %}<small>→ {{ p.value }}</small>{% endif %}</div><form action="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/http/patches/{{ p.id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="Restaurar original">×</button></form></article>
+      {% endfor %}
+    </div>
+    {% else %}<div class="empty-state compact"><strong>Sin cambios.</strong><span>Este Step se ejecutará igual que el Flow.</span></div>{% endif %}
+
+    <details class="scenario-add-patch" open>
+      <summary>+ Modificar HTTP</summary>
+      <form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/http/patches" method="post" data-scenario-patch-form>
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>Qué quieres tocar<select name="location" data-patch-location><option value="header">Header</option><option value="query">Query param</option><option value="json">Campo JSON</option><option value="cookie">Cookie</option><option value="form">Form field</option><option value="text">Texto exacto</option></select></label>
+        <label>Qué hacer<select name="operation" data-patch-operation><option value="set">Cambiar / agregar</option><option value="remove">Quitar</option><option value="replace" data-text-only hidden>Reemplazar texto</option></select></label>
+        <label data-patch-key><span data-patch-key-label>Nombre / path</span><input name="key_name" placeholder="Authorization / orderId / $.user.id"></label>
+        <label data-patch-value><span>Nuevo valor</span><textarea name="value" rows="2" placeholder="Bearer {{ '{{jwt}}' }} / 91823 / false"></textarea></label>
+        <button class="button">Guardar cambio</button>
+      </form>
+    </details>
+    <div class="scenario-http-tip"><b>Tip</b><span>Para cambiar Identity, omitir/repetir Step o poner alias, vuelve al Escenario. Aquí sólo editamos HTTP.</span></div>
+  </aside>
+</section>
+
+<script>
+(() => {
+ const form=document.querySelector('[data-scenario-patch-form]'); if(!form)return;
+ const loc=form.querySelector('[data-patch-location]'), op=form.querySelector('[data-patch-operation]');
+ const value=form.querySelector('[data-patch-value]'), label=form.querySelector('[data-patch-key-label]');
+ const sync=()=>{
+   const text=loc.value==='text';
+   [...op.options].forEach(x=>{ if(x.value==='replace') x.hidden=!text; if((x.value==='set'||x.value==='remove')) x.hidden=text; });
+   if(text) op.value='replace'; else if(op.value==='replace') op.value='set';
+   value.hidden=op.value==='remove';
+   label.textContent=text?'Texto original':'Nombre / path';
+ };
+ loc.addEventListener('change',sync); op.addEventListener('change',sync); sync();
+})();
+</script>
+{% endblock %}

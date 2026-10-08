@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Compare Runs · Negro{% endblock %}
+{% block content %}
+{% set a=compare.a.run %}{% set b=compare.b.run %}{% set aa=compare.attempt_a %}{% set bb=compare.attempt_b %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">COMPARE RUNS</p><h1>Baseline vs prueba</h1><p class="muted">Compara ejecuciones reales. El target Step va primero; el Setup queda disponible debajo.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners/{{ a.runner_id }}#runner-history">← Escenario</a></div>
+</section>
+
+<section class="run-compare-summary">
+  <article class="panel run-compare-side"><p class="eyebrow">A · {% if a.is_baseline %}★ BASELINE{% else %}RUN{% endif %}</p><h2>Run #{{ a.id }}</h2><div class="run-compare-facts"><span>Identity <b>{{ compare.identity_a }}</b></span><span>Status <b>{% if aa %}HTTP {{ aa.status_code or '—' }}{% else %}—{% endif %}</b></span><span>Duración <b>{% if aa %}{{ aa.elapsed_ms or 0 }} ms{% else %}—{% endif %}</b></span></div><a class="button ghost small-button" href="{{ target_base }}/runners/runs/{{ a.id }}">Abrir Run</a></article>
+  <div class="run-compare-vs">VS</div>
+  <article class="panel run-compare-side"><p class="eyebrow">B · {% if b.is_baseline %}★ BASELINE{% else %}TEST{% endif %}</p><h2>Run #{{ b.id }}</h2><div class="run-compare-facts"><span>Identity <b>{{ compare.identity_b }}</b></span><span>Status <b>{% if bb %}HTTP {{ bb.status_code or '—' }}{% else %}—{% endif %}</b></span><span>Duración <b>{% if bb %}{{ bb.elapsed_ms or 0 }} ms{% else %}—{% endif %}</b></span></div><a class="button ghost small-button" href="{{ target_base }}/runners/runs/{{ b.id }}">Abrir Run</a></article>
+</section>
+
+<section class="panel run-compare-target">
+  <div class="panel-head"><div><p class="eyebrow">🎯 STEP COMPARADO</p><h2>{% if aa %}{{ aa.alias_label or aa.flow_label or (aa.flow_method ~ ' ' ~ aa.flow_path) }}{% else %}Último Step ejecutado{% endif %}</h2><p class="muted small">Primero mostramos lo que importa para la prueba, no todo el setup.</p></div>{% if compare.same_status %}<span class="badge class-interesting">Mismo HTTP status</span>{% endif %}</div>
+  <div class="semantic-compare-grid">
+    <article><small>IDENTITY</small><b>{{ compare.identity_a }}</b><span>→</span><b>{{ compare.identity_b }}</b></article>
+    <article><small>STATUS</small><b>{% if aa %}{{ aa.status_code or '—' }}{% else %}—{% endif %}</b><span>→</span><b>{% if bb %}{{ bb.status_code or '—' }}{% else %}—{% endif %}</b></article>
+    <article><small>DURACIÓN</small><b>{% if aa %}{{ aa.elapsed_ms or 0 }} ms{% else %}—{% endif %}</b><span>→</span><b>{% if bb %}{{ bb.elapsed_ms or 0 }} ms{% else %}—{% endif %}</b></article>
+  </div>
+  {% if compare.identity_a != compare.identity_b and compare.same_status %}<div class="callout"><b>Observación útil</b><span>Cambió la Identity pero el target devolvió el mismo HTTP status. Esto merece revisión; por sí solo no demuestra una vulnerabilidad.</span></div>{% endif %}
+  {% if compare.patch_changes %}<div class="compare-variable-changes"><h3>Qué cambió en el Escenario</h3>{% for p in compare.patch_changes %}<div class="runtime-row"><span class="badge">{{ 'B añadió' if p.kind=='added' else 'B ya no usa' }}</span><code>{{ p.label }}</code><small>{{ p.value }}</small></div>{% endfor %}</div>{% endif %}
+  {% if compare.variable_changes %}<div class="compare-variable-changes"><h3>Variables que cambiaron</h3>{% for v in compare.variable_changes %}<div class="diff-row"><code>{{ v.name }}</code><div class="diff-values"><div><small>A</small><code>{{ v.a }}</code></div><div><small>B</small><code>{{ v.b }}</code></div></div></div>{% endfor %}</div>{% endif %}
+</section>
+
+{% if compare.smart %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">SMART COMPARE · REUTILIZADO</p><h2>{{ compare.smart.changes|length }} diferencias HTTP</h2><p class="muted small">Usa el mismo motor de Smart Compare de Negro; Run Compare sólo añade contexto de Escenario/Identity/target.</p></div><span>{{ compare.smart.business_changes }} de negocio</span></div>
+  <div class="diff-list">
+  {% for c in compare.smart.changes %}<div class="diff-row {% if c.business %}business-diff{% endif %}"><div><span class="badge">{{ c.surface }}</span>{% if c.business %}<span class="badge">negocio</span>{% endif %}<code>{{ c.key }}</code></div><div class="diff-values"><div><small>A</small><code>{{ c.a if c.a!='' else '∅' }}</code></div><div><small>B</small><code>{{ c.b if c.b!='' else '∅' }}</code></div></div></div>{% else %}<p class="empty">El target Step no tiene diferencias estructuradas.</p>{% endfor %}
+  </div>
+</section>
+{% else %}<section class="panel"><div class="empty-state compact"><strong>No pude ejecutar Smart Compare sobre el target.</strong><span>Puede faltar evidencia HTTP canónica en alguno de los Runs.</span></div></section>{% endif %}
+
+<details class="panel flow-collapsible-section">
+  <summary><span><b>Comparar Setup completo</b><small>Revisa status por Step sólo si necesitas investigar una diferencia anterior al target.</small></span><span>＋</span></summary>
+  <div class="run-setup-compare">
+    <div><h3>Run #{{ a.id }}</h3>{% for x in compare.a.attempts %}<span>Step {{ x.position }} · HTTP {{ x.status_code or '—' }} · {{ x.elapsed_ms or 0 }} ms</span>{% endfor %}</div>
+    <div><h3>Run #{{ b.id }}</h3>{% for x in compare.b.attempts %}<span>Step {{ x.position }} · HTTP {{ x.status_code or '—' }} · {{ x.elapsed_ms or 0 }} ms</span>{% endfor %}</div>
+  </div>
+</details>
+{% endblock %}

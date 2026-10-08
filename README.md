@@ -1,6 +1,17 @@
+## v0.51.0 · Scenario Lab + Run Compare
+
+> Current build: **v0.51.0** — Flow queda como blueprint normal; **Escenario** concentra las mutaciones HTTP/Identity/secuencia sin tocar el Flow; **Run** conserva evidencia inmutable y ahora puede fijarse como baseline y compararse contra otra prueba reutilizando Smart Compare.
+
+### Lo nuevo
+- Cada Step del Escenario tiene **Editar HTTP**. Puedes cambiar/agregar/quitar headers, query params, JSON, cookies y form fields, o hacer reemplazo textual exacto.
+- Las modificaciones se guardan como deltas del Escenario; el HTTP original del Flow permanece intacto.
+- Los Runs pueden marcarse como **★ baseline**.
+- **Compare Runs** prioriza el Step objetivo y compara Identity, status, duración, variables y cambios HTTP usando el Smart Compare existente.
+- La composición de Flows queda colapsada para reducir ruido; el foco visual del Escenario son sus Steps, modificaciones y resultados.
+
 ## v0.50.0 · Minimal Flow + Scenarios UX
 
-> Current build: **v0.50.0** — Flow vuelve a ser una lectura simple del proceso; `Runner` se conserva internamente pero la interfaz lo presenta como **Escenario**: una prueba reutilizable basada en uno o varios Flows, con alias/Identity por Step y Runs inspeccionables.
+> Previous build: **v0.50.0** — Flow vuelve a ser una lectura simple del proceso; `Runner` se conserva internamente pero la interfaz lo presenta como **Escenario**: una prueba reutilizable basada en uno o varios Flows, con alias/Identity por Step y Runs inspeccionables.
 
 ### UX principal
 

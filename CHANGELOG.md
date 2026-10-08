@@ -1,3 +1,13 @@
+# v0.51.0 · Scenario Lab + Run Compare
+
+- Flow permanece canónico: las pruebas ya no necesitan deformar el HTTP del Flow base.
+- Nuevo editor **Escenario → Step → Editar HTTP** con mutaciones `set/remove/replace` para headers, query, JSON, cookies, forms y texto exacto.
+- Las mutaciones se aplican sólo al ejecutar el Escenario y quedan congeladas en el contexto del Run.
+- Nuevo **★ baseline** por Escenario y **Compare Runs** target-first.
+- Run Compare reutiliza `negro_parameters.smart_diff`; no introduce un segundo motor de diff.
+- Cada Run Inspector muestra las modificaciones del Escenario aplicadas a cada Step.
+- La composición multi-Flow del Escenario queda colapsada para mantener una UX más minimalista.
+
 # v0.50.0 · Minimal Flow + Scenarios UX
 
 - Flow detail is now process-first: alias/role/note, method/path/status and existing `USA / PRODUCE` dependencies are the primary surface.

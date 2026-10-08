@@ -4815,9 +4815,10 @@ def create_app(default_domain: str, default_workspace: Path):
             "runner_transport_ready": bool(bridge_active and _bridge_supports_execute(str(bridge_version or ""))),
             "last_seen_seconds_ago": round(max(0.0,now_ts-bridge_seen),2) if bridge_id else None,
         }
+        baseline_run=next((x for x in data.get("runs",[]) if bool(x.get("is_baseline"))),None)
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
                       hypotheses=hypotheses, available_flows=available_flows, planned_requests=planned, active_steps=active_steps, job=job,
-                      transport=runner_tools.transport_settings(), bridge_status=bridge_status)
+                      baseline_run=baseline_run, transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
     @app.post("/t/{target_key}/investigations/{investigation_id}/runner")
     def investigation_create_runner(target_key: str, investigation_id: int, flow_id: int = Form(...), hypothesis_id: str = Form(""), alias: str = Form(...), description: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
@@ -5064,6 +5065,37 @@ def create_app(default_domain: str, default_workspace: Path):
             runner_tools.update_runner_step(conn, int(runner_id), int(runner_step_id), action=action, repeat_count=repeat_count, notes=notes, alias_label=alias_label, role_label=role_label, identity_id=iid)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}", status_code=303)
 
+    @app.get("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/http", response_class=HTMLResponse)
+    def runner_step_http_page(request: Request, target_key: str, runner_id: int, runner_step_id: int):
+        import negro_runners as runner_tools
+        domain,workspace,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            try:
+                data=runner_tools.scenario_step_preview(conn,int(runner_id),int(runner_step_id))
+            except ValueError as exc:
+                raise HTTPException(status_code=404,detail=str(exc))
+        return render(request,"scenario_step_http.html",target_key,domain,workspace,scenario_http=data)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/http/patches")
+    def runner_step_patch_add(target_key: str, runner_id: int, runner_step_id: int, location: str = Form(...), operation: str = Form("set"),
+                              key_name: str = Form(""), value: str = Form(""), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                runner_tools.add_step_patch(conn,int(runner_id),int(runner_step_id),location=location,operation=operation,key_name=key_name,value=value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/http",status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/http/patches/{patch_id}/delete")
+    def runner_step_patch_delete(target_key: str, runner_id: int, runner_step_id: int, patch_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        with _db(paths) as conn:
+            runner_tools.delete_step_patch(conn,int(runner_id),int(patch_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}/steps/{runner_step_id}/http",status_code=303)
+
     @app.post("/t/{target_key}/runners/{runner_id}/variables/add")
     def runner_variable_add(request: Request, target_key: str, runner_id: int, target_ref: str = Form(...), mode: str = Form("values"), values_text: str = Form(""), source_runner_step_id: str = Form(""), source_name: str = Form(""), regex_pattern: str = Form(""), csrf: str = Form(...)):
         import negro_runners as runner_tools
@@ -5105,6 +5137,28 @@ def create_app(default_domain: str, default_workspace: Path):
         tid=int(target_flow_step_id) if str(target_flow_step_id).isdigit() else None
         job_id = _start_job(f"Runner · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id), hid, tid)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?job={job_id}", status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/runs/{run_id}/baseline")
+    def runner_run_set_baseline(target_key: str, runner_id: int, run_id: int, csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                runner_tools.set_run_baseline(conn,int(runner_id),int(run_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}#runner-history",status_code=303)
+
+    @app.get("/t/{target_key}/runners/runs/compare", response_class=HTMLResponse)
+    def runner_runs_compare_page(request: Request, target_key: str, a: int, b: int):
+        import negro_runners as runner_tools
+        domain,workspace,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                result=runner_tools.compare_runner_runs(conn,int(a),int(b))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return render(request,"runner_run_compare.html",target_key,domain,workspace,compare=result)
 
     @app.get("/t/{target_key}/runners/runs/{run_id}", response_class=HTMLResponse)
     def runner_run_detail_page(request: Request, target_key: str, run_id: int):

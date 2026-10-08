@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "0.50.0"
+VERSION = "0.51.0"
 CONFIG_PATH = Path.home() / ".config" / "negro" / "config.json"
 _WORKSPACE_INIT_LOCK = threading.RLock()
 TARGETS_PATH = Path.home() / ".config" / "negro" / "targets.json"

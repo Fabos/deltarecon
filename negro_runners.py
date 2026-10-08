@@ -96,6 +96,22 @@ def init_schema(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_runner_variables_runner ON runner_variables(runner_id, target_runner_step_id);
 
+        CREATE TABLE IF NOT EXISTS runner_step_patches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            runner_id INTEGER NOT NULL,
+            runner_step_id INTEGER NOT NULL,
+            location TEXT NOT NULL,
+            operation TEXT NOT NULL DEFAULT 'set',
+            key_name TEXT,
+            value TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(runner_id) REFERENCES runners(id) ON DELETE CASCADE,
+            FOREIGN KEY(runner_step_id) REFERENCES runner_steps(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_runner_step_patches_step ON runner_step_patches(runner_step_id,id);
+        CREATE INDEX IF NOT EXISTS idx_runner_step_patches_runner ON runner_step_patches(runner_id,runner_step_id);
+
         CREATE TABLE IF NOT EXISTS runner_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             runner_id INTEGER NOT NULL,
@@ -158,6 +174,8 @@ def init_schema(conn) -> None:
     _safe_add_column("runner_runs", "context_snapshot_json", "TEXT")
     _safe_add_column("runner_runs", "hypothesis_id", "INTEGER")
     _safe_add_column("runner_runs", "target_flow_step_id", "INTEGER")
+    _safe_add_column("runner_runs", "is_baseline", "INTEGER NOT NULL DEFAULT 0")
+    _safe_add_column("runner_runs", "label", "TEXT")
     # FastAPI can initialize Runner schema from more than one request/thread at
     # the same time.  SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
     # so two initializers can both observe a missing column and race.  Re-read
@@ -410,6 +428,12 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
         item=dict(v); item["values"]=_load_json(item.get("values_json"),[])
         if int(item["target_runner_step_id"]) in by_id:
             by_id[int(item["target_runner_step_id"])]["variables"].append(item)
+    for patch in conn.execute("SELECT * FROM runner_step_patches WHERE runner_id=? ORDER BY id",(int(runner_id),)).fetchall():
+        item=dict(patch)
+        if int(item["runner_step_id"]) in by_id:
+            by_id[int(item["runner_step_id"])].setdefault("patches",[]).append(item)
+    for st in steps:
+        st.setdefault("patches",[])
     # Reuse Flow runtime definitions for readable dependencies. A Scenario may
     # now contain Steps from several Flows, but still reuses each Flow's own
     # variables/bindings instead of inventing a second dependency system.
@@ -602,6 +626,233 @@ def delete_variable(conn, runner_id: int, variable_id: int) -> None:
     conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
 
 
+def add_step_patch(conn, runner_id: int, runner_step_id: int, *, location: str, operation: str = "set",
+                   key_name: str = "", value: str = "") -> int:
+    """Persist one Scenario-only HTTP mutation without touching the source Flow."""
+    init_schema(conn)
+    location=str(location or "").strip().lower()
+    operation=str(operation or "set").strip().lower()
+    if location not in {"header","query","json","cookie","form","text"}:
+        raise ValueError("Ubicación de modificación inválida")
+    if operation not in {"set","remove","replace"}:
+        raise ValueError("Operación de modificación inválida")
+    if location != "text" and not str(key_name or "").strip():
+        raise ValueError("Indica el campo que quieres modificar")
+    if location == "text" and operation != "replace":
+        raise ValueError("Texto exacto sólo soporta reemplazo")
+    if location == "text" and not str(key_name or ""):
+        raise ValueError("Indica el texto original que quieres reemplazar")
+    if not conn.execute("SELECT 1 FROM runner_steps WHERE id=? AND runner_id=?",(int(runner_step_id),int(runner_id))).fetchone():
+        raise ValueError("Step del Escenario no encontrado")
+    now=now_iso()
+    cur=conn.execute(
+        """INSERT INTO runner_step_patches(runner_id,runner_step_id,location,operation,key_name,value,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (int(runner_id),int(runner_step_id),location,operation,str(key_name or "")[:1000],str(value or "")[:20000],now,now),
+    )
+    conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now,int(runner_id)))
+    return int(cur.lastrowid)
+
+
+def delete_step_patch(conn, runner_id: int, patch_id: int) -> None:
+    init_schema(conn)
+    conn.execute("DELETE FROM runner_step_patches WHERE id=? AND runner_id=?",(int(patch_id),int(runner_id)))
+    conn.execute("UPDATE runners SET updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
+
+
+def _patches_for_step(conn, runner_step_id: int) -> list[dict[str,Any]]:
+    return [dict(x) for x in conn.execute(
+        "SELECT * FROM runner_step_patches WHERE runner_step_id=? ORDER BY id",(int(runner_step_id),)
+    ).fetchall()]
+
+
+def _coerce_patch_value(value: str) -> Any:
+    text=str(value or "")
+    stripped=text.strip()
+    if stripped == "":
+        return ""
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return text
+
+
+def _json_parts(path: str) -> list[str]:
+    clean=str(path or "").strip()
+    if clean.startswith("$."):
+        clean=clean[2:]
+    elif clean.startswith("$"):
+        clean=clean[1:].lstrip(".")
+    return [x for x in clean.split(".") if x]
+
+
+def _json_set_path(data: Any, path: str, value: Any) -> Any:
+    parts=_json_parts(path)
+    if not parts:
+        return value
+    if not isinstance(data,dict):
+        data={}
+    cur=data
+    for part in parts[:-1]:
+        nxt=cur.get(part)
+        if not isinstance(nxt,dict):
+            nxt={}; cur[part]=nxt
+        cur=nxt
+    cur[parts[-1]]=value
+    return data
+
+
+def _json_remove_path(data: Any, path: str) -> Any:
+    parts=_json_parts(path)
+    if not parts or not isinstance(data,dict):
+        return data
+    cur=data
+    for part in parts[:-1]:
+        nxt=cur.get(part)
+        if not isinstance(nxt,dict):
+            return data
+        cur=nxt
+    cur.pop(parts[-1],None)
+    return data
+
+
+def _header_key(headers: dict[str,str], name: str) -> str | None:
+    wanted=str(name or "").lower()
+    return next((k for k in headers if str(k).lower()==wanted),None)
+
+
+def _apply_step_patches(method: str, url: str, headers: dict[str,str], body: str,
+                        patches: list[dict[str,Any]]) -> tuple[str,str,dict[str,str],str,list[dict[str,Any]]]:
+    """Apply Scenario mutations after Flow/Identity resolution and before transport."""
+    applied=[]
+    for patch in patches:
+        location=str(patch.get("location") or "").lower(); operation=str(patch.get("operation") or "set").lower()
+        key=str(patch.get("key_name") or ""); value=str(patch.get("value") or "")
+        try:
+            if location == "header":
+                real=_header_key(headers,key)
+                if operation == "remove":
+                    if real: headers.pop(real,None)
+                else:
+                    headers[real or key]=value
+            elif location == "cookie":
+                real=_header_key(headers,"Cookie")
+                pairs=[]
+                if real and headers.get(real):
+                    for piece in str(headers.get(real) or "").split(";"):
+                        if "=" in piece:
+                            n,v=piece.split("=",1); pairs.append((n.strip(),v.strip()))
+                pairs=[(n,v) for n,v in pairs if n.lower()!=key.lower()]
+                if operation != "remove": pairs.append((key,value))
+                if pairs: headers[real or "Cookie"]="; ".join(f"{n}={v}" for n,v in pairs)
+                elif real: headers.pop(real,None)
+            elif location == "query":
+                parsed=urllib.parse.urlsplit(url); items=urllib.parse.parse_qsl(parsed.query,keep_blank_values=True)
+                items=[(n,v) for n,v in items if n!=key]
+                if operation != "remove": items.append((key,value))
+                url=urllib.parse.urlunsplit((parsed.scheme,parsed.netloc,parsed.path,urllib.parse.urlencode(items,doseq=True),parsed.fragment))
+            elif location == "json":
+                try: data=json.loads(body or "{}")
+                except Exception: data={}
+                if operation == "remove": data=_json_remove_path(data,key)
+                else: data=_json_set_path(data,key,_coerce_patch_value(value))
+                body=json.dumps(data,ensure_ascii=False,separators=(",",":"))
+                real=_header_key(headers,"Content-Type")
+                if not real: headers["Content-Type"]="application/json"
+            elif location == "form":
+                items=urllib.parse.parse_qsl(body,keep_blank_values=True)
+                items=[(n,v) for n,v in items if n!=key]
+                if operation != "remove": items.append((key,value))
+                body=urllib.parse.urlencode(items,doseq=True)
+            elif location == "text" and operation == "replace":
+                if key in body: body=body.replace(key,value,1)
+                elif key in url: url=url.replace(key,value,1)
+                else:
+                    for hk,hv in list(headers.items()):
+                        if key in str(hv): headers[hk]=str(hv).replace(key,value,1); break
+            applied.append({"id":patch.get("id"),"location":location,"operation":operation,"key":key,"value_preview":_value_preview(key,value)})
+        except Exception as exc:
+            applied.append({"id":patch.get("id"),"location":location,"operation":operation,"key":key,"error":str(exc)[:240]})
+    return method,url,headers,body,applied
+
+
+def scenario_step_preview(conn, runner_id: int, runner_step_id: int) -> dict[str,Any]:
+    data=get_runner(conn,int(runner_id))
+    if not data: raise ValueError("Escenario no encontrado")
+    step=next((x for x in data["steps"] if int(x["id"])==int(runner_step_id)),None)
+    if not step: raise ValueError("Step no encontrado")
+    effective_identity_id=step.get("identity_id") or data["runner"].get("identity_id")
+    raw_base,base_url=_decode_raw_request(conn,int(step["exchange_id"]),None)
+    omethod,ourl,oheaders,obody=_split_raw_request(raw_base,base_url)
+    original_target=urllib.parse.urlsplit(ourl)
+    original_raw=f"{omethod} {(original_target.path or '/') + ('?'+original_target.query if original_target.query else '')} HTTP/1.1\r\n"+"\r\n".join(f"{k}: {v}" for k,v in oheaders.items())+"\r\n\r\n"+obody
+    raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),effective_identity_id)
+    method,url,headers,body=_split_raw_request(raw,base_url)
+    patches=_patches_for_step(conn,int(runner_step_id))
+    method,url,headers,body,applied=_apply_step_patches(method,url,dict(headers),body,patches)
+    target=urllib.parse.urlsplit(url)
+    preview=f"{method} {(target.path or '/') + ('?'+target.query if target.query else '')} HTTP/1.1\r\n"+"\r\n".join(f"{k}: {v}" for k,v in headers.items())+"\r\n\r\n"+body
+    return {"runner":data["runner"],"step":step,"patches":patches,"applied":applied,"original_raw":original_raw,"preview_raw":preview}
+
+
+def set_run_baseline(conn, runner_id: int, run_id: int) -> None:
+    init_schema(conn)
+    row=conn.execute("SELECT id,counts_as_test FROM runner_runs WHERE id=? AND runner_id=?",(int(run_id),int(runner_id))).fetchone()
+    if not row: raise ValueError("Run no pertenece a este Escenario")
+    if not bool(row["counts_as_test"]): raise ValueError("El baseline debe haber alcanzado válidamente al aplicativo")
+    conn.execute("UPDATE runner_runs SET is_baseline=0 WHERE runner_id=?",(int(runner_id),))
+    conn.execute("UPDATE runner_runs SET is_baseline=1,updated_at=? WHERE id=?",(now_iso(),int(run_id)))
+
+
+def _attempt_by_flow_step(run_data: dict[str,Any], flow_step_id: int | None) -> dict[str,Any] | None:
+    attempts=run_data.get("attempts") or []
+    if flow_step_id is not None:
+        for a in attempts:
+            if int(a.get("flow_step_id") or 0)==int(flow_step_id): return a
+    return attempts[-1] if attempts else None
+
+
+def compare_runner_runs(conn, run_a: int, run_b: int) -> dict[str,Any]:
+    """Compare two Runs from the same Scenario; reuse Smart Compare for HTTP evidence."""
+    a=get_runner_run(conn,int(run_a)); b=get_runner_run(conn,int(run_b))
+    if not a or not b: raise ValueError("Run no encontrado")
+    if int(a["run"]["runner_id"]) != int(b["run"]["runner_id"]):
+        raise ValueError("Por ahora compara Runs del mismo Escenario")
+    ctx_a=a["run"].get("context") or {}; ctx_b=b["run"].get("context") or {}
+    target=((ctx_b.get("target_step") or {}).get("flow_step_id") or (ctx_a.get("target_step") or {}).get("flow_step_id"))
+    aa=_attempt_by_flow_step(a,int(target) if target else None); bb=_attempt_by_flow_step(b,int(target) if target else None)
+    smart=None
+    if aa and bb and aa.get("exchange_id") and bb.get("exchange_id"):
+        try:
+            import negro_parameters as parameter_tools
+            smart=parameter_tools.smart_diff(conn,int(aa["exchange_id"]),int(bb["exchange_id"]))
+        except Exception:
+            smart=None
+    def identity_name(run_data,attempt):
+        ctx=run_data["run"].get("context") or {}
+        if attempt and attempt.get("identity_name"): return attempt.get("identity_name")
+        return (ctx.get("identity") or {}).get("name") or run_data["run"].get("identity_name") or "Auth del Flow"
+    def varmap(attempt,key):
+        return {str(x.get("name") or ""):str(x.get("value_preview") or "") for x in ((attempt or {}).get(key) or []) if x.get("name")}
+    va=varmap(aa,"resolved_variables"); vb=varmap(bb,"resolved_variables")
+    variable_changes=[]
+    for name in sorted(set(va)|set(vb)):
+        if va.get(name)!=vb.get(name): variable_changes.append({"name":name,"a":va.get(name,"∅"),"b":vb.get(name,"∅")})
+    def patch_key(x):
+        return (int(x.get("runner_step_id") or 0),str(x.get("location") or ""),str(x.get("operation") or ""),str(x.get("key") or ""),str(x.get("value_preview") or ""))
+    pa={patch_key(x):x for x in (ctx_a.get("step_patches") or [])}; pb={patch_key(x):x for x in (ctx_b.get("step_patches") or [])}
+    patch_changes=[]
+    for k in sorted(set(pa)-set(pb)):
+        x=pa[k]; patch_changes.append({"kind":"removed","label":f"{x.get('operation')} {x.get('location')} {x.get('key')}","value":x.get("value_preview") or ""})
+    for k in sorted(set(pb)-set(pa)):
+        x=pb[k]; patch_changes.append({"kind":"added","label":f"{x.get('operation')} {x.get('location')} {x.get('key')}","value":x.get("value_preview") or ""})
+    return {
+        "a":a,"b":b,"target_flow_step_id":target,"attempt_a":aa,"attempt_b":bb,"smart":smart,
+        "identity_a":identity_name(a,aa),"identity_b":identity_name(b,bb),"variable_changes":variable_changes,"patch_changes":patch_changes,
+        "same_status":bool(aa and bb and aa.get("status_code")==bb.get("status_code")),
+    }
+
+
 def _value_preview(name: str, value: Any) -> str:
     raw=str(value or "")
     low=str(name or "").lower()
@@ -660,6 +911,9 @@ def _run_context_snapshot(conn, runner: dict[str,Any], steps: list[dict[str,Any]
                       "identity_id":s.get("identity_id"),"identity_name":s.get("step_identity_name") or "",
                       "repeat_count":int(s.get("repeat_count") or 1)} for s in steps],
         "runner_variables":variable_rows,
+        "step_patches":[{"runner_step_id":int(p["runner_step_id"] or 0),"location":p["location"],"operation":p["operation"],
+                         "key":p["key_name"],"value_preview":_value_preview(str(p["key_name"] or ""),p["value"] or "")}
+                        for p in conn.execute("SELECT * FROM runner_step_patches WHERE runner_id=? ORDER BY id",(int(runner["id"]),)).fetchall()],
         "captured_at":now_iso(),
     }
 
@@ -1188,6 +1442,8 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                                                          "value_preview":_value_preview(str(var.get("target_name") or ""),new_value),
                                                          "source_runner_step_id":var.get("source_runner_step_id")})
                     method,url,headers,body=_split_raw_request(raw,base_url)
+                    patches_for_step=_patches_for_step(conn,int(step["id"]))
+                    method,url,headers,body,applied_patches=_apply_step_patches(method,url,headers,body,patches_for_step)
 
                 # Cookies are state, not a static copy of the baseline. Seed them
                 # from the first captured Request and then carry server rotations.
@@ -1215,6 +1471,7 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                     "url_host":request_line.hostname or "","host_header":raw_headers.get("Host") or raw_headers.get("host") or "",
                     "sni":request_line.hostname or "","verify_tls":cfg.get("verify_tls",True),
                     "runner_step_id":int(step["id"]),"flow_step_position":int(step.get("position") or 0),
+                    "scenario_patches":applied_patches,
                 }
                 start=time.perf_counter(); error=None; response_b64=None; status=None
                 response_headers: list[dict[str,str]]=[]; response_body_b64=None; response_text=""; canonical_request_b64=req_b64

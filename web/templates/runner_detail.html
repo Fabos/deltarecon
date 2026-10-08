@@ -22,13 +22,13 @@
 
 {% if job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Ejecutando escenario…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Esta página se actualizará al terminar.</p></section>{% endif %}
 
-<section class="panel scenario-overview" id="scenario-flows">
-  <div class="panel-head"><div><p class="eyebrow">COMPOSICIÓN</p><h2>Flows del escenario</h2><p class="muted small">No se copian los Flows. El escenario guarda un plan editable con sus Steps.</p></div><span>{{ runner_data.source_flows|length }}</span></div>
+<details class="panel flow-collapsible-section scenario-overview" id="scenario-flows">
+  <summary><span><b>Flows usados · {{ runner_data.source_flows|length }}</b><small>El Escenario puede encadenar varios procesos sin copiarlos.</small></span><span>＋</span></summary>
   <div class="scenario-flow-list">
     {% for f in runner_data.source_flows %}<article><div><b>{{ loop.index }}. {{ f.name }}</b><small>{{ f.step_count }} Step(s){% if f.flow_id==r.flow_id %} · Flow base{% endif %}</small></div>{% if f.flow_id!=r.flow_id %}<form action="{{ target_base }}/runners/{{ r.id }}/flows/{{ f.flow_id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="Quitar Flow">×</button></form>{% endif %}</article>{% endfor %}
   </div>
   {% if available_flows %}<details class="inline-create"><summary>+ Añadir otro Flow</summary><form class="form-row" action="{{ target_base }}/runners/{{ r.id }}/flows/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="flow_id">{% for f in available_flows %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select><button class="button secondary">Añadir al escenario</button></form></details>{% endif %}
-</section>
+</details>
 
 <section class="scenario-context-strip">
   <div><small>IDENTITY NORMAL</small><b>{{ r.identity_name or 'Auth capturado del Flow' }}</b></div>
@@ -52,7 +52,7 @@
   <div class="panel-head"><div><p class="eyebrow">STEPS</p><h2>Qué hará este escenario</h2><p class="muted small">Modifica sólo lo que necesites. El Flow base no cambia.</p></div><span>{{ active_steps }} activos</span></div>
   <div class="runner-step-list scenario-step-list">
   {% for s in runner_data.steps %}
-    <article class="runner-step scenario-step {% if s.action=='omit' %}runner-step-omit{% endif %} {% if r.target_flow_step_id==s.flow_step_id %}scenario-target-step{% endif %}">
+    <article id="scenario-step-{{ s.id }}" class="runner-step scenario-step {% if s.action=='omit' %}runner-step-omit{% endif %} {% if r.target_flow_step_id==s.flow_step_id %}scenario-target-step{% endif %} {% if s.patches %}scenario-step-modified{% endif %}">
       <div class="scenario-step-number">{{ s.position }}</div>
       <div class="scenario-step-main">
         <div class="runner-step-head">
@@ -62,12 +62,15 @@
             {% if s.notes or s.flow_notes %}<p class="human-step-note">{{ s.notes or s.flow_notes }}</p>{% endif %}
             <small><span class="source-flow-tag">{{ s.source_flow_name }}</span> · <b>{{ s.method }}</b> <code>{{ s.path }}</code>{% if s.checkpoint_label %} · ◆ {{ s.checkpoint_label }}{% endif %}</small>
           </div>
-          <div class="scenario-step-status">{% if s.step_identity_name %}<span class="badge identity-badge">⚠ {{ s.step_identity_name }}</span>{% endif %}{% if s.action=='omit' %}<span class="badge">Omitido</span>{% elif s.action=='repeat' %}<span class="badge class-interesting">Repetir ×{{ s.repeat_count }}</span>{% endif %}</div>
+          <div class="scenario-step-status">{% if s.patches %}<span class="badge class-interesting">● HTTP modificado · {{ s.patches|length }}</span>{% endif %}{% if s.step_identity_name %}<span class="badge identity-badge">⚠ {{ s.step_identity_name }}</span>{% endif %}{% if s.action=='omit' %}<span class="badge">Omitido</span>{% elif s.action=='repeat' %}<span class="badge class-interesting">Repetir ×{{ s.repeat_count }}</span>{% endif %}</div>
         </div>
 
         {% if s.flow_inputs or s.flow_outputs %}<div class="step-story runner-step-story compact-step-story">{% if s.flow_inputs %}<div class="step-story-group"><span class="step-story-label">USA</span>{% for x in s.flow_inputs %}<span class="story-chip source-{{ x.source_type|lower }}">← {{ x.name }} <small>· {% if x.source_type=='IDENTITY' and x.identity_name %}{{ x.identity_name }}{% elif x.source_type=='PREVIOUS_RESPONSE' and x.producer_position %}Step {{ x.producer_position }}{% else %}{{ x.source_label }}{% endif %}</small></span>{% endfor %}</div>{% endif %}{% if s.flow_outputs %}<div class="step-story-group"><span class="step-story-label">PRODUCE</span>{% for x in s.flow_outputs %}<span class="story-chip">→ {{ x.name }}</span>{% endfor %}</div>{% endif %}</div>{% endif %}
 
-        <details class="scenario-step-edit"><summary>Modificar este Step</summary>
+        <div class="row-actions scenario-step-primary-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/http">Editar HTTP</a>{% if s.exchange_id %}<a class="button ghost small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect">Ver evidencia base</a>{% endif %}</div>
+        {% if s.patches %}<div class="scenario-patch-summary">{% for p in s.patches %}<span class="story-chip">{{ p.operation|upper }} · {{ p.location }} · {{ p.key_name }}</span>{% endfor %}</div>{% endif %}
+
+        <details class="scenario-step-edit"><summary>Alias, Identity y secuencia</summary>
           <form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
             <label>Alias del Step<input name="alias_label" value="{{ s.alias_label or '' }}" placeholder="Aceptar la orden"></label>
             <label>Rol<input name="role_label" value="{{ s.role_label_override or '' }}" placeholder="Cliente / Vendedor / Admin"></label>
@@ -84,16 +87,18 @@
 </section>
 
 <section class="panel" id="runner-history">
-  <div class="panel-head"><div><p class="eyebrow">RUNS</p><h2>Qué ocurrió al ejecutarlo</h2></div><span>{{ runner_data.runs|length }}</span></div>
+  <div class="panel-head"><div><p class="eyebrow">RUNS</p><h2>Resultados de tus pruebas</h2><p class="muted small">Marca un comportamiento normal como baseline y compara las siguientes pruebas contra él.</p></div><span>{{ runner_data.runs|length }}</span></div>
+  {% if baseline_run %}<div class="scenario-baseline-banner"><span>★ BASELINE</span><b>Run #{{ baseline_run.id }}</b><small>{% if baseline_run.summary.statuses %}HTTP {{ baseline_run.summary.statuses|join(', ') }}{% endif %}</small></div>{% endif %}
+  {% if runner_data.runs|length >= 2 %}<details class="inline-create run-compare-picker"><summary>Comparar dos Runs manualmente</summary><form class="form-row" action="{{ target_base }}/runners/runs/compare" method="get"><label>A<select name="a">{% for x in runner_data.runs %}<option value="{{ x.id }}" {% if x.is_baseline %}selected{% endif %}>Run #{{ x.id }}{% if x.is_baseline %} · baseline{% endif %}</option>{% endfor %}</select></label><label>B<select name="b">{% for x in runner_data.runs %}<option value="{{ x.id }}">Run #{{ x.id }}</option>{% endfor %}</select></label><button class="button ghost small-button">Comparar</button></form></details>{% endif %}
   <div class="runner-run-list">
   {% for run in runner_data.runs %}
     {% set valid=run.counts_as_test %}
-    <article class="runner-run outcome-{{ run.outcome }} execution-{{ run.execution_class }} {% if not valid %}run-not-counted{% endif %}">
-      <div class="runner-run-main"><b>Run #{{ run.id }}</b><span class="badge execution-chip execution-{{ run.execution_class }}">{{ {'application_response':'Aplicativo','transport_error':'Transporte','timeout':'Timeout','dns_error':'DNS','tls_error':'TLS','proxy_error':'Proxy','runner_error':'Runner','pending':'Pendiente'}.get(run.execution_class,run.execution_class) }}</span><small>{{ run.request_count }} Requests{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div>
-      <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/runs/{{ run.id }}">Abrir Run</a></div>
+    <article class="runner-run outcome-{{ run.outcome }} execution-{{ run.execution_class }} {% if not valid %}run-not-counted{% endif %} {% if run.is_baseline %}runner-run-baseline{% endif %}">
+      <div class="runner-run-main"><b>{% if run.is_baseline %}★ {% endif %}Run #{{ run.id }}</b><span class="badge execution-chip execution-{{ run.execution_class }}">{{ {'application_response':'Aplicativo','transport_error':'Transporte','timeout':'Timeout','dns_error':'DNS','tls_error':'TLS','proxy_error':'Proxy','runner_error':'Runner','pending':'Pendiente'}.get(run.execution_class,run.execution_class) }}</span><small>{{ run.request_count }} Requests{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div>
+      <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/runs/{{ run.id }}">Abrir Run</a>{% if baseline_run and baseline_run.id != run.id %}<a class="button small-button" href="{{ target_base }}/runners/runs/compare?a={{ baseline_run.id }}&b={{ run.id }}">Comparar con baseline</a>{% endif %}{% if not run.is_baseline and run.counts_as_test %}<form action="{{ target_base }}/runners/{{ r.id }}/runs/{{ run.id }}/baseline" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button">Usar como baseline</button></form>{% endif %}</div>
       {% if run.context.hypothesis or run.context.target_step %}<div class="run-context-summary">{% if run.context.hypothesis %}<span class="badge">◆ {{ run.context.hypothesis.title }}</span>{% endif %}{% if run.context.target_step %}<span class="badge class-interesting">🎯 {{ run.context.target_step.name }}</span>{% endif %}</div>{% endif %}
     </article>
-  {% else %}<div class="empty-state compact"><strong>Sin Runs todavía.</strong><span>Ejecuta el escenario para crear la primera evidencia.</span></div>{% endfor %}
+  {% else %}<div class="empty-state compact"><strong>Sin Runs todavía.</strong><span>Ejecuta el Escenario; luego marca el comportamiento normal como baseline.</span></div>{% endfor %}
   </div>
 </section>
 
