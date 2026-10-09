@@ -1,6 +1,6 @@
-## v0.52.2 · Identity Search Hotfix
+## v0.52.3 · JWT Claims Layout Hotfix
 
-> Current build: **v0.52.2** — HTTP Inspector mantiene Identity Learning + JWT Rotation y corrige el filtrado visual: los resultados no coincidentes se ocultan realmente aunque las cards usen `display:grid`. El buscador de Valores dinámicos usa el mismo fallback robusto.
+> Current build: **v0.52.3** — HTTP Inspector mantiene Identity Learning + JWT Rotation y corrige el filtrado visual: los resultados no coincidentes se ocultan realmente aunque las cards usen `display:grid`. El buscador de Valores dinámicos usa el mismo fallback robusto.
 
 ### Lo nuevo
 - HTTP Inspector separa **Por revisar** de **Ya marcados / reconocidos**.

@@ -1,3 +1,11 @@
+# v0.52.3 · JWT Claims Layout Hotfix
+
+- HTTP Inspector: JWT Header y Claims ahora se apilan verticalmente.
+- Cada claim usa una tarjeta vertical real: key → value → estado → controles.
+- Se eliminan explícitamente los `grid-area` heredados que provocaban solapamientos.
+- El layout ya no depende del ancho del viewport; funciona dentro de columnas estrechas y con zoom alto.
+- Mantiene el buscador corregido de v0.52.2 y Identity Learning/JWT Rotation.
+
 # v0.52.2 · HTTP Inspector search + JWT claims layout
 
 - Search now uses a server-generated index including nested JWT claim keys/values and Identity names.

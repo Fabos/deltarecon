@@ -766,3 +766,100 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .jwt-claim-actions{display:grid!important;grid-template-columns:minmax(110px,160px) minmax(150px,1fr) auto!important;gap:7px!important;align-items:center!important;min-width:0!important;margin-top:0!important}
 .jwt-claim-actions select{min-width:0!important;width:100%!important}
 @media(max-width:1250px){.jwt-claim-actions{grid-template-columns:1fr!important}.jwt-claim-actions .draft-state{justify-self:start}}
+
+
+/* v0.52.3 · JWT claims layout: container-safe vertical cards
+   v0.52.2 removed named grid areas from the row but older grid-area declarations
+   remained active on child blocks. Reset them explicitly and use a vertical flex
+   layout so claims cannot overlap at high zoom or inside a narrow inspector column. */
+.jwt-details{overflow:visible!important}
+.jwt-claims{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr)!important;
+  gap:14px!important;
+  min-width:0!important;
+}
+.jwt-header-block{
+  min-width:0!important;
+  padding-bottom:10px;
+  border-bottom:1px solid var(--border);
+}
+.jwt-header-block>pre{
+  max-width:100%!important;
+  overflow:auto!important;
+}
+.jwt-claims-list{
+  min-width:0!important;
+  width:100%!important;
+}
+.jwt-claim-row{
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:stretch!important;
+  gap:8px!important;
+  width:100%!important;
+  min-width:0!important;
+  overflow:visible!important;
+  padding:12px 0!important;
+}
+.jwt-claim-copy,
+.jwt-claim-status,
+.jwt-claim-actions{
+  grid-area:auto!important;
+  position:static!important;
+  inset:auto!important;
+  min-width:0!important;
+  max-width:100%!important;
+}
+.jwt-claim-copy{
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:flex-start!important;
+  gap:4px!important;
+  width:100%!important;
+}
+.jwt-claim-key,
+.jwt-claim-value{
+  position:static!important;
+  display:block!important;
+  width:100%!important;
+  min-width:0!important;
+  max-width:100%!important;
+  margin:0!important;
+  line-height:1.45!important;
+}
+.jwt-claim-key{
+  font-size:.82rem!important;
+  white-space:normal!important;
+  overflow-wrap:anywhere!important;
+}
+.jwt-claim-value{
+  font-size:.82rem!important;
+  white-space:pre-wrap!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+}
+.jwt-claim-status{
+  display:block!important;
+  width:100%!important;
+}
+.jwt-claim-actions{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+  gap:8px!important;
+  width:100%!important;
+  margin:0!important;
+}
+.jwt-claim-actions select{
+  width:100%!important;
+  min-width:0!important;
+  max-width:100%!important;
+}
+.jwt-claim-actions .draft-state{
+  grid-column:1/-1!important;
+  justify-self:start!important;
+}
+@media(max-width:760px){
+  .jwt-claim-actions{grid-template-columns:minmax(0,1fr)!important}
+  .jwt-claim-actions .draft-state{grid-column:auto!important}
+}
