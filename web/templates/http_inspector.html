@@ -38,7 +38,7 @@
   </div>
 </details>
 <script>
-(() => { const input=document.querySelector('[data-flow-value-search]'),grid=document.querySelector('[data-flow-value-grid]'); if(!input||!grid)return; const cards=[...grid.querySelectorAll('[data-flow-value-card]')],count=document.querySelector('[data-flow-value-count]'); const refresh=()=>{const q=(input.value||'').trim().toLowerCase();let visible=0;cards.forEach(c=>{const show=!q||(c.dataset.search||'').includes(q);c.hidden=!show;if(show)visible++;});if(count)count.textContent=`${visible} de ${cards.length}`}; input.addEventListener('input',refresh);refresh(); })();
+(() => { const input=document.querySelector('[data-flow-value-search]'),grid=document.querySelector('[data-flow-value-grid]'); if(!input||!grid)return; const cards=[...grid.querySelectorAll('[data-flow-value-card]')],count=document.querySelector('[data-flow-value-count]'); const refresh=()=>{const q=(input.value||'').trim().toLowerCase();let visible=0;cards.forEach(c=>{const show=!q||(c.dataset.search||'').includes(q);c.hidden=!show;c.style.display=show?'':'none';if(show)visible++;});if(count)count.textContent=`${visible} de ${cards.length}`}; input.addEventListener('input',refresh);refresh(); })();
 </script>
 {% endif %}
 
@@ -68,7 +68,7 @@
       <div class="inspector-value-head"><span>Origen</span><span>Key / path</span><span>Valor</span><span>Decisión</span></div>
       {% for v in inspector["values"] if v.ui_state in ['pending','suggested','conflict'] %}
       {% set ann=v.annotation %}{% set suggestion=v.identity_suggestion %}
-      <article class="inspector-value-row state-{{ v.ui_state }}" data-inspector-row data-state="{{ v.ui_state }}" data-side="{{ v.side }}">
+      <article class="inspector-value-row state-{{ v.ui_state }}" data-inspector-row data-state="{{ v.ui_state }}" data-side="{{ v.side }}" data-search="{{ v.search_blob|e }}">
         <div><span class="badge {{ 'response-badge' if v.side=='response' else 'request-badge' }}">{{ v.side|upper }}</span><small>{{ v.location }}</small></div>
         <div><b><code>{{ v.key }}</code></b><small>{{ v.detected_type }}</small>
           {% if v.ui_state=='suggested' %}<span class="identity-learning-badge suggested">? MATCH · {{ suggestion.identity_name }}</span><small>El valor ya identifica a {{ suggestion.identity_name }}, pero esta key aún no está confirmada como Resolver.</small>{% endif %}
@@ -88,7 +88,7 @@
       <div class="inspector-value-head"><span>Origen</span><span>Key / path</span><span>Valor</span><span>Decisión</span></div>
       {% for v in inspector["values"] if v.ui_state in ['confirmed','recognized'] %}
       {% set ann=v.annotation %}{% set recognized=v.recognized_annotation %}{% set auto=v.auto_jwt %}{% set current=(ann.classification if ann else ('auth' if auto and auto.state=='auto_auth' else (recognized.classification if recognized else ''))) %}{% set current_identity=(ann.identity_id if ann else (auto.identity_id if auto and auto.state=='auto_auth' else (recognized.identity_id if recognized else 0))) %}
-      <article class="inspector-value-row state-{{ v.ui_state }}" data-inspector-row data-state="{{ v.ui_state }}" data-side="{{ v.side }}">
+      <article class="inspector-value-row state-{{ v.ui_state }}" data-inspector-row data-state="{{ v.ui_state }}" data-side="{{ v.side }}" data-search="{{ v.search_blob|e }}">
         <div><span class="badge {{ 'response-badge' if v.side=='response' else 'request-badge' }}">{{ v.side|upper }}</span><small>{{ v.location }}</small></div>
         <div><b><code>{{ v.key }}</code></b><small>{{ v.detected_type }}</small>{% if ann %}<span class="identity-learning-badge confirmed">✓ {{ ann.classification|upper }}{% if ann.identity_id %} · {% for ident in identities %}{% if ident.id==ann.identity_id %}{{ ident.name }}{% endif %}{% endfor %}{% endif %}</span>{% elif auto and auto.state=='auto_auth' %}<span class="identity-learning-badge recognized">AUTO · AUTH · {{ auto.identity_name }}</span><small>{{ auto.reason }}</small>{% elif recognized %}<span class="identity-learning-badge recognized">AUTO · {{ recognized.classification|upper }}{% if recognized.identity_name %} · {{ recognized.identity_name }}{% endif %}</span><small>{{ recognized.match_reason }}</small>{% endif %}</div>
         <div class="inspector-value-preview"><code>{{ v.preview or '(vacío)' }}</code>
@@ -113,8 +113,8 @@
  const refreshDirty=()=>{let n=0;drafts.forEach(d=>{const dirty=sig(d)!==d.dataset.saved;d.classList.toggle('is-dirty',dirty);const st=d.querySelector('.draft-state');if(st&&dirty)st.textContent='modificado';if(dirty)n++;});count.textContent=`${n} cambio${n===1?'':'s'} pendiente${n===1?'':'s'}`;save.disabled=!n;reset.disabled=!n;};
  drafts.forEach(d=>d.querySelectorAll('select,input').forEach(el=>el.addEventListener('change',refreshDirty)));
  const normalize=t=>(t||'').toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
- const searchableText=r=>{const clone=r.cloneNode(true);clone.querySelectorAll('select,option,input,button').forEach(x=>x.remove());return `${r.dataset.side||''} ${r.dataset.state||''} ${clone.textContent||''}`};
- const run=()=>{const q=normalize(input?.value||'');let visible=0,knownVisible=0;rows.forEach(r=>{const hay=normalize(searchableText(r));const show=(side==='all'||r.dataset.side===side)&&(!q||hay.includes(q));r.hidden=!show;if(show){visible++;if(r.closest('[data-section="known"]'))knownVisible++;}});if(visibleCount)visibleCount.textContent=`${visible} visibles`;if(q&&knownVisible&&known)known.open=true;};
+ const searchableText=r=>r.dataset.search||`${r.dataset.side||''} ${r.dataset.state||''} ${r.textContent||''}`;
+ const run=()=>{const q=normalize(input?.value||'');let visible=0,knownVisible=0;rows.forEach(r=>{const hay=normalize(searchableText(r));const show=(side==='all'||r.dataset.side===side)&&(!q||hay.includes(q));r.hidden=!show;r.classList.toggle('is-filtered-out',!show);if(show){r.style.removeProperty('display');visible++;if(r.closest('[data-section="known"]'))knownVisible++;}else{r.style.setProperty('display','none','important');}});if(visibleCount)visibleCount.textContent=`${visible} visibles`;if(q&&knownVisible&&known)known.open=true;};
  input?.addEventListener('input',run);root.querySelectorAll('[data-inspector-side]').forEach(b=>b.addEventListener('click',()=>{side=b.dataset.inspectorSide;root.querySelectorAll('[data-inspector-side]').forEach(x=>x.classList.toggle('active',x===b));run()}));
  root.querySelectorAll('[data-accept-resolver]').forEach(btn=>btn.addEventListener('click',()=>{const draft=btn.closest('.inspector-value-row')?.querySelector('.inspector-annotation-form');if(!draft)return;const fields=Object.fromEntries([...draft.querySelectorAll('[data-field]')].map(x=>[x.dataset.field,x]));if(fields.classification)fields.classification.value='resolver';if(fields.identity_id)fields.identity_id.value=btn.dataset.acceptResolver||'';refreshDirty();draft.scrollIntoView({behavior:'smooth',block:'center'});}));
  function getFields(d){return Object.fromEntries([...d.querySelectorAll('[data-field]')].map(x=>[x.dataset.field,x]));}

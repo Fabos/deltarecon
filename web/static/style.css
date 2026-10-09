@@ -738,6 +738,11 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .run-setup-compare{display:grid;grid-template-columns:1fr 1fr;gap:16px}.run-setup-compare>div{display:grid;gap:7px}.run-setup-compare span{padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.025);font-family:var(--mono,monospace);font-size:.85rem}
 @media(max-width:1000px){.scenario-http-layout,.run-compare-summary{grid-template-columns:1fr}.run-compare-vs{padding:0}.semantic-compare-grid,.run-compare-facts,.run-setup-compare{grid-template-columns:1fr}}
 
+/* v0.52.1 · Search visibility hotfix
+   Cards use author-level display:grid, which can override the browser rendering of the HTML hidden attribute.
+   Keep hidden search results truly hidden even before/without the inline JS fallback. */
+.inspector-value-row[hidden],.flow-http-value-card[hidden]{display:none!important}
+
 /* v0.52 · Identity learning UX */
 .inspector-learning-head{align-items:flex-start}.identity-learning-summary{display:flex;gap:.6rem;flex-wrap:wrap;margin:.55rem 0 1rem}.identity-learning-summary>div{display:grid;gap:.1rem;min-width:110px;padding:.7rem .85rem;border:1px solid var(--border);border-radius:10px;background:#0b1013}.identity-learning-summary b{font-size:1.05rem}.identity-learning-summary span{font-size:.72rem;color:var(--muted)}.identity-learning-summary .suggested{border-color:#6b5a2b;background:rgba(202,168,72,.045)}.identity-learning-summary .conflict{border-color:#69363c;background:rgba(255,92,106,.045)}
 .inspector-learning-filter{position:sticky;top:72px;z-index:10;padding:.55rem;background:rgba(8,12,14,.96);border:1px solid var(--border);border-radius:10px;backdrop-filter:blur(8px)}.inspector-learning-filter .mini-action.active{border-color:var(--accent);color:var(--accent)}
@@ -748,3 +753,16 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .jwt-details{border:1px solid #242d32;border-radius:9px;overflow:hidden;margin-top:.65rem}.jwt-details>summary{padding:.55rem .7rem;cursor:pointer;background:#0a0f12;color:#9eabb2}.jwt-claims{margin:0;padding:.7rem;display:grid;grid-template-columns:minmax(0,.7fr) minmax(0,1.3fr);gap:1rem}.jwt-header-block,.jwt-claims-list{min-width:0}.jwt-header-block>pre{margin:.4rem 0 0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.jwt-claims-list>b{display:block;margin-bottom:.35rem}.jwt-claim-row{display:grid!important;grid-template-columns:minmax(130px,210px) minmax(0,1fr)!important;grid-template-areas:"copy copy" "status status" "actions actions"!important;gap:.42rem .8rem!important;padding:.72rem 0!important;border-top:1px solid var(--border)}.jwt-claim-copy{grid-area:copy!important;display:grid!important;grid-template-columns:minmax(130px,210px) minmax(0,1fr)!important;gap:.75rem!important;align-items:start}.jwt-claim-key{white-space:nowrap!important;word-break:normal!important;overflow-wrap:normal!important;font-weight:750;color:#a9d8ff}.jwt-claim-value{min-width:0!important;white-space:pre-wrap!important;word-break:normal!important;overflow-wrap:anywhere!important;color:#d8e2e7}.jwt-claim-status{grid-area:status}.jwt-claim-actions{grid-area:actions!important;display:grid!important;grid-template-columns:minmax(120px,160px) minmax(160px,1fr) auto!important;gap:.45rem!important;align-items:center!important;margin:0!important}.jwt-claim-actions select{min-width:0}.claim-state-confirmed{background:rgba(168,243,93,.018)}.claim-state-recognized{background:rgba(74,153,214,.018)}
 @media(max-width:1100px){.jwt-claims{grid-template-columns:1fr}.jwt-claim-copy{grid-template-columns:minmax(110px,180px) minmax(0,1fr)!important}.jwt-claim-actions{grid-template-columns:1fr!important}.inspector-learning-filter{top:8px}}
 @media(max-width:720px){.identity-learning-summary>div{min-width:90px;flex:1}.jwt-claim-copy{grid-template-columns:1fr!important}.jwt-claim-key{white-space:normal!important}.inspector-learning-filter{flex-wrap:wrap}.inspector-learning-filter input{flex-basis:100%}}
+
+/* v0.52.2 · HTTP Inspector search + JWT claim layout hardening */
+.inspector-value-row.is-filtered-out,.inspector-value-row[hidden]{display:none!important}
+.jwt-claims-list{min-width:0;display:grid;gap:0}
+.jwt-claim-row{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-areas:none!important;gap:7px!important;min-width:0!important;padding:10px 0!important;overflow:hidden}
+.jwt-claim-copy{display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:3px!important;min-width:0!important}
+.jwt-claim-key,.jwt-claim-value{grid-area:auto!important;display:block!important;min-width:0!important;max-width:100%!important}
+.jwt-claim-key{white-space:normal!important;word-break:normal!important;overflow-wrap:anywhere!important;font-weight:800!important;color:#b9d9f0}
+.jwt-claim-value{white-space:pre-wrap!important;word-break:break-word!important;overflow-wrap:anywhere!important;color:#d8dee2}
+.jwt-claim-status{min-width:0!important}
+.jwt-claim-actions{display:grid!important;grid-template-columns:minmax(110px,160px) minmax(150px,1fr) auto!important;gap:7px!important;align-items:center!important;min-width:0!important;margin-top:0!important}
+.jwt-claim-actions select{min-width:0!important;width:100%!important}
+@media(max-width:1250px){.jwt-claim-actions{grid-template-columns:1fr!important}.jwt-claim-actions .draft-state{justify-self:start}}

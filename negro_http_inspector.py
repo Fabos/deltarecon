@@ -621,6 +621,43 @@ def decorate_inspector_identity_state(conn, inspector: dict[str, Any], learned: 
                 claim["ui_state"] = "conflict"
             else:
                 claim["ui_state"] = "pending"
+
+        # Stable server-side search index for HTTP Inspector.  Do not depend on
+        # DOM text layout/details/selects: include nested JWT claims and learned
+        # Identity context explicitly so searches such as `nickname`, `Fabian`,
+        # `jwt.sub` or a resolver value work even when claims are collapsed.
+        search_parts = [
+            str(item.get("side") or ""),
+            str(item.get("location") or ""),
+            str(item.get("key") or ""),
+            str(item.get("value") or ""),
+            str(item.get("preview") or ""),
+            str(item.get("detected_type") or ""),
+            str(item.get("ui_state") or ""),
+            str(item.get("ui_label") or ""),
+        ]
+        if suggestion:
+            search_parts.extend([str(suggestion.get("identity_name") or ""), str(suggestion.get("state") or "")])
+        if explicit:
+            search_parts.extend([str(explicit.get("classification") or ""), str(explicit.get("identity_id") or "")])
+            iid = int(explicit.get("identity_id") or 0)
+            if iid:
+                row = conn.execute("SELECT name FROM identities WHERE id=?", (iid,)).fetchone()
+                if row:
+                    search_parts.append(str(row["name"] or ""))
+        if auto:
+            search_parts.extend([str(auto.get("identity_name") or ""), str(auto.get("reason") or "")])
+        for claim in item.get("jwt_claims") or []:
+            search_parts.extend([
+                f"jwt.{claim.get('key') or ''}",
+                str(claim.get("key") or ""),
+                str(claim.get("value") or ""),
+                str(claim.get("ui_state") or ""),
+                str(claim.get("identity_name") or ""),
+            ])
+            cann = claim.get("annotation") or {}
+            search_parts.append(str(cann.get("classification") or ""))
+        item["search_blob"] = " ".join(x for x in search_parts if x).lower()
     return counts
 
 

@@ -1,6 +1,6 @@
-## v0.52.0 · Identity Learning UX + JWT Rotation
+## v0.52.2 · Identity Search Hotfix
 
-> Current build: **v0.52.0** — HTTP Inspector separa lo pendiente de lo ya conocido, su buscador filtra también Identity/clasificación/claims, una key nueva con un valor Resolver conocido aparece como sugerencia `MATCH` sin aprenderse sola, y JWT rotados se atribuyen automáticamente como AUTH cuando claims fuertes coinciden de forma inequívoca con una Identity.
+> Current build: **v0.52.2** — HTTP Inspector mantiene Identity Learning + JWT Rotation y corrige el filtrado visual: los resultados no coincidentes se ocultan realmente aunque las cards usen `display:grid`. El buscador de Valores dinámicos usa el mismo fallback robusto.
 
 ### Lo nuevo
 - HTTP Inspector separa **Por revisar** de **Ya marcados / reconocidos**.

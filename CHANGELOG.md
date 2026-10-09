@@ -1,3 +1,17 @@
+# v0.52.2 · HTTP Inspector search + JWT claims layout
+
+- Search now uses a server-generated index including nested JWT claim keys/values and Identity names.
+- Filtered rows are hidden with an explicit `display:none!important` class/style fallback.
+- JWT claims use a single-column resilient layout so key/value/actions never overlap at high zoom or narrow widths.
+
+# v0.52.1 · Identity Search Hotfix
+
+- Corrige el buscador de HTTP Inspector: el contador ya calculaba correctamente los matches, pero las cards con `display:grid` podían seguir visibles aunque tuvieran `hidden`.
+- El filtro ahora fuerza la visibilidad con `style.display` y conserva `hidden` como estado semántico.
+- Añade CSS defensivo para `inspector-value-row[hidden]` y `flow-http-value-card[hidden]`.
+- Aplica el mismo fix al buscador de **Valores dinámicos del Step** para evitar el mismo fallo allí.
+- Sin cambios de modelo, Identity, JWT learning, Bridge o workspace.
+
 # v0.52.0 · Identity Learning UX + JWT Rotation
 
 - HTTP Inspector separa **Por revisar** de **Ya marcados / reconocidos** para que enseñar una Identity no obligue a revisar una y otra vez el mismo tráfico.
