@@ -2109,3 +2109,11 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Increased graph-edge contrast and fixed layout spacing for expanded families.
 - Guided sequence now follows the manual workflow: Root → Subdomains → DNS validation → HTTP/technology → TLS → Historical URLs → Web depth → Infrastructure classification → Services/Nmap.
 - crt.sh/Amass are optional enrichment inside Subdomain Discovery and no longer block DNS validation.
+
+## v0.76 · Reliable family/host click drill-down
+
+- Corrige el bug donde `pointerup` re-renderizaba el SVG antes de que el navegador pudiera emitir `click`, haciendo que familias y hosts parecieran no responder.
+- La activación del nodo ahora ocurre directamente al finalizar un gesto corto (`pointerup` sin desplazamiento).
+- Un gesto con desplazamiento sigue siendo drag y conserva la posición manual sin activar/colapsar el nodo.
+- Se suprime el `click` sintético posterior al `pointerup` para evitar doble toggle.
+- Añade regresión `v076_surface_family_click_test.py`.

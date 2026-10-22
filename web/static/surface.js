@@ -226,15 +226,7 @@
       if(n.type==='host'){const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);}
       const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
 
-      g.addEventListener('pointerdown',ev=>{
-        ev.stopPropagation();
-        nodeDrag={id:n.id,g,startX:ev.clientX,startY:ev.clientY,baseX:p.x,baseY:p.y,x:p.x,y:p.y,moved:false,pointerId:ev.pointerId};
-        svg.setPointerCapture?.(ev.pointerId);
-        g.classList.add('dragging');
-      });
-      g.addEventListener('click',ev=>{
-        ev.stopPropagation();
-        if(Date.now()<suppressClickUntil)return;
+      const activateNode=()=>{
         if(n.type==='family'){toggleFamily(n.key);return;}
         if(n.type==='host'){
           selectedHost=n.key;
@@ -245,9 +237,24 @@
           return;
         }
         renderNodeDetail(n,scene);
+      };
+      g.addEventListener('pointerdown',ev=>{
+        ev.stopPropagation();
+        nodeDrag={id:n.id,g,startX:ev.clientX,startY:ev.clientY,baseX:p.x,baseY:p.y,x:p.x,y:p.y,moved:false,pointerId:ev.pointerId,activate:activateNode};
+        svg.setPointerCapture?.(ev.pointerId);
+        g.classList.add('dragging');
+      });
+      // Pointer-up owns activation. Rendering the SVG on pointer-up before the native
+      // click fires removes the original node from the DOM and swallows the click.
+      // Keeping activation here makes family/host drill-down reliable while still
+      // allowing the exact same gesture to become a drag once movement is detected.
+      g.addEventListener('click',ev=>{
+        ev.stopPropagation();
+        if(Date.now()<suppressClickUntil)return;
+        activateNode();
       });
       g.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='family')enterFamily(n.key);});
-      g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();g.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
+      g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();activateNode();}});
       world.appendChild(g);
     });
   }
@@ -390,11 +397,21 @@
       }
       if(!pan)return; view.x=pan.vx+(e.clientX-pan.x);view.y=pan.vy+(e.clientY-pan.y);renderGraph();
     });
-    const endPointer=()=>{
+    const endPointer=ev=>{
       if(nodeDrag){
-        nodeDrag.g?.classList.remove('dragging');
-        if(nodeDrag.moved){manualPositions.set(nodeDrag.id,{x:nodeDrag.x,y:nodeDrag.y});suppressClickUntil=Date.now()+220;}
-        nodeDrag=null;renderGraph();
+        const drag=nodeDrag;
+        drag.g?.classList.remove('dragging');
+        nodeDrag=null;
+        if(drag.moved){
+          manualPositions.set(drag.id,{x:drag.x,y:drag.y});
+          suppressClickUntil=Date.now()+260;
+          renderGraph();
+        }else if(ev?.type==='pointerup'){
+          // Activate before any re-render destroys the SVG node. Suppress the
+          // browser's follow-up click so the node is not toggled twice.
+          suppressClickUntil=Date.now()+320;
+          drag.activate?.();
+        }
       }
       pan=null;
     };
