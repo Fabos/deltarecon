@@ -2081,3 +2081,14 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - `ENTITY` reutiliza Business Objects/Parameter observations en lugar de crear un motor paralelo;
 - Request Workbench resalta decisiones conocidas y muestra contadores `AUTH / ID / ENT` en cada variante;
 - la evidencia completa siempre permanece disponible; los highlights representan decisiones humanas, no conclusiones automáticas.
+
+## v0.73 — Progressive recon fidelity
+
+- Moved Nmap/service discovery to the end of the guided recon roadmap.
+- Added an expanded passive discovery phase using crt.sh and optional Amass passive.
+- DNS validation now classifies unresolved names as NXDOMAIN vs NOERROR/NODATA using the same manual reasoning workflow.
+- Phase completion is now based on a successful Negro execution, not merely on existing result counts.
+- Phase cards show the exact command, stdout/stderr previews and links to the complete raw outputs.
+- Added multi-root surface support using project scopes; authorized root domains can be added and enumerated independently inside the same project.
+- Tool runs now retain root-domain and execution-group provenance.
+- HTTP/httpx remains the technology fingerprint phase; it only receives DNS-resolved hosts, making upstream discovery coverage visible instead of hiding it.

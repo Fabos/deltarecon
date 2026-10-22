@@ -5,6 +5,7 @@ import re
 import sqlite3
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -98,6 +99,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phase TEXT NOT NULL,
             tool TEXT NOT NULL,
+            root_domain TEXT,
+            run_group TEXT,
             command_json TEXT NOT NULL,
             status TEXT NOT NULL,
             return_code INTEGER,
@@ -111,6 +114,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_recon_tool_runs_phase ON recon_tool_runs(phase, id DESC);
         """
     )
+    # Lightweight migrations for projects created before guided multi-root recon.
+    cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(recon_tool_runs)").fetchall()}
+    if "root_domain" not in cols:
+        conn.execute("ALTER TABLE recon_tool_runs ADD COLUMN root_domain TEXT")
+    if "run_group" not in cols:
+        conn.execute("ALTER TABLE recon_tool_runs ADD COLUMN run_group TEXT")
 
 
 def _loads(raw: str | None) -> dict:
@@ -369,6 +378,39 @@ def import_subfinder_text(conn: sqlite3.Connection, text: str, root_domain: str,
     return {"source": "subfinder", "records": count, "errors": errors}
 
 
+def import_discovered_hosts(conn: sqlite3.Connection, hosts: list[str], root_domain: str, source: str, filename: str = "") -> dict:
+    """Persist hostname candidates from any passive discovery source.
+
+    Discovery sources are intentionally treated as candidate evidence only;
+    DNS validation decides whether the names currently resolve.
+    """
+    init_schema(conn)
+    count = errors = 0
+    root = root_domain.lower().rstrip(".")
+    for raw in hosts:
+        host = str(raw or "").strip().lower().rstrip(".").lstrip("*.")
+        if not host or " " in host or not (host == root or host.endswith("." + root)):
+            continue
+        try:
+            env, env_conf = detect_environment(host)
+            hid = upsert_asset(conn, "hostname", host, host, {
+                "sources": [source], "environment": env, "environment_confidence": env_conf,
+                "family": _family_stem(host, root_domain), "dns_state": "DISCOVERED",
+            })
+            _link_family(conn, hid, host, root_domain)
+            add_evidence(conn, hid, source, "discovered_hostname", host, {"hostname": host, "source": source})
+            count += 1
+        except Exception:
+            errors += 1
+    rebuild_family_heuristics(conn, root_domain)
+    conn.execute(
+        "INSERT INTO recon_import_runs(source,filename,record_count,error_count,created_at) VALUES(?,?,?,?,?)",
+        (source, filename, count, errors, _now()),
+    )
+    conn.commit()
+    return {"source": source, "records": count, "errors": errors}
+
+
 _DNSX_RE = re.compile(r"^(?P<host>\S+)\s+\[(?P<rtype>A|AAAA|CNAME)\]\s+\[(?P<value>.+?)\]\s*$", re.I)
 
 
@@ -494,6 +536,10 @@ def import_text(conn: sqlite3.Connection, source: str, text: str, root_domain: s
 
 
 def _tool_path(name: str) -> str | None:
+    if name == "amass":
+        kali_real = Path("/usr/lib/amass/amass")
+        if kali_real.exists() and kali_real.is_file():
+            return str(kali_real)
     preferred = Path.home() / "go" / "bin" / name
     if preferred.exists() and preferred.is_file():
         return str(preferred)
@@ -502,23 +548,25 @@ def _tool_path(name: str) -> str | None:
 
 def tool_inventory() -> dict[str, dict]:
     out = {}
-    for name in ("whois", "dig", "openssl", "curl", "subfinder", "dnsx", "httpx", "nmap"):
+    for name in ("whois", "dig", "openssl", "curl", "subfinder", "amass", "gau", "dnsx", "httpx", "nmap"):
         path = _tool_path(name)
         out[name] = {"available": bool(path), "path": path or ""}
     return out
 
 
 def _record_tool_run(conn: sqlite3.Connection, phase: str, tool: str, command: list[str], status: str, return_code: int | None,
-                     record_count: int, stdout_path: str, stderr_path: str, error: str, started_at: str, finished_at: str) -> int:
+                     record_count: int, stdout_path: str, stderr_path: str, error: str, started_at: str, finished_at: str,
+                     *, root_domain: str = "", run_group: str = "") -> int:
     cur = conn.execute(
-        """INSERT INTO recon_tool_runs(phase,tool,command_json,status,return_code,record_count,stdout_path,stderr_path,error,started_at,finished_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (phase, tool, json.dumps(command, ensure_ascii=False), status, return_code, record_count, stdout_path, stderr_path, error, started_at, finished_at),
+        """INSERT INTO recon_tool_runs(phase,tool,root_domain,run_group,command_json,status,return_code,record_count,stdout_path,stderr_path,error,started_at,finished_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (phase, tool, root_domain, run_group, json.dumps(command, ensure_ascii=False), status, return_code, record_count, stdout_path, stderr_path, error, started_at, finished_at),
     )
     return int(cur.lastrowid)
 
 
-def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, command: list[str], *, timeout: int = 180, input_text: str | None = None) -> dict:
+def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, command: list[str], *, timeout: int = 180,
+              input_text: str | None = None, root_domain: str = "", run_group: str = "") -> dict:
     init_schema(conn)
     started = _now()
     run_dir = Path(paths["raw"]) / "surface-runs"
@@ -535,7 +583,7 @@ def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, comm
         stderr_path.write_text(stderr, encoding="utf-8")
         status = "ok" if proc.returncode == 0 else "error"
         error = "" if proc.returncode == 0 else (stderr.strip() or f"{tool} rc={proc.returncode}")[:1200]
-        _record_tool_run(conn, phase, tool, command, status, proc.returncode, len([x for x in stdout.splitlines() if x.strip()]), str(stdout_path), str(stderr_path), error, started, _now())
+        run_id = _record_tool_run(conn, phase, tool, command, status, proc.returncode, len([x for x in stdout.splitlines() if x.strip()]), str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
         return {"status": status, "return_code": proc.returncode, "stdout": stdout, "stderr": stderr, "command": command, "error": error}
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""; stderr = exc.stderr or ""
@@ -543,7 +591,7 @@ def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, comm
         if isinstance(stderr, bytes): stderr = stderr.decode("utf-8", errors="replace")
         stdout_path.write_text(stdout, encoding="utf-8"); stderr_path.write_text(stderr, encoding="utf-8")
         error = f"{tool} timeout después de {timeout}s"
-        _record_tool_run(conn, phase, tool, command, "error", None, 0, str(stdout_path), str(stderr_path), error, started, _now())
+        run_id = _record_tool_run(conn, phase, tool, command, "error", None, 0, str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
         return {"status": "error", "return_code": None, "stdout": stdout, "stderr": stderr, "command": command, "error": error}
 
 
@@ -560,7 +608,7 @@ def _first_party_hostnames(conn: sqlite3.Connection, root_domain: str, *, resolv
     return sorted(set(values))
 
 
-def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 30) -> dict:
+def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 30, run_group: str = "") -> dict:
     init_schema(conn)
     root = root_domain.lower().rstrip(".")
     hid = upsert_asset(conn, "hostname", root, root, {"sources": ["root_recon"]})
@@ -568,7 +616,7 @@ def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
     dig = _tool_path("dig")
     if dig:
         for rtype in ("NS", "A", "AAAA", "MX", "TXT", "CAA"):
-            run = _run_tool(conn, paths, "root", "dig", [dig, root, rtype, "+short"], timeout=timeout)
+            run = _run_tool(conn, paths, "root", "dig", [dig, root, rtype, "+short"], timeout=timeout, root_domain=root, run_group=run_group)
             results.append(run)
             if run["status"] == "ok":
                 values = [x.strip().rstrip(".") for x in run["stdout"].splitlines() if x.strip()]
@@ -583,14 +631,14 @@ def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
                         link(conn, hid, "RESOLVES_TO", iid, "root_recon")
     whois = _tool_path("whois")
     if whois:
-        run = _run_tool(conn, paths, "root", "whois", [whois, root], timeout=max(timeout, 45))
+        run = _run_tool(conn, paths, "root", "whois", [whois, root], timeout=max(timeout, 45), root_domain=root, run_group=run_group)
         results.append(run)
         if run["stdout"].strip(): add_evidence(conn, hid, "root_recon", "whois", None, run["stdout"][:200000])
     curl = _tool_path("curl")
     if curl:
         for scheme in ("https", "http"):
             cmd = [curl, "-skD", "-", "-o", "/dev/null", "--max-time", str(timeout), f"{scheme}://{root}/"] if scheme == "https" else [curl, "-sD", "-", "-o", "/dev/null", "--max-time", str(timeout), f"{scheme}://{root}/"]
-            run = _run_tool(conn, paths, "root", "curl", cmd, timeout=timeout+5)
+            run = _run_tool(conn, paths, "root", "curl", cmd, timeout=timeout+5, root_domain=root, run_group=run_group)
             results.append(run)
             if run["stdout"].strip(): add_evidence(conn, hid, "root_recon", f"http_{scheme}_headers", None, run["stdout"][:50000])
     rebuild_family_heuristics(conn, root_domain)
@@ -599,15 +647,75 @@ def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
     return {"phase": "root", "status": "ok" if ok else "error", "tools_ok": ok, "tools_total": len(results)}
 
 
-def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240) -> dict:
+def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240, run_group: str = "") -> dict:
     binary = _tool_path("subfinder")
     if not binary:
         raise RuntimeError("Subfinder no está instalado o no está disponible en PATH.")
     cmd = [binary, "-d", root_domain, "-all", "-silent"]
-    run = _run_tool(conn, paths, "discovery", "subfinder", cmd, timeout=timeout)
+    run = _run_tool(conn, paths, "discovery", "subfinder", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
     if run["status"] != "ok": raise RuntimeError(run["error"] or "Subfinder falló")
     result = import_subfinder_text(conn, run["stdout"], root_domain, "surface-run:subfinder")
     return {"phase": "discovery", **result, "command": cmd}
+
+
+def _crtsh_hosts(raw: str, root_domain: str) -> list[str]:
+    try:
+        data = json.loads(raw or "[]")
+    except Exception:
+        return []
+    root = root_domain.lower().rstrip(".")
+    out: set[str] = set()
+    if not isinstance(data, list):
+        return []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        for field in ("name_value", "common_name"):
+            value = entry.get(field)
+            if not isinstance(value, str):
+                continue
+            for item in value.splitlines():
+                host = item.strip().lower().rstrip(".").lstrip("*.")
+                if host and (host == root or host.endswith("." + root)):
+                    out.add(host)
+    return sorted(out)
+
+
+def run_expand_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240, run_group: str = "") -> dict:
+    """Expand passive hostname discovery with independent public sources.
+
+    crt.sh is always attempted through curl when available. Amass passive is
+    additive when installed; one source succeeding is enough for the phase.
+    """
+    root = root_domain.lower().rstrip(".")
+    total = errors = 0
+    successes = 0
+    commands: list[list[str]] = []
+
+    curl = _tool_path("curl")
+    if curl:
+        query = f"https://crt.sh/?q=%25.{root}&output=json"
+        cmd = [curl, "-fsSL", "--max-time", str(min(timeout, 180)), query]
+        commands.append(cmd)
+        run = _run_tool(conn, paths, "discovery_expand", "crt.sh", cmd, timeout=min(timeout, 190), root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            hosts = _crtsh_hosts(run["stdout"], root)
+            result = import_discovered_hosts(conn, hosts, root, "crtsh", "surface-run:crtsh")
+            total += int(result["records"]); errors += int(result["errors"]); successes += 1
+
+    amass = _tool_path("amass")
+    if amass:
+        cmd = [amass, "enum", "-passive", "-d", root]
+        commands.append(cmd)
+        run = _run_tool(conn, paths, "discovery_expand", "amass", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()]
+            result = import_discovered_hosts(conn, hosts, root, "amass", "surface-run:amass")
+            total += int(result["records"]); errors += int(result["errors"]); successes += 1
+
+    if successes == 0:
+        raise RuntimeError("No pude ampliar el descubrimiento: crt.sh y Amass no produjeron una ejecución válida.")
+    return {"phase": "discovery_expand", "records": total, "errors": errors, "sources_ok": successes, "commands": commands}
 
 
 def _write_target_list(paths: dict, phase: str, hosts: list[str]) -> Path:
@@ -618,28 +726,69 @@ def _write_target_list(paths: dict, phase: str, hosts: list[str]) -> Path:
     return path
 
 
-def run_dns_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300) -> dict:
+def run_dns_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
     binary = _tool_path("dnsx")
     if not binary: raise RuntimeError("dnsx no está instalado. Instálalo con ProjectDiscovery y verifica que esté en PATH.")
     hosts = _first_party_hostnames(conn, root_domain)
     if not hosts: raise RuntimeError("No hay hostnames descubiertos. Ejecuta primero Descubrimiento pasivo.")
     target_file = _write_target_list(paths, "dns", hosts)
     cmd = [binary, "-l", str(target_file), "-a", "-aaaa", "-cname", "-resp", "-silent"]
-    run = _run_tool(conn, paths, "dns", "dnsx", cmd, timeout=timeout)
+    run = _run_tool(conn, paths, "dns", "dnsx", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
     if run["status"] != "ok": raise RuntimeError(run["error"] or "dnsx falló")
     result = import_dnsx_text(conn, run["stdout"], root_domain, "surface-run:dnsx")
-    # Anything discovered but absent from dnsx remains DISCOVERED rather than being falsely marked dead.
-    return {"phase": "dns", **result, "targets": len(hosts), "command": cmd}
+    resolved_hosts = set()
+    for line in run["stdout"].splitlines():
+        m = _DNSX_RE.match(line.strip())
+        if m:
+            resolved_hosts.add(m.group("host").lower().rstrip("."))
+
+    # Match the manual methodology: names omitted by dnsx are not immediately
+    # called dead. Ask DNS for the response status and distinguish NXDOMAIN from
+    # NOERROR/NODATA so the map keeps historical and DNS-only names separate.
+    unresolved = sorted(set(hosts) - resolved_hosts)
+    status_counts = {"NXDOMAIN": 0, "NODATA": 0, "UNKNOWN": 0}
+    dig = _tool_path("dig")
+    bash = shutil.which("bash")
+    if unresolved and dig and bash:
+        unresolved_file = _write_target_list(paths, f"dns-unresolved-{re.sub(r'[^a-zA-Z0-9]+','-',root_domain)}", unresolved)
+        script = (
+            'while IFS= read -r host; do '
+            's=$(dig "$host" A +noall +comments | grep -o "status: [A-Z]*" | head -1 | awk "{print \\$2}"); '
+            'printf "%s\\t%s\\n" "$host" "${s:-UNKNOWN}"; '
+            'done < "$1"'
+        )
+        status_cmd = [bash, "-lc", script, "negro-dns-status", str(unresolved_file)]
+        status_run = _run_tool(conn, paths, "dns", "dig-status", status_cmd, timeout=max(timeout, 300), root_domain=root_domain, run_group=run_group)
+        if status_run["status"] == "ok":
+            for line in status_run["stdout"].splitlines():
+                parts = line.split("\t", 1)
+                if len(parts) != 2:
+                    continue
+                host, status = parts[0].strip().lower().rstrip("."), parts[1].strip().upper()
+                row = conn.execute("SELECT id,metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?", (host,)).fetchone()
+                if not row:
+                    continue
+                if status == "NXDOMAIN":
+                    state = "NXDOMAIN"; status_counts["NXDOMAIN"] += 1
+                elif status == "NOERROR":
+                    state = "NODATA"; status_counts["NODATA"] += 1
+                else:
+                    state = "DISCOVERED"; status_counts["UNKNOWN"] += 1
+                meta = _merge_meta(_loads(row["metadata_json"]), {"dns_state": state})
+                conn.execute("UPDATE recon_assets SET metadata_json=?,last_seen_at=? WHERE id=?", (json.dumps(meta, ensure_ascii=False), _now(), row["id"]))
+                add_evidence(conn, int(row["id"]), "dig-status", "dns_status", status, {"hostname": host, "status": status})
+            conn.commit()
+    return {"phase": "dns", **result, "targets": len(hosts), "command": cmd, "unresolved": len(unresolved), "status_counts": status_counts}
 
 
-def run_http_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 420) -> dict:
+def run_http_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 420, run_group: str = "") -> dict:
     binary = _tool_path("httpx")
     if not binary: raise RuntimeError("httpx de ProjectDiscovery no está instalado o no está en PATH.")
     hosts = _first_party_hostnames(conn, root_domain, resolved_only=True)
     if not hosts: raise RuntimeError("No hay hosts DNS_RESOLVED. Ejecuta primero Validación DNS.")
     target_file = _write_target_list(paths, "http", hosts)
     cmd = [binary, "-l", str(target_file), "-status-code", "-title", "-tech-detect", "-server", "-ip", "-cname", "-cdn", "-location", "-json", "-silent"]
-    run = _run_tool(conn, paths, "http", "httpx", cmd, timeout=timeout)
+    run = _run_tool(conn, paths, "http", "httpx", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
     if run["status"] != "ok": raise RuntimeError(run["error"] or "httpx falló")
     result = import_httpx_jsonl(conn, run["stdout"], root_domain, "surface-run:httpx")
     return {"phase": "http", **result, "targets": len(hosts), "command": cmd}
@@ -647,75 +796,156 @@ def run_http_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
 
 def run_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, phase: str) -> dict:
     phase = (phase or "").strip().lower()
-    if phase == "root": return run_root_phase(conn, root_domain, paths)
-    if phase == "discovery": return run_discovery_phase(conn, root_domain, paths)
-    if phase == "dns": return run_dns_phase(conn, root_domain, paths)
-    if phase == "http": return run_http_phase(conn, root_domain, paths)
+    run_group = uuid.uuid4().hex
+    if phase == "root": return run_root_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "discovery": return run_discovery_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "discovery_expand": return run_expand_discovery_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "dns": return run_dns_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "http": return run_http_phase(conn, root_domain, paths, run_group=run_group)
     raise ValueError(f"Fase no soportada: {phase}")
+
+
+def _read_run_preview(path_value: str | None, *, max_lines: int = 120, max_chars: int = 32000) -> str:
+    if not path_value:
+        return ""
+    try:
+        path = Path(path_value)
+        if not path.exists() or not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    lines = text.splitlines()
+    clipped = "\n".join(lines[:max_lines])
+    if len(clipped) > max_chars:
+        clipped = clipped[:max_chars]
+    if len(lines) > max_lines or len(text) > len(clipped):
+        clipped += f"\n… salida truncada ({len(lines)} líneas totales)"
+    return clipped
+
+
+def attach_legacy_runs(conn: sqlite3.Connection, primary_root: str) -> None:
+    """Attach pre-v0.73 tool runs to the project's original root once.
+
+    v0.72 had no root_domain column because a project effectively exposed only
+    one recon root. Backfilling against the primary project domain avoids
+    accidentally assigning historical runs to a newly-added secondary root.
+    """
+    init_schema(conn)
+    conn.execute(
+        "UPDATE recon_tool_runs SET root_domain=? WHERE COALESCE(root_domain,'')=''",
+        (primary_root.lower().rstrip("."),),
+    )
+    conn.commit()
+
+
+def _phase_run_bundle(conn: sqlite3.Connection, phase: str, root_domain: str) -> dict:
+    root = root_domain.lower().rstrip(".")
+    latest = conn.execute(
+        "SELECT * FROM recon_tool_runs WHERE phase=? AND COALESCE(root_domain,'')=? ORDER BY id DESC LIMIT 1",
+        (phase, root),
+    ).fetchone()
+    if not latest:
+        return {"count": 0, "latest": None, "runs": [], "done": False}
+    latest = dict(latest)
+    group = str(latest.get("run_group") or "")
+    if group:
+        rows = conn.execute(
+            "SELECT * FROM recon_tool_runs WHERE phase=? AND COALESCE(root_domain,'')=? AND run_group=? ORDER BY id",
+            (phase, root, group),
+        ).fetchall()
+    else:
+        rows = [latest]
+    runs = []
+    for row in rows:
+        item = dict(row)
+        try:
+            cmd = json.loads(item.get("command_json") or "[]")
+        except Exception:
+            cmd = []
+        item["command"] = " ".join(str(x) for x in cmd)
+        item["stdout_preview"] = _read_run_preview(item.get("stdout_path"))
+        item["stderr_preview"] = _read_run_preview(item.get("stderr_path"), max_lines=60, max_chars=16000)
+        runs.append(item)
+    total_count = conn.execute(
+        "SELECT COUNT(*) c FROM recon_tool_runs WHERE phase=? AND COALESCE(root_domain,'')=?",
+        (phase, root),
+    ).fetchone()["c"]
+    return {
+        "count": int(total_count),
+        "latest": latest,
+        "runs": runs,
+        "done": bool(runs and any(str(r.get("status")) == "ok" for r in runs)),
+    }
 
 
 def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     init_schema(conn)
+    root = root_domain.lower().rstrip(".")
     hosts = _asset_rows(conn, "hostname")
-    first = [h for h in hosts if h["asset_key"] == root_domain.lower() or h["asset_key"].endswith("." + root_domain.lower())]
-    discovered = len(first)
+    first = [h for h in hosts if h["asset_key"] == root or h["asset_key"].endswith("." + root)]
+    discovered = max(0, len(first) - 1 if any(h["asset_key"] == root for h in first) else len(first))
     resolved = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "RESOLVED")
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
-    root_ev = conn.execute("SELECT COUNT(*) c FROM recon_evidence WHERE source='root_recon'").fetchone()["c"]
+    expanded = int(conn.execute(
+        """SELECT COUNT(DISTINCT e.asset_id) c FROM recon_evidence e
+           JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source IN ('crtsh','amass') AND a.asset_type='hostname'
+             AND (a.asset_key=? OR a.asset_key LIKE ?)""",
+        (root, "%." + root),
+    ).fetchone()["c"] or 0)
+    root_ev = int(conn.execute(
+        """SELECT COUNT(*) c FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='root_recon' AND a.asset_type='hostname' AND a.asset_key=?""",
+        (root,),
+    ).fetchone()["c"] or 0)
     tooling = tool_inventory()
-    phase_help = {
-        "root": {
-            "question": "¿Qué publica el dominio raíz y qué intermediarios aparecen antes de la aplicación?",
-            "tool": "dig · whois · curl",
-            "checks": ["WHOIS / registrador", "NS y DNS raíz", "A / AAAA", "MX / TXT / CAA", "Headers HTTP/HTTPS"],
-            "success": "Identificar la postura inicial del dominio sin confundir edge/CDN con origin.",
-        },
-        "discovery": {
-            "question": "¿Qué nombres conoce la superficie pública del target?",
-            "tool": "subfinder",
-            "checks": ["Enumerar hostnames candidatos", "Conservar fuente/evidencia", "No asumir que un nombre descubierto sigue activo"],
-            "success": "Construir el inventario candidato que después será validado por DNS.",
-        },
-        "dns": {
-            "question": "¿Cuáles nombres existen hoy y a qué infraestructura observable apuntan?",
-            "tool": "dnsx",
-            "checks": ["A / AAAA", "CNAME", "Separar resolved de discovered", "Conservar IP observada sin llamarla origin"],
-            "success": "Reducir el inventario a nombres DNS útiles y relaciones de red observables.",
-        },
-        "http": {
-            "question": "¿Qué hosts exponen HTTP y qué tecnologías, redirects o edge/CDN podemos observar?",
-            "tool": "httpx",
-            "checks": ["Status HTTP", "Title", "Servidor", "Tecnologías", "CDN / cloud", "Redirects"],
-            "success": "Convertir el mapa DNS en un mapa tecnológico y operativo.",
-        },
-        "services": {
-            "question": "¿Qué infraestructura directa merece enumeración de puertos y servicios?",
-            "tool": "nmap",
-            "checks": ["Excluir CDN/edge compartido", "Excluir SaaS/terceros fuera de scope", "Validar candidatos directos", "Enumerar servicios sólo con contexto"],
-            "success": "Enumerar servicios sin escanear indiscriminadamente infraestructura compartida.",
-        },
-    }
+    bundles = {key: _phase_run_bundle(conn, key, root) for key in ("root","discovery","discovery_expand","dns","http","tls","historical","infra","services")}
+
+    root_done = bundles["root"]["done"]
+    discovery_done = bundles["discovery"]["done"]
+    expand_done = bundles["discovery_expand"]["done"]
+    dns_done = bundles["dns"]["done"]
+    http_done = bundles["http"]["done"]
+
     specs = [
-        ("root", "Dominio raíz", "WHOIS · DNS · HTTP inicial", int(root_ev), True, all(tooling[x]["available"] for x in ("dig","curl"))),
-        ("discovery", "Descubrimiento", "Subfinder · nombres candidatos", discovered, bool(root_ev), tooling["subfinder"]["available"]),
-        ("dns", "Validar DNS", "dnsx · A / AAAA / CNAME", resolved, discovered > 0, tooling["dnsx"]["available"]),
-        ("http", "Descubrir HTTP", "httpx · status / tech / CDN", http, resolved > 0, tooling["httpx"]["available"]),
-        ("services", "Servicios", "Nmap · sólo candidatos directos", 0, http > 0, tooling["nmap"]["available"]),
+        {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","ready":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"implemented":True,"done":root_done},
+        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","ready":root_done,"tool_ok":tooling["subfinder"]["available"],"implemented":True,"done":discovery_done},
+        {"key":"discovery_expand","title":"Ampliar descubrimiento","subtitle":"crt.sh + Amass pasivo (si está disponible)","count":expanded,"count_label":"hosts con evidencia extra","ready":discovery_done,"tool_ok":tooling["curl"]["available"],"implemented":True,"done":expand_done},
+        {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME","count":resolved,"count_label":"DNS resueltos","ready":discovery_done,"tool_ok":tooling["dnsx"]["available"],"implemented":True,"done":dns_done},
+        {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / tech / CDN / redirects","count":http,"count_label":"HTTP observados","ready":dns_done,"tool_ok":tooling["httpx"]["available"],"implemented":True,"done":http_done},
+        {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","ready":http_done,"tool_ok":tooling["openssl"]["available"],"implemented":False,"done":False},
+        {"key":"historical","title":"Históricos y URLs","subtitle":"Wayback / GAU · rutas y hosts históricos","count":0,"count_label":"URLs históricas","ready":http_done,"tool_ok":True,"implemented":False,"done":False},
+        {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","ready":http_done,"tool_ok":True,"implemented":False,"done":False},
+        {"key":"services","title":"Servicios","subtitle":"Nmap · sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","ready":False,"tool_ok":tooling["nmap"]["available"],"implemented":False,"done":False},
     ]
     out=[]
-    for key,title,subtitle,count,ready,tool_ok in specs:
-        complete = count > 0
-        state = "done" if complete else "ready" if ready and tool_ok and key != "services" else "blocked" if not ready else "planned" if key=="services" else "missing_tool"
-        latest = conn.execute("SELECT * FROM recon_tool_runs WHERE phase=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
-        runs = conn.execute("SELECT COUNT(*) c FROM recon_tool_runs WHERE phase=?", (key,)).fetchone()["c"]
-        help_data = phase_help[key]
+    for spec in specs:
+        key=spec["key"]
+        bundle=bundles[key]
+        if spec["done"]:
+            state="done"
+        elif spec["implemented"] and spec["ready"] and spec["tool_ok"]:
+            state="ready"
+        elif not spec["implemented"]:
+            state="planned"
+        elif not spec["ready"]:
+            state="blocked"
+        else:
+            state="missing_tool"
         out.append({
-            "key":key,"title":title,"subtitle":subtitle,"count":int(count),"state":state,
-            "ready":bool(ready),"tool_available":bool(tool_ok),"implemented":key!="services",
-            "question": help_data["question"], "tool": help_data["tool"], "checks": help_data["checks"],
-            "success": help_data["success"], "run_count": int(runs),
-            "last_status": (dict(latest).get("status") if latest else None),
-            "last_started_at": (dict(latest).get("started_at") if latest else None),
+            **spec,
+            "state": state,
+            # Kept in the API for backward compatibility/documentation, but the
+            # phase card UI now prioritizes real execution output instead.
+            "question": spec["subtitle"],
+            "tool": spec["subtitle"].split(" · ", 1)[0],
+            "checks": [spec["count_label"]],
+            "success": spec["count_label"],
+            "run_count": bundle["count"],
+            "last_status": (bundle["latest"].get("status") if bundle["latest"] else None),
+            "last_started_at": (bundle["latest"].get("started_at") if bundle["latest"] else None),
+            "latest_runs": bundle["runs"],
         })
     return out
 
@@ -728,7 +958,7 @@ def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     return out
 
 
-def surface_data(conn: sqlite3.Connection, root_domain: str) -> dict:
+def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] | None = None) -> dict:
     init_schema(conn)
     rebuild_family_heuristics(conn, root_domain)
     conn.commit()
@@ -784,11 +1014,12 @@ def surface_data(conn: sqlite3.Connection, root_domain: str) -> dict:
     next_phase = next((p for p in phases if p.get("state") in {"ready", "planned", "missing_tool"}), None)
     return {
         "root_domain": root_domain,
+        "roots": list(dict.fromkeys([root_domain] + [str(x).lower().rstrip('.') for x in (scopes or []) if x])),
         "hosts": enriched,
         "filters": {"technologies": uniq("technologies"), "providers": uniq("providers"), "servers": uniq("servers"), "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status},
         "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families)},
         "imports": [dict(r) for r in conn.execute("SELECT * FROM recon_import_runs ORDER BY id DESC LIMIT 20").fetchall()],
-        "tool_runs": [dict(r) for r in conn.execute("SELECT * FROM recon_tool_runs ORDER BY id DESC LIMIT 30").fetchall()],
+        "tool_runs": [dict(r) for r in conn.execute("SELECT * FROM recon_tool_runs WHERE COALESCE(root_domain,'')=? ORDER BY id DESC LIMIT 30", (root_domain.lower().rstrip('.'),)).fetchall()],
         "phases": phases,
         "phase_summary": {"done": done_count, "total": total_count, "percent": int(round((done_count / total_count) * 100)) if total_count else 0, "next": next_phase},
         "tooling": tool_inventory(),

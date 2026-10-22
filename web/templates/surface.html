@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Superficie · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
-<section class="surface-page" data-surface-root data-api="/api/t/{{ target_key }}/surface" data-root-domain="{{ domain }}">
+<section class="surface-page" data-surface-root data-api="/api/t/{{ target_key }}/surface?root={{ surface.root_domain | urlencode }}" data-root-domain="{{ surface.root_domain }}">
   <header class="surface-head">
     <div>
       <p class="eyebrow">ATTACK SURFACE · GUIDED RECON</p>
@@ -20,8 +20,25 @@
 
   <section class="surface-workflow panel">
     <div class="surface-workflow-head">
-      <div><span class="eyebrow">RECON PROGRESIVO</span><h2>{{ domain }}</h2><p>No se lanza la siguiente fase automáticamente. Mira lo aprendido y decide cuándo continuar.</p></div>
-      <div class="surface-workflow-scope"><span>Scope</span><code>*.{{ domain }}</code></div>
+      <div><span class="eyebrow">RECON PROGRESIVO</span><h2>{{ surface.root_domain }}</h2><p>No se lanza la siguiente fase automáticamente. Mira lo aprendido y decide cuándo continuar.</p></div>
+      <div class="surface-workflow-scope"><span>Root activo</span><code>*.{{ surface.root_domain }}</code></div>
+    </div>
+    <div class="surface-rootbar">
+      <div class="surface-root-list">
+        <span>Roots del proyecto</span>
+        {% for root in surface.roots %}
+        <a class="surface-root-chip {% if root == surface.root_domain %}active{% endif %}" href="{{ target_base }}/surface?root={{ root | urlencode }}">{{ root }}</a>
+        {% endfor %}
+      </div>
+      <details class="surface-root-add">
+        <summary>+ Añadir dominio al proyecto</summary>
+        <form method="post" action="{{ target_base }}/surface/scope/add">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="text" name="new_root" placeholder="otro-dominio.com" required>
+          <label><input type="checkbox" name="confirm_scope" value="yes" required> Confirmo que pertenece al alcance autorizado</label>
+          <button class="button" type="submit">Añadir y enumerar</button>
+        </form>
+      </details>
     </div>
     <div class="surface-phase-grid">
       {% for phase in surface.phases %}
@@ -29,19 +46,37 @@
         <div class="surface-phase-top"><span class="surface-phase-index">0{{ loop.index }}</span><span class="surface-phase-state">{{ phase.state }}</span></div>
         <h3>{{ phase.title }}</h3>
         <p>{{ phase.subtitle }}</p>
-        <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{% if phase.key == 'root' %}evidencias{% elif phase.key == 'discovery' %}hosts conocidos{% elif phase.key == 'dns' %}DNS resueltos{% elif phase.key == 'http' %}HTTP observados{% else %}candidatos{% endif %}</span></div>
-        <button type="button" class="surface-phase-info-toggle" data-phase-toggle aria-expanded="false">Ver detalle <span>⌄</span></button>
+        <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{{ phase.count_label }}</span></div>
+        <button type="button" class="surface-phase-info-toggle" data-phase-toggle aria-expanded="false">Ver resultado <span>⌄</span></button>
         <div class="surface-phase-detail" data-phase-detail hidden>
-          <div><span>Pregunta</span><p>{{ phase.question }}</p></div>
-          <div><span>Herramienta</span><code>{{ phase.tool }}</code></div>
-          <div><span>Qué valida</span><ul>{% for check in phase.checks %}<li>{{ check }}</li>{% endfor %}</ul></div>
-          <div><span>Resultado esperado</span><p>{{ phase.success }}</p></div>
-          <div class="surface-phase-runmeta"><span>{{ phase.run_count }} ejecuciones{% if phase.last_status %} · última: {{ phase.last_status }}{% endif %}</span>{% if phase.last_started_at %}<small>{{ phase.last_started_at }}</small>{% endif %}</div>
+          {% if phase.latest_runs %}
+          <div class="surface-phase-runmeta"><span>{{ phase.run_count }} ejecuciones guardadas · última fase: {{ phase.last_status or '—' }}</span>{% if phase.last_started_at %}<small>{{ phase.last_started_at }}</small>{% endif %}</div>
+          {% for run in phase.latest_runs %}
+          <article class="surface-phase-run-result">
+            <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{{ run.status }}</span><small>{{ run.record_count }} líneas</small></div>
+            <span>Comando ejecutado</span>
+            <code>{{ run.command }}</code>
+            {% if run.stdout_preview %}
+            <span>STDOUT</span>
+            <pre>{{ run.stdout_preview }}</pre>
+            <a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">Abrir stdout completo ↗</a>
+            {% endif %}
+            {% if run.stderr_preview %}
+            <span>STDERR</span>
+            <pre class="stderr">{{ run.stderr_preview }}</pre>
+            <a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir stderr completo ↗</a>
+            {% endif %}
+          </article>
+          {% endfor %}
+          {% else %}
+          <div class="surface-phase-no-run"><b>Aún no hay una ejecución guardada para este root.</b><span>Cuando ejecutes la fase, aquí verás el comando exacto y su salida para contrastarla manualmente.</span></div>
+          {% endif %}
         </div>
         {% if phase.implemented and phase.ready and phase.tool_available %}
         <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="phase" value="{{ phase.key }}">
+          <input type="hidden" name="root" value="{{ surface.root_domain }}">
           <button class="button {% if phase.state == 'ready' %}primary{% else %}ghost{% endif %}" type="submit">{% if phase.state == 'done' %}Repetir fase{% else %}Ejecutar fase{% endif %}</button>
         </form>
         {% elif not phase.implemented %}
@@ -80,6 +115,7 @@
     </div>
     <form method="post" action="{{ target_base }}/surface/import" enctype="multipart/form-data" class="surface-import-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="root" value="{{ surface.root_domain }}">
       <label>Formato
         <select name="source">
           <option value="auto">Detectar automáticamente</option>

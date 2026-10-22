@@ -32,13 +32,13 @@ import negro_http_inspector as http_inspector
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
     from fastapi.staticfiles import StaticFiles
     from fastapi.templating import Jinja2Templates
     _WEB_IMPORT_ERROR = None
 except ImportError as exc:  # CLI remains usable without web dependencies
     FastAPI = File = Form = HTTPException = Request = UploadFile = None  # type: ignore
-    FileResponse = HTMLResponse = JSONResponse = RedirectResponse = StaticFiles = Jinja2Templates = None  # type: ignore
+    FileResponse = HTMLResponse = JSONResponse = RedirectResponse = PlainTextResponse = StaticFiles = Jinja2Templates = None  # type: ignore
     _WEB_IMPORT_ERROR = exc
 
 JOBS: dict[str, dict[str, Any]] = {}
@@ -5572,55 +5572,124 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "parameter_detail.html", target_key, domain, workspace, detail=detail)
 
     @app.get("/t/{target_key}/surface", response_class=HTMLResponse)
-    def surface_page(request: Request, target_key: str, imported: str = "", scan: str = ""):
+    def surface_page(request: Request, target_key: str, imported: str = "", scan: str = "", root: str = ""):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_scopes(target.get("scopes"), domain)
+        selected_root = core.normalize_scope(root) if root else domain
+        if selected_root not in roots:
+            selected_root = domain
         with _db(paths) as conn:
             recon.init_schema(conn)
-            data = recon.surface_data(conn, domain)
+            recon.attach_legacy_runs(conn, domain)
+            data = recon.surface_data(conn, selected_root, roots)
         return render(request, "surface.html", target_key, domain, workspace, surface=data, imported=imported, scan=scan)
 
     @app.post("/t/{target_key}/surface/run")
-    def surface_run_phase(request: Request, target_key: str, phase: str = Form(...), csrf: str = Form(...)):
+    def surface_run_phase(request: Request, target_key: str, phase: str = Form(...), root: str = Form(""), csrf: str = Form(...)):
         import negro_recon as recon
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_scopes(target.get("scopes"), domain)
+        selected_root = core.normalize_scope(root) if root else domain
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
         with _db(paths) as conn:
             recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
             try:
-                result = recon.run_phase(conn, domain, paths, phase)
+                result = recon.run_phase(conn, selected_root, paths, phase)
             except (ValueError, RuntimeError) as exc:
                 msg = urllib.parse.quote(f"{phase}: {str(exc)}")
-                return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+                return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
         detail = result.get("records", result.get("tools_ok", 0))
         msg = urllib.parse.quote(f"{phase}: completado · {detail} resultados")
-        return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
 
     @app.get("/api/t/{target_key}/surface", response_class=JSONResponse)
-    def surface_api(target_key: str):
+    def surface_api(target_key: str, root: str = ""):
         import negro_recon as recon
         domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_scopes(target.get("scopes"), domain)
+        selected_root = core.normalize_scope(root) if root else domain
+        if selected_root not in roots:
+            selected_root = domain
         with _db(paths) as conn:
             recon.init_schema(conn)
-            return recon.surface_data(conn, domain)
+            recon.attach_legacy_runs(conn, domain)
+            return recon.surface_data(conn, selected_root, roots)
 
     @app.post("/t/{target_key}/surface/import")
-    async def surface_import(request: Request, target_key: str, source: str = Form("auto"), recon_file: UploadFile = File(...), csrf: str = Form(...)):
+    async def surface_import(request: Request, target_key: str, source: str = Form("auto"), root: str = Form(""), recon_file: UploadFile = File(...), csrf: str = Form(...)):
         import negro_recon as recon
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_scopes(target.get("scopes"), domain)
+        selected_root = core.normalize_scope(root) if root else domain
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
         raw = await recon_file.read()
         if len(raw) > 20 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="El archivo supera 20 MB")
         text = raw.decode("utf-8", errors="replace")
         with _db(paths) as conn:
             recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
             try:
-                result = recon.import_text(conn, source, text, domain, recon_file.filename or "")
+                result = recon.import_text(conn, source, text, selected_root, recon_file.filename or "")
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
         msg = urllib.parse.quote(f"{result['source']}: {result['records']} registros · {result['errors']} errores")
-        return RedirectResponse(url=f"/t/{target_key}/surface?imported={msg}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&imported={msg}", status_code=303)
+
+    @app.post("/t/{target_key}/surface/scope/add")
+    def surface_add_scope(request: Request, target_key: str, new_root: str = Form(...), confirm_scope: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        if confirm_scope != "yes":
+            raise HTTPException(status_code=400, detail="Confirma que el dominio pertenece al alcance autorizado")
+        target = core.get_target(target_key)
+        if not target:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        root = core.normalize_scope(new_root)
+        if not root or not DOMAIN_RE.fullmatch(root):
+            raise HTTPException(status_code=400, detail="Dominio inválido")
+        roots = core.normalize_scopes(target.get("scopes"), target.get("domain"))
+        if root not in roots:
+            roots.append(root)
+            updated = core.update_target_project(target_key, name=target.get("name") or target.get("domain"), scopes=roots)
+            core.ensure_workspace(
+                Path(str(updated.get("workspace") or target.get("workspace"))).expanduser(),
+                updated.get("domain") or target.get("domain"),
+                scopes=roots,
+                project_name=updated.get("name") or target.get("name") or target.get("domain"),
+            )
+        return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(root)}", status_code=303)
+
+    @app.get("/t/{target_key}/surface/run/{run_id}/output/{stream}", response_class=PlainTextResponse)
+    def surface_run_output(target_key: str, run_id: int, stream: str):
+        import negro_recon as recon
+        _, _, paths = _target_context(target_key)
+        if stream not in {"stdout", "stderr"}:
+            raise HTTPException(status_code=400, detail="Stream inválido")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            row = conn.execute("SELECT stdout_path,stderr_path FROM recon_tool_runs WHERE id=?", (int(run_id),)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+            raw_path = str(row[f"{stream}_path"] or "")
+        path = Path(raw_path)
+        allowed = (Path(paths["raw"]) / "surface-runs").resolve()
+        try:
+            resolved = path.resolve()
+        except Exception:
+            raise HTTPException(status_code=404, detail="Salida no disponible")
+        if allowed not in resolved.parents or not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Salida no disponible")
+        return resolved.read_text(encoding="utf-8", errors="replace")
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):

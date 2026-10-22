@@ -17,7 +17,7 @@ def test_phase_progress_has_guidance_and_summary():
     conn.row_factory = sqlite3.Row
     recon.init_schema(conn)
     data = recon.surface_data(conn, "example.com")
-    assert data["phase_summary"]["total"] == 5
+    assert data["phase_summary"]["total"] == 9
     root = next(p for p in data["phases"] if p["key"] == "root")
     assert root["question"]
     assert root["tool"]
