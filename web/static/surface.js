@@ -246,7 +246,8 @@
           expandedHosts.add(n.key);
           renderDetail(n.meta);
           renderGraph();
-          setTimeout(fit,0);
+          // Preserve the user's current pan/zoom when drilling into a host.
+          // Re-centering is now explicit via the Ajustar/Layout controls.
           return;
         }
         renderNodeDetail(n,scene);
@@ -297,7 +298,7 @@
     selectedHost='';
     renderDetail(null);
     renderGraph();
-    setTimeout(fit,0);
+    // Expanding/collapsing a family must not steal the user's viewport.
   }
 
   function enterFamily(name){
@@ -329,7 +330,7 @@
     detail.querySelector('[data-filter-node]')?.addEventListener('click',()=>applyNodeFilter(n));
     detail.querySelectorAll('[data-related-host]').forEach(btn=>btn.addEventListener('click',()=>{
       const h=data.hosts.find(x=>x.hostname===btn.dataset.relatedHost);if(!h)return;
-      selectedHost=h.hostname; expandedHosts.add(h.hostname); if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph(); setTimeout(fit,0);
+      selectedHost=h.hostname; expandedHosts.add(h.hostname); if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph();
     }));
   }
 

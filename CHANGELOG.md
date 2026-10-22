@@ -1,3 +1,18 @@
+# v0.80
+
+- Corrige Validar DNS para no convertir hosts vivos en NODATA cuando `dnsx` no produce un formato normalizable o cambia de versión.
+- `dnsx` sigue siendo la fuente primaria; cualquier hostname no normalizado se verifica con `dig` (A/AAAA/CNAME) antes de clasificar NXDOMAIN/NODATA.
+- Solo se asigna NXDOMAIN/NODATA después de comprobar que no existe evidencia A/AAAA/CNAME en ambas rutas.
+- La fase DNS expone `dnsx_records`, `dig_fallback_records` y `resolved_hosts` para poder auditar por qué un host se considera vivo.
+- Añadida regresión específica para impedir el falso NODATA que dejaba a `httpx` sin superficie.
+
+# v0.79
+
+- Superficie conserva el viewport del usuario al expandir/colapsar familias y al abrir hosts.
+- El drill-down ya no ejecuta `fit()` automáticamente; zoom, paneo y posiciones manuales permanecen estables.
+- `Ajustar` y `Layout` quedan como acciones explícitas para recentrar/reorganizar.
+- Añadidas pruebas de regresión para evitar que el auto-fit vuelva a aparecer en familia/host drill-down.
+
 # v0.78
 
 - Corrige la selección de host en el mapa de Superficie: el click sintético posterior al `pointerup` ya no cae sobre el SVG recién renderizado y borra inmediatamente la ficha lateral.

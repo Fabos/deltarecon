@@ -728,58 +728,150 @@ def _write_target_list(paths: dict, phase: str, hosts: list[str]) -> Path:
 
 def run_dns_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
     binary = _tool_path("dnsx")
-    if not binary: raise RuntimeError("dnsx no está instalado. Instálalo con ProjectDiscovery y verifica que esté en PATH.")
+    if not binary:
+        raise RuntimeError("dnsx no está instalado. Instálalo con ProjectDiscovery y verifica que esté en PATH.")
     hosts = _first_party_hostnames(conn, root_domain)
-    if not hosts: raise RuntimeError("No hay hostnames descubiertos. Ejecuta primero Descubrimiento pasivo.")
+    if not hosts:
+        raise RuntimeError("No hay hostnames descubiertos. Ejecuta primero Descubrimiento pasivo.")
+
     target_file = _write_target_list(paths, "dns", hosts)
     cmd = [binary, "-l", str(target_file), "-a", "-aaaa", "-cname", "-resp", "-silent"]
     run = _run_tool(conn, paths, "dns", "dnsx", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
-    if run["status"] != "ok": raise RuntimeError(run["error"] or "dnsx falló")
-    result = import_dnsx_text(conn, run["stdout"], root_domain, "surface-run:dnsx")
-    resolved_hosts = set()
+    if run["status"] != "ok":
+        raise RuntimeError(run["error"] or "dnsx falló")
+
+    dnsx_result = import_dnsx_text(conn, run["stdout"], root_domain, "surface-run:dnsx")
+    resolved_hosts: set[str] = set()
     for line in run["stdout"].splitlines():
         m = _DNSX_RE.match(line.strip())
         if m:
             resolved_hosts.add(m.group("host").lower().rstrip("."))
 
-    # Match the manual methodology: names omitted by dnsx are not immediately
-    # called dead. Ask DNS for the response status and distinguish NXDOMAIN from
-    # NOERROR/NODATA so the map keeps historical and DNS-only names separate.
-    unresolved = sorted(set(hosts) - resolved_hosts)
-    status_counts = {"NXDOMAIN": 0, "NODATA": 0, "UNKNOWN": 0}
+    # Evidence-first fallback: a dnsx output/parser mismatch must never make a
+    # live host look like NODATA. Verify every host not normalized from dnsx with
+    # dig A/AAAA/CNAME, import those answers using the same canonical model, and
+    # only then classify names with no answer as NXDOMAIN/NODATA.
     dig = _tool_path("dig")
     bash = shutil.which("bash")
+    unresolved = sorted(set(hosts) - resolved_hosts)
+    fallback_records = 0
+
     if unresolved and dig and bash:
-        unresolved_file = _write_target_list(paths, f"dns-unresolved-{re.sub(r'[^a-zA-Z0-9]+','-',root_domain)}", unresolved)
-        script = (
+        unresolved_file = _write_target_list(
+            paths,
+            f"dns-unresolved-{re.sub(r'[^a-zA-Z0-9]+','-',root_domain)}",
+            unresolved,
+        )
+        record_script = (
             'while IFS= read -r host; do '
-            's=$(dig "$host" A +noall +comments | grep -o "status: [A-Z]*" | head -1 | awk "{print \\$2}"); '
+            'for t in A AAAA CNAME; do '
+            'dig "$host" "$t" +time=3 +tries=1 +noall +answer | '
+            'awk -v h="$host" -v want="$t" \'$4==want {v=$5; sub(/\\.$/,"",v); printf "%s [%s] [%s]\\n",h,want,v}\'; '
+            'done; '
+            'done < "$1"'
+        )
+        records_cmd = [bash, "-lc", record_script, "negro-dns-records", str(unresolved_file)]
+        records_run = _run_tool(
+            conn,
+            paths,
+            "dns",
+            "dig-records",
+            records_cmd,
+            timeout=max(timeout, 300),
+            root_domain=root_domain,
+            run_group=run_group,
+        )
+        if records_run["status"] == "ok" and records_run["stdout"].strip():
+            fallback_result = import_dnsx_text(
+                conn,
+                records_run["stdout"],
+                root_domain,
+                "surface-run:dig-records",
+            )
+            fallback_records = int(fallback_result.get("records", 0))
+            for line in records_run["stdout"].splitlines():
+                m = _DNSX_RE.match(line.strip())
+                if m:
+                    resolved_hosts.add(m.group("host").lower().rstrip("."))
+
+    unresolved = sorted(set(hosts) - resolved_hosts)
+    status_counts = {"NXDOMAIN": 0, "NODATA": 0, "UNKNOWN": 0}
+
+    if unresolved and dig and bash:
+        unresolved_file = _write_target_list(
+            paths,
+            f"dns-status-{re.sub(r'[^a-zA-Z0-9]+','-',root_domain)}",
+            unresolved,
+        )
+        status_script = (
+            'while IFS= read -r host; do '
+            's=$(dig "$host" A +time=3 +tries=1 +noall +comments | '
+            'grep -o "status: [A-Z]*" | head -1 | awk "{print \\$2}"); '
             'printf "%s\\t%s\\n" "$host" "${s:-UNKNOWN}"; '
             'done < "$1"'
         )
-        status_cmd = [bash, "-lc", script, "negro-dns-status", str(unresolved_file)]
-        status_run = _run_tool(conn, paths, "dns", "dig-status", status_cmd, timeout=max(timeout, 300), root_domain=root_domain, run_group=run_group)
+        status_cmd = [bash, "-lc", status_script, "negro-dns-status", str(unresolved_file)]
+        status_run = _run_tool(
+            conn,
+            paths,
+            "dns",
+            "dig-status",
+            status_cmd,
+            timeout=max(timeout, 300),
+            root_domain=root_domain,
+            run_group=run_group,
+        )
         if status_run["status"] == "ok":
             for line in status_run["stdout"].splitlines():
                 parts = line.split("\t", 1)
                 if len(parts) != 2:
                     continue
                 host, status = parts[0].strip().lower().rstrip("."), parts[1].strip().upper()
-                row = conn.execute("SELECT id,metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?", (host,)).fetchone()
+                row = conn.execute(
+                    "SELECT id,metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?",
+                    (host,),
+                ).fetchone()
                 if not row:
                     continue
                 if status == "NXDOMAIN":
-                    state = "NXDOMAIN"; status_counts["NXDOMAIN"] += 1
+                    state = "NXDOMAIN"
+                    status_counts["NXDOMAIN"] += 1
                 elif status == "NOERROR":
-                    state = "NODATA"; status_counts["NODATA"] += 1
+                    state = "NODATA"
+                    status_counts["NODATA"] += 1
                 else:
-                    state = "DISCOVERED"; status_counts["UNKNOWN"] += 1
+                    state = "DISCOVERED"
+                    status_counts["UNKNOWN"] += 1
                 meta = _merge_meta(_loads(row["metadata_json"]), {"dns_state": state})
-                conn.execute("UPDATE recon_assets SET metadata_json=?,last_seen_at=? WHERE id=?", (json.dumps(meta, ensure_ascii=False), _now(), row["id"]))
-                add_evidence(conn, int(row["id"]), "dig-status", "dns_status", status, {"hostname": host, "status": status})
+                conn.execute(
+                    "UPDATE recon_assets SET metadata_json=?,last_seen_at=? WHERE id=?",
+                    (json.dumps(meta, ensure_ascii=False), _now(), row["id"]),
+                )
+                add_evidence(
+                    conn,
+                    int(row["id"]),
+                    "dig-status",
+                    "dns_status",
+                    status,
+                    {"hostname": host, "status": status},
+                )
             conn.commit()
-    return {"phase": "dns", **result, "targets": len(hosts), "command": cmd, "unresolved": len(unresolved), "status_counts": status_counts}
 
+    dnsx_records = int(dnsx_result.get("records", 0))
+    total_records = dnsx_records + fallback_records
+    return {
+        "phase": "dns",
+        "source": "dnsx+dig",
+        "records": total_records,
+        "errors": int(dnsx_result.get("errors", 0)),
+        "dnsx_records": dnsx_records,
+        "dig_fallback_records": fallback_records,
+        "targets": len(hosts),
+        "command": cmd,
+        "resolved_hosts": len(resolved_hosts),
+        "unresolved": len(unresolved),
+        "status_counts": status_counts,
+    }
 
 def run_http_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 420, run_group: str = "") -> dict:
     binary = _tool_path("httpx")
