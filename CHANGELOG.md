@@ -1,3 +1,11 @@
+## v0.85 - 2026-10-22
+
+- Amass usa timeout específico de 900 s dentro de Discovery.
+- Un timeout conserva stdout parcial y se registra como `partial` si produjo evidencia o `timeout` si no produjo stdout útil.
+- La auditoría oculta el progress meter de Amass en la vista limpia; el STDERR crudo sigue disponible.
+- El nodo ROOT es también el hostname raíz: sus tecnologías/proveedores/servidores/IP cuelgan directamente del ROOT cuando el target está abierto.
+- El root deja de duplicarse como hijo de `Otros / sin agrupar`; debajo quedan sólo subdominios.
+
 # v0.84 · Composite Discovery + execution feedback
 
 - Paso 02 deja de equivaler a Subfinder: ahora cruza todas las fuentes locales disponibles antes de DNS.

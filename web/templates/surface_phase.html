@@ -35,11 +35,11 @@
       {% if phase_detail.runs %}
         {% for run in phase_detail.runs %}
         <article class="surface-phase-run-audit">
-          <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{{ run.status }}</span><small>{{ run.record_count }} líneas{% if run.normalized_count is defined %} · {{ run.normalized_count }} hosts normalizados{% endif %}{% if run.return_code is not none %} · rc={{ run.return_code }}{% endif %}</small></div>
+          <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{% if run.status == 'partial' %}PARCIAL{% elif run.status == 'timeout' %}TIMEOUT{% else %}{{ run.status }}{% endif %}</span><small>{{ run.record_count }} líneas{% if run.normalized_count is defined %} · {{ run.normalized_count }} hosts normalizados{% endif %}{% if run.return_code is not none %} · rc={{ run.return_code }}{% endif %}</small></div>
           <div class="surface-audit-block"><span>Comando ejecutado</span><code>{{ run.command }}</code></div>
           {% if run.stdout_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDOUT</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">Abrir crudo ↗</a></div><pre>{{ run.stdout_full }}</pre></div>{% endif %}
-          {% if run.stderr_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDERR</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir crudo ↗</a></div><pre class="stderr">{{ run.stderr_full }}</pre></div>{% endif %}
-          {% if run.error %}<div class="callout warning"><b>Error registrado:</b> {{ run.error }}</div>{% endif %}
+          {% if run.stderr_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDERR{% if run.tool == 'amass' %} · vista limpia{% endif %}</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir crudo ↗</a></div>{% if run.stderr_display %}<pre class="stderr">{{ run.stderr_display }}</pre>{% elif run.tool == 'amass' %}<div class="callout info"><b>Sin diagnóstico textual.</b><p>Amass sólo emitió progreso en STDERR. El stream completo sigue disponible en “Abrir crudo”.</p></div>{% else %}<pre class="stderr">{{ run.stderr_full }}</pre>{% endif %}</div>{% endif %}
+          {% if run.error %}<div class="callout warning"><b>{% if run.status in ['partial','timeout'] %}Ejecución incompleta:{% else %}Error registrado:{% endif %}</b> {{ run.error }}</div>{% endif %}
         </article>
         {% endfor %}
       {% else %}
@@ -53,8 +53,8 @@
       <div class="panel-head"><div><p class="eyebrow">COBERTURA DE DISCOVERY</p><h2>Qué aportó cada fuente</h2><p class="muted small">Los conteos normalizados son hostnames únicos observados por cada fuente. Cero en una fuente no equivale a “no existe”.</p></div></div>
       <div class="surface-discovery-source-grid">
       {% for source in phase_detail.source_summary %}
-        <article class="surface-discovery-source {% if source.status == 'ok' %}ok{% elif source.executed %}error{% elif source.available %}idle{% else %}missing{% endif %}">
-          <div><b>{{ source.label }}</b><span>{% if source.status == 'ok' %}OK{% elif source.executed %}ERROR{% elif source.available %}SIN EJECUTAR{% else %}NO DISPONIBLE{% endif %}</span></div>
+        <article class="surface-discovery-source {% if source.status == 'ok' %}ok{% elif source.status == 'partial' %}partial{% elif source.status == 'timeout' %}timeout{% elif source.executed %}error{% elif source.available %}idle{% else %}missing{% endif %}">
+          <div><b>{{ source.label }}</b><span>{% if source.status == 'ok' %}OK{% elif source.status == 'partial' %}PARCIAL{% elif source.status == 'timeout' %}TIMEOUT{% elif source.executed %}ERROR{% elif source.available %}SIN EJECUTAR{% else %}NO DISPONIBLE{% endif %}</span></div>
           <strong>{{ source.normalized_count }}</strong>
           <small>hosts únicos{% if source.executed %} · {{ source.raw_count }} líneas crudas{% endif %}</small>
         </article>

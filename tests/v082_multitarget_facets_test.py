@@ -28,5 +28,8 @@ def test_surface_project_graph_supports_collapsible_roots():
     js=(ROOT/'web/static/surface.js').read_text(encoding='utf-8')
     assert 'const expandedRoots = new Set([rootDomain]);' in js
     assert "node('project','project'" in js
-    assert "if(n.type==='root'){if(expandedRoots.has(n.key))expandedRoots.delete(n.key);else expandedRoots.add(n.key)" in js
+    assert "if(n.type==='root')" in js
+    assert "expandedRoots.has(n.key)" in js
+    assert "expandedRoots.delete(n.key)" in js
+    assert "expandedRoots.add(n.key)" in js
     assert 'Trabajar este target' in js

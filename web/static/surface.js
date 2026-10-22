@@ -172,13 +172,18 @@
 
     roots.forEach(rr=>{
       const rootHosts=hosts.filter(h=>(h.root_domain||rootDomain)===rr);
-      const rid=add(node('root',rr,`ROOT · ${rr}`,{count:rootHosts.length,active:rr===rootDomain}));
+      const rootAsset=rootHosts.find(h=>h.hostname===rr)||null;
+      const childHosts=rootHosts.filter(h=>h.hostname!==rr);
+      const rid=add(node('root',rr,`ROOT · ${rr}`,{count:childHosts.length,active:rr===rootDomain,host:rootAsset}));
       if(projectId) edges.push(edge(projectId,rid,'CONTAINS','observed'));
       const shouldOpen=!multiRoot || expandedRoots.has(rr);
       if(!shouldOpen)return;
+      // The recon root is also a real hostname.  Its technical context belongs
+      // directly to the ROOT node instead of being duplicated as a fake child.
+      if(rootAsset) addHostLayers(scene,rootAsset,rid,layers);
 
       const rawFamilies=new Map();
-      rootHosts.forEach(h=>{
+      childHosts.forEach(h=>{
         const family=(h.family||'other').trim()||'other';
         if(!rawFamilies.has(family))rawFamilies.set(family,[]);
         rawFamilies.get(family).push(h);
@@ -315,7 +320,12 @@
 
       const activateNode=()=>{
         if(n.type==='project'){renderNodeDetail(n,scene);return;}
-        if(n.type==='root'){if(expandedRoots.has(n.key))expandedRoots.delete(n.key);else expandedRoots.add(n.key);renderNodeDetail(n,scene);renderGraph();return;}
+        if(n.type==='root'){
+          if(expandedRoots.has(n.key)) expandedRoots.delete(n.key); else expandedRoots.add(n.key);
+          if(n.meta?.host) renderDetail(n.meta.host); else renderNodeDetail(n,scene);
+          renderGraph();
+          return;
+        }
         if(n.type==='family'){toggleFamily(n.key);return;}
         if(n.type==='host'){
           const wasExpanded=expandedHosts.has(n.key);
@@ -356,8 +366,10 @@
   function renderDetail(h){
     if(!h){detail.innerHTML='<div class="surface-detail-empty"><span class="surface-detail-icon">◎</span><b>Selecciona una rama</b><p>Abre una familia o hostname para reducir ruido y revisar evidencia.</p></div>';return;}
     const sharedEdge=(h.providers||[]).some(x=>/cloudflare|fastly|cloudfront/i.test(x));
+    const isReconRoot=(data.roots||[]).includes(h.hostname);
     detail.innerHTML=`
-      <div class="surface-detail-head"><div><span class="eyebrow">HOSTNAME</span><h2>${esc(h.hostname)}</h2></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">HTTP ?</span>'}</div>
+      <div class="surface-detail-head"><div><span class="eyebrow">${isReconRoot?'ROOT / HOSTNAME':'HOSTNAME'}</span><h2>${esc(h.hostname)}</h2></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">HTTP ?</span>'}</div>
+      ${isReconRoot?`<a class="button ghost full" href="${window.location.pathname}?root=${encodeURIComponent(h.hostname)}">${h.hostname===rootDomain?'Target activo':'Trabajar este target →'}</a>`:''}
       ${h.title?`<p class="surface-title">${esc(h.title)}</p>`:''}
       <div class="surface-detail-grid"><div><span>Ambiente</span><b class="env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</b></div><div><span>Familia</span><b>${esc(h.family||'—')}</b><small>heurística</small></div><div><span>DNS</span><b>${esc(h.dns_state||'UNKNOWN')}</b></div><div><span>HTTP</span><b>${esc(h.http_state||'UNKNOWN')}</b></div></div>
       <section><h3>Tecnologías</h3><div class="surface-chips">${tags(h.technologies,'technology')||'<span class="muted">Sin fingerprint</span>'}</div></section>

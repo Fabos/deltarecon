@@ -590,9 +590,14 @@ def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, comm
         if isinstance(stdout, bytes): stdout = stdout.decode("utf-8", errors="replace")
         if isinstance(stderr, bytes): stderr = stderr.decode("utf-8", errors="replace")
         stdout_path.write_text(stdout, encoding="utf-8"); stderr_path.write_text(stderr, encoding="utf-8")
-        error = f"{tool} timeout después de {timeout}s"
-        run_id = _record_tool_run(conn, phase, tool, command, "error", None, 0, str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
-        return {"status": "error", "return_code": None, "stdout": stdout, "stderr": stderr, "command": command, "error": error}
+        record_count = len([x for x in stdout.splitlines() if x.strip()])
+        status = "partial" if record_count else "timeout"
+        error = (
+            f"{tool} alcanzó el timeout de {timeout}s; se conservaron {record_count} líneas parciales"
+            if record_count else f"{tool} alcanzó el timeout de {timeout}s sin stdout utilizable"
+        )
+        _record_tool_run(conn, phase, tool, command, status, None, record_count, str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
+        return {"status": status, "return_code": None, "stdout": stdout, "stderr": stderr, "command": command, "error": error, "timed_out": True}
 
 
 def _first_party_hostnames(conn: sqlite3.Connection, root_domain: str, *, resolved_only: bool = False) -> list[str]:
@@ -724,12 +729,12 @@ def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict,
     if amass:
         attempted += 1
         cmd = [amass, "enum", "-passive", "-d", root]
-        run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
-        if run["status"] == "ok":
+        run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=max(timeout, 900), root_domain=root, run_group=run_group)
+        if run["status"] in {"ok", "partial"}:
             hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()]
             result = import_discovered_hosts(conn, hosts, root, "amass", "surface-run:amass")
             successes += 1
-            source_results.append({"source":"amass", **result})
+            source_results.append({"source":"amass", **result, "partial": run["status"] == "partial"})
 
     gau = _tool_path("gau")
     if gau:
@@ -1068,7 +1073,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     discovery_latest_runs = list(bundles["discovery"].get("runs") or [])
     discovery_last_tools = {str(r.get("tool")) for r in discovery_latest_runs}
     discovery_executed = sum(1 for tool in ("subfinder","crt.sh","amass","gau") if tool in discovery_last_tools)
-    discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","amass","gau"} and str(r.get("status")) == "ok")
+    discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","amass","gau"} and str(r.get("status")) in {"ok","partial"})
     specs = [
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
         {"key":"discovery","title":"Descubrimiento de superficie","subtitle":"Subfinder · CT · Amass · históricos","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","amass","gau"],"purpose":"Cruzar fuentes pasivas e históricas antes de DNS. Cero resultados en una fuente no significa que no exista más superficie.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Amass":discovery_counts.get("amass",0),"Históricos":discovery_counts.get("gau_historical",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":4}},
@@ -1154,6 +1159,25 @@ def _read_run_text(path_value: str | None, *, max_chars: int = 240000) -> str:
     return text
 
 
+def _compact_audit_stderr(tool: str, text: str) -> str:
+    """Hide noisy progress meters from the inline audit while preserving raw stderr on disk."""
+    raw = text or ""
+    if str(tool).lower() != "amass":
+        return raw
+    # Amass progress is commonly emitted with carriage returns.  Keep only
+    # human-readable diagnostic lines in the inline view; the raw link still
+    # exposes the complete stream for audit/reproduction.
+    parts = re.split(r"[\r\n]+", raw)
+    kept = []
+    progress = re.compile(r"^\s*\d+\s*/\s*\d+\s*\[[^\]]*\]\s*\d+(?:\.\d+)?%", re.I)
+    for part in parts:
+        line = part.strip()
+        if not line or progress.search(line):
+            continue
+        kept.append(line)
+    return "\n".join(kept[-80:])
+
+
 def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str) -> dict | None:
     """Full auditable detail for one guided recon phase."""
     phases=phase_progress(conn, root_domain)
@@ -1172,6 +1196,7 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
         run=dict(item)
         run["stdout_full"]=_read_run_text(run.get("stdout_path"))
         run["stderr_full"]=_read_run_text(run.get("stderr_path"))
+        run["stderr_display"]=_compact_audit_stderr(str(run.get("tool") or ""), run.get("stderr_full") or "")
         if phase_key == "discovery":
             raw = run.get("stdout_full") or ""
             tool = str(run.get("tool") or "")
