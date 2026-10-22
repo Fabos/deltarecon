@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% set phase = phase_detail.phase %}
+{% block title %}{{ '%02d'|format(phase.number) }} · {{ phase.title }} · Negro{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="Ruta"><a href="{{ target_base }}/surface?root={{ phase_detail.root_domain | urlencode }}">Superficie</a><span>›</span><strong>{{ '%02d'|format(phase.number) }} · {{ phase.title }}</strong></nav>
+<section class="page-head surface-phase-page-head">
+  <div>
+    <p class="eyebrow">RECON GUIADO · PASO {{ '%02d'|format(phase.number) }}</p>
+    <h1>{{ phase.title }}</h1>
+    <p class="muted">{{ phase.subtitle }}</p>
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/surface?root={{ phase_detail.root_domain | urlencode }}">← Volver a Superficie</a></div>
+</section>
+
+{% if scan %}<div class="callout {% if 'Completado' in scan %}success{% else %}warning{% endif %}">{{ scan }}</div>{% endif %}
+
+<section class="panel surface-phase-audit-head">
+  <div class="surface-phase-audit-status">
+    <span class="surface-phase-index big">{{ '%02d'|format(phase.number) }}</span>
+    <div><span class="eyebrow">ESTADO DEL PASO</span><b class="phase-state-{{ phase.state }}">{{ phase.state_label }}</b><small>{{ phase.purpose }}</small></div>
+  </div>
+  <div class="surface-phase-audit-metrics">
+    <div><span>Resultado normalizado</span><b>{{ phase.count }}</b><small>{{ phase.count_label }}</small></div>
+    <div><span>Ejecuciones guardadas</span><b>{{ phase.run_count }}</b><small>para {{ phase_detail.root_domain }}</small></div>
+  </div>
+  {% if phase.secondary_counts %}<div class="surface-phase-secondary large">{% for key,value in phase.secondary_counts.items() %}<span>{{ key }} <b>{{ value }}</b></span>{% endfor %}</div>{% endif %}
+  {% if phase.prior_evidence %}<div class="callout info"><b>Hay evidencia previa.</b> Negro la conserva, pero este paso todavía no cuenta como completado dentro de la secuencia guiada porque falta un paso anterior.</div>{% endif %}
+</section>
+
+<section class="surface-phase-layout">
+  <div class="surface-phase-main">
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Comando y salida real</h2><p class="muted small">Aquí puedes contrastar exactamente qué ejecutó Negro y qué devolvió la herramienta.</p></div></div>
+      {% if phase_detail.runs %}
+        {% for run in phase_detail.runs %}
+        <article class="surface-phase-run-audit">
+          <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{{ run.status }}</span><small>{{ run.record_count }} líneas{% if run.return_code is not none %} · rc={{ run.return_code }}{% endif %}</small></div>
+          <div class="surface-audit-block"><span>Comando ejecutado</span><code>{{ run.command }}</code></div>
+          {% if run.stdout_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDOUT</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">Abrir crudo ↗</a></div><pre>{{ run.stdout_full }}</pre></div>{% endif %}
+          {% if run.stderr_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDERR</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir crudo ↗</a></div><pre class="stderr">{{ run.stderr_full }}</pre></div>{% endif %}
+          {% if run.error %}<div class="callout warning"><b>Error registrado:</b> {{ run.error }}</div>{% endif %}
+        </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state"><strong>Aún no hay una ejecución guardada para este paso.</strong><span>Cuando lo ejecutes, Negro conservará aquí comando, stdout, stderr y evidencia normalizada.</span></div>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">EVIDENCIA NORMALIZADA</p><h2>Lo que Negro incorporó al mapa</h2><p class="muted small">La salida cruda queda arriba; aquí ves cómo fue interpretada sin convertir inferencias en hechos.</p></div><span>{{ phase_detail.normalized|length }}</span></div>
+      {% if phase_detail.normalized %}
+        <div class="surface-normalized-list">
+        {% for item in phase_detail.normalized %}
+          {% if item.hostname is defined %}
+          <article>
+            <div><b>{{ item.hostname }}</b><small>{{ item.dns_state or 'DISCOVERED' }}{% if item.status_code is not none %} · HTTP {{ item.status_code }}{% endif %}</small></div>
+            {% if item.technologies %}<div class="surface-chips compact">{% for tech in item.technologies %}<span class="surface-chip technology">{{ tech }}</span>{% endfor %}</div>{% endif %}
+            <div class="surface-normalized-meta">{% if item.providers %}<span>{{ item.providers|join(' · ') }}</span>{% endif %}{% if item.cnames %}<span>CNAME {{ item.cnames|join(', ') }}</span>{% endif %}{% if item.ips %}<span>IP observada {{ item.ips|join(', ') }}</span>{% endif %}</div>
+          </article>
+          {% else %}
+          <article><div><b>{{ item.kind }}</b><small>{{ item.observed_at }}</small></div><code>{{ item.value if item.value else item.payload }}</code></article>
+          {% endif %}
+        {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state compact"><strong>No hay evidencia normalizada todavía.</strong><span>Esto puede ser correcto si la herramienta devolvió cero resultados; revisa la salida cruda antes de concluir.</span></div>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside class="surface-phase-side">
+    <section class="panel">
+      <p class="eyebrow">HERRAMIENTAS</p>
+      <h2>Disponibilidad local</h2>
+      <div class="surface-tool-status-list">
+        {% for tool in phase.tool_info %}
+        <div class="{% if tool.available %}ok{% else %}missing{% endif %}"><span>{{ tool.name }}</span><b>{% if tool.available %}DISPONIBLE{% else %}NO ENCONTRADA{% endif %}</b><small>{{ tool.path or ('Negro busca ~/go/bin/' ~ tool.name ~ ' y luego PATH') }}</small></div>
+        {% else %}<p class="muted">Este paso no depende de un binario externo directo.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">ACCIÓN</p>
+      {% if phase.state in ['ready','done','missing_tool'] and phase.implemented %}
+        {% if phase.tool_ok %}
+        <form method="post" action="{{ target_base }}/surface/run">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="phase" value="{{ phase.key }}">
+          <input type="hidden" name="root" value="{{ phase_detail.root_domain }}">
+          <button class="button primary full" type="submit">{% if phase.state == 'done' %}Repetir paso {{ '%02d'|format(phase.number) }}{% else %}Ejecutar paso {{ '%02d'|format(phase.number) }}{% endif %}</button>
+        </form>
+        {% else %}<div class="callout warning"><b>Falta una herramienta local.</b><p>Instálala o corrige el PATH y vuelve a abrir esta vista. Negro no saltará este paso automáticamente.</p></div>{% endif %}
+      {% elif phase.state == 'blocked' %}
+        <div class="callout info"><b>Este paso está bloqueado.</b><p>Completa primero el paso anterior desde Superficie.</p></div>
+      {% elif not phase.implemented %}
+        <div class="callout info"><b>Aún no está integrado en el flujo guiado.</b><p>Lo dejamos visible para que la metodología completa sea clara, pero no se ejecuta desde esta versión.</p></div>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">SECUENCIA</p>
+      <h2>Qué viene alrededor</h2>
+      <p class="muted small">La numeración es la metodología. Negro no ejecuta el siguiente paso sin tu decisión.</p>
+      <a class="button ghost full" href="{{ target_base }}/surface?root={{ phase_detail.root_domain | urlencode }}">Ver checklist completo</a>
+    </section>
+  </aside>
+</section>
+{% endblock %}

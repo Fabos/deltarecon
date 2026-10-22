@@ -3276,7 +3276,7 @@ def targets_save(data: dict) -> None:
     atomic_write_text(TARGETS_PATH, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def register_target(domain: str, workspace: Path, make_current: bool = True, *, name: str | None = None, scopes: Iterable[str] | None = None) -> str:
+def register_target(domain: str, workspace: Path, make_current: bool = True, *, name: str | None = None, scopes: Iterable[str] | None = None, recon_roots: Iterable[str] | None = None) -> str:
     domain = (normalize_scope(domain) or "").strip()
     initial_roots = normalize_scopes(scopes, domain)
     if not initial_roots:
@@ -3290,7 +3290,8 @@ def register_target(domain: str, workspace: Path, make_current: bool = True, *, 
     existing = data.setdefault("targets", {}).get(key, {})
     roots = normalize_scopes(scopes if scopes is not None else existing.get("scopes"), domain)
     display_name = str(name if name is not None else existing.get("name") or domain).strip()[:120]
-    data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
+    explicit_recon_roots = normalize_scopes(recon_roots if recon_roots is not None else existing.get("recon_roots"), domain)
+    data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, "recon_roots": explicit_recon_roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
     if make_current:
         data["last_target"] = key
     targets_save(data)
@@ -3300,7 +3301,7 @@ def register_target(domain: str, workspace: Path, make_current: bool = True, *, 
     return key
 
 
-def update_target_project(key: str, *, name: str | None = None, scopes: Iterable[str] | None = None) -> dict:
+def update_target_project(key: str, *, name: str | None = None, scopes: Iterable[str] | None = None, recon_roots: Iterable[str] | None = None) -> dict:
     data = targets_load()
     target = data.get("targets", {}).get(key)
     if not isinstance(target, dict):
@@ -3311,6 +3312,7 @@ def update_target_project(key: str, *, name: str | None = None, scopes: Iterable
     target["domain"] = normalize_scope(target.get("domain")) or roots[0]
     target["name"] = str(name if name is not None else target.get("name") or target["domain"]).strip()[:120]
     target["scopes"] = roots
+    target["recon_roots"] = normalize_scopes(recon_roots if recon_roots is not None else target.get("recon_roots"), target["domain"])
     data["targets"][key] = target
     targets_save(data)
     workspace = Path(str(target.get("workspace") or "")).expanduser()
@@ -3339,6 +3341,7 @@ def get_target(key: str) -> dict | None:
     out = dict(target)
     out.setdefault("name", out.get("domain", key))
     out["scopes"] = normalize_scopes(out.get("scopes") if isinstance(out.get("scopes"), list) else [], out.get("domain"))
+    out["recon_roots"] = normalize_scopes(out.get("recon_roots") if isinstance(out.get("recon_roots"), list) else [], out.get("domain"))
     return out
 
 
@@ -3349,7 +3352,8 @@ def list_targets() -> list[dict]:
     for key, target in sorted(data.get("targets", {}).items(), key=lambda item: str(item[1].get("name") or item[1].get("domain") or item[0]).lower()):
         domain = target.get("domain", key)
         scopes = normalize_scopes(target.get("scopes") if isinstance(target.get("scopes"), list) else [], domain)
-        result.append({"key": key, "name": target.get("name") or domain, "domain": domain, "scopes": scopes, "workspace": target.get("workspace", ""), "current": key == current})
+        recon_roots = normalize_scopes(target.get("recon_roots") if isinstance(target.get("recon_roots"), list) else [], domain)
+        result.append({"key": key, "name": target.get("name") or domain, "domain": domain, "scopes": scopes, "recon_roots": recon_roots, "workspace": target.get("workspace", ""), "current": key == current})
     return result
 
 

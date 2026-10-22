@@ -36,72 +36,58 @@
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="text" name="new_root" placeholder="otro-dominio.com" required>
           <label><input type="checkbox" name="confirm_scope" value="yes" required> Confirmo que pertenece al alcance autorizado</label>
-          <button class="button" type="submit">Añadir y enumerar</button>
+          <button class="button" type="submit">Añadir root</button>
         </form>
       </details>
     </div>
+    {% if surface.phase_summary.next %}
+    <div class="surface-next-step">
+      <div><span class="eyebrow">SIGUIENTE PASO</span><b>{{ '%02d'|format(surface.phase_summary.next.number) }} · {{ surface.phase_summary.next.title }}</b><small>{{ surface.phase_summary.next.subtitle }}</small></div>
+      <a class="button primary" href="{{ target_base }}/surface/phase/{{ surface.phase_summary.next.key }}?root={{ surface.root_domain | urlencode }}">Abrir paso →</a>
+    </div>
+    {% endif %}
     <div class="surface-phase-grid">
       {% for phase in surface.phases %}
-      <article class="surface-phase {{ phase.state }}" data-phase-card="{{ phase.key }}" tabindex="0" aria-expanded="false">
-        <div class="surface-phase-top"><span class="surface-phase-index">0{{ loop.index }}</span><span class="surface-phase-state">{{ phase.state }}</span></div>
+      <article class="surface-phase {{ phase.state }}" data-phase-card="{{ phase.key }}" data-phase-href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}" tabindex="0">
+        <div class="surface-phase-top"><span class="surface-phase-index">{{ '%02d'|format(phase.number) }}</span><span class="surface-phase-state">{{ phase.state_label }}</span></div>
         <h3>{{ phase.title }}</h3>
         <p>{{ phase.subtitle }}</p>
         <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{{ phase.count_label }}</span></div>
-        <button type="button" class="surface-phase-info-toggle" data-phase-toggle aria-expanded="false">Ver resultado <span>⌄</span></button>
-        <div class="surface-phase-detail" data-phase-detail hidden>
-          {% if phase.latest_runs %}
-          <div class="surface-phase-runmeta"><span>{{ phase.run_count }} ejecuciones guardadas · última fase: {{ phase.last_status or '—' }}</span>{% if phase.last_started_at %}<small>{{ phase.last_started_at }}</small>{% endif %}</div>
-          {% for run in phase.latest_runs %}
-          <article class="surface-phase-run-result">
-            <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{{ run.status }}</span><small>{{ run.record_count }} líneas</small></div>
-            <span>Comando ejecutado</span>
-            <code>{{ run.command }}</code>
-            {% if run.stdout_preview %}
-            <span>STDOUT</span>
-            <pre>{{ run.stdout_preview }}</pre>
-            <a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">Abrir stdout completo ↗</a>
-            {% endif %}
-            {% if run.stderr_preview %}
-            <span>STDERR</span>
-            <pre class="stderr">{{ run.stderr_preview }}</pre>
-            <a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir stderr completo ↗</a>
-            {% endif %}
-          </article>
-          {% endfor %}
-          {% else %}
-          <div class="surface-phase-no-run"><b>Aún no hay una ejecución guardada para este root.</b><span>Cuando ejecutes la fase, aquí verás el comando exacto y su salida para contrastarla manualmente.</span></div>
-          {% endif %}
-        </div>
-        {% if phase.implemented and phase.ready and phase.tool_available %}
+        {% if phase.secondary_counts %}<div class="surface-phase-secondary">{% for key,value in phase.secondary_counts.items() %}<span>{{ key }} <b>{{ value }}</b></span>{% endfor %}</div>{% endif %}
+        {% if phase.prior_evidence %}<div class="surface-prior-evidence">Hay resultados previos, pero este paso todavía no está validado dentro de la secuencia guiada.</div>{% endif %}
+        <a class="surface-phase-open" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">Ver resultado y evidencia →</a>
+        {% if phase.state == 'ready' and phase.tool_ok %}
         <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="phase" value="{{ phase.key }}">
           <input type="hidden" name="root" value="{{ surface.root_domain }}">
-          <button class="button {% if phase.state == 'ready' %}primary{% else %}ghost{% endif %}" type="submit">{% if phase.state == 'done' %}Repetir fase{% else %}Ejecutar fase{% endif %}</button>
+          <button class="button primary" type="submit">Ejecutar paso {{ '%02d'|format(phase.number) }}</button>
         </form>
-        {% elif not phase.implemented %}
-          <button class="button ghost" type="button" disabled>Próximamente</button>
-        {% elif not phase.ready %}
-          <button class="button ghost" type="button" disabled>Completa la fase anterior</button>
+        {% elif phase.state == 'done' %}
+          <a class="button ghost" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">Abrir / repetir</a>
+        {% elif phase.state == 'missing_tool' %}
+          <a class="button ghost" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">Resolver herramienta</a>
+        {% elif phase.state == 'planned' %}
+          <button class="button ghost" type="button" disabled>Pendiente de integrar</button>
         {% else %}
-          <button class="button ghost" type="button" disabled>Herramienta no disponible</button>
+          <button class="button ghost" type="button" disabled>Primero completa el paso anterior</button>
         {% endif %}
       </article>
       {% endfor %}
     </div>
     <div class="surface-checklist-wrap">
       <div class="surface-progress-overview">
-        <div><span class="eyebrow">CHECKLIST DE RECON</span><b>{{ surface.phase_summary.done }}/{{ surface.phase_summary.total }} fases cubiertas</b></div>
+        <div><span class="eyebrow">CHECKLIST DE RECON</span><b>{{ surface.phase_summary.done }}/{{ surface.phase_summary.total }} pasos completados</b></div>
         <div class="surface-progress-meter" aria-label="{{ surface.phase_summary.percent }}% completado"><i style="width: {{ surface.phase_summary.percent }}%"></i></div>
-        {% if surface.phase_summary.next %}<small>Siguiente lectura: <b>{{ surface.phase_summary.next.title }}</b> · {{ surface.phase_summary.next.subtitle }}</small>{% endif %}
+        {% if surface.phase_summary.next %}<small>Siguiente: <b>{{ '%02d'|format(surface.phase_summary.next.number) }} · {{ surface.phase_summary.next.title }}</b></small>{% else %}<small>La secuencia disponible está completa.</small>{% endif %}
       </div>
       <div class="surface-checklist">
         {% for phase in surface.phases %}
-        <button type="button" class="surface-check-item {{ phase.state }}" data-phase-jump="{{ phase.key }}">
-          <span class="surface-check-icon">{% if phase.state == 'done' %}✓{% elif phase.state == 'ready' %}→{% elif phase.state == 'planned' %}○{% else %}·{% endif %}</span>
-          <span><b>{{ phase.title }}</b><small>{{ phase.subtitle }}</small></span>
-          <em>{{ phase.state }}</em>
-        </button>
+        <a class="surface-check-item {{ phase.state }}" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">
+          <span class="surface-check-icon">{% if phase.state == 'done' %}✓{% elif phase.state in ['ready','missing_tool'] %}→{% elif phase.state == 'evidence' %}◐{% elif phase.state == 'planned' %}○{% else %}·{% endif %}</span>
+          <span><b>{{ '%02d'|format(phase.number) }} · {{ phase.title }}</b><small>{{ phase.subtitle }}</small></span>
+          <em>{{ phase.state_label }}</em>
+        </a>
         {% endfor %}
       </div>
     </div>
@@ -173,7 +159,7 @@
 
   <section class="surface-map-view" data-view-panel="map" data-surface-workspace>
     <div class="surface-map-toolbar">
-      <div><b>Mapa de superficie</b><span>Arrastra nodos, usa rueda/controles para zoom y haz clic para inspeccionar o filtrar.</span></div>
+      <div><b>Mapa de superficie</b><span>Haz clic en un host para desplegar sus capas; arrastra nodos y usa rueda/controles para zoom.</span></div>
       <div class="surface-map-actions">
         <button type="button" class="button ghost compact" data-surface-zoom-out title="Alejar">−</button>
         <button type="button" class="button ghost compact" data-surface-zoom-in title="Acercar">+</button>
@@ -186,7 +172,7 @@
       <div class="surface-map-stage" data-map-stage>
         <svg data-surface-svg role="img" aria-label="Mapa de superficie de ataque"></svg>
         <div class="surface-map-empty" data-map-empty hidden><b>No hay activos que coincidan con estos filtros.</b><span>Quita filtros o vuelve a la vista general.</span></div>
-        <div class="surface-map-hint">Arrastrar fondo = mover · rueda = zoom · arrastrar nodo = reorganizar</div>
+        <div class="surface-map-hint">clic host = expandir · clic familia = entrar · arrastrar fondo = mover · rueda = zoom</div>
       </div>
       <aside class="surface-detail" data-surface-detail>
         <div class="surface-detail-empty">

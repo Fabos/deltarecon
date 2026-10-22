@@ -8,18 +8,10 @@
 </section>
 <div class="inspect-status" data-inspect-status aria-live="polite"></div>
 <section class="panel host-toolbox">
-  <div class="panel-head"><div><p class="eyebrow">HERRAMIENTAS</p><h2>Acciones del host</h2></div><div class="panel-head-links"><span class="muted small">ejecución explícita</span><a href="{{ target_base }}/guide#enumeration">¿Qué hace cada una?</a></div></div>
-  <div class="host-tool-grid">
-    <form action="{{ target_base }}/host/{{ host.id }}/inspect" method="post" data-inspect-form><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile primary-tool" type="submit" data-inspect-button data-tip="Confirma DNS, HTTP/HTTPS y TLS del host."><b>Inspección básica</b><small>DNS, HTTP/HTTPS y TLS</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/web-recon" method="post" data-job-form data-job-label="Recon web"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Revisa raíz, robots, sitemap y rutas .well-known."><b>Recon web</b><small>robots, sitemap y well-known</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/crawl" method="post" data-job-form data-job-label="Crawler"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Sigue enlaces navegables dentro del alcance."><b>Crawler controlado</b><small>rutas enlazadas por HTML</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/js-discover" method="post" data-job-form data-job-label="Descubrir JavaScript"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile" type="submit" data-tip="Descubre scripts cargados por la página."><b>Descubrir JavaScript</b><small>bundles y scripts asociados</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/tls-san" method="post" data-job-form data-job-label="TLS SAN"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile secondary-tool" type="submit" data-tip="Lee SANs del certificado TLS para descubrir nombres relacionados."><b>TLS SAN</b><small>nombres relacionados en certificado</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/passive-dns" method="post" data-job-form data-job-label="DNS pasivo"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile secondary-tool" type="submit" data-tip="Consulta historial DNS pasivo cuando haya proveedor configurado."><b>DNS pasivo</b><small>historial de nombres e IP</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/cors" method="post" data-job-form data-job-label="CORS"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="action-tile secondary-tool" type="submit" data-tip="Prueba CORS sobre la raíz. Para endpoints concretos usa el recurso."><b>CORS en raíz</b><small>mejor usar recurso cuando sea posible</small></button></form>
-    <form action="{{ target_base }}/host/{{ host.id }}/vhost" method="post" data-job-form data-job-label="VHost inteligente" class="vhost-tool"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="base_url" placeholder="https://host/ o http://IP:puerto/" aria-label="URL base para VHost"><button class="action-tile secondary-tool" type="submit" data-tip="Prueba candidatos de virtual host contra una base conocida."><b>VHost inteligente</b><small>respuestas diferenciadas por Host</small></button></form>
-  </div>
+  <div class="panel-head"><div><p class="eyebrow">ENUMERACIÓN</p><h2>Las herramientas viven en Superficie</h2></div><a class="button" href="{{ target_base }}/surface">Abrir Superficie →</a></div>
+  <p class="muted small">Negro centraliza descubrimiento, DNS, HTTP, TLS, históricos, web discovery y servicios en un único flujo guiado. Esta ficha conserva el contexto del host; la enumeración se ejecuta desde Superficie para no duplicar caminos.</p>
 </section>
+
 
 <div class="grid host-grid">
   <section class="panel">

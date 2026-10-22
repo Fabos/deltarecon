@@ -880,12 +880,20 @@ def _phase_run_bundle(conn: sqlite3.Connection, phase: str, root_domain: str) ->
 
 
 def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    """Return the single guided recon sequence for a root.
+
+    A phase is only marked DONE when its own execution succeeded *and* all
+    previous guided phases are complete. Older/out-of-order evidence is kept and
+    exposed as ``prior_evidence`` but never makes the checklist jump ahead.
+    """
     init_schema(conn)
     root = root_domain.lower().rstrip(".")
     hosts = _asset_rows(conn, "hostname")
     first = [h for h in hosts if h["asset_key"] == root or h["asset_key"].endswith("." + root)]
     discovered = max(0, len(first) - 1 if any(h["asset_key"] == root for h in first) else len(first))
     resolved = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "RESOLVED")
+    nodata = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NODATA")
+    nxdomain = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NXDOMAIN")
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
     expanded = int(conn.execute(
         """SELECT COUNT(DISTINCT e.asset_id) c FROM recon_evidence e
@@ -900,54 +908,123 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
         (root,),
     ).fetchone()["c"] or 0)
     tooling = tool_inventory()
-    bundles = {key: _phase_run_bundle(conn, key, root) for key in ("root","discovery","discovery_expand","dns","http","tls","historical","infra","services")}
-
-    root_done = bundles["root"]["done"]
-    discovery_done = bundles["discovery"]["done"]
-    expand_done = bundles["discovery_expand"]["done"]
-    dns_done = bundles["dns"]["done"]
-    http_done = bundles["http"]["done"]
+    phase_keys = ("root","discovery","discovery_expand","dns","http","tls","historical","web","infra","services")
+    bundles = {key: _phase_run_bundle(conn, key, root) for key in phase_keys}
 
     specs = [
-        {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","ready":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"implemented":True,"done":root_done},
-        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","ready":root_done,"tool_ok":tooling["subfinder"]["available"],"implemented":True,"done":discovery_done},
-        {"key":"discovery_expand","title":"Ampliar descubrimiento","subtitle":"crt.sh + Amass pasivo (si está disponible)","count":expanded,"count_label":"hosts con evidencia extra","ready":discovery_done,"tool_ok":tooling["curl"]["available"],"implemented":True,"done":expand_done},
-        {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME","count":resolved,"count_label":"DNS resueltos","ready":discovery_done,"tool_ok":tooling["dnsx"]["available"],"implemented":True,"done":dns_done},
-        {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / tech / CDN / redirects","count":http,"count_label":"HTTP observados","ready":dns_done,"tool_ok":tooling["httpx"]["available"],"implemented":True,"done":http_done},
-        {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","ready":http_done,"tool_ok":tooling["openssl"]["available"],"implemented":False,"done":False},
-        {"key":"historical","title":"Históricos y URLs","subtitle":"Wayback / GAU · rutas y hosts históricos","count":0,"count_label":"URLs históricas","ready":http_done,"tool_ok":True,"implemented":False,"done":False},
-        {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","ready":http_done,"tool_ok":True,"implemented":False,"done":False},
-        {"key":"services","title":"Servicios","subtitle":"Nmap · sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","ready":False,"tool_ok":tooling["nmap"]["available"],"implemented":False,"done":False},
+        {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
+        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","implemented":True,"tool_ok":tooling["subfinder"]["available"],"tool_names":["subfinder"],"purpose":"Descubrir nombres candidatos sin asumir que siguen vivos."},
+        {"key":"discovery_expand","title":"Ampliar descubrimiento","subtitle":"crt.sh + Amass pasivo","count":expanded,"count_label":"hosts con evidencia extra","implemented":True,"tool_ok":bool(tooling["curl"]["available"] or tooling["amass"]["available"]),"tool_names":["curl","amass"],"purpose":"Cruzar fuentes pasivas independientes para no depender de una sola enumeración."},
+        {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
+        {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
+        {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","implemented":False,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Encontrar nombres y relaciones adicionales en certificados sin confundirlos con hosts activos."},
+        {"key":"historical","title":"Históricos y URLs","subtitle":"GAU / Wayback · rutas y hosts históricos","count":0,"count_label":"URLs históricas","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Recuperar superficie histórica y rutas que no aparecen enlazadas actualmente."},
+        {"key":"web","title":"Profundizar superficie web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar una rama elegida: rutas, well-known, enlaces y JavaScript, sin barrer todo a ciegas."},
+        {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Decidir qué IP es edge compartido, SaaS o candidata real a infraestructura directa."},
+        {"key":"services","title":"Servicios","subtitle":"Nmap · sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","implemented":False,"tool_ok":tooling["nmap"]["available"],"tool_names":["nmap"],"purpose":"Enumerar puertos únicamente después de confirmar que el objetivo no es un CDN/SaaS compartido."},
     ]
+
     out=[]
-    for spec in specs:
+    previous_complete = True
+    for index, spec in enumerate(specs, start=1):
         key=spec["key"]
         bundle=bundles[key]
-        if spec["done"]:
-            state="done"
-        elif spec["implemented"] and spec["ready"] and spec["tool_ok"]:
-            state="ready"
-        elif not spec["implemented"]:
-            state="planned"
-        elif not spec["ready"]:
-            state="blocked"
+        own_done=bool(bundle["done"])
+        effective_done=bool(own_done and previous_complete)
+        ready=bool(previous_complete and spec["implemented"])
+        prior_evidence=bool(own_done and not previous_complete)
+        if effective_done:
+            state="done"; state_label="COMPLETADO"
+        elif ready and spec["tool_ok"]:
+            state="ready"; state_label="SIGUIENTE"
+        elif ready and not spec["tool_ok"]:
+            state="missing_tool"; state_label="FALTA HERRAMIENTA"
+        elif prior_evidence:
+            state="evidence"; state_label="EVIDENCIA PREVIA"
+        elif not spec["implemented"] and previous_complete:
+            state="planned"; state_label="PENDIENTE"
         else:
-            state="missing_tool"
+            state="blocked"; state_label="BLOQUEADO"
+        tool_info=[]
+        for name in spec.get("tool_names",[]):
+            info=dict(tooling.get(name) or {"available":False,"path":""})
+            info["name"]=name
+            tool_info.append(info)
         out.append({
             **spec,
+            "number": index,
+            "ready": ready,
+            "done": effective_done,
+            "own_done": own_done,
+            "prior_evidence": prior_evidence,
             "state": state,
-            # Kept in the API for backward compatibility/documentation, but the
-            # phase card UI now prioritizes real execution output instead.
-            "question": spec["subtitle"],
-            "tool": spec["subtitle"].split(" · ", 1)[0],
-            "checks": [spec["count_label"]],
-            "success": spec["count_label"],
+            "state_label": state_label,
+            "tool_info": tool_info,
             "run_count": bundle["count"],
             "last_status": (bundle["latest"].get("status") if bundle["latest"] else None),
             "last_started_at": (bundle["latest"].get("started_at") if bundle["latest"] else None),
             "latest_runs": bundle["runs"],
+            "question": spec.get("purpose") or spec["subtitle"],
+            "tool": ", ".join(spec.get("tool_names") or []),
+            "checks": [spec["count_label"]],
+            "success": spec["count_label"],
         })
+        # The guided sequence is strict. Planned phases remain visible but do
+        # not allow later phases to appear as the next action.
+        previous_complete = effective_done
     return out
+
+
+def _read_run_text(path_value: str | None, *, max_chars: int = 240000) -> str:
+    if not path_value:
+        return ""
+    try:
+        path=Path(path_value)
+        if not path.exists() or not path.is_file():
+            return ""
+        text=path.read_text(encoding="utf-8",errors="replace")
+    except Exception:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n… salida truncada en UI ({len(text)} caracteres totales)"
+    return text
+
+
+def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str) -> dict | None:
+    """Full auditable detail for one guided recon phase."""
+    phases=phase_progress(conn, root_domain)
+    phase=next((p for p in phases if p["key"]==phase_key),None)
+    if not phase:
+        return None
+    runs=[]
+    for item in phase.get("latest_runs") or []:
+        run=dict(item)
+        run["stdout_full"]=_read_run_text(run.get("stdout_path"))
+        run["stderr_full"]=_read_run_text(run.get("stderr_path"))
+        runs.append(run)
+    normalized=[]
+    root=root_domain.lower().rstrip(".")
+    if phase_key in {"discovery","discovery_expand","dns","http"}:
+        data=surface_data(conn, root_domain)
+        for h in data.get("hosts",[]):
+            if phase_key=="discovery" and "subfinder" not in (h.get("sources") or []):
+                continue
+            if phase_key=="discovery_expand" and not ({"crtsh","amass"} & set(h.get("sources") or [])):
+                continue
+            if phase_key=="dns" and h.get("dns_state") in {None,"DISCOVERED"}:
+                continue
+            if phase_key=="http" and h.get("status_code") is None:
+                continue
+            normalized.append(h)
+    elif phase_key=="root":
+        rows=conn.execute(
+            """SELECT e.kind,e.value,e.raw_json,e.observed_at FROM recon_evidence e
+               JOIN recon_assets a ON a.id=e.asset_id
+               WHERE e.source='root_recon' AND a.asset_type='hostname' AND a.asset_key=?
+               ORDER BY e.id""",(root,)).fetchall()
+        for row in rows:
+            normalized.append({"kind":row["kind"],"value":row["value"],"payload":_loads(row["raw_json"]),"observed_at":row["observed_at"]})
+    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain}
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     out = []

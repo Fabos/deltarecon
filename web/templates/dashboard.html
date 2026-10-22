@@ -117,13 +117,8 @@
 
 
 <section class="panel dashboard-recon-panel">
-  <div class="panel-head"><div><p class="eyebrow">RECON</p><h2>Fuentes manuales del proyecto actual</h2></div><a href="{{ target_base }}/intelligence">Más inteligencia →</a></div>
-  <p class="muted small">Acciones explícitas y de bajo impacto para <b>{{ project.name if project else domain }}</b>. Administrar otros proyectos está separado de este Inicio.</p>
-  <div class="scan-grid compact-scan-grid">
-    {% for source, label in [('crtsh','crt.sh'),('subfinder','Subfinder'),('amass','Amass pasivo'),('gau_otx','GAU · OTX'),('gau_urlscan','GAU · URLScan'),('gau_wayback','GAU · Wayback'),('gau_commoncrawl','GAU · Common Crawl'),('wayback_cdx','Wayback · CDX'),('urlscan_direct','URLScan'),('securitytrails','SecurityTrails'),('github_code','GitHub · código público')] %}
-    <form action="{{ target_base }}/scan" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="source" value="{{ source }}"><button class="button scan" type="submit">{{ label }}</button></form>
-    {% endfor %}
-  </div>
+  <div class="panel-head"><div><p class="eyebrow">RECON</p><h2>Enumeración centralizada en Superficie</h2></div><a class="button" href="{{ target_base }}/surface">Abrir Superficie →</a></div>
+  <p class="muted small">Las fuentes de descubrimiento, DNS, HTTP, TLS, históricos y futuras acciones de servicio se ejecutan desde el flujo guiado de <b>Superficie</b>. Así Negro conserva un único orden, evidencia y mapa.</p>
 </section>
 
 <section class="panel subdued-panel">

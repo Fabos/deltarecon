@@ -30,6 +30,7 @@
   let suppressClickUntil = 0;
   let sceneExtent = {width:1460,height:760};
   const manualPositions = new Map();
+  const expandedHosts = new Set();
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const short = (s, n=34) => String(s || '').length > n ? `${String(s).slice(0,n-1)}…` : String(s || '');
@@ -96,7 +97,7 @@
     const collapsed=!!collapseFamilies?.checked;
     const nodes=[]; const edges=[]; const seen=new Set();
     const add=n=>{ if(!seen.has(n.id)){seen.add(n.id);nodes.push(n);} return n.id; };
-    const rootId=add(node('root',rootDomain,rootDomain,{count:hosts.length}));
+    const rootId=add(node('root',rootDomain,`ROOT · ${rootDomain}`,{count:hosts.length}));
     const families = new Map();
     hosts.forEach(h=>{
       const family=(h.family||'other').trim()||'other';
@@ -112,7 +113,7 @@
         const h=items[0];
         const hid=add(node('host',h.hostname,h.hostname,h));
         edges.push(edge(rootId,hid,'CONTAINS','observed'));
-        if(!collapsed) addHostLayers(scene,h,hid,layers);
+        if(!collapsed || expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
         return;
       }
       const fid=add(node('family',family,family,{count:items.length,heuristic:true,hosts:items.map(x=>x.hostname)}));
@@ -223,8 +224,16 @@
       g.addEventListener('click',ev=>{
         ev.stopPropagation();
         if(Date.now()<suppressClickUntil)return;
-        if(n.type==='host'){selectedHost=n.key;renderDetail(n.meta);renderGraph();}
-        else renderNodeDetail(n,scene);
+        if(n.type==='family'){enterFamily(n.key);return;}
+        if(n.type==='host'){
+          selectedHost=n.key;
+          expandedHosts.add(n.key);
+          renderDetail(n.meta);
+          renderGraph();
+          setTimeout(fit,0);
+          return;
+        }
+        renderNodeDetail(n,scene);
       });
       g.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='family')enterFamily(n.key);});
       g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();g.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
@@ -279,14 +288,14 @@
     detail.querySelector('[data-filter-node]')?.addEventListener('click',()=>applyNodeFilter(n));
     detail.querySelectorAll('[data-related-host]').forEach(btn=>btn.addEventListener('click',()=>{
       const h=data.hosts.find(x=>x.hostname===btn.dataset.relatedHost);if(!h)return;
-      selectedHost=h.hostname; if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph();
+      selectedHost=h.hostname; expandedHosts.add(h.hostname); if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph(); setTimeout(fit,0);
     }));
   }
 
   function renderInventory(){
     const hosts=visibleHosts(); if(visibleCount)visibleCount.textContent=String(hosts.length);
     grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</div><div class="surface-card-meta"><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
-    grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;const h=data.hosts.find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');if(collapseFamilies)collapseFamilies.checked=false;renderGraph();}));
+    grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;expandedHosts.add(selectedHost);const h=data.hosts.find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');if(collapseFamilies)collapseFamilies.checked=false;renderGraph();}));
   }
 
   function renderRuns(){
@@ -316,14 +325,11 @@
     const fam=filterEl('family'); if(fam)fam.value='';
     if(search)search.value=''; filterEls.forEach(el=>{if(el.dataset.filter!=='family')el.value='';});
     if(collapseFamilies)collapseFamilies.checked=true;
-    selectedHost='';renderDetail(null);refresh();fit();
+    selectedHost='';expandedHosts.clear();renderDetail(null);refresh();fit();
   }
   function resetLayout(){manualPositions.clear();fit();}
-  function togglePhase(card,force){
-    const panel=card.querySelector('[data-phase-detail]'); const btn=card.querySelector('[data-phase-toggle]'); if(!panel||!btn)return;
-    const open=force!==undefined?force:panel.hidden;
-    panel.hidden=!open; card.setAttribute('aria-expanded',String(open)); btn.setAttribute('aria-expanded',String(open)); btn.querySelector('span').textContent=open?'⌃':'⌄';
-  }
+  function openPhaseCard(card){ const href=card?.dataset?.phaseHref; if(href) window.location.href=href; }
+
 
   function bind(){
     search?.addEventListener('input',refresh);
@@ -341,14 +347,9 @@
     root.querySelector('[data-copy-visible]')?.addEventListener('click',async()=>{const text=visibleHosts().map(h=>h.hostname).join('\n');try{await navigator.clipboard.writeText(text);}catch(_){}});
 
     root.querySelectorAll('[data-phase-card]').forEach(card=>{
-      card.addEventListener('click',e=>{if(e.target.closest('button,form,input,a,select'))return;togglePhase(card);});
-      card.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button,form,input,a,select')){e.preventDefault();togglePhase(card);}});
-      card.querySelector('[data-phase-toggle]')?.addEventListener('click',e=>{e.stopPropagation();togglePhase(card);});
+      card.addEventListener('click',e=>{if(e.target.closest('button,form,input,a,select'))return;openPhaseCard(card);});
+      card.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button,form,input,a,select')){e.preventDefault();openPhaseCard(card);}});
     });
-    root.querySelectorAll('[data-phase-jump]').forEach(btn=>btn.addEventListener('click',()=>{
-      const card=root.querySelector(`[data-phase-card="${btn.dataset.phaseJump}"]`);if(!card)return;
-      togglePhase(card,true);card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('pulse');setTimeout(()=>card.classList.remove('pulse'),900);
-    }));
 
     svg.addEventListener('click',e=>{if(e.target.closest('.surface-node'))return;selectedHost='';renderDetail(null);renderGraph();});
     svg.addEventListener('wheel',e=>{

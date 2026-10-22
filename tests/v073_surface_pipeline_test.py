@@ -18,6 +18,7 @@ def test_nmap_is_late_and_expanded_discovery_precedes_dns():
     phases=recon.surface_data(conn,'example.com')['phases']
     keys=[p['key'] for p in phases]
     assert keys.index('discovery_expand') < keys.index('dns') < keys.index('http') < keys.index('services')
+    assert keys.index('web') < keys.index('infra') < keys.index('services')
     assert keys[-1] == 'services'
 
 
@@ -38,6 +39,9 @@ def test_phase_card_exposes_real_latest_stdout():
         try:
             recon._tool_path=lambda name: str(fake) if name=='subfinder' else None
             with core.db_connect(paths) as conn:
+                recon.init_schema(conn)
+                conn.execute("""INSERT INTO recon_tool_runs(phase,tool,root_domain,run_group,command_json,status,return_code,record_count,stdout_path,stderr_path,error,started_at,finished_at) VALUES('root','curl','example.com','root','[]','ok',0,1,'','','','now','now')""")
+                conn.commit()
                 recon.run_phase(conn,'example.com',paths,'discovery')
                 phase=next(p for p in recon.surface_data(conn,'example.com')['phases'] if p['key']=='discovery')
             assert phase['state']=='done'
@@ -53,7 +57,7 @@ def test_surface_shows_root_selector_and_add_scope_form():
         old=core.TARGETS_PATH
         try:
             core.TARGETS_PATH=Path(td)/'targets.json'
-            key=core.register_target('example.com',workspace,make_current=True,name='Multi root',scopes=['example.com','example.net'])
+            key=core.register_target('example.com',workspace,make_current=True,name='Multi root',scopes=['example.com','example.net'],recon_roots=['example.com','example.net'])
             client=TestClient(create_app('example.com',workspace))
             page=client.get(f'/t/{key}/surface?root=example.net')
             assert page.status_code==200

@@ -5576,7 +5576,7 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("scopes"), domain)
+        roots = core.normalize_scopes(target.get("recon_roots"), domain)
         selected_root = core.normalize_scope(root) if root else domain
         if selected_root not in roots:
             selected_root = domain
@@ -5592,7 +5592,7 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("scopes"), domain)
+        roots = core.normalize_scopes(target.get("recon_roots"), domain)
         selected_root = core.normalize_scope(root) if root else domain
         if selected_root not in roots:
             raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
@@ -5602,18 +5602,35 @@ def create_app(default_domain: str, default_workspace: Path):
             try:
                 result = recon.run_phase(conn, selected_root, paths, phase)
             except (ValueError, RuntimeError) as exc:
-                msg = urllib.parse.quote(f"{phase}: {str(exc)}")
-                return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+                msg = urllib.parse.quote(str(exc))
+                return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
         detail = result.get("records", result.get("tools_ok", 0))
-        msg = urllib.parse.quote(f"{phase}: completado · {detail} resultados")
-        return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+        msg = urllib.parse.quote(f"Completado · {detail} resultados")
+        return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+
+    @app.get("/t/{target_key}/surface/phase/{phase_key}", response_class=HTMLResponse)
+    def surface_phase_page(request: Request, target_key: str, phase_key: str, root: str = "", scan: str = ""):
+        import negro_recon as recon
+        domain, workspace, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
+        roots = core.normalize_scopes(target.get("recon_roots"), domain)
+        selected_root = core.normalize_scope(root) if root else domain
+        if selected_root not in roots:
+            selected_root = domain
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
+            detail = recon.phase_detail_data(conn, selected_root, phase_key)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Fase no encontrada")
+        return render(request, "surface_phase.html", target_key, domain, workspace, phase_detail=detail, scan=scan)
 
     @app.get("/api/t/{target_key}/surface", response_class=JSONResponse)
     def surface_api(target_key: str, root: str = ""):
         import negro_recon as recon
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("scopes"), domain)
+        roots = core.normalize_scopes(target.get("recon_roots"), domain)
         selected_root = core.normalize_scope(root) if root else domain
         if selected_root not in roots:
             selected_root = domain
@@ -5628,10 +5645,10 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("scopes"), domain)
+        roots = core.normalize_scopes(target.get("recon_roots"), domain)
         selected_root = core.normalize_scope(root) if root else domain
         if selected_root not in roots:
-            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
+            raise HTTPException(status_code=400, detail="Root fuera de los roots de recon del proyecto")
         raw = await recon_file.read()
         if len(raw) > 20 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="El archivo supera 20 MB")
@@ -5657,16 +5674,24 @@ def create_app(default_domain: str, default_workspace: Path):
         root = core.normalize_scope(new_root)
         if not root or not DOMAIN_RE.fullmatch(root):
             raise HTTPException(status_code=400, detail="Dominio inválido")
-        roots = core.normalize_scopes(target.get("scopes"), target.get("domain"))
-        if root not in roots:
-            roots.append(root)
-            updated = core.update_target_project(target_key, name=target.get("name") or target.get("domain"), scopes=roots)
-            core.ensure_workspace(
-                Path(str(updated.get("workspace") or target.get("workspace"))).expanduser(),
-                updated.get("domain") or target.get("domain"),
-                scopes=roots,
-                project_name=updated.get("name") or target.get("name") or target.get("domain"),
-            )
+        scopes = core.normalize_scopes(target.get("scopes"), target.get("domain"))
+        recon_roots = core.normalize_scopes(target.get("recon_roots"), target.get("domain"))
+        if root not in scopes:
+            scopes.append(root)
+        if root not in recon_roots:
+            recon_roots.append(root)
+        updated = core.update_target_project(
+            target_key,
+            name=target.get("name") or target.get("domain"),
+            scopes=scopes,
+            recon_roots=recon_roots,
+        )
+        core.ensure_workspace(
+            Path(str(updated.get("workspace") or target.get("workspace"))).expanduser(),
+            updated.get("domain") or target.get("domain"),
+            scopes=scopes,
+            project_name=updated.get("name") or target.get("name") or target.get("domain"),
+        )
         return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(root)}", status_code=303)
 
     @app.get("/t/{target_key}/surface/run/{run_id}/output/{stream}", response_class=PlainTextResponse)

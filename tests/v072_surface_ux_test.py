@@ -17,7 +17,7 @@ def test_phase_progress_has_guidance_and_summary():
     conn.row_factory = sqlite3.Row
     recon.init_schema(conn)
     data = recon.surface_data(conn, "example.com")
-    assert data["phase_summary"]["total"] == 9
+    assert data["phase_summary"]["total"] == 10
     root = next(p for p in data["phases"] if p["key"] == "root")
     assert root["question"]
     assert root["tool"]
@@ -51,8 +51,9 @@ def test_surface_has_fullscreen_checklist_and_expandable_phases():
             assert "CHECKLIST DE RECON" in page.text
             assert "data-surface-fullscreen" in page.text
             assert "data-surface-reset-layout" in page.text
-            assert "data-phase-detail" in page.text
-            assert "Arrastra nodos" in page.text
+            assert "data-phase-href" in page.text
+            assert "SIGUIENTE PASO" in page.text
+            assert "clic host = expandir" in page.text
         finally:
             core.TARGETS_PATH = old_targets
 

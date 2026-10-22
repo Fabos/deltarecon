@@ -1,3 +1,13 @@
+# v0.74 · Guided Surface navigation
+
+- Phase cards now open dedicated audit views with exact command, stdout/stderr and normalized evidence.
+- Guided states are strictly sequential: old/out-of-order evidence is shown as EVIDENCIA PREVIA and never skips steps.
+- Fixed tool availability rendering (`tool_ok`) and added local tool diagnostics.
+- Added explicit project `recon_roots`, separate from general scope entries.
+- Clicking a hostname in the surface graph expands its contextual layers and refits the view; singleton hosts no longer require Inventory to inspect.
+- Centralized recon launch UI in Superficie; dashboard/host pages now point to the guided recon instead of duplicating enumeration controls.
+- Expanded the visible methodology to 10 ordered steps, with Nmap last after infrastructure classification.
+
 # v0.72 · Guided Recon UX stabilization
 
 - Corrige estados `hidden` de Superficie para que Importar/Ejecuciones/mensajes vacíos no aparezcan fuera de su contexto.
