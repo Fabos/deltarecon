@@ -1,3 +1,14 @@
+# v0.72 · Guided Recon UX stabilization
+
+- Corrige estados `hidden` de Superficie para que Importar/Ejecuciones/mensajes vacíos no aparezcan fuera de su contexto.
+- Añade fullscreen real, zoom, fit, reset de layout, paneo y drag de nodos en el mapa de Superficie.
+- Mejora layout por capas para evitar solapamiento entre provider/technology/server/IP.
+- Los nodos de tecnología, proveedor, servidor e IP permiten pivotar a hosts relacionados y aplicar filtros.
+- Las familias singleton dejan de introducir nodos redundantes en el mapa general.
+- Las tarjetas de Recon progresivo son expandibles y explican pregunta, herramienta, checks y resultado esperado.
+- Añade checklist visual de fases con progreso y salto a la tarjeta correspondiente.
+- `summary.families` cuenta agrupaciones reales (2+ hosts), no familias singleton.
+
 # Development · Attack Surface MVP
 
 - Nueva vista **Superficie** separada del mapa de investigación para no mezclar infraestructura con Requests/Identities/Flows.

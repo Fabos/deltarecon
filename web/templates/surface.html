@@ -25,11 +25,19 @@
     </div>
     <div class="surface-phase-grid">
       {% for phase in surface.phases %}
-      <article class="surface-phase {{ phase.state }}" data-phase-card="{{ phase.key }}">
+      <article class="surface-phase {{ phase.state }}" data-phase-card="{{ phase.key }}" tabindex="0" aria-expanded="false">
         <div class="surface-phase-top"><span class="surface-phase-index">0{{ loop.index }}</span><span class="surface-phase-state">{{ phase.state }}</span></div>
         <h3>{{ phase.title }}</h3>
         <p>{{ phase.subtitle }}</p>
         <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{% if phase.key == 'root' %}evidencias{% elif phase.key == 'discovery' %}hosts conocidos{% elif phase.key == 'dns' %}DNS resueltos{% elif phase.key == 'http' %}HTTP observados{% else %}candidatos{% endif %}</span></div>
+        <button type="button" class="surface-phase-info-toggle" data-phase-toggle aria-expanded="false">Ver detalle <span>⌄</span></button>
+        <div class="surface-phase-detail" data-phase-detail hidden>
+          <div><span>Pregunta</span><p>{{ phase.question }}</p></div>
+          <div><span>Herramienta</span><code>{{ phase.tool }}</code></div>
+          <div><span>Qué valida</span><ul>{% for check in phase.checks %}<li>{{ check }}</li>{% endfor %}</ul></div>
+          <div><span>Resultado esperado</span><p>{{ phase.success }}</p></div>
+          <div class="surface-phase-runmeta"><span>{{ phase.run_count }} ejecuciones{% if phase.last_status %} · última: {{ phase.last_status }}{% endif %}</span>{% if phase.last_started_at %}<small>{{ phase.last_started_at }}</small>{% endif %}</div>
+        </div>
         {% if phase.implemented and phase.ready and phase.tool_available %}
         <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -45,6 +53,22 @@
         {% endif %}
       </article>
       {% endfor %}
+    </div>
+    <div class="surface-checklist-wrap">
+      <div class="surface-progress-overview">
+        <div><span class="eyebrow">CHECKLIST DE RECON</span><b>{{ surface.phase_summary.done }}/{{ surface.phase_summary.total }} fases cubiertas</b></div>
+        <div class="surface-progress-meter" aria-label="{{ surface.phase_summary.percent }}% completado"><i style="width: {{ surface.phase_summary.percent }}%"></i></div>
+        {% if surface.phase_summary.next %}<small>Siguiente lectura: <b>{{ surface.phase_summary.next.title }}</b> · {{ surface.phase_summary.next.subtitle }}</small>{% endif %}
+      </div>
+      <div class="surface-checklist">
+        {% for phase in surface.phases %}
+        <button type="button" class="surface-check-item {{ phase.state }}" data-phase-jump="{{ phase.key }}">
+          <span class="surface-check-icon">{% if phase.state == 'done' %}✓{% elif phase.state == 'ready' %}→{% elif phase.state == 'planned' %}○{% else %}·{% endif %}</span>
+          <span><b>{{ phase.title }}</b><small>{{ phase.subtitle }}</small></span>
+          <em>{{ phase.state }}</em>
+        </button>
+        {% endfor %}
+      </div>
     </div>
   </section>
 
@@ -111,11 +135,22 @@
     <div class="surface-result-count"><b data-visible-count>0</b> hosts visibles</div>
   </div>
 
-  <section class="surface-map-view" data-view-panel="map">
+  <section class="surface-map-view" data-view-panel="map" data-surface-workspace>
+    <div class="surface-map-toolbar">
+      <div><b>Mapa de superficie</b><span>Arrastra nodos, usa rueda/controles para zoom y haz clic para inspeccionar o filtrar.</span></div>
+      <div class="surface-map-actions">
+        <button type="button" class="button ghost compact" data-surface-zoom-out title="Alejar">−</button>
+        <button type="button" class="button ghost compact" data-surface-zoom-in title="Acercar">+</button>
+        <button type="button" class="button ghost" data-surface-fit>⌖ Ajustar</button>
+        <button type="button" class="button ghost" data-surface-reset-layout>↺ Layout</button>
+        <button type="button" class="button ghost" data-surface-fullscreen>⛶ Pantalla completa</button>
+      </div>
+    </div>
     <div class="surface-map-shell">
       <div class="surface-map-stage" data-map-stage>
         <svg data-surface-svg role="img" aria-label="Mapa de superficie de ataque"></svg>
-        <div class="surface-map-empty" data-map-empty hidden>No hay activos que coincidan con estos filtros.</div>
+        <div class="surface-map-empty" data-map-empty hidden><b>No hay activos que coincidan con estos filtros.</b><span>Quita filtros o vuelve a la vista general.</span></div>
+        <div class="surface-map-hint">Arrastrar fondo = mover · rueda = zoom · arrastrar nodo = reorganizar</div>
       </div>
       <aside class="surface-detail" data-surface-detail>
         <div class="surface-detail-empty">

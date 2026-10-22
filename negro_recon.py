@@ -663,6 +663,38 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
     root_ev = conn.execute("SELECT COUNT(*) c FROM recon_evidence WHERE source='root_recon'").fetchone()["c"]
     tooling = tool_inventory()
+    phase_help = {
+        "root": {
+            "question": "¿Qué publica el dominio raíz y qué intermediarios aparecen antes de la aplicación?",
+            "tool": "dig · whois · curl",
+            "checks": ["WHOIS / registrador", "NS y DNS raíz", "A / AAAA", "MX / TXT / CAA", "Headers HTTP/HTTPS"],
+            "success": "Identificar la postura inicial del dominio sin confundir edge/CDN con origin.",
+        },
+        "discovery": {
+            "question": "¿Qué nombres conoce la superficie pública del target?",
+            "tool": "subfinder",
+            "checks": ["Enumerar hostnames candidatos", "Conservar fuente/evidencia", "No asumir que un nombre descubierto sigue activo"],
+            "success": "Construir el inventario candidato que después será validado por DNS.",
+        },
+        "dns": {
+            "question": "¿Cuáles nombres existen hoy y a qué infraestructura observable apuntan?",
+            "tool": "dnsx",
+            "checks": ["A / AAAA", "CNAME", "Separar resolved de discovered", "Conservar IP observada sin llamarla origin"],
+            "success": "Reducir el inventario a nombres DNS útiles y relaciones de red observables.",
+        },
+        "http": {
+            "question": "¿Qué hosts exponen HTTP y qué tecnologías, redirects o edge/CDN podemos observar?",
+            "tool": "httpx",
+            "checks": ["Status HTTP", "Title", "Servidor", "Tecnologías", "CDN / cloud", "Redirects"],
+            "success": "Convertir el mapa DNS en un mapa tecnológico y operativo.",
+        },
+        "services": {
+            "question": "¿Qué infraestructura directa merece enumeración de puertos y servicios?",
+            "tool": "nmap",
+            "checks": ["Excluir CDN/edge compartido", "Excluir SaaS/terceros fuera de scope", "Validar candidatos directos", "Enumerar servicios sólo con contexto"],
+            "success": "Enumerar servicios sin escanear indiscriminadamente infraestructura compartida.",
+        },
+    }
     specs = [
         ("root", "Dominio raíz", "WHOIS · DNS · HTTP inicial", int(root_ev), True, all(tooling[x]["available"] for x in ("dig","curl"))),
         ("discovery", "Descubrimiento", "Subfinder · nombres candidatos", discovered, bool(root_ev), tooling["subfinder"]["available"]),
@@ -674,7 +706,17 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     for key,title,subtitle,count,ready,tool_ok in specs:
         complete = count > 0
         state = "done" if complete else "ready" if ready and tool_ok and key != "services" else "blocked" if not ready else "planned" if key=="services" else "missing_tool"
-        out.append({"key":key,"title":title,"subtitle":subtitle,"count":int(count),"state":state,"ready":bool(ready),"tool_available":bool(tool_ok),"implemented":key!="services"})
+        latest = conn.execute("SELECT * FROM recon_tool_runs WHERE phase=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+        runs = conn.execute("SELECT COUNT(*) c FROM recon_tool_runs WHERE phase=?", (key,)).fetchone()["c"]
+        help_data = phase_help[key]
+        out.append({
+            "key":key,"title":title,"subtitle":subtitle,"count":int(count),"state":state,
+            "ready":bool(ready),"tool_available":bool(tool_ok),"implemented":key!="services",
+            "question": help_data["question"], "tool": help_data["tool"], "checks": help_data["checks"],
+            "success": help_data["success"], "run_count": int(runs),
+            "last_status": (dict(latest).get("status") if latest else None),
+            "last_started_at": (dict(latest).get("started_at") if latest else None),
+        })
     return out
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
@@ -731,13 +773,23 @@ def surface_data(conn: sqlite3.Connection, root_domain: str) -> dict:
             vals.extend(v if isinstance(v,list) else [v] if v not in (None,"") else [])
         return sorted(set(str(x) for x in vals if str(x)))
     status = sorted(set(str(h["status_code"]) for h in enriched if h.get("status_code") is not None))
+    family_counts: dict[str, int] = {}
+    for h in enriched:
+        fam = str(h.get("family") or "other")
+        family_counts[fam] = family_counts.get(fam, 0) + 1
+    grouped_families = sorted(f for f, count in family_counts.items() if count > 1)
+    phases = phase_progress(conn, root_domain)
+    done_count = sum(1 for p in phases if p.get("state") == "done")
+    total_count = len(phases)
+    next_phase = next((p for p in phases if p.get("state") in {"ready", "planned", "missing_tool"}), None)
     return {
         "root_domain": root_domain,
         "hosts": enriched,
         "filters": {"technologies": uniq("technologies"), "providers": uniq("providers"), "servers": uniq("servers"), "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status},
-        "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(uniq("family"))},
+        "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families)},
         "imports": [dict(r) for r in conn.execute("SELECT * FROM recon_import_runs ORDER BY id DESC LIMIT 20").fetchall()],
         "tool_runs": [dict(r) for r in conn.execute("SELECT * FROM recon_tool_runs ORDER BY id DESC LIMIT 30").fetchall()],
-        "phases": phase_progress(conn, root_domain),
+        "phases": phases,
+        "phase_summary": {"done": done_count, "total": total_count, "percent": int(round((done_count / total_count) * 100)) if total_count else 0, "next": next_phase},
         "tooling": tool_inventory(),
     }

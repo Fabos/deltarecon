@@ -1,10 +1,12 @@
 (() => {
   const root = document.querySelector('[data-surface-root]');
   if (!root) return;
+
   const api = root.dataset.api;
   const rootDomain = root.dataset.rootDomain || '';
   const svg = root.querySelector('[data-surface-svg]');
   const stage = root.querySelector('[data-map-stage]');
+  const workspace = root.querySelector('[data-surface-workspace]');
   const detail = root.querySelector('[data-surface-detail]');
   const grid = root.querySelector('[data-host-grid]');
   const runList = root.querySelector('[data-run-list]');
@@ -17,12 +19,17 @@
   const viewBtns = [...root.querySelectorAll('[data-surface-view]')];
   const viewPanels = [...root.querySelectorAll('[data-view-panel]')];
   const importPanel = root.querySelector('[data-import-panel]');
+  const fullscreenBtn = root.querySelector('[data-surface-fullscreen]');
   const NS = 'http://www.w3.org/2000/svg';
+
   let data = {hosts:[], filters:{}, summary:{}, tool_runs:[]};
   let selectedHost = '';
-  let view = {x: 18, y: 18, k: 1};
+  let view = {x: 20, y: 20, k: 1};
   let pan = null;
+  let nodeDrag = null;
+  let suppressClickUntil = 0;
   let sceneExtent = {width:1460,height:760};
+  const manualPositions = new Map();
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const short = (s, n=34) => String(s || '').length > n ? `${String(s).slice(0,n-1)}…` : String(s || '');
@@ -40,6 +47,7 @@
   function fillSelect(name, values){
     const el = root.querySelector(`[data-filter="${name}"]`);
     if (!el) return;
+    [...el.options].slice(1).forEach(o=>o.remove());
     values.forEach(v => { const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el.appendChild(o); });
   }
   function filterEl(name){ return root.querySelector(`[data-filter="${name}"]`); }
@@ -75,6 +83,14 @@
   function node(type,id,label,meta={}){ return {type,id:`${type}:${id}`,key:id,label,meta}; }
   function edge(source,target,relation,kind='observed'){ return {source,target,relation,kind}; }
 
+  function addHostLayers(scene, h, hid, layers){
+    const {add, edges} = scene;
+    if(layers.has('provider')) (h.providers||[]).forEach(p=>{const id=add(node('provider',p,p));edges.push(edge(hid,id,'PROXIED_BY','observed'));});
+    if(layers.has('technology')) (h.technologies||[]).forEach(t=>{const id=add(node('technology',t,t));edges.push(edge(hid,id,'USES','fingerprint'));});
+    if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',s,s));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
+    if(layers.has('ip')) (h.ips||[]).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip));edges.push(edge(hid,id,'OBSERVED_IP','observed'));});
+  }
+
   function buildScene(hosts){
     const layers=selectedLayers();
     const collapsed=!!collapseFamilies?.checked;
@@ -83,23 +99,32 @@
     const rootId=add(node('root',rootDomain,rootDomain,{count:hosts.length}));
     const families = new Map();
     hosts.forEach(h=>{
-      const family=h.family||'other';
+      const family=(h.family||'other').trim()||'other';
       if(!families.has(family)) families.set(family,[]);
       families.get(family).push(h);
     });
+
+    const scene={nodes,edges,add};
     [...families.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([family,items])=>{
+      items.sort((a,b)=>a.hostname.localeCompare(b.hostname));
+      // A singleton "family" only adds noise. Show the host directly.
+      if(items.length===1){
+        const h=items[0];
+        const hid=add(node('host',h.hostname,h.hostname,h));
+        edges.push(edge(rootId,hid,'CONTAINS','observed'));
+        if(!collapsed) addHostLayers(scene,h,hid,layers);
+        return;
+      }
       const fid=add(node('family',family,family,{count:items.length,heuristic:true,hosts:items.map(x=>x.hostname)}));
       edges.push(edge(rootId,fid,'POSSIBLE_FAMILY','heuristic'));
-      if (collapsed) return;
-      items.sort((a,b)=>a.hostname.localeCompare(b.hostname)).forEach(h=>{
+      if(collapsed) return;
+      items.forEach(h=>{
         const hid=add(node('host',h.hostname,h.hostname,h));
         edges.push(edge(fid,hid,'GROUPS','heuristic'));
-        if(layers.has('provider')) (h.providers||[]).forEach(p=>{const id=add(node('provider',p,p));edges.push(edge(hid,id,'PROXIED_BY','observed'));});
-        if(layers.has('technology')) (h.technologies||[]).forEach(t=>{const id=add(node('technology',t,t));edges.push(edge(hid,id,'USES','fingerprint'));});
-        if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',s,s));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
-        if(layers.has('ip')) (h.ips||[]).slice(0,4).forEach(ip=>{const id=add(node('ip',ip,ip));edges.push(edge(hid,id,'OBSERVED_IP','observed'));});
+        addHostLayers(scene,h,hid,layers);
       });
     });
+
     if(!collapsed){
       const visibleSet=new Set(hosts.map(h=>h.hostname));
       hosts.forEach(h=>(h.redirects||[]).forEach(dst=>{if(visibleSet.has(dst))edges.push(edge(`host:${h.hostname}`,`host:${dst}`,'REDIRECTS_TO','observed'));}));
@@ -108,55 +133,102 @@
   }
 
   function layout(scene){
-    const byType = type => scene.nodes.filter(n=>n.type===type);
-    const roots=byType('root'), families=byType('family'), hosts=byType('host');
-    const right=scene.nodes.filter(n=>['provider','technology','server','ip'].includes(n.type));
-    const familyHosts=new Map();
-    scene.edges.filter(e=>e.relation==='GROUPS').forEach(e=>{if(!familyHosts.has(e.source))familyHosts.set(e.source,[]);familyHosts.get(e.source).push(e.target);});
-    let y=50; const pos=new Map();
-    roots.forEach(n=>pos.set(n.id,{x:90,y:Math.max(120, Math.min(420, (scene.collapsed?families.length:hosts.length)*20))}));
+    const pos=new Map();
+    const rootNode=scene.nodes.find(n=>n.type==='root');
+    const families=scene.nodes.filter(n=>n.type==='family');
+    const hosts=scene.nodes.filter(n=>n.type==='host');
+    const familyChildren=new Map();
+    scene.edges.filter(e=>e.relation==='GROUPS').forEach(e=>{if(!familyChildren.has(e.source))familyChildren.set(e.source,[]);familyChildren.get(e.source).push(e.target);});
+    const directHosts = hosts.filter(h=>scene.edges.some(e=>e.relation==='CONTAINS'&&e.target===h.id));
+    let y=60;
+
     families.forEach(f=>{
-      const ids=familyHosts.get(f.id)||[];
-      const height=scene.collapsed?58:Math.max(76,ids.length*44);
-      pos.set(f.id,{x:scene.collapsed?480:330,y:y+height/2});
-      ids.forEach((id,i)=>pos.set(id,{x:620,y:y+36+i*44}));
-      y+=height+22;
+      const ids=familyChildren.get(f.id)||[];
+      const block=scene.collapsed ? 58 : Math.max(76,ids.length*56);
+      pos.set(f.id,{x:390,y:y+block/2});
+      ids.forEach((id,i)=>pos.set(id,{x:690,y:y+30+i*56}));
+      y+=block+30;
     });
-    right.forEach((n,i)=>{
-      const links=scene.edges.filter(e=>e.target===n.id).map(e=>pos.get(e.source)).filter(Boolean);
-      const avg=links.length?links.reduce((s,p)=>s+p.y,0)/links.length:80+i*46;
-      pos.set(n.id,{x:n.type==='ip'?1240:1010,y:avg + ((i%3)-1)*10});
+    directHosts.forEach(h=>{pos.set(h.id,{x:scene.collapsed?470:690,y:y+24});y+=62;});
+    if(rootNode) pos.set(rootNode.id,{x:110,y:Math.max(110,Math.min(Math.max(220,y/2),520))});
+
+    const typeX={provider:980,technology:1210,server:1440,ip:1670};
+    const rightTypes=['provider','technology','server','ip'];
+    let maxRightY=0;
+    rightTypes.forEach(type=>{
+      const list=scene.nodes.filter(n=>n.type===type).map(n=>{
+        const sourceY=scene.edges.filter(e=>e.target===n.id).map(e=>pos.get(e.source)?.y).filter(v=>Number.isFinite(v));
+        return {n,desired:sourceY.length?sourceY.reduce((a,b)=>a+b,0)/sourceY.length:80};
+      }).sort((a,b)=>a.desired-b.desired||a.n.label.localeCompare(b.n.label));
+      let cursor=46;
+      list.forEach(({n,desired})=>{
+        const yy=Math.max(desired,cursor);
+        pos.set(n.id,{x:typeX[type],y:yy});
+        cursor=yy+48;
+        maxRightY=Math.max(maxRightY,yy);
+      });
     });
-    return {pos,width:1460,height:Math.max(620,y+80)};
+
+    // Preserve user-arranged nodes during the current session.
+    for(const n of scene.nodes){ if(manualPositions.has(n.id)) pos.set(n.id,{...manualPositions.get(n.id)}); }
+    const activeTypes=rightTypes.filter(t=>scene.nodes.some(n=>n.type===t));
+    const width=activeTypes.length ? typeX[activeTypes[activeTypes.length-1]]+150 : 820;
+    const height=Math.max(560,y+60,maxRightY+70);
+    return {pos,width,height};
   }
 
   function svgEl(tag,attrs={}){const el=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,String(v)));return el;}
+  function canvasSize(){ return {width:Math.max(720,stage?.clientWidth||1460),height:Math.max(480,stage?.clientHeight||760)}; }
+  function relatedHosts(scene,n){
+    if(n.type==='host') return [n.meta];
+    if(n.type==='family') return (n.meta?.hosts||[]).map(h=>data.hosts.find(x=>x.hostname===h)).filter(Boolean);
+    const ids=new Set(scene.edges.filter(e=>e.target===n.id&&e.source.startsWith('host:')).map(e=>e.source.slice(5)));
+    return data.hosts.filter(h=>ids.has(h.hostname));
+  }
+
   function renderGraph(){
     const hosts=visibleHosts();
-    visibleCount.textContent=String(hosts.length);
+    if(visibleCount) visibleCount.textContent=String(hosts.length);
     const scene=buildScene(hosts);
-    empty.hidden=scene.nodes.length>1;
+    if(empty) empty.hidden=hosts.length>0;
     svg.innerHTML='';
     const {pos,width,height}=layout(scene); sceneExtent={width,height};
-    svg.setAttribute('viewBox','0 0 1460 760');
+    const cs=canvasSize();
+    svg.setAttribute('viewBox',`0 0 ${cs.width} ${cs.height}`);
     const world=svgEl('g',{transform:`translate(${view.x} ${view.y}) scale(${view.k})`}); svg.appendChild(world);
+
     scene.edges.forEach(e=>{
       const a=pos.get(e.source), b=pos.get(e.target); if(!a||!b)return;
-      const path=svgEl('path',{d:`M ${a.x+70} ${a.y} C ${a.x+150} ${a.y}, ${b.x-150} ${b.y}, ${b.x-70} ${b.y}`,class:`surface-edge ${e.kind}`});
+      const path=svgEl('path',{d:`M ${a.x+72} ${a.y} C ${a.x+155} ${a.y}, ${b.x-155} ${b.y}, ${b.x-72} ${b.y}`,class:`surface-edge ${e.kind}`});
       const title=svgEl('title'); title.textContent=e.relation; path.appendChild(title); world.appendChild(path);
     });
+
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
-      const g=svgEl('g',{class:`surface-node ${n.type}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0'});
+      const g=svgEl('g',{class:`surface-node ${n.type}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const w=n.type==='host'?230:n.type==='family'?210:n.type==='root'?190:190;
-      const h=n.type==='family'&&scene.collapsed?42:n.type==='host'?34:30;
+      const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?36:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
-      const text=svgEl('text',{x:0,y:scene.collapsed&&n.type==='family'?0:4,'text-anchor':'middle'}); text.textContent=short(n.label,n.type==='host'?31:28); g.appendChild(text);
+      const text=svgEl('text',{x:0,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':'middle'}); text.textContent=short(n.label,n.type==='host'?31:28); g.appendChild(text);
       if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts`;g.appendChild(count);}
       if(n.type==='host'){const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);}
-      const title=svgEl('title'); title.textContent=n.label; g.appendChild(title);
-      g.addEventListener('click',ev=>{ev.stopPropagation(); if(n.type==='host'){selectedHost=n.key;renderDetail(n.meta);renderGraph();} else if(n.type==='family'){renderNodeDetail(n,true);} else renderNodeDetail(n,false);});
-      g.addEventListener('keydown',ev=>{if(ev.key==='Enter')g.dispatchEvent(new Event('click'));}); world.appendChild(g);
+      const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
+
+      g.addEventListener('pointerdown',ev=>{
+        ev.stopPropagation();
+        nodeDrag={id:n.id,g,startX:ev.clientX,startY:ev.clientY,baseX:p.x,baseY:p.y,x:p.x,y:p.y,moved:false,pointerId:ev.pointerId};
+        svg.setPointerCapture?.(ev.pointerId);
+        g.classList.add('dragging');
+      });
+      g.addEventListener('click',ev=>{
+        ev.stopPropagation();
+        if(Date.now()<suppressClickUntil)return;
+        if(n.type==='host'){selectedHost=n.key;renderDetail(n.meta);renderGraph();}
+        else renderNodeDetail(n,scene);
+      });
+      g.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='family')enterFamily(n.key);});
+      g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();g.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
+      world.appendChild(g);
     });
   }
 
@@ -177,18 +249,42 @@
       <section><h3>Evidencia</h3><div class="surface-chips">${tags(h.sources,'source')}</div><small class="muted">Última observación: ${esc(h.last_seen_at||'—')}</small></section>
       ${h.url?`<a class="button ghost full" target="_blank" rel="noopener noreferrer" href="${esc(h.url)}">Abrir host ↗</a>`:''}`;
   }
+
   function enterFamily(name){
     const sel=filterEl('family'); if(sel) sel.value=name;
     if(collapseFamilies) collapseFamilies.checked=false;
     selectedHost=''; renderDetail(null); refresh(); fit();
   }
-  function renderNodeDetail(n, family=false){
-    detail.innerHTML=`<div class="surface-detail-head"><div><span class="eyebrow">${esc(n.type.toUpperCase())}</span><h2>${esc(n.label)}</h2></div></div><p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':'Nodo contextual. Selecciona un hostname para revisar evidencia completa.'}</p>${n.meta?.count?`<div class="surface-big-number">${esc(n.meta.count)} <small>hosts relacionados</small></div>`:''}${family?'<button class="button full" type="button" data-enter-family>Investigar esta rama</button>':''}`;
+
+  function applyNodeFilter(n){
+    if(n.type==='technology'){const el=filterEl('technology');if(el)el.value=n.key;}
+    else if(n.type==='provider'){const el=filterEl('provider');if(el)el.value=n.key;}
+    else if(n.type==='server'){const el=filterEl('server');if(el)el.value=n.key;}
+    else if(n.type==='ip'){if(search)search.value=n.key;}
+    refresh();fit();
+  }
+
+  function renderNodeDetail(n,scene){
+    const related=relatedHosts(scene,n);
+    const family=n.type==='family';
+    const filterable=['technology','provider','server','ip'].includes(n.type);
+    detail.innerHTML=`
+      <div class="surface-detail-head"><div><span class="eyebrow">${esc(n.type.toUpperCase())}</span><h2>${esc(n.label)}</h2></div></div>
+      <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='root'?'Raíz de la superficie actualmente visible.':'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
+      <div class="surface-big-number">${esc(related.length || n.meta?.count || 0)} <small>hosts relacionados</small></div>
+      ${related.length?`<section><h3>Relacionados</h3><div class="surface-related-hosts">${related.slice(0,14).map(h=>`<button type="button" data-related-host="${esc(h.hostname)}">${esc(h.hostname)}</button>`).join('')}${related.length>14?`<small>+${related.length-14} más</small>`:''}</div></section>`:''}
+      ${family?'<button class="button full" type="button" data-enter-family>Investigar esta rama</button>':''}
+      ${filterable?'<button class="button ghost full" type="button" data-filter-node>Filtrar mapa por este nodo</button>':''}`;
     detail.querySelector('[data-enter-family]')?.addEventListener('click',()=>enterFamily(n.key));
+    detail.querySelector('[data-filter-node]')?.addEventListener('click',()=>applyNodeFilter(n));
+    detail.querySelectorAll('[data-related-host]').forEach(btn=>btn.addEventListener('click',()=>{
+      const h=data.hosts.find(x=>x.hostname===btn.dataset.relatedHost);if(!h)return;
+      selectedHost=h.hostname; if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph();
+    }));
   }
 
   function renderInventory(){
-    const hosts=visibleHosts(); visibleCount.textContent=String(hosts.length);
+    const hosts=visibleHosts(); if(visibleCount)visibleCount.textContent=String(hosts.length);
     grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</div><div class="surface-card-meta"><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
     grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;const h=data.hosts.find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');if(collapseFamilies)collapseFamilies.checked=false;renderGraph();}));
   }
@@ -203,29 +299,93 @@
   }
 
   function refresh(){ renderGraph(); renderInventory(); renderRuns(); }
-  function switchView(name){viewBtns.forEach(b=>b.classList.toggle('active',b.dataset.surfaceView===name));viewPanels.forEach(p=>p.hidden=p.dataset.viewPanel!==name);if(name==='map')renderGraph();else if(name==='inventory')renderInventory();else renderRuns();}
-  function fit(){const scale=Math.max(.16,Math.min(1,700/Math.max(700,sceneExtent.height)));view={x:18,y:18,k:scale};renderGraph();}
+  function switchView(name){viewBtns.forEach(b=>b.classList.toggle('active',b.dataset.surfaceView===name));viewPanels.forEach(p=>p.hidden=p.dataset.viewPanel!==name);if(name==='map'){renderGraph();setTimeout(fit,0);}else if(name==='inventory')renderInventory();else renderRuns();}
+  function fit(){
+    const {width,height}=canvasSize();
+    const k=Math.max(.18,Math.min(1.25,(width-90)/Math.max(700,sceneExtent.width),(height-90)/Math.max(480,sceneExtent.height)));
+    view={x:Math.max(24,(width-sceneExtent.width*k)/2),y:Math.max(24,(height-sceneExtent.height*k)/2),k};
+    renderGraph();
+  }
+  function zoomAt(factor,sx=null,sy=null){
+    const cs=canvasSize(); sx=sx??cs.width/2; sy=sy??cs.height/2;
+    const old=view.k; const next=Math.max(.28,Math.min(2.6,old*factor));
+    const wx=(sx-view.x)/old, wy=(sy-view.y)/old;
+    view.x=sx-wx*next; view.y=sy-wy*next; view.k=next; renderGraph();
+  }
   function resetDrill(){
     const fam=filterEl('family'); if(fam)fam.value='';
-    if(search)search.value='';
+    if(search)search.value=''; filterEls.forEach(el=>{if(el.dataset.filter!=='family')el.value='';});
     if(collapseFamilies)collapseFamilies.checked=true;
     selectedHost='';renderDetail(null);refresh();fit();
   }
+  function resetLayout(){manualPositions.clear();fit();}
+  function togglePhase(card,force){
+    const panel=card.querySelector('[data-phase-detail]'); const btn=card.querySelector('[data-phase-toggle]'); if(!panel||!btn)return;
+    const open=force!==undefined?force:panel.hidden;
+    panel.hidden=!open; card.setAttribute('aria-expanded',String(open)); btn.setAttribute('aria-expanded',String(open)); btn.querySelector('span').textContent=open?'⌃':'⌄';
+  }
+
   function bind(){
     search?.addEventListener('input',refresh);
-    filterEls.forEach(el=>el.addEventListener('change',()=>{if(el.dataset.filter==='family'&&el.value&&collapseFamilies)collapseFamilies.checked=false;refresh();}));
-    layerEls.forEach(el=>el.addEventListener('change',renderGraph)); collapseFamilies?.addEventListener('change',renderGraph);
-    root.querySelector('[data-filter-clear]')?.addEventListener('click',()=>{if(search)search.value='';filterEls.forEach(el=>el.value='');refresh();});
+    filterEls.forEach(el=>el.addEventListener('change',()=>{if(el.dataset.filter==='family'&&el.value&&collapseFamilies)collapseFamilies.checked=false;refresh();fit();}));
+    layerEls.forEach(el=>el.addEventListener('change',()=>{renderGraph();fit();}));
+    collapseFamilies?.addEventListener('change',()=>{renderGraph();fit();});
+    root.querySelector('[data-filter-clear]')?.addEventListener('click',()=>{if(search)search.value='';filterEls.forEach(el=>el.value='');refresh();fit();});
     root.querySelector('[data-drill-reset]')?.addEventListener('click',resetDrill);
-    root.querySelector('[data-surface-fit]')?.addEventListener('click',fit);
+    root.querySelectorAll('[data-surface-fit]').forEach(btn=>btn.addEventListener('click',fit));
+    root.querySelector('[data-surface-reset-layout]')?.addEventListener('click',resetLayout);
+    root.querySelector('[data-surface-zoom-in]')?.addEventListener('click',()=>zoomAt(1.2));
+    root.querySelector('[data-surface-zoom-out]')?.addEventListener('click',()=>zoomAt(.82));
     root.querySelector('[data-import-toggle]')?.addEventListener('click',()=>{importPanel.hidden=!importPanel.hidden;});
     viewBtns.forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.surfaceView)));
     root.querySelector('[data-copy-visible]')?.addEventListener('click',async()=>{const text=visibleHosts().map(h=>h.hostname).join('\n');try{await navigator.clipboard.writeText(text);}catch(_){}});
-    svg.addEventListener('click',()=>{selectedHost='';renderDetail(null);renderGraph();});
-    svg.addEventListener('wheel',e=>{e.preventDefault();view.k=Math.max(.45,Math.min(2.1,view.k*(e.deltaY<0?1.08:.92)));renderGraph();},{passive:false});
-    svg.addEventListener('pointerdown',e=>{if(e.target.closest('.surface-node'))return;pan={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};svg.setPointerCapture?.(e.pointerId);});
-    svg.addEventListener('pointermove',e=>{if(!pan)return;view.x=pan.vx+(e.clientX-pan.x);view.y=pan.vy+(e.clientY-pan.y);renderGraph();});
-    svg.addEventListener('pointerup',()=>{pan=null;});
+
+    root.querySelectorAll('[data-phase-card]').forEach(card=>{
+      card.addEventListener('click',e=>{if(e.target.closest('button,form,input,a,select'))return;togglePhase(card);});
+      card.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button,form,input,a,select')){e.preventDefault();togglePhase(card);}});
+      card.querySelector('[data-phase-toggle]')?.addEventListener('click',e=>{e.stopPropagation();togglePhase(card);});
+    });
+    root.querySelectorAll('[data-phase-jump]').forEach(btn=>btn.addEventListener('click',()=>{
+      const card=root.querySelector(`[data-phase-card="${btn.dataset.phaseJump}"]`);if(!card)return;
+      togglePhase(card,true);card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('pulse');setTimeout(()=>card.classList.remove('pulse'),900);
+    }));
+
+    svg.addEventListener('click',e=>{if(e.target.closest('.surface-node'))return;selectedHost='';renderDetail(null);renderGraph();});
+    svg.addEventListener('wheel',e=>{
+      e.preventDefault();
+      const rect=svg.getBoundingClientRect(); const cs=canvasSize();
+      const sx=(e.clientX-rect.left)*(cs.width/Math.max(1,rect.width)); const sy=(e.clientY-rect.top)*(cs.height/Math.max(1,rect.height));
+      zoomAt(e.deltaY<0?1.1:.9,sx,sy);
+    },{passive:false});
+    svg.addEventListener('pointerdown',e=>{if(e.target.closest('.surface-node'))return;pan={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y,pointerId:e.pointerId};svg.setPointerCapture?.(e.pointerId);});
+    svg.addEventListener('pointermove',e=>{
+      if(nodeDrag){
+        const dx=(e.clientX-nodeDrag.startX)/view.k, dy=(e.clientY-nodeDrag.startY)/view.k;
+        nodeDrag.x=nodeDrag.baseX+dx; nodeDrag.y=nodeDrag.baseY+dy;
+        if(Math.abs(dx)+Math.abs(dy)>3)nodeDrag.moved=true;
+        nodeDrag.g?.setAttribute('transform',`translate(${nodeDrag.x} ${nodeDrag.y})`);
+        return;
+      }
+      if(!pan)return; view.x=pan.vx+(e.clientX-pan.x);view.y=pan.vy+(e.clientY-pan.y);renderGraph();
+    });
+    const endPointer=()=>{
+      if(nodeDrag){
+        nodeDrag.g?.classList.remove('dragging');
+        if(nodeDrag.moved){manualPositions.set(nodeDrag.id,{x:nodeDrag.x,y:nodeDrag.y});suppressClickUntil=Date.now()+220;}
+        nodeDrag=null;renderGraph();
+      }
+      pan=null;
+    };
+    svg.addEventListener('pointerup',endPointer); svg.addEventListener('pointercancel',endPointer);
+
+    fullscreenBtn?.addEventListener('click',async()=>{
+      try{if(document.fullscreenElement===workspace)await document.exitFullscreen();else await workspace?.requestFullscreen();}catch(err){console.warn('Fullscreen no disponible',err);}
+    });
+    document.addEventListener('fullscreenchange',()=>{
+      if(fullscreenBtn)fullscreenBtn.textContent=document.fullscreenElement===workspace?'⤢ Salir de pantalla completa':'⛶ Pantalla completa';
+      setTimeout(()=>{renderGraph();fit();},120);
+    });
+    window.addEventListener('resize',()=>{if(!root.querySelector('[data-view-panel="map"]')?.hidden){renderGraph();}});
   }
 
   fetch(api).then(r=>r.json()).then(payload=>{
