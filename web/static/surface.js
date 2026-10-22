@@ -32,6 +32,12 @@
   const expandedHosts = new Set();
   const expandedFamilies = new Set();
   const expandedRoots = new Set([rootDomain]);
+  const expandedRootsStateKey = `negro.surface.expandedRoots:${window.location.pathname}`;
+  try{
+    const saved=JSON.parse(sessionStorage.getItem(expandedRootsStateKey)||'[]');
+    if(Array.isArray(saved)) saved.forEach(x=>{if(x)expandedRoots.add(String(x));});
+  }catch(_){}
+  const persistExpandedRoots=()=>{try{sessionStorage.setItem(expandedRootsStateKey,JSON.stringify([...expandedRoots]));}catch(_){}};
   const selectedFilters = {root:new Set(), technology:new Set(), server:new Set(), provider:new Set(), environment:new Set(), status:new Set(), family:new Set(), source:new Set()};
   const facetLabels = {root:'Target',technology:'Tecnología',server:'Servidor',provider:'Proveedor',environment:'Ambiente',status:'Status',family:'Familia',source:'Fuente'};
 
@@ -221,7 +227,7 @@
     const project=scene.nodes.find(n=>n.type==='project');
     const roots=scene.nodes.filter(n=>n.type==='root');
     const familyChildren=new Map();
-    scene.edges.filter(e=>e.relation==='GROUPS').forEach(e=>{if(!familyChildren.has(e.source))familyChildren.set(e.source,[]);familyChildren.get(e.source).push(e.target);});
+    scene.edges.filter(e=>e.source.startsWith('family:')&&e.target.startsWith('host:')).forEach(e=>{if(!familyChildren.has(e.source))familyChildren.set(e.source,[]);familyChildren.get(e.source).push(e.target);});
     const rootFamilies=new Map(); const rootHosts=new Map();
     scene.edges.forEach(e=>{
       if(e.source.startsWith('root:')&&e.target.startsWith('family:')){if(!rootFamilies.has(e.source))rootFamilies.set(e.source,[]);rootFamilies.get(e.source).push(e.target);}
@@ -316,12 +322,13 @@
           g.appendChild(badge);
         }
       }
-      const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
+      const title=svgEl('title'); title.textContent=`${n.label} · ${n.type==='root'?(expandedRoots.has(n.key)?'clic para recoger target':'clic para abrir target'):n.type==='family'?(expandedFamilies.has(n.key)?'clic para recoger familia':'clic para abrir familia'):n.type==='host'?(expandedHosts.has(n.key)?'clic para recoger capas':'clic para abrir capas'):'clic para revisar'} · arrastra para reorganizar`; g.appendChild(title);
 
       const activateNode=()=>{
         if(n.type==='project'){renderNodeDetail(n,scene);return;}
         if(n.type==='root'){
           if(expandedRoots.has(n.key)) expandedRoots.delete(n.key); else expandedRoots.add(n.key);
+          persistExpandedRoots();
           if(n.meta?.host) renderDetail(n.meta.host); else renderNodeDetail(n,scene);
           renderGraph();
           return;
@@ -460,7 +467,7 @@
   function resetDrill(){
     if(search)search.value=''; Object.values(selectedFilters).forEach(set=>set.clear()); redrawFacets();
     if(collapseFamilies)collapseFamilies.checked=true;
-    selectedHost='';expandedHosts.clear();expandedFamilies.clear();expandedRoots.clear();expandedRoots.add(rootDomain);renderDetail(null);refresh();fit();
+    selectedHost='';expandedHosts.clear();expandedFamilies.clear();expandedRoots.clear();expandedRoots.add(rootDomain);persistExpandedRoots();renderDetail(null);refresh();fit();
   }
   function resetLayout(){manualPositions.clear();fit();}
   function openPhaseCard(card){ const href=card?.dataset?.phaseHref; if(href) window.location.href=href; }

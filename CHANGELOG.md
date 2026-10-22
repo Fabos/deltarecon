@@ -1,3 +1,21 @@
+# v0.87 · Discovery resilience
+
+- crt.sh retries transient HTTP failures before giving up. HTTP 429/5xx/timeouts are classified as `unavailable`, not as successful zero-result discovery.
+- Discovery audit now distinguishes useful sources, unavailable sources, timeouts and real errors.
+- Amass progress-meter noise is aggressively removed from the inline audit while raw stderr remains untouched and downloadable.
+- Each Discovery source can be retried independently without rerunning the whole phase; retries stay in the same audit group.
+- Source cards use source-specific raw units (GAU URLs, Subfinder names, etc.).
+- Added regression coverage for transient CT failures, concatenated Amass progress frames and per-source retry UX.
+
+## v0.86 - 2026-10-22
+
+- Corrige el drill-down de `Otros / sin agrupar`: los hijos `CONTAINS` ahora reciben layout igual que los hijos `GROUPS`, por lo que los hosts dejan de quedar invisibles aunque la familia figure abierta.
+- Los targets abiertos/cerrados del mapa se conservan durante la sesión mediante `sessionStorage`.
+- El root activo de Superficie se recuerda mediante cookie por proyecto; volver a `/surface` sin `?root=` conserva el target seleccionado.
+- Nueva ingesta manual de hostnames por root activo con nota/contexto opcional. Se guarda como fuente `manual`, estado `DISCOVERED` y evidencia `discovered_hostname`.
+- Los hostnames manuales entran automáticamente a la siguiente validación DNS y aparecen en el inventario/mapa sin fingir que fueron descubiertos por una herramienta.
+- La UI muestra una lista de hosts manuales del root activo con su contexto de procedencia.
+
 ## v0.85 - 2026-10-22
 
 - Amass usa timeout específico de 900 s dentro de Discovery.

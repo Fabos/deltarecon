@@ -5572,19 +5572,23 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "parameter_detail.html", target_key, domain, workspace, detail=detail)
 
     @app.get("/t/{target_key}/surface", response_class=HTMLResponse)
-    def surface_page(request: Request, target_key: str, imported: str = "", scan: str = "", root: str = ""):
+    def surface_page(request: Request, target_key: str, imported: str = "", scan: str = "", manual: str = "", root: str = ""):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
         roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
-        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        remembered_root = str(request.cookies.get("negro_surface_root") or "")
+        requested_root = root or remembered_root or domain
+        selected_root = core.normalize_recon_root(requested_root)
         if selected_root not in roots:
-            selected_root = domain
+            selected_root = core.normalize_recon_root(domain)
         with _db(paths) as conn:
             recon.init_schema(conn)
             recon.attach_legacy_runs(conn, domain)
             data = recon.surface_data(conn, selected_root, roots)
-        return render(request, "surface.html", target_key, domain, workspace, surface=data, imported=imported, scan=scan)
+        response = render(request, "surface.html", target_key, domain, workspace, surface=data, imported=imported, scan=scan, manual=manual)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
 
     @app.post("/t/{target_key}/surface/run")
     def surface_run_phase(request: Request, target_key: str, phase: str = Form(...), root: str = Form(""), csrf: str = Form(...)):
@@ -5610,22 +5614,65 @@ def create_app(default_domain: str, default_workspace: Path):
         return_phase = "discovery" if phase == "discovery_expand" else phase
         return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(return_phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
 
+    @app.post("/t/{target_key}/surface/discovery/source")
+    def surface_run_discovery_source(request: Request, target_key: str, source: str = Form(...), root: str = Form(""), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
+            latest = conn.execute(
+                "SELECT run_group FROM recon_tool_runs WHERE phase='discovery' AND COALESCE(root_domain,'')=? AND COALESCE(run_group,'')!='' ORDER BY id DESC LIMIT 1",
+                (selected_root,),
+            ).fetchone()
+            run_group = str(latest["run_group"] or "") if latest else uuid.uuid4().hex
+            try:
+                result = recon.run_discovery_source(conn, selected_root, paths, source, run_group=run_group)
+                status = str(result.get("status") or "")
+                records = int(result.get("records") or 0)
+                if status == "ok":
+                    text = f"Fuente reintentada · {records} hosts observados"
+                elif status == "partial":
+                    text = f"Fuente parcial · {records} hosts conservados"
+                elif status == "unavailable":
+                    text = "Fuente temporalmente no disponible · revisa el detalle"
+                elif status == "timeout":
+                    text = "Fuente llegó a timeout · revisa el detalle"
+                else:
+                    text = "La fuente terminó con error · revisa el detalle"
+            except (ValueError, RuntimeError) as exc:
+                text = str(exc)
+        msg = urllib.parse.quote(text)
+        response = RedirectResponse(url=f"/t/{target_key}/surface/phase/discovery?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
+
     @app.get("/t/{target_key}/surface/phase/{phase_key}", response_class=HTMLResponse)
     def surface_phase_page(request: Request, target_key: str, phase_key: str, root: str = "", scan: str = ""):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
         roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
-        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        remembered_root = str(request.cookies.get("negro_surface_root") or "")
+        requested_root = root or remembered_root or domain
+        selected_root = core.normalize_recon_root(requested_root)
         if selected_root not in roots:
-            selected_root = domain
+            selected_root = core.normalize_recon_root(domain)
         with _db(paths) as conn:
             recon.init_schema(conn)
             recon.attach_legacy_runs(conn, domain)
             detail = recon.phase_detail_data(conn, selected_root, phase_key)
         if not detail:
             raise HTTPException(status_code=404, detail="Fase no encontrada")
-        return render(request, "surface_phase.html", target_key, domain, workspace, phase_detail=detail, scan=scan)
+        response = render(request, "surface_phase.html", target_key, domain, workspace, phase_detail=detail, scan=scan)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
 
     @app.get("/api/t/{target_key}/surface", response_class=JSONResponse)
     def surface_api(target_key: str, root: str = ""):
@@ -5720,6 +5767,30 @@ def create_app(default_domain: str, default_workspace: Path):
                 recon.add_evidence(conn, hid, "manual_seed", "seed_hostname", seed, {"hostname": seed, "recon_root": root})
                 conn.commit()
         return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(root)}", status_code=303)
+
+    @app.post("/t/{target_key}/surface/host/add")
+    def surface_add_manual_hosts(request: Request, target_key: str, manual_hosts: str = Form(...), note: str = Form(""), root: str = Form(""), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera de los roots de recon del proyecto")
+        tokens = [x.strip().lower().rstrip('.') for x in re.split(r"[\s,;]+", manual_hosts or "") if x.strip()]
+        if not tokens:
+            raise HTTPException(status_code=400, detail="Agrega al menos un hostname")
+        invalid = [h for h in tokens if not DOMAIN_RE.fullmatch(h) or not (h == selected_root or h.endswith('.' + selected_root))]
+        if invalid:
+            raise HTTPException(status_code=400, detail=f"Host fuera del root activo o inválido: {', '.join(invalid[:5])}")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            result = recon.add_manual_hostnames(conn, selected_root, tokens, note)
+        msg = urllib.parse.quote(f"{result['added']} host(s) manual(es) agregado(s) · quedan pendientes de DNS")
+        response = RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&manual={msg}", status_code=303)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
 
     @app.get("/t/{target_key}/surface/run/{run_id}/output/{stream}", response_class=PlainTextResponse)
     def surface_run_output(target_key: str, run_id: int, stream: str):

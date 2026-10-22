@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import shutil
@@ -583,8 +584,17 @@ def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, comm
         stderr_path.write_text(stderr, encoding="utf-8")
         status = "ok" if proc.returncode == 0 else "error"
         error = "" if proc.returncode == 0 else (stderr.strip() or f"{tool} rc={proc.returncode}")[:1200]
+        # Remote passive sources can be temporarily unavailable.  That is not
+        # equivalent to a scanner failure nor to a successful zero-result query.
+        # Preserve the raw curl error but expose a semantically distinct state.
+        if tool == "crt.sh" and proc.returncode != 0:
+            transient = re.search(r"(?:HTTP[^\n]*\b(?:429|500|502|503|504)\b|returned error:\s*(?:429|500|502|503|504)|timed?\s*out|timeout|temporar(?:y|ily))", stderr, re.I)
+            if transient:
+                status = "unavailable"
+                detail = (stderr.strip() or f"crt.sh rc={proc.returncode}")[:700]
+                error = f"Certificate Transparency no estuvo disponible temporalmente. {detail}"
         run_id = _record_tool_run(conn, phase, tool, command, status, proc.returncode, len([x for x in stdout.splitlines() if x.strip()]), str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
-        return {"status": status, "return_code": proc.returncode, "stdout": stdout, "stderr": stderr, "command": command, "error": error}
+        return {"id": run_id, "status": status, "return_code": proc.returncode, "stdout": stdout, "stderr": stderr, "command": command, "error": error}
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""; stderr = exc.stderr or ""
         if isinstance(stdout, bytes): stdout = stdout.decode("utf-8", errors="replace")
@@ -596,9 +606,80 @@ def _run_tool(conn: sqlite3.Connection, paths: dict, phase: str, tool: str, comm
             f"{tool} alcanzó el timeout de {timeout}s; se conservaron {record_count} líneas parciales"
             if record_count else f"{tool} alcanzó el timeout de {timeout}s sin stdout utilizable"
         )
-        _record_tool_run(conn, phase, tool, command, status, None, record_count, str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
-        return {"status": status, "return_code": None, "stdout": stdout, "stderr": stderr, "command": command, "error": error, "timed_out": True}
+        run_id = _record_tool_run(conn, phase, tool, command, status, None, record_count, str(stdout_path), str(stderr_path), error, started, _now(), root_domain=root_domain, run_group=run_group)
+        return {"id": run_id, "status": status, "return_code": None, "stdout": stdout, "stderr": stderr, "command": command, "error": error, "timed_out": True}
 
+
+
+def add_manual_hostnames(conn: sqlite3.Connection, root_domain: str, hostnames: list[str], note: str = "") -> dict:
+    """Add hunter-known hostnames as first-class discovery evidence.
+
+    Manual knowledge is intentionally preserved as a distinct source instead of
+    pretending a scanner discovered it.  Entries remain DISCOVERED until the DNS
+    phase validates them, so they naturally flow into the same guided pipeline.
+    """
+    init_schema(conn)
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    clean: list[str] = []
+    rejected: list[str] = []
+    for raw in hostnames or []:
+        host = str(raw or "").strip().lower().rstrip(".")
+        if not host:
+            continue
+        if host == root or host.endswith("." + root):
+            if host not in clean:
+                clean.append(host)
+        else:
+            rejected.append(host)
+    added = 0
+    for host in clean:
+        env, env_conf = detect_environment(host)
+        hid = upsert_asset(
+            conn,
+            "hostname",
+            host,
+            host,
+            {
+                "sources": ["manual"],
+                "environment": env,
+                "environment_confidence": env_conf,
+                "family": _family_stem(host, root),
+                "dns_state": "DISCOVERED",
+            },
+        )
+        add_evidence(
+            conn,
+            hid,
+            "manual",
+            "discovered_hostname",
+            host,
+            {"hostname": host, "recon_root": root, "note": str(note or "").strip()},
+        )
+        added += 1
+    conn.commit()
+    return {"added": added, "hostnames": clean, "rejected": rejected}
+
+
+def manual_hostname_entries(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    """Latest manual discovery note per hostname for the active recon root."""
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT a.asset_key hostname,e.raw_json,e.observed_at,e.id
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='manual' AND e.kind='discovered_hostname'
+             AND a.asset_type='hostname' AND (a.asset_key=? OR a.asset_key LIKE ?)
+           ORDER BY e.id DESC""",
+        (root, "%." + root),
+    ).fetchall()
+    out=[]; seen=set()
+    for row in rows:
+        host=str(row["hostname"] or "")
+        if host in seen:
+            continue
+        seen.add(host)
+        raw=_loads(row["raw_json"])
+        out.append({"hostname":host,"note":str(raw.get("note") or ""),"observed_at":row["observed_at"]})
+    return out
 
 def _first_party_hostnames(conn: sqlite3.Connection, root_domain: str, *, resolved_only: bool = False) -> list[str]:
     values = []
@@ -717,7 +798,7 @@ def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict,
     if curl:
         attempted += 1
         query = f"https://crt.sh/?q=%25.{root}&output=json"
-        cmd = [curl, "-fsSL", "--max-time", str(min(timeout, 180)), query]
+        cmd = [curl, "-fsSL", "--retry", "3", "--retry-delay", "2", "--retry-max-time", "75", "--max-time", str(min(timeout, 180)), query]
         run = _run_tool(conn, paths, "discovery", "crt.sh", cmd, timeout=min(timeout, 190), root_domain=root, run_group=run_group)
         if run["status"] == "ok":
             hosts = [h for h in _crtsh_hosts(run["stdout"], root) if h != root]
@@ -783,6 +864,71 @@ def _crtsh_hosts(raw: str, root_domain: str) -> list[str]:
                     out.add(host)
     return sorted(out)
 
+
+
+def run_discovery_source(conn: sqlite3.Connection, root_domain: str, paths: dict, source: str, timeout: int = 300, run_group: str = "") -> dict:
+    """Run exactly one discovery source without repeating the whole phase.
+
+    This is primarily useful for transient remote failures (crt.sh) or expensive
+    enrichment sources (Amass).  Evidence is merged into the same inventory and
+    can be attached to the latest discovery run group for a coherent audit view.
+    """
+    root = root_domain.lower().rstrip(".")
+    src = (source or "").strip().lower()
+    if src in {"crtsh", "ct", "certificate_transparency"}:
+        src = "crt.sh"
+    if src in {"gau_historical", "historical"}:
+        src = "gau"
+
+    if src == "subfinder":
+        tool = _tool_path("subfinder")
+        if not tool:
+            raise RuntimeError("Subfinder no está disponible localmente")
+        cmd = [tool, "-d", root, "-all", "-silent"]
+        run = _run_tool(conn, paths, "discovery", "subfinder", cmd, timeout=timeout, root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            result = import_subfinder_text(conn, run["stdout"], root, "surface-rerun:subfinder")
+        else:
+            result = {"records": 0, "errors": 0}
+        return {"source":"subfinder", "status":run["status"], "records":int(result.get("records") or 0), "run":run}
+
+    if src == "crt.sh":
+        curl = _tool_path("curl")
+        if not curl:
+            raise RuntimeError("curl no está disponible para consultar Certificate Transparency")
+        query = f"https://crt.sh/?q=%25.{root}&output=json"
+        cmd = [curl, "-fsSL", "--retry", "3", "--retry-delay", "2", "--retry-max-time", "75", "--max-time", str(min(timeout, 180)), query]
+        run = _run_tool(conn, paths, "discovery", "crt.sh", cmd, timeout=min(timeout, 190), root_domain=root, run_group=run_group)
+        hosts: list[str] = []
+        if run["status"] == "ok":
+            hosts = [h for h in _crtsh_hosts(run["stdout"], root) if h != root]
+            import_discovered_hosts(conn, hosts, root, "crtsh", "surface-rerun:crtsh")
+        return {"source":"crtsh", "status":run["status"], "records":len(set(hosts)), "run":run}
+
+    if src == "amass":
+        tool = _tool_path("amass")
+        if not tool:
+            raise RuntimeError("Amass no está disponible localmente")
+        cmd = [tool, "enum", "-passive", "-d", root]
+        amass_timeout = max(timeout, int(os.environ.get("NEGRO_AMASS_TIMEOUT", "900") or 900))
+        run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=amass_timeout, root_domain=root, run_group=run_group)
+        hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()] if run["status"] in {"ok", "partial"} else []
+        if hosts:
+            import_discovered_hosts(conn, hosts, root, "amass", "surface-rerun:amass")
+        return {"source":"amass", "status":run["status"], "records":len(set(hosts)), "run":run}
+
+    if src == "gau":
+        tool = _tool_path("gau")
+        if not tool:
+            raise RuntimeError("GAU no está disponible localmente")
+        cmd = [tool, "--subs", root]
+        run = _run_tool(conn, paths, "discovery", "gau", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
+        hosts = _historical_hosts_from_text(run["stdout"], root) if run["status"] == "ok" else []
+        if hosts:
+            import_discovered_hosts(conn, hosts, root, "gau_historical", "surface-rerun:gau")
+        return {"source":"gau_historical", "status":run["status"], "records":len(set(hosts)), "run":run}
+
+    raise ValueError(f"Fuente de discovery no soportada: {source}")
 
 def run_expand_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
     """Backward-compatible alias for pre-v0.84 discovery enrichment actions."""
@@ -1076,7 +1222,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","amass","gau"} and str(r.get("status")) in {"ok","partial"})
     specs = [
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
-        {"key":"discovery","title":"Descubrimiento de superficie","subtitle":"Subfinder · CT · Amass · históricos","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","amass","gau"],"purpose":"Cruzar fuentes pasivas e históricas antes de DNS. Cero resultados en una fuente no significa que no exista más superficie.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Amass":discovery_counts.get("amass",0),"Históricos":discovery_counts.get("gau_historical",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":4}},
+        {"key":"discovery","title":"Descubrimiento de superficie","subtitle":"Subfinder · CT · Amass · históricos","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","amass","gau"],"purpose":"Cruzar fuentes pasivas e históricas antes de DNS. Cero resultados en una fuente no significa que no exista más superficie.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Amass":discovery_counts.get("amass",0),"Históricos":discovery_counts.get("gau_historical",0),"Manual":discovery_counts.get("manual",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":4}},
         {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
         {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","implemented":False,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Encontrar nombres y relaciones adicionales en certificados sin confundirlos con hosts activos."},
@@ -1160,19 +1306,41 @@ def _read_run_text(path_value: str | None, *, max_chars: int = 240000) -> str:
 
 
 def _compact_audit_stderr(tool: str, text: str) -> str:
-    """Hide noisy progress meters from the inline audit while preserving raw stderr on disk."""
+    """Hide progress/terminal noise inline while preserving raw stderr on disk.
+
+    Amass can emit hundreds of kilobytes of carriage-return progress frames.
+    Those frames are useful only for low-level audit and make the phase detail
+    unreadable.  The raw file is never modified; this function only creates the
+    compact UI representation.
+    """
     raw = text or ""
     if str(tool).lower() != "amass":
         return raw
-    # Amass progress is commonly emitted with carriage returns.  Keep only
-    # human-readable diagnostic lines in the inline view; the raw link still
-    # exposes the complete stream for audit/reproduction.
-    parts = re.split(r"[\r\n]+", raw)
-    kept = []
-    progress = re.compile(r"^\s*\d+\s*/\s*\d+\s*\[[^\]]*\]\s*\d+(?:\.\d+)?%", re.I)
-    for part in parts:
+
+    # Remove ANSI control sequences / backspaces first.
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw).replace("\b", "")
+
+    # Progress frames may be separated by CR, LF, or concatenated into one very
+    # long line after capture.  Remove the complete `done / total [bar] pct p/s`
+    # frame globally rather than relying only on line boundaries.
+    frame = re.compile(
+        r"\d+\s*/\s*\d+\s*\[[^\]]{10,2000}\]\s*"
+        r"\d+(?:\.\d+)?%\s*(?:\??\s*)?(?:\d+(?:\.\d+)?\s*)?p/s?",
+        re.I,
+    )
+    cleaned = frame.sub("\n", cleaned)
+    # Some builds print the p/s counter before the next frame.
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s+p/s(?=\d+\s*/\s*\d+)", "\n", cleaned, flags=re.I)
+
+    kept: list[str] = []
+    for part in re.split(r"[\r\n]+", cleaned):
         line = part.strip()
-        if not line or progress.search(line):
+        if not line:
+            continue
+        # Defensive catch for malformed/truncated progress frames.
+        if "p/s" in line.lower() and (line.count("-") + line.count("_") > 18 or "%" in line):
+            continue
+        if line.count("-") + line.count("_") > 60:
             continue
         kept.append(line)
     return "\n".join(kept[-80:])
@@ -1241,17 +1409,18 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
         latest_by_tool={str(r.get("tool")):r for r in runs}
         inventory=tool_inventory()
         definitions=[
-            ("subfinder","Subfinder","subfinder",bool(inventory.get("subfinder",{}).get("available"))),
-            ("crtsh","Certificate Transparency · crt.sh","crt.sh",bool(inventory.get("curl",{}).get("available"))),
-            ("amass","Amass passive","amass",bool(inventory.get("amass",{}).get("available"))),
-            ("gau_historical","Históricos · GAU","gau",bool(inventory.get("gau",{}).get("available"))),
+            ("subfinder","Subfinder","subfinder",bool(inventory.get("subfinder",{}).get("available")),"nombres crudos"),
+            ("crtsh","Certificate Transparency · crt.sh","crt.sh",bool(inventory.get("curl",{}).get("available")),"respuestas crudas"),
+            ("amass","Amass passive","amass",bool(inventory.get("amass",{}).get("available")),"líneas crudas"),
+            ("gau_historical","Históricos · GAU","gau",bool(inventory.get("gau",{}).get("available")),"URLs históricas"),
         ]
-        for source,label,tool,available in definitions:
+        for source,label,tool,available,raw_label in definitions:
             run=latest_by_tool.get(tool)
             source_summary.append({
                 "source":source,"label":label,"tool":tool,"available":available,
                 "executed":bool(run),"status":str(run.get("status")) if run else "",
                 "raw_count":int(run.get("record_count") or 0) if run else 0,
+                "raw_label":raw_label,
                 "normalized_count":int((run or {}).get("normalized_count") if run and (run or {}).get("normalized_count") is not None else counts.get(source,0)),
             })
     return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary}
@@ -1363,4 +1532,5 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
         "phases": phases,
         "phase_summary": {"done": done_count, "total": total_count, "percent": int(round((done_count / total_count) * 100)) if total_count else 0, "next": next_phase},
         "tooling": tool_inventory(),
+        "manual_hosts": manual_hostname_entries(conn, root_domain),
     }

@@ -17,6 +17,7 @@
 
   {% if scan %}<div class="callout surface-run-result">{{ scan }}</div>{% endif %}
   {% if imported %}<div class="callout success surface-import-result">Importación completada · {{ imported }}</div>{% endif %}
+  {% if manual %}<div class="callout success">{{ manual }}</div>{% endif %}
 
   <section class="surface-workflow panel">
     <div class="surface-workflow-head">
@@ -40,7 +41,32 @@
           <button class="button" type="submit">Añadir target</button>
         </form>
       </details>
+      <details class="surface-root-add surface-manual-add">
+        <summary>+ Añadir subdominio conocido</summary>
+        <form method="post" action="{{ target_base }}/surface/host/add">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="root" value="{{ surface.root_domain }}">
+          <label>Hostname(s) del root activo
+            <textarea name="manual_hosts" rows="3" placeholder="api.{{ surface.root_domain }}&#10;qa.{{ surface.root_domain }}" required></textarea>
+          </label>
+          <label>Contexto / de dónde salió (opcional)
+            <input type="text" name="note" placeholder="Ej. mencionado en reunión, inventario interno, correo, documentación…">
+          </label>
+          <small class="muted">Se guarda como evidencia <b>MANUAL</b> y estado <b>DISCOVERED</b>. DNS/HTTP lo validarán después; Negro no fingirá que lo encontró una herramienta.</small>
+          <button class="button" type="submit">Agregar al inventario</button>
+        </form>
+      </details>
     </div>
+    {% if surface.manual_hosts %}
+    <div class="surface-manual-known">
+      <div class="surface-manual-known-head"><span>Hosts añadidos manualmente · {{ surface.root_domain }}</span><b>{{ surface.manual_hosts|length }}</b></div>
+      <div class="surface-manual-known-list">
+        {% for item in surface.manual_hosts %}
+        <span><code>{{ item.hostname }}</code>{% if item.note %}<small>{{ item.note }}</small>{% endif %}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
     {% if surface.phase_summary.next %}
     <div class="surface-next-step">
       <div><span class="eyebrow">SIGUIENTE PASO</span><b>{{ '%02d'|format(surface.phase_summary.next.number) }} · {{ surface.phase_summary.next.title }}</b><small>{{ surface.phase_summary.next.subtitle }}</small></div>
@@ -54,7 +80,7 @@
         <h3>{{ phase.title }}</h3>
         <p>{{ phase.subtitle }}</p>
         <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{{ phase.count_label }}</span></div>
-        {% if phase.coverage %}<div class="surface-phase-coverage"><span>Cobertura de fuentes</span><b>{{ phase.coverage.success }}/{{ phase.coverage.total }}</b><small>{{ phase.coverage.executed }} ejecutadas · {{ phase.coverage.available }} disponibles localmente</small></div>{% endif %}
+        {% if phase.coverage %}<div class="surface-phase-coverage"><span>Fuentes útiles</span><b>{{ phase.coverage.success }}/{{ phase.coverage.total }}</b><small>{{ phase.coverage.executed }} ejecutadas · {{ phase.coverage.available }} disponibles localmente</small></div>{% endif %}
         {% if phase.secondary_counts %}<div class="surface-phase-secondary">{% for key,value in phase.secondary_counts.items() %}<span>{{ key }} <b>{{ value }}</b></span>{% endfor %}</div>{% endif %}
         {% if phase.prior_evidence %}<div class="surface-prior-evidence">Hay resultados previos, pero este paso todavía no está validado dentro de la secuencia guiada.</div>{% endif %}
         <a class="surface-phase-open" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">Ver resultado y evidencia →</a>
@@ -175,7 +201,7 @@
       <div class="surface-map-stage" data-map-stage>
         <svg data-surface-svg role="img" aria-label="Mapa de superficie de ataque"></svg>
         <div class="surface-map-empty" data-map-empty hidden><b>No hay activos que coincidan con estos filtros.</b><span>Quita filtros o vuelve a la vista general.</span></div>
-        <div class="surface-map-hint">clic host = expandir · clic familia = entrar · arrastrar fondo = mover · rueda = zoom</div>
+        <div class="surface-map-hint">clic target = abrir/recoger · clic familia = abrir/recoger · clic host = expandir/recoger capas · arrastrar fondo = mover · rueda = zoom</div>
       </div>
       <aside class="surface-detail" data-surface-detail>
         <div class="surface-detail-empty">

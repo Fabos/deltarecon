@@ -1089,4 +1089,14 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .recon-loading-card{width:min(560px,calc(100vw - 36px));display:grid;grid-template-columns:46px 1fr;gap:16px;align-items:start;padding:20px;border:1px solid rgba(112,155,255,.28);border-radius:16px;background:#0c111a;box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .recon-loading-card h2{margin:.2rem 0 .35rem;font-size:1.05rem}.recon-loading-card p,.recon-loading-card small{margin:0;color:#8e9bad}.recon-loading-spinner{width:34px;height:34px;border-radius:50%;border:3px solid rgba(112,155,255,.18);border-top-color:#7aa7ff;animation:reconSpin .85s linear infinite}
 @keyframes reconSpin{to{transform:rotate(360deg)}}.recon-is-loading{cursor:progress}
-.surface-phase-run-head .run-partial{color:#f4c15d}.surface-phase-run-head .run-timeout{color:#e9a85c}.surface-discovery-source.partial{border-color:rgba(244,193,93,.3)}.surface-discovery-source.partial>div span{color:#f4c15d}.surface-discovery-source.timeout{border-color:rgba(233,168,92,.24)}.surface-discovery-source.timeout>div span{color:#e9a85c}
+.surface-phase-run-head .run-partial{color:#f4c15d}.surface-phase-run-head .run-timeout{color:#e9a85c}.surface-discovery-source.partial{border-color:rgba(244,193,93,.3)}.surface-discovery-source.partial>div span{color:#f4c15d}.surface-discovery-source.timeout{border-color:rgba(233,168,92,.24)}.surface-discovery-source.timeout>div span{color:#e9a85c}.surface-discovery-source.unavailable{border-color:rgba(104,155,214,.28)}.surface-discovery-source.unavailable>div span{color:#8bb7e8}.surface-phase-run-head .run-unavailable{color:#8bb7e8}
+
+/* Surface v0.86 · manual discovery evidence */
+.surface-manual-known{margin-top:12px;padding:12px 14px;border:1px solid rgba(148,163,184,.16);border-radius:12px;background:rgba(15,23,42,.28)}
+.surface-manual-known-head{display:flex;justify-content:space-between;gap:12px;align-items:center;color:var(--muted,#94a3b8);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em}
+.surface-manual-known-head b{color:var(--text,#e5e7eb)}
+.surface-manual-known-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+.surface-manual-known-list>span{display:flex;gap:7px;align-items:center;padding:6px 9px;border:1px solid rgba(148,163,184,.14);border-radius:9px;background:rgba(2,6,23,.34)}
+.surface-manual-known-list code{font-size:.78rem}
+.surface-manual-known-list small{color:var(--muted,#94a3b8);max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.surface-manual-add textarea{width:100%;resize:vertical;min-height:72px}
