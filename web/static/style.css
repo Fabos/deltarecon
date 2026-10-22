@@ -1100,3 +1100,8 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .surface-manual-known-list code{font-size:.78rem}
 .surface-manual-known-list small{color:var(--muted,#94a3b8);max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .surface-manual-add textarea{width:100%;resize:vertical;min-height:72px}
+.surface-source-hosts{margin-top:6px;border-top:1px solid rgba(255,255,255,.05);padding-top:6px}
+.surface-source-hosts summary{cursor:pointer;color:#9fb0c6;font-size:.65rem;user-select:none}
+.surface-source-hosts>div{display:grid;gap:4px;max-height:220px;overflow:auto;margin-top:7px;padding-right:3px}
+.surface-source-hosts code{display:block;font-size:.62rem;line-height:1.35;white-space:normal;word-break:break-all;color:#c5d0df;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.045);border-radius:6px;padding:5px 6px}
+.tls-meta{margin-top:7px}

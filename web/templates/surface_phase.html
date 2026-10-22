@@ -35,7 +35,7 @@
       {% if phase_detail.runs %}
         {% for run in phase_detail.runs %}
         <article class="surface-phase-run-audit">
-          <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{% if run.status == 'partial' %}PARCIAL{% elif run.status == 'timeout' %}TIMEOUT{% elif run.status == 'unavailable' %}NO DISPONIBLE AHORA{% else %}{{ run.status }}{% endif %}</span><small>{{ run.record_count }} líneas{% if run.normalized_count is defined %} · {{ run.normalized_count }} hosts normalizados{% endif %}{% if run.return_code is not none %} · rc={{ run.return_code }}{% endif %}</small></div>
+          <div class="surface-phase-run-head"><b>{{ run.tool }}</b><span class="run-{{ run.status }}">{% if run.status == 'partial' %}PARCIAL{% elif run.status == 'timeout' %}TIMEOUT{% elif run.status == 'unavailable' %}NO DISPONIBLE AHORA{% else %}{{ run.status }}{% endif %}</span><small>{{ run.record_count }} líneas{% if run.normalized_count is defined %} · {{ run.normalized_count }} {{ run.normalized_label or 'hosts normalizados' }}{% endif %}{% if run.return_code is not none %} · rc={{ run.return_code }}{% endif %}</small></div>
           <div class="surface-audit-block"><span>Comando ejecutado</span><code>{{ run.command }}</code></div>
           {% if run.stdout_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDOUT</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">Abrir crudo ↗</a></div><pre>{{ run.stdout_full }}</pre></div>{% endif %}
           {% if run.stderr_full %}<div class="surface-audit-block"><div class="surface-audit-block-head"><span>STDERR{% if run.tool == 'amass' %} · vista limpia{% endif %}</span><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">Abrir crudo ↗</a></div>{% if run.stderr_display %}<pre class="stderr">{{ run.stderr_display }}</pre>{% elif run.tool == 'amass' %}<div class="callout info"><b>Sin diagnóstico textual.</b><p>Amass sólo emitió progreso en STDERR. El stream completo sigue disponible en “Abrir crudo”.</p></div>{% else %}<pre class="stderr">{{ run.stderr_full }}</pre>{% endif %}</div>{% endif %}
@@ -48,21 +48,27 @@
     </section>
 
 
-    {% if phase.key == 'discovery' %}
+    {% if phase_detail.source_summary %}
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">COBERTURA DE DISCOVERY</p><h2>Qué aportó cada fuente</h2><p class="muted small">Los conteos normalizados son hostnames únicos observados por cada fuente. Cero en una fuente no equivale a “no existe”.</p></div></div>
+      <div class="panel-head"><div><p class="eyebrow">{% if phase.key == 'discovery' %}COBERTURA DE DISCOVERY PASIVO{% elif phase.key == 'active_discovery' %}DISCOVERY ACTIVO{% elif phase.key == 'tls' %}NOMBRES DESDE CERTIFICADOS{% else %}FUENTES{% endif %}</p><h2>Qué aportó cada fuente</h2><p class="muted small">Aquí ves no sólo el conteo: puedes desplegar la lista exacta de hostnames que cada fuente incorporó. Cero en una fuente no equivale a “no existe”.</p></div></div>
       <div class="surface-discovery-source-grid">
       {% for source in phase_detail.source_summary %}
         <article class="surface-discovery-source {% if source.status == 'ok' %}ok{% elif source.status == 'partial' %}partial{% elif source.status == 'timeout' %}timeout{% elif source.status == 'unavailable' %}unavailable{% elif source.executed %}error{% elif source.available %}idle{% else %}missing{% endif %}">
-          <div><b>{{ source.label }}</b><span>{% if source.status == 'ok' %}OK{% elif source.status == 'partial' %}PARCIAL{% elif source.status == 'timeout' %}TIMEOUT{% elif source.status == 'unavailable' %}NO DISPONIBLE AHORA{% elif source.executed %}ERROR{% elif source.available %}SIN EJECUTAR{% else %}NO DISPONIBLE{% endif %}</span></div>
+          <div><b>{{ source.label }}</b><span>{% if source.optional %}OPCIONAL · {% endif %}{% if source.status == 'ok' %}OK{% elif source.status == 'partial' %}PARCIAL{% elif source.status == 'timeout' %}TIMEOUT{% elif source.status == 'unavailable' %}NO DISPONIBLE AHORA{% elif source.executed %}ERROR{% elif source.available %}SIN EJECUTAR{% else %}NO DISPONIBLE{% endif %}</span></div>
           <strong>{% if source.status == 'unavailable' %}—{% else %}{{ source.normalized_count }}{% endif %}</strong>
           <small>{% if source.status == 'unavailable' %}resultado desconocido · la fuente no respondió correctamente{% else %}hosts únicos{% if source.executed %} · {{ source.raw_count }} {{ source.raw_label or 'líneas crudas' }}{% endif %}{% endif %}</small>
-          {% if source.available %}
-          <form method="post" action="{{ target_base }}/surface/discovery/source" data-recon-run data-loading-label="Reintentando {{ source.label }}…" data-loading-tools="{{ source.tool }}">
+          {% if source.hosts %}
+          <details class="surface-source-hosts">
+            <summary>Ver {{ source.hosts|length }} hostname{% if source.hosts|length != 1 %}s{% endif %}</summary>
+            <div>{% for host in source.hosts %}<code>{{ host }}</code>{% endfor %}</div>
+          </details>
+          {% elif source.executed and source.status == 'ok' %}<p class="muted small">La fuente terminó correctamente pero no añadió hostnames.</p>{% endif %}
+          {% if source.available and source.rerunnable and phase.key == 'discovery' %}
+          <form method="post" action="{{ target_base }}/surface/discovery/source" data-recon-run data-loading-label="{% if source.executed %}Reintentando{% else %}Ejecutando{% endif %} {{ source.label }}…" data-loading-tools="{{ source.tool }}">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <input type="hidden" name="root" value="{{ phase_detail.root_domain }}">
             <input type="hidden" name="source" value="{{ source.source }}">
-            <button class="button ghost small" type="submit">Reintentar esta fuente</button>
+            <button class="button ghost small" type="submit">{% if source.executed %}Reintentar esta fuente{% else %}Ejecutar esta fuente{% endif %}</button>
           </form>
           {% endif %}
         </article>
@@ -80,6 +86,10 @@
           <article>
             <div><b>{{ item.hostname }}</b><small>{{ item.dns_state or 'DISCOVERED' }}{% if item.status_code is not none %} · HTTP {{ item.status_code }}{% endif %}</small></div>
             {% if item.technologies %}<div class="surface-chips compact">{% for tech in item.technologies %}<span class="surface-chip technology">{{ tech }}</span>{% endfor %}</div>{% endif %}
+            {% if item.tls %}
+              <div class="surface-normalized-meta tls-meta">{% if item.tls.issuer %}<span>Issuer {{ item.tls.issuer }}</span>{% endif %}{% if item.tls.not_before or item.tls.not_after %}<span>Validez {{ item.tls.not_before or '?' }} → {{ item.tls.not_after or '?' }}</span>{% endif %}{% if item.tls.fingerprint %}<span>SHA256 {{ item.tls.fingerprint[:24] }}…</span>{% endif %}</div>
+              {% if item.tls.sans %}<details class="surface-source-hosts"><summary>Ver {{ item.tls.sans|length }} SAN</summary><div>{% for san in item.tls.sans %}<code>{{ san }}</code>{% endfor %}</div></details>{% endif %}
+            {% endif %}
             <div class="surface-normalized-meta">{% if item.providers %}<span>{{ item.providers|join(' · ') }}</span>{% endif %}{% if item.cnames %}<span>CNAME {{ item.cnames|join(', ') }}</span>{% endif %}{% if item.ips %}<span>IP observada {{ item.ips|join(', ') }}</span>{% endif %}</div>
           </article>
           {% else %}

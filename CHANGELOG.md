@@ -2205,3 +2205,14 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Existing `www.*` recon roots self-heal in Surface navigation and old `?root=www.*` URLs resolve to the canonical recon root.
 - Arbitrary subdomains such as `api.example.com` are NOT silently promoted to the parent domain, avoiding accidental scope widening.
 - Target-add UI explains the effective recon root and authorization implication.
+
+## v0.88 · Discovery activo + TLS antes de HTTP
+- Reordena el recon guiado: Root → Discovery pasivo → Discovery activo → DNS → TLS → HTTP → Web → Históricos → Infra → Deep → Nmap.
+- Amass v5 queda como enriquecimiento opcional del Paso 02; ya no bloquea el discovery base.
+- Nuevo Paso 03 activo: AlterX (si está disponible) + validación dnsx y baseline DNS brute-force corto con wildcard filtering.
+- Soporte de `NEGRO_DNS_WORDLIST` para usar una wordlist autorizada externa y `NEGRO_ALTERX_LIMIT` para limitar permutaciones.
+- TLS implementado con OpenSSL sobre hosts DNS_RESOLVED: subject, issuer, validez, SHA256 y SANs.
+- SANs first-party se incorporan como `tls_san` y vuelven al ciclo DNS sin degradar estados DNS ya validados.
+- Detalle de Discovery/Active/TLS ahora permite desplegar la lista exacta de hostnames aportados por cada fuente.
+- Los run cards muestran etiquetas normalizadas más precisas: candidatos generados, hosts que resolvieron y certificados parseados.
+- 60/60 tests.

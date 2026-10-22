@@ -12,6 +12,6 @@ def test_discovery_expand_is_optional_not_numbered_or_blocking():
     phases=recon.phase_progress(conn,'example.com')
     keys=[p['key'] for p in phases]
     assert 'discovery_expand' not in keys
-    assert keys[:4]==['root','discovery','dns','http']
+    assert keys[:6]==['root','discovery','active_discovery','dns','tls','http']
     discovery=next(p for p in phases if p['key']=='discovery')
     assert 'optional_tool_info' in discovery

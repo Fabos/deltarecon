@@ -27,6 +27,21 @@ ROLE_TOKENS = {
     "sso", "auth", "login", "cdn", "static", "frontend", "backend", "portal", "admin", "mobile",
 }
 
+# Small, high-signal baseline for the *explicit* active discovery phase.
+# The goal is not to spray huge dictionaries by default; hunters can point
+# NEGRO_DNS_WORDLIST at a larger authorized wordlist when that is useful.
+DEFAULT_DNS_WORDS = (
+    "www", "api", "apis", "app", "apps", "web", "portal", "admin",
+    "auth", "login", "sso", "oauth", "idp", "gateway", "gw", "backend",
+    "frontend", "mobile", "cdn", "static", "assets", "files", "download",
+    "dev", "development", "qa", "test", "testing", "uat", "stage",
+    "staging", "preprod", "prod", "prd", "production", "sandbox", "lab",
+    "old", "legacy", "new", "beta", "alpha", "demo", "internal", "intranet",
+    "vpn", "remote", "jenkins", "gitlab", "github", "grafana", "kibana",
+    "monitor", "status", "docs", "swagger", "openapi", "graphql", "ws",
+    "socket", "mail", "smtp", "autodiscover", "ftp", "sftp", "mta",
+)
+
 PROVIDER_TECH = {
     "amazon web services": ("Amazon Web Services", "HOSTED_ON", "cloud"),
     "amazon s3": ("Amazon Web Services", "HOSTED_ON", "cloud"),
@@ -367,7 +382,10 @@ def import_subfinder_text(conn: sqlite3.Connection, text: str, root_domain: str,
             continue
         try:
             env, env_conf = detect_environment(host)
-            hid = upsert_asset(conn, "hostname", host, host, {"sources": ["subfinder"], "environment": env, "environment_confidence": env_conf, "family": _family_stem(host, root_domain), "dns_state": "DISCOVERED"})
+            prior = conn.execute("SELECT metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?", (host,)).fetchone()
+            prior_state = (_loads(prior["metadata_json"]).get("dns_state") if prior else None)
+            dns_state = prior_state if prior_state in {"RESOLVED","NODATA","NXDOMAIN"} else "DISCOVERED"
+            hid = upsert_asset(conn, "hostname", host, host, {"sources": ["subfinder"], "environment": env, "environment_confidence": env_conf, "family": _family_stem(host, root_domain), "dns_state": dns_state})
             _link_family(conn, hid, host, root_domain)
             add_evidence(conn, hid, "subfinder", "discovered_hostname", host, {"hostname": host})
             count += 1
@@ -394,9 +412,12 @@ def import_discovered_hosts(conn: sqlite3.Connection, hosts: list[str], root_dom
             continue
         try:
             env, env_conf = detect_environment(host)
+            prior = conn.execute("SELECT metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?", (host,)).fetchone()
+            prior_state = (_loads(prior["metadata_json"]).get("dns_state") if prior else None)
+            dns_state = prior_state if prior_state in {"RESOLVED","NODATA","NXDOMAIN"} else "DISCOVERED"
             hid = upsert_asset(conn, "hostname", host, host, {
                 "sources": [source], "environment": env, "environment_confidence": env_conf,
-                "family": _family_stem(host, root_domain), "dns_state": "DISCOVERED",
+                "family": _family_stem(host, root_domain), "dns_state": dns_state,
             })
             _link_family(conn, hid, host, root_domain)
             add_evidence(conn, hid, source, "discovered_hostname", host, {"hostname": host, "source": source})
@@ -549,7 +570,7 @@ def _tool_path(name: str) -> str | None:
 
 def tool_inventory() -> dict[str, dict]:
     out = {}
-    for name in ("whois", "dig", "openssl", "curl", "subfinder", "amass", "gau", "dnsx", "httpx", "nmap"):
+    for name in ("whois", "dig", "openssl", "curl", "subfinder", "amass", "gau", "alterx", "dnsx", "httpx", "nmap"):
         path = _tool_path(name)
         out[name] = {"available": bool(path), "path": path or ""}
     return out
@@ -774,10 +795,10 @@ def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict,
     """Composite hostname discovery.
 
     One source returning zero names never means the domain has no additional
-    surface.  Run every locally available passive/historical source and merge
-    candidates before DNS validation.  Every command is persisted as its own
-    recon_tool_run inside the same run_group so the audit page can show exactly
-    what each source returned.
+    surface. The default pass runs the fast/base sources (Subfinder, CT and
+    historical URLs); Amass remains optional enrichment because it may add no
+    names while taking several minutes. Every command is persisted separately
+    so the audit page can show exactly what each source returned.
     """
     root = root_domain.lower().rstrip(".")
     successes = 0
@@ -806,16 +827,10 @@ def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict,
             successes += 1
             source_results.append({"source":"crtsh", **result})
 
-    amass = _tool_path("amass")
-    if amass:
-        attempted += 1
-        cmd = [amass, "enum", "-passive", "-d", root]
-        run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=max(timeout, 900), root_domain=root, run_group=run_group)
-        if run["status"] in {"ok", "partial"}:
-            hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()]
-            result = import_discovered_hosts(conn, hosts, root, "amass", "surface-run:amass")
-            successes += 1
-            source_results.append({"source":"amass", **result, "partial": run["status"] == "partial"})
+    # Amass v5 passive enumeration is intentionally optional in the default
+    # composite run. In real targets it can take minutes while adding zero new
+    # names; the phase detail exposes an explicit per-source button when the
+    # hunter wants that extra coverage.
 
     gau = _tool_path("gau")
     if gau:
@@ -909,8 +924,8 @@ def run_discovery_source(conn: sqlite3.Connection, root_domain: str, paths: dict
         tool = _tool_path("amass")
         if not tool:
             raise RuntimeError("Amass no está disponible localmente")
-        cmd = [tool, "enum", "-passive", "-d", root]
-        amass_timeout = max(timeout, int(os.environ.get("NEGRO_AMASS_TIMEOUT", "900") or 900))
+        cmd = [tool, "enum", "-d", root, "-nocolor", "-timeout", str(int(os.environ.get("NEGRO_AMASS_STALL_MINUTES", "10") or 10))]
+        amass_timeout = max(timeout, int(os.environ.get("NEGRO_AMASS_TIMEOUT", "2400") or 2400))
         run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=amass_timeout, root_domain=root, run_group=run_group)
         hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()] if run["status"] in {"ok", "partial"} else []
         if hosts:
@@ -933,6 +948,207 @@ def run_discovery_source(conn: sqlite3.Connection, root_domain: str, paths: dict
 def run_expand_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
     """Backward-compatible alias for pre-v0.84 discovery enrichment actions."""
     return run_discovery_phase(conn, root_domain, paths, timeout=timeout, run_group=run_group)
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _first_party_hosts_from_lines(text: str, root_domain: str) -> list[str]:
+    """Extract clean first-party hostnames from line-oriented tool output."""
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    out: set[str] = set()
+    for raw in (text or "").splitlines():
+        value = _ANSI_RE.sub("", raw).strip()
+        if not value:
+            continue
+        token = value.split()[0].strip().lower().rstrip(".")
+        if "://" in token:
+            try:
+                token = (urlsplit(token).hostname or "").lower().rstrip(".")
+            except Exception:
+                token = ""
+        if token and token != root and token.endswith("." + root):
+            out.add(token)
+    return sorted(out)
+
+
+def _discovery_source_hosts(conn: sqlite3.Connection, root_domain: str, source: str) -> list[str]:
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT DISTINCT a.asset_key hostname
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.kind='discovered_hostname' AND e.source=?
+             AND a.asset_type='hostname' AND a.asset_key!=? AND a.asset_key LIKE ?
+           ORDER BY a.asset_key COLLATE NOCASE""",
+        (source, root, "%." + root),
+    ).fetchall()
+    return [str(r["hostname"]) for r in rows]
+
+
+def _active_wordlist(paths: dict) -> tuple[Path, str]:
+    configured = str(os.environ.get("NEGRO_DNS_WORDLIST", "") or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return candidate, "externa"
+    out_dir = Path(paths["raw"]) / "surface-runs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "negro-active-dns-baseline.txt"
+    target.write_text("\n".join(DEFAULT_DNS_WORDS) + "\n", encoding="utf-8")
+    return target, "baseline Negro"
+
+
+def run_active_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 420, run_group: str = "") -> dict:
+    """Explicit active hostname discovery before broad DNS/HTTP fingerprinting.
+
+    AlterX, when installed, proposes naming-pattern permutations from already
+    observed first-party hosts and dnsx validates those candidates. A compact
+    DNS wordlist is then brute-forced with wildcard filtering. Only names that
+    resolve are imported, avoiding thousands of speculative graph nodes.
+    """
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    dnsx = _tool_path("dnsx")
+    if not dnsx:
+        raise RuntimeError("dnsx no está instalado. El discovery activo necesita resolver candidatos y filtrar wildcard DNS.")
+
+    existing = [h for h in _first_party_hostnames(conn, root) if h != root]
+    source_results: list[dict] = []
+    new_hosts: set[str] = set()
+    runs_ok = 0
+
+    alterx = _tool_path("alterx")
+    if alterx and existing:
+        seeds = _write_target_list(paths, "active-alterx-seeds", existing)
+        limit = max(100, int(os.environ.get("NEGRO_ALTERX_LIMIT", "5000") or 5000))
+        alter_cmd = [alterx, "-l", str(seeds), "-silent", "-limit", str(limit)]
+        alter_run = _run_tool(conn, paths, "active_discovery", "alterx", alter_cmd, timeout=min(timeout, 300), root_domain=root, run_group=run_group)
+        if alter_run["status"] == "ok":
+            runs_ok += 1
+            existing_set = set(existing)
+            candidates = [h for h in _first_party_hosts_from_lines(alter_run["stdout"], root) if h not in existing_set]
+            if candidates:
+                candidate_file = _write_target_list(paths, "active-alterx-candidates", candidates)
+                resolve_cmd = [dnsx, "-l", str(candidate_file), "-silent", "-nc", "-auto-wildcard"]
+                resolve_run = _run_tool(conn, paths, "active_discovery", "dnsx-permutations", resolve_cmd, timeout=timeout, root_domain=root, run_group=run_group)
+                if resolve_run["status"] == "ok":
+                    runs_ok += 1
+                    hosts = _first_party_hosts_from_lines(resolve_run["stdout"], root)
+                    if hosts:
+                        import_discovered_hosts(conn, hosts, root, "active_permutation", "surface-run:alterx+dnsx")
+                        new_hosts.update(hosts)
+                    source_results.append({"source":"active_permutation", "records":len(hosts), "candidates":len(candidates)})
+            else:
+                source_results.append({"source":"active_permutation", "records":0, "candidates":0})
+
+    wordlist, wordlist_kind = _active_wordlist(paths)
+    brute_cmd = [dnsx, "-d", root, "-w", str(wordlist), "-silent", "-nc", "-auto-wildcard"]
+    brute_run = _run_tool(conn, paths, "active_discovery", "dnsx-bruteforce", brute_cmd, timeout=timeout, root_domain=root, run_group=run_group)
+    if brute_run["status"] == "ok":
+        runs_ok += 1
+        brute_hosts = _first_party_hosts_from_lines(brute_run["stdout"], root)
+        if brute_hosts:
+            import_discovered_hosts(conn, brute_hosts, root, "active_bruteforce", f"surface-run:dnsx:{wordlist_kind}")
+            new_hosts.update(brute_hosts)
+        source_results.append({"source":"active_bruteforce", "records":len(brute_hosts), "wordlist":str(wordlist), "wordlist_kind":wordlist_kind})
+
+    if runs_ok == 0:
+        raise RuntimeError("El discovery activo no pudo completar ninguna ejecución. Revisa stdout/stderr del paso.")
+    return {
+        "phase":"active_discovery", "records":len(new_hosts), "new_hosts":sorted(new_hosts),
+        "source_results":source_results, "wordlist":str(wordlist), "wordlist_kind":wordlist_kind,
+    }
+
+
+def _parse_tls_bundle(text: str, root_domain: str) -> list[dict]:
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    records: list[dict] = []
+    current: dict | None = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if line.startswith("===HOST ") and line.endswith("==="):
+            if current:
+                records.append(current)
+            host = line[len("===HOST "):-3].strip().lower().rstrip(".")
+            current = {"hostname":host, "sans":[]}
+            continue
+        if line == "===END===":
+            if current:
+                records.append(current)
+                current = None
+            continue
+        if current is None or not line:
+            continue
+        lower = line.lower()
+        if lower.startswith("subject="):
+            current["subject"] = line.split("=",1)[1].strip()
+        elif lower.startswith("issuer="):
+            current["issuer"] = line.split("=",1)[1].strip()
+        elif lower.startswith("notbefore="):
+            current["not_before"] = line.split("=",1)[1].strip()
+        elif lower.startswith("notafter="):
+            current["not_after"] = line.split("=",1)[1].strip()
+        elif "fingerprint=" in lower:
+            current["fingerprint"] = line.split("=",1)[1].replace(":","").strip().lower()
+        elif "DNS:" in line:
+            for name in re.findall(r"DNS:([^,\s]+)", line, re.I):
+                san = name.strip().lower().rstrip(".")
+                if san and san not in current["sans"]:
+                    current["sans"].append(san)
+    if current:
+        records.append(current)
+    for rec in records:
+        rec["first_party_sans"] = sorted({x.lstrip("*.") for x in rec.get("sans",[]) if x.lstrip("*.") == root or x.lstrip("*.").endswith("." + root)})
+    return records
+
+
+def run_tls_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 600, run_group: str = "") -> dict:
+    openssl = _tool_path("openssl")
+    if not openssl:
+        raise RuntimeError("openssl no está disponible localmente")
+    hosts = _first_party_hostnames(conn, root_domain, resolved_only=True)
+    if not hosts:
+        raise RuntimeError("No hay hosts DNS_RESOLVED. Ejecuta primero Validación DNS.")
+    target_file = _write_target_list(paths, "tls", hosts)
+    bash = shutil.which("bash") or "/bin/bash"
+    timeout_bin = shutil.which("timeout") or "timeout"
+    script = '''while IFS= read -r host; do
+  [ -z "$host" ] && continue
+  echo "===HOST $host==="
+  cert="$({timeout} 8 {openssl} s_client -connect "${{host}}:443" -servername "$host" -showcerts </dev/null 2>/dev/null | {openssl} x509 -noout -subject -issuer -dates -fingerprint -sha256 -ext subjectAltName 2>/dev/null)"
+  if [ -n "$cert" ]; then printf '%s\\n' "$cert"; fi
+  echo "===END==="
+done < "$1"'''.format(timeout=timeout_bin, openssl=openssl)
+    cmd = [bash, "-lc", script, "negro-tls", str(target_file)]
+    run = _run_tool(conn, paths, "tls", "openssl", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
+    if run["status"] not in {"ok", "partial"}:
+        raise RuntimeError(run["error"] or "openssl TLS discovery falló")
+    records = _parse_tls_bundle(run["stdout"], root_domain)
+    san_candidates: set[str] = set()
+    certificates = 0
+    root = root_domain.lower().rstrip(".")
+    for rec in records:
+        host = str(rec.get("hostname") or "").lower().rstrip(".")
+        if not host:
+            continue
+        hid = upsert_asset(conn, "hostname", host, host, {"sources":["openssl"]})
+        add_evidence(conn, hid, "openssl", "tls_certificate", rec.get("fingerprint") or "", rec)
+        fp = str(rec.get("fingerprint") or "").strip().lower()
+        if fp:
+            cid = upsert_asset(conn, "certificate", fp, fp[:16], {"issuer":rec.get("issuer"), "subject":rec.get("subject"), "not_before":rec.get("not_before"), "not_after":rec.get("not_after"), "sans":rec.get("sans") or []})
+            link(conn, hid, "PRESENTS_CERTIFICATE", cid, "openssl", confidence=1.0, confidence_type="observed")
+            certificates += 1
+            for san_raw in rec.get("sans") or []:
+                san = str(san_raw).lower().rstrip(".").lstrip("*.")
+                if not san or not (san == root or san.endswith("." + root)):
+                    continue
+                sid = upsert_asset(conn, "hostname", san, san, {"sources":["tls_san"]})
+                link(conn, cid, "NAMES", sid, "openssl", confidence=1.0, confidence_type="observed")
+                if san != root:
+                    san_candidates.add(san)
+    if san_candidates:
+        import_discovered_hosts(conn, sorted(san_candidates), root, "tls_san", "surface-run:openssl-san")
+    conn.commit()
+    return {"phase":"tls", "records":certificates, "targets":len(hosts), "san_hosts":sorted(san_candidates), "run_status":run["status"]}
 
 
 def _write_target_list(paths: dict, phase: str, hosts: list[str]) -> Path:
@@ -1109,7 +1325,9 @@ def run_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, phase: st
     if phase == "root": return run_root_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "discovery": return run_discovery_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "discovery_expand": return run_expand_discovery_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "active_discovery": return run_active_discovery_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "dns": return run_dns_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "tls": return run_tls_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "http": return run_http_phase(conn, root_domain, paths, run_group=run_group)
     raise ValueError(f"Fase no soportada: {phase}")
 
@@ -1189,11 +1407,11 @@ def _phase_run_bundle(conn: sqlite3.Connection, phase: str, root_domain: str) ->
 
 
 def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
-    """Return the single guided recon sequence for a root.
+    """Return the guided recon sequence for a root.
 
-    A phase is only marked DONE when its own execution succeeded *and* all
-    previous guided phases are complete. Older/out-of-order evidence is kept and
-    exposed as ``prior_evidence`` but never makes the checklist jump ahead.
+    Discovery is intentionally split into passive and explicit active phases.
+    TLS sits before HTTP because SANs can add hostnames which then flow back to
+    DNS validation before the technology fingerprinting step.
     """
     init_schema(conn)
     root = root_domain.lower().rstrip(".")
@@ -1205,29 +1423,39 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     nxdomain = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NXDOMAIN")
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
     discovery_counts = _discovery_source_counts(conn, root)
-    discovery_sources_with_evidence = sum(1 for key in ("subfinder","crtsh","amass","gau_historical") if discovery_counts.get(key, 0) > 0)
+    discovery_sources_with_evidence = sum(1 for key in ("subfinder","crtsh","amass","gau_historical","manual") if discovery_counts.get(key, 0) > 0)
+    active_count = int(discovery_counts.get("active_permutation", 0)) + int(discovery_counts.get("active_bruteforce", 0))
+    tls_certs = int(conn.execute(
+        """SELECT COUNT(*) c FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='openssl' AND e.kind='tls_certificate' AND a.asset_type='hostname'
+             AND (a.asset_key=? OR a.asset_key LIKE ?)""", (root, "%." + root)
+    ).fetchone()["c"] or 0)
     root_ev = int(conn.execute(
         """SELECT COUNT(*) c FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
            WHERE e.source='root_recon' AND a.asset_type='hostname' AND a.asset_key=?""",
         (root,),
     ).fetchone()["c"] or 0)
     tooling = tool_inventory()
-    phase_keys = ("root","discovery","discovery_expand","dns","http","tls","web","historical","infra","deep","services")
+    phase_keys = ("root","discovery","discovery_expand","active_discovery","dns","tls","http","web","historical","infra","deep","services")
     bundles = {key: _phase_run_bundle(conn, key, root) for key in phase_keys}
 
-    discovery_available = sum(1 for name in ("subfinder","curl","amass","gau") if tooling.get(name,{}).get("available"))
+    # Base passive discovery is intentionally fast: Subfinder + CT + GAU.
+    # Amass remains visible as optional enrichment and can be run independently.
+    discovery_available = sum(1 for name in ("subfinder","curl","gau") if tooling.get(name,{}).get("available"))
     discovery_latest_runs = list(bundles["discovery"].get("runs") or [])
     discovery_last_tools = {str(r.get("tool")) for r in discovery_latest_runs}
-    discovery_executed = sum(1 for tool in ("subfinder","crt.sh","amass","gau") if tool in discovery_last_tools)
-    discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","amass","gau"} and str(r.get("status")) in {"ok","partial"})
+    discovery_executed = sum(1 for tool in ("subfinder","crt.sh","gau") if tool in discovery_last_tools)
+    discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","gau"} and str(r.get("status")) in {"ok","partial"})
+
     specs = [
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
-        {"key":"discovery","title":"Descubrimiento de superficie","subtitle":"Subfinder · CT · Amass · históricos","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","amass","gau"],"purpose":"Cruzar fuentes pasivas e históricas antes de DNS. Cero resultados en una fuente no significa que no exista más superficie.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Amass":discovery_counts.get("amass",0),"Históricos":discovery_counts.get("gau_historical",0),"Manual":discovery_counts.get("manual",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":4}},
+        {"key":"discovery","title":"Discovery pasivo de hosts","subtitle":"Subfinder · CT · históricos · Amass opcional","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","gau"],"optional_tool_names":["amass"],"purpose":"Cruzar fuentes pasivas e históricas antes de generar tráfico DNS activo. Amass es enriquecimiento opcional y no bloquea el flujo.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Históricos":discovery_counts.get("gau_historical",0),"Amass opcional":discovery_counts.get("amass",0),"Manual":discovery_counts.get("manual",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":3}},
+        {"key":"active_discovery","title":"Discovery activo de hosts","subtitle":"AlterX · DNS wordlist · wildcard filtering","count":active_count,"count_label":"hosts activos añadidos","implemented":True,"tool_ok":bool(tooling["dnsx"]["available"]),"tool_names":["dnsx"],"optional_tool_names":["alterx"],"purpose":"Generar candidatos plausibles a partir de patrones reales y una wordlist corta; incorporar únicamente nombres que resuelven.","secondary_counts":{"Permutaciones":discovery_counts.get("active_permutation",0),"DNS brute force":discovery_counts.get("active_bruteforce",0)}},
         {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
+        {"key":"tls","title":"TLS y certificados","subtitle":"SAN · issuer · fechas · certificados compartidos","count":tls_certs,"count_label":"certificados observados","implemented":True,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Extraer SANs y relaciones de certificados; cualquier hostname nuevo vuelve a DNS antes de HTTP.","secondary_counts":{"SAN hosts":discovery_counts.get("tls_san",0)}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
-        {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","implemented":False,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Encontrar nombres y relaciones adicionales en certificados sin confundirlos con hosts activos."},
         {"key":"web","title":"Descubrimiento web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar hosts HTTP vivos y permitir que robots, sitemap, crawling y JavaScript retroalimenten nuevos hostnames."},
-        {"key":"historical","title":"Históricos y contenido","subtitle":"rutas antiguas · endpoints · correlación","count":0,"count_label":"artefactos históricos","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Reutilizar históricos para rutas/endpoints y contexto temporal; los hostnames históricos ya alimentan Discovery."},
+        {"key":"historical","title":"Históricos y contenido","subtitle":"rutas antiguas · endpoints · parámetros · correlación","count":0,"count_label":"artefactos históricos","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Reutilizar las URLs históricas ya recolectadas para rutas, endpoints, parámetros y contexto temporal; nuevos hosts vuelven a DNS."},
         {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Decidir qué IP es edge compartido, SaaS o candidata real a infraestructura directa."},
         {"key":"deep","title":"Enumeración profunda","subtitle":"rama elegida · señales de alto valor","count":0,"count_label":"ramas priorizadas","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Profundizar únicamente ramas priorizadas usando el contexto acumulado, sin barrer toda la superficie a ciegas."},
         {"key":"services","title":"Servicios / Nmap","subtitle":"sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","implemented":False,"tool_ok":tooling["nmap"]["available"],"tool_names":["nmap"],"purpose":"Enumerar puertos únicamente después de confirmar que el objetivo no es un CDN/SaaS compartido."},
@@ -1284,11 +1512,8 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
             "checks": [spec["count_label"]],
             "success": spec["count_label"],
         })
-        # The guided sequence is strict. Planned phases remain visible but do
-        # not allow later phases to appear as the next action.
         previous_complete = effective_done
     return out
-
 
 def _read_run_text(path_value: str | None, *, max_chars: int = 240000) -> str:
     if not path_value:
@@ -1355,8 +1580,6 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
     runs=[]
     run_items=list(phase.get("latest_runs") or [])
     if phase_key=="discovery" and len(run_items) <= 1:
-        # Preserve visibility of pre-v0.84 optional enrichment runs until the
-        # user executes the new composite discovery once.
         legacy = list(_phase_run_bundle(conn, "discovery_expand", root_domain).get("runs") or [])
         seen = {int(x.get("id") or 0) for x in run_items}
         run_items += [x for x in legacy if int(x.get("id") or 0) not in seen]
@@ -1365,36 +1588,58 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
         run["stdout_full"]=_read_run_text(run.get("stdout_path"))
         run["stderr_full"]=_read_run_text(run.get("stderr_path"))
         run["stderr_display"]=_compact_audit_stderr(str(run.get("tool") or ""), run.get("stderr_full") or "")
+        raw = run.get("stdout_full") or ""
+        tool = str(run.get("tool") or "")
+        root = root_domain.lower().rstrip(".")
         if phase_key == "discovery":
-            raw = run.get("stdout_full") or ""
-            tool = str(run.get("tool") or "")
-            root = root_domain.lower().rstrip(".")
             if tool == "subfinder":
-                hosts = {x.strip().lower().rstrip(".") for x in raw.splitlines() if x.strip()}
-                hosts = {h for h in hosts if h != root and h.endswith("." + root)}
-                run["normalized_count"] = len(hosts)
+                run["normalized_count"] = len(_first_party_hosts_from_lines(raw, root))
             elif tool == "crt.sh":
                 run["normalized_count"] = len([h for h in _crtsh_hosts(raw, root) if h != root])
             elif tool == "amass":
-                hosts = {x.strip().lower().rstrip(".") for x in raw.splitlines() if x.strip()}
-                run["normalized_count"] = len({h for h in hosts if h != root and h.endswith("." + root)})
+                run["normalized_count"] = len(_first_party_hosts_from_lines(raw, root))
             elif tool == "gau":
                 run["normalized_count"] = len(_historical_hosts_from_text(raw, root))
+        elif phase_key == "active_discovery":
+            if tool == "alterx":
+                run["normalized_count"] = len(_first_party_hosts_from_lines(raw, root))
+                run["normalized_label"] = "candidatos generados"
+            elif tool in {"dnsx-permutations", "dnsx-bruteforce"}:
+                run["normalized_count"] = len(_first_party_hosts_from_lines(raw, root))
+                run["normalized_label"] = "hosts que resolvieron"
+        elif phase_key == "tls" and tool == "openssl":
+            tls_rows = _parse_tls_bundle(raw, root)
+            run["normalized_count"] = len([x for x in tls_rows if x.get("fingerprint")])
+            run["normalized_label"] = "certificados parseados"
         runs.append(run)
+
     normalized=[]
     root=root_domain.lower().rstrip(".")
-    if phase_key in {"discovery","discovery_expand","dns","http"}:
+    if phase_key in {"discovery","discovery_expand","active_discovery","dns","http"}:
         data=surface_data(conn, root_domain)
         for h in data.get("hosts",[]):
-            if phase_key=="discovery" and not ({"subfinder","crtsh","amass","gau_historical"} & set(h.get("sources") or [])):
+            sources=set(h.get("sources") or [])
+            if phase_key=="discovery" and not ({"subfinder","crtsh","amass","gau_historical","manual"} & sources):
                 continue
-            if phase_key=="discovery_expand" and not ({"crtsh","amass"} & set(h.get("sources") or [])):
+            if phase_key=="discovery_expand" and not ({"crtsh","amass"} & sources):
+                continue
+            if phase_key=="active_discovery" and not ({"active_permutation","active_bruteforce"} & sources):
                 continue
             if phase_key=="dns" and h.get("dns_state") in {None,"DISCOVERED"}:
                 continue
             if phase_key=="http" and h.get("status_code") is None:
                 continue
             normalized.append(h)
+    elif phase_key=="tls":
+        rows=conn.execute(
+            """SELECT a.asset_key hostname,e.raw_json,e.observed_at FROM recon_evidence e
+               JOIN recon_assets a ON a.id=e.asset_id
+               WHERE e.source='openssl' AND e.kind='tls_certificate' AND a.asset_type='hostname'
+                 AND (a.asset_key=? OR a.asset_key LIKE ?)
+               ORDER BY e.id""", (root, "%."+root)).fetchall()
+        for row in rows:
+            raw=_loads(row["raw_json"])
+            normalized.append({"hostname":row["hostname"],"tls":raw,"observed_at":row["observed_at"],"dns_state":"TLS"})
     elif phase_key=="root":
         rows=conn.execute(
             """SELECT e.kind,e.value,e.raw_json,e.observed_at FROM recon_evidence e
@@ -1403,26 +1648,53 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
                ORDER BY e.id""",(root,)).fetchall()
         for row in rows:
             normalized.append({"kind":row["kind"],"value":row["value"],"payload":_loads(row["raw_json"]),"observed_at":row["observed_at"]})
+
     source_summary=[]
+    inventory=tool_inventory()
+    latest_by_tool={str(r.get("tool")):r for r in runs}
     if phase_key=="discovery":
         counts=_discovery_source_counts(conn, root)
-        latest_by_tool={str(r.get("tool")):r for r in runs}
-        inventory=tool_inventory()
         definitions=[
-            ("subfinder","Subfinder","subfinder",bool(inventory.get("subfinder",{}).get("available")),"nombres crudos"),
-            ("crtsh","Certificate Transparency · crt.sh","crt.sh",bool(inventory.get("curl",{}).get("available")),"respuestas crudas"),
-            ("amass","Amass passive","amass",bool(inventory.get("amass",{}).get("available")),"líneas crudas"),
-            ("gau_historical","Históricos · GAU","gau",bool(inventory.get("gau",{}).get("available")),"URLs históricas"),
+            ("subfinder","Subfinder","subfinder",bool(inventory.get("subfinder",{}).get("available")),"nombres crudos",False),
+            ("crtsh","Certificate Transparency · crt.sh","crt.sh",bool(inventory.get("curl",{}).get("available")),"respuestas crudas",False),
+            ("gau_historical","Históricos · GAU","gau",bool(inventory.get("gau",{}).get("available")),"URLs históricas",False),
+            ("amass","Amass · enriquecimiento opcional","amass",bool(inventory.get("amass",{}).get("available")),"líneas crudas",True),
+            ("manual","Añadidos manualmente","manual",True,"entradas manuales",True),
         ]
-        for source,label,tool,available,raw_label in definitions:
+        for source,label,tool,available,raw_label,optional in definitions:
             run=latest_by_tool.get(tool)
+            hosts=_discovery_source_hosts(conn, root, source)
+            source_summary.append({
+                "source":source,"label":label,"tool":tool,"available":available,
+                "executed":bool(run) or source=="manual","status":str(run.get("status")) if run else ("ok" if hosts and source=="manual" else ""),
+                "raw_count":int(run.get("record_count") or 0) if run else len(hosts),
+                "raw_label":raw_label,"optional":optional,"hosts":hosts,
+                "normalized_count":len(hosts) if hosts else int(counts.get(source,0)),
+                "rerunnable":source != "manual",
+            })
+    elif phase_key=="active_discovery":
+        definitions=[
+            ("active_permutation","Permutaciones validadas · AlterX + dnsx","dnsx-permutations",bool(inventory.get("dnsx",{}).get("available"))),
+            ("active_bruteforce","DNS wordlist · dnsx","dnsx-bruteforce",bool(inventory.get("dnsx",{}).get("available"))),
+        ]
+        for source,label,tool,available in definitions:
+            run=latest_by_tool.get(tool)
+            hosts=_discovery_source_hosts(conn, root, source)
             source_summary.append({
                 "source":source,"label":label,"tool":tool,"available":available,
                 "executed":bool(run),"status":str(run.get("status")) if run else "",
                 "raw_count":int(run.get("record_count") or 0) if run else 0,
-                "raw_label":raw_label,
-                "normalized_count":int((run or {}).get("normalized_count") if run and (run or {}).get("normalized_count") is not None else counts.get(source,0)),
+                "raw_label":"hosts que resolvieron","optional":False,"hosts":hosts,
+                "normalized_count":len(hosts),"rerunnable":False,
             })
+    elif phase_key=="tls":
+        san_hosts=_discovery_source_hosts(conn, root, "tls_san")
+        source_summary.append({
+            "source":"tls_san","label":"Hostnames descubiertos en SAN","tool":"openssl","available":bool(inventory.get("openssl",{}).get("available")),
+            "executed":bool(runs),"status":str(runs[-1].get("status")) if runs else "",
+            "raw_count":0,"raw_label":"SANs","optional":False,"hosts":san_hosts,
+            "normalized_count":len(san_hosts),"rerunnable":False,
+        })
     return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary}
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:

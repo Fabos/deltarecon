@@ -68,7 +68,8 @@ def test_discovery_detail_has_individual_retry_controls():
             client = TestClient(create_app('example.com', workspace))
             page = client.get(f'/t/{key}/surface/phase/discovery?root=example.com')
             assert page.status_code == 200
-            assert 'Reintentar esta fuente' in page.text
+            assert '/surface/discovery/source' in page.text
+            assert ('Ejecutar esta fuente' in page.text or 'Reintentar esta fuente' in page.text)
             assert '/surface/discovery/source' in page.text
             assert 'Fuentes útiles' in page.text
         finally:

@@ -43,7 +43,9 @@ def test_amass_progress_is_hidden_from_inline_audit():
 
 def test_amass_gets_longer_discovery_timeout():
     source = (ROOT / 'negro_recon.py').read_text(encoding='utf-8')
-    assert '"discovery", "amass", cmd, timeout=max(timeout, 900)' in source
+    assert 'NEGRO_AMASS_TIMEOUT' in source
+    assert '2400' in source
+    assert 'NEGRO_AMASS_STALL_MINUTES' in source
 
 
 def test_root_hostname_is_not_duplicated_as_family_child_and_gets_layers():

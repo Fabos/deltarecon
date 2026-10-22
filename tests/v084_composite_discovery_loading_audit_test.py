@@ -55,12 +55,14 @@ def test_composite_discovery_runs_available_sources_and_audits_each(monkeypatch,
     monkeypatch.setattr(recon, "_run_tool", fake_run)
     paths = {"raw": str(tmp_path / "raw")}
     result = recon.run_discovery_phase(conn, "example.com", paths, run_group="group-1")
-    assert result["sources_ok"] == 4
+    assert result["sources_ok"] == 3
     hosts = recon._first_party_hostnames(conn, "example.com")
-    assert {"www.example.com","api.example.com","qa.example.com","stage.example.com","old.example.com"}.issubset(set(hosts))
+    assert {"www.example.com","api.example.com","qa.example.com","old.example.com"}.issubset(set(hosts))
+    assert "stage.example.com" not in set(hosts)  # Amass is optional now
     detail = recon.phase_detail_data(conn, "example.com", "discovery")
     tools = {r["tool"] for r in detail["runs"]}
-    assert {"subfinder","crt.sh","amass","gau"}.issubset(tools)
+    assert {"subfinder","crt.sh","gau"}.issubset(tools)
+    assert "amass" not in tools
     summary = {x["source"]: x for x in detail["source_summary"]}
     assert summary["gau_historical"]["normalized_count"] == 2
     assert summary["crtsh"]["normalized_count"] == 1
@@ -78,7 +80,7 @@ def test_surface_pages_include_loading_feedback_and_discovery_audit():
             page = client.get(f"/t/{key}/surface")
             assert page.status_code == 200
             assert "/static/recon_loading.js" in page.text
-            assert "Descubrimiento de superficie" in page.text
+            assert "Discovery pasivo de hosts" in page.text
             detail = client.get(f"/t/{key}/surface/phase/discovery?root=example.com")
             assert detail.status_code == 200
             assert "COBERTURA DE DISCOVERY" in detail.text
