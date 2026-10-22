@@ -392,7 +392,15 @@
       card.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button,form,input,a,select')){e.preventDefault();openPhaseCard(card);}});
     });
 
-    svg.addEventListener('click',e=>{if(e.target.closest('.surface-node'))return;selectedHost='';renderDetail(null);renderGraph();});
+    svg.addEventListener('click',e=>{
+      // A short node gesture is activated on pointerup. That activation re-renders
+      // the SVG, so the browser's synthetic follow-up click can land on the new
+      // background instead of the original node. Ignore it during the same
+      // suppression window or it would immediately clear the selected host/detail.
+      if(Date.now()<suppressClickUntil)return;
+      if(e.target.closest('.surface-node'))return;
+      selectedHost='';renderDetail(null);renderGraph();
+    });
     svg.addEventListener('wheel',e=>{
       e.preventDefault();
       const rect=svg.getBoundingClientRect(); const cs=canvasSize();

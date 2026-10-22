@@ -1,3 +1,8 @@
+# v0.78
+
+- Corrige la selección de host en el mapa de Superficie: el click sintético posterior al `pointerup` ya no cae sobre el SVG recién renderizado y borra inmediatamente la ficha lateral.
+- Un clic corto sobre el último hijo (hostname/subdominio) conserva ahora la selección, abre la ficha contextual y mantiene visibles sus capas técnicas.
+
 # v0.74 · Guided Surface navigation
 
 - Phase cards now open dedicated audit views with exact command, stdout/stderr and normalized evidence.
