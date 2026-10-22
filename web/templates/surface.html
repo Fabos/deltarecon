@@ -31,12 +31,12 @@
         {% endfor %}
       </div>
       <details class="surface-root-add">
-        <summary>+ Añadir dominio al proyecto</summary>
+        <summary>+ Añadir dominio al proyecto / target</summary>
         <form method="post" action="{{ target_base }}/surface/scope/add">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="text" name="new_root" placeholder="otro-dominio.com" required>
           <label><input type="checkbox" name="confirm_scope" value="yes" required> Confirmo que pertenece al alcance autorizado</label>
-          <button class="button" type="submit">Añadir root</button>
+          <button class="button" type="submit">Añadir target</button>
         </form>
       </details>
     </div>
@@ -127,16 +127,17 @@
   </section>
 
   <section class="surface-toolbar panel">
-    <label class="surface-search grow">Buscar
+    <label class="surface-search grow">Buscar en la superficie
       <input type="search" data-filter-search placeholder="host, PHP, Node.js, IIS, Fastly, 502, CNAME…" autocomplete="off">
     </label>
-    <label>Tecnología<select data-filter="technology"><option value="">Todas</option></select></label>
-    <label>Servidor<select data-filter="server"><option value="">Todos</option></select></label>
-    <label>Proveedor<select data-filter="provider"><option value="">Todos</option></select></label>
-    <label>Ambiente<select data-filter="environment"><option value="">Todos</option></select></label>
-    <label>Status<select data-filter="status"><option value="">Todos</option></select></label>
-    <label>Familia<select data-filter="family"><option value="">Todas</option></select></label>
-    <label>Fuente<select data-filter="source"><option value="">Todas</option></select></label>
+    <div class="surface-facet" data-filter-facet="root"><span>Target</span></div>
+    <div class="surface-facet" data-filter-facet="technology"><span>Tecnología</span></div>
+    <div class="surface-facet" data-filter-facet="server"><span>Servidor</span></div>
+    <div class="surface-facet" data-filter-facet="provider"><span>Proveedor</span></div>
+    <div class="surface-facet" data-filter-facet="environment"><span>Ambiente</span></div>
+    <div class="surface-facet" data-filter-facet="status"><span>Status</span></div>
+    <div class="surface-facet" data-filter-facet="family"><span>Familia</span></div>
+    <div class="surface-facet" data-filter-facet="source"><span>Fuente</span></div>
     <button type="button" class="button ghost" data-filter-clear>Limpiar</button>
   </section>
 
@@ -178,7 +179,7 @@
         <div class="surface-detail-empty">
           <span class="surface-detail-icon">◎</span>
           <b>Empieza por una rama</b>
-          <p>La vista general agrupa familias. Haz clic para entrar; luego filtra o selecciona un hostname para revisar evidencia.</p>
+          <p>El mapa puede mostrar varios targets del proyecto. Abre un target, luego una familia y finalmente un hostname para revisar evidencia.</p>
         </div>
       </aside>
     </div>

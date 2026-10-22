@@ -13,7 +13,6 @@
   const empty = root.querySelector('[data-map-empty]');
   const visibleCount = root.querySelector('[data-visible-count]');
   const search = root.querySelector('[data-filter-search]');
-  const filterEls = [...root.querySelectorAll('[data-filter]')];
   const layerEls = [...root.querySelectorAll('[data-layer]')];
   const collapseFamilies = root.querySelector('[data-collapse-families]');
   const viewBtns = [...root.querySelectorAll('[data-surface-view]')];
@@ -32,6 +31,9 @@
   const manualPositions = new Map();
   const expandedHosts = new Set();
   const expandedFamilies = new Set();
+  const expandedRoots = new Set([rootDomain]);
+  const selectedFilters = {root:new Set(), technology:new Set(), server:new Set(), provider:new Set(), environment:new Set(), status:new Set(), family:new Set(), source:new Set()};
+  const facetLabels = {root:'Target',technology:'Tecnología',server:'Servidor',provider:'Proveedor',environment:'Ambiente',status:'Status',family:'Familia',source:'Fuente'};
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const short = (s, n=34) => String(s || '').length > n ? `${String(s).slice(0,n-1)}…` : String(s || '');
@@ -77,42 +79,76 @@
     return null;
   };
 
-  function fillSelect(name, values){
-    const el = root.querySelector(`[data-filter="${name}"]`);
-    if (!el) return;
-    [...el.options].slice(1).forEach(o=>o.remove());
-    values.forEach(v => { const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el.appendChild(o); });
+  function fillSelect(){ /* legacy no-op: facets replaced single-selects in v0.82 */ }
+  function allHosts(){ return (data.project_hosts && data.project_hosts.length) ? data.project_hosts : (data.hosts||[]); }
+  function facetHostValues(h,name){
+    if(name==='root') return [h.root_domain||rootDomain];
+    if(name==='technology') return h.technologies||[];
+    if(name==='server') return h.servers||[];
+    if(name==='provider') return h.providers||[];
+    if(name==='environment') return [h.environment||'UNKNOWN'];
+    if(name==='status') return h.status_code!==null&&h.status_code!==undefined?[String(h.status_code)]:[];
+    if(name==='family') return [h.family||'other'];
+    if(name==='source') return h.sources||[];
+    return [];
   }
-  function filterEl(name){ return root.querySelector(`[data-filter="${name}"]`); }
+  function exactFacetCount(name,value){
+    return allHosts().filter(h=>facetHostValues(h,name).map(String).includes(String(value))).length;
+  }
+  function renderFacet(name, values){
+    const box=root.querySelector(`[data-filter-facet="${name}"]`); if(!box)return;
+    const uniq=[...new Set((values||[]).map(String))].sort((a,b)=>a.localeCompare(b));
+    box.dataset.values=JSON.stringify(uniq);
+    box.innerHTML=`<span>${esc(facetLabels[name]||name)}</span>
+      <button type="button" class="surface-facet-trigger" data-facet-trigger><b data-facet-caption>Todas</b><i>⌄</i></button>
+      <div class="surface-facet-menu" data-facet-menu hidden>
+        <input type="search" class="surface-facet-search" data-facet-search placeholder="Buscar ${esc((facetLabels[name]||name).toLowerCase())}…" autocomplete="off">
+        <div class="surface-facet-tools"><small data-facet-summary></small><span><button type="button" data-facet-select-all>Seleccionar visibles</button><button type="button" data-facet-clear>Limpiar</button></span></div>
+        <div class="surface-facet-options" data-facet-options></div>
+      </div>`;
+    const trigger=box.querySelector('[data-facet-trigger]'), menu=box.querySelector('[data-facet-menu]'), q=box.querySelector('[data-facet-search]');
+    const draw=()=>{
+      const needle=(q?.value||'').trim().toLowerCase();
+      const shown=uniq.filter(v=>!needle||v.toLowerCase().includes(needle));
+      const sel=selectedFilters[name];
+      box.querySelector('[data-facet-options]').innerHTML=shown.length?shown.map(v=>`<label class="surface-facet-option"><input type="checkbox" value="${esc(v)}" ${sel.has(v)?'checked':''}><span>${esc(v)}</span><small>${exactFacetCount(name,v)} hosts</small></label>`).join(''):'<div class="surface-facet-none">Sin coincidencias</div>';
+      const hostUnion=new Set(); shown.forEach(v=>allHosts().forEach(h=>{if(facetHostValues(h,name).map(String).includes(v))hostUnion.add(h.hostname)}));
+      box.querySelector('[data-facet-summary]').textContent=`${shown.length} opciones · ${hostUnion.size} hosts`;
+      const caption=box.querySelector('[data-facet-caption]'); caption.textContent=sel.size?`${sel.size} seleccionados`:'Todas';
+      trigger.classList.toggle('active',sel.size>0);
+      box.querySelectorAll('.surface-facet-option input').forEach(cb=>cb.addEventListener('change',()=>{
+        if(cb.checked)sel.add(cb.value);else sel.delete(cb.value); draw(); refresh();
+      }));
+    };
+    trigger.addEventListener('click',e=>{e.stopPropagation();document.querySelectorAll('.surface-facet-menu').forEach(x=>{if(x!==menu)x.hidden=true});menu.hidden=!menu.hidden;if(!menu.hidden){q?.focus();draw();}});
+    menu.addEventListener('click',e=>e.stopPropagation());
+    q?.addEventListener('input',draw);
+    box.querySelector('[data-facet-select-all]')?.addEventListener('click',()=>{const needle=(q?.value||'').trim().toLowerCase();uniq.filter(v=>!needle||v.toLowerCase().includes(needle)).forEach(v=>selectedFilters[name].add(v));draw();refresh();});
+    box.querySelector('[data-facet-clear]')?.addEventListener('click',()=>{selectedFilters[name].clear();draw();refresh();});
+    box._facetDraw=draw; draw();
+  }
+  function redrawFacets(){root.querySelectorAll('[data-filter-facet]').forEach(box=>box._facetDraw?.());}
   function selectedLayers(){ return new Set(layerEls.filter(x=>x.checked).map(x=>x.dataset.layer)); }
-  function filters(){
-    const f = {q:(search?.value||'').trim().toLowerCase()};
-    filterEls.forEach(el => f[el.dataset.filter] = el.value || '');
-    return f;
-  }
+  function filters(){ return {q:(search?.value||'').trim().toLowerCase()}; }
   function haystack(h){
-    return [h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,
+    return [h.root_domain,h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,
       ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
+  }
+  function matchesSelected(h,name){
+    const sel=selectedFilters[name]; if(!sel||!sel.size)return true;
+    const vals=facetHostValues(h,name).map(String);
+    return vals.some(v=>sel.has(v));
   }
   function visibleHosts(){
     const f=filters();
-    return data.hosts.filter(h => {
+    return allHosts().filter(h => {
       if(f.q && !haystack(h).includes(f.q)) return false;
-      if(f.technology){
-        const wanted=f.technology.toLowerCase();
-        const ok=(h.technologies||[]).some(t=>{const got=String(t).toLowerCase();return got===wanted || (!wanted.includes(':') && got.startsWith(wanted+':'));});
-        if(!ok)return false;
-      }
-      if(f.server && !(h.servers||[]).includes(f.server)) return false;
-      if(f.provider && !(h.providers||[]).includes(f.provider)) return false;
-      if(f.environment && h.environment !== f.environment) return false;
-      if(f.status && String(h.status_code) !== f.status) return false;
-      if(f.family && h.family !== f.family) return false;
-      if(f.source && !(h.sources||[]).includes(f.source)) return false;
+      for(const name of Object.keys(selectedFilters)){if(!matchesSelected(h,name))return false;}
       return true;
     });
   }
-
+  function setSingleFilter(name,value){selectedFilters[name].clear();if(value)selectedFilters[name].add(String(value));redrawFacets();}
+  function addFilter(name,value){if(value)selectedFilters[name].add(String(value));redrawFacets();}
   function node(type,id,label,meta={}){ return {type,id:`${type}:${id}`,key:id,label,meta}; }
   function edge(source,target,relation,kind='observed'){ return {source,target,relation,kind}; }
 
@@ -129,94 +165,90 @@
     const grouped=!!collapseFamilies?.checked;
     const nodes=[]; const edges=[]; const seen=new Set();
     const add=n=>{ if(!seen.has(n.id)){seen.add(n.id);nodes.push(n);} return n.id; };
-    const rootId=add(node('root',rootDomain,`ROOT · ${rootDomain}`,{count:hosts.length}));
-    const rawFamilies = new Map();
-    hosts.forEach(h=>{
-      const family=(h.family||'other').trim()||'other';
-      if(!rawFamilies.has(family)) rawFamilies.set(family,[]);
-      rawFamilies.get(family).push(h);
-    });
+    const roots=(data.roots||[rootDomain]);
+    const multiRoot=(data.roots||[]).length>1;
+    const projectId=multiRoot?add(node('project','project',`PROJECT · ${(data.roots||[]).length} targets`,{count:(data.roots||[]).length})):null;
+    const scene={nodes,edges,add,multiRoot,roots};
 
-    // Initial graph should be readable: real multi-host families stay separate,
-    // singleton heuristic families are collapsed into one neutral bucket.
-    const families = new Map();
-    const singletons=[];
-    for(const [family,items] of rawFamilies.entries()){
-      if(grouped && items.length===1) singletons.push(items[0]);
-      else families.set(family,items);
-    }
-    if(grouped && singletons.length) families.set('__ungrouped__',singletons);
+    roots.forEach(rr=>{
+      const rootHosts=hosts.filter(h=>(h.root_domain||rootDomain)===rr);
+      const rid=add(node('root',rr,`ROOT · ${rr}`,{count:rootHosts.length,active:rr===rootDomain}));
+      if(projectId) edges.push(edge(projectId,rid,'CONTAINS','observed'));
+      const shouldOpen=!multiRoot || expandedRoots.has(rr);
+      if(!shouldOpen)return;
 
-    const scene={nodes,edges,add};
-    [...families.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([family,items])=>{
-      items.sort((a,b)=>a.hostname.localeCompare(b.hostname));
-      if(!grouped){
-        items.forEach(h=>{
-          const hid=add(node('host',h.hostname,h.hostname,h));
-          edges.push(edge(rootId,hid,'CONTAINS','observed'));
-          if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
-        });
-        return;
+      const rawFamilies=new Map();
+      rootHosts.forEach(h=>{
+        const family=(h.family||'other').trim()||'other';
+        if(!rawFamilies.has(family))rawFamilies.set(family,[]);
+        rawFamilies.get(family).push(h);
+      });
+      const families=new Map(); const singletons=[];
+      for(const [family,items] of rawFamilies.entries()){
+        if(grouped&&items.length===1)singletons.push(items[0]); else families.set(family,items);
       }
-      const isUngrouped=family==='__ungrouped__';
-      const label=isUngrouped?'Otros / sin agrupar':family;
-      const fid=add(node('family',family,label,{count:items.length,heuristic:!isUngrouped,hosts:items.map(x=>x.hostname),ungrouped:isUngrouped}));
-      edges.push(edge(rootId,fid,isUngrouped?'CONTAINS':'POSSIBLE_FAMILY',isUngrouped?'observed':'heuristic'));
-      if(!expandedFamilies.has(family)) return;
-      items.forEach(h=>{
-        const hid=add(node('host',h.hostname,h.hostname,h));
-        edges.push(edge(fid,hid,isUngrouped?'CONTAINS':'GROUPS',isUngrouped?'observed':'heuristic'));
-        if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
+      if(grouped&&singletons.length)families.set('__ungrouped__',singletons);
+
+      [...families.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([family,items])=>{
+        items.sort((a,b)=>a.hostname.localeCompare(b.hostname));
+        if(!grouped){
+          items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(rid,hid,'CONTAINS','observed'));if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);});
+          return;
+        }
+        const isUngrouped=family==='__ungrouped__';
+        const label=isUngrouped?'Otros / sin agrupar':family;
+        const familyKey=`${rr}::${family}`;
+        const fid=add(node('family',familyKey,label,{count:items.length,heuristic:!isUngrouped,hosts:items.map(x=>x.hostname),ungrouped:isUngrouped,root_domain:rr,family}));
+        edges.push(edge(rid,fid,isUngrouped?'CONTAINS':'POSSIBLE_FAMILY',isUngrouped?'observed':'heuristic'));
+        // Single-root equivalent retained conceptually: if(!expandedFamilies.has(family)) return;
+        if(!expandedFamilies.has(familyKey))return;
+        items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(fid,hid,isUngrouped?'CONTAINS':'GROUPS',isUngrouped?'observed':'heuristic'));if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);});
       });
     });
 
     const visibleHostNodes=new Set(scene.nodes.filter(n=>n.type==='host').map(n=>n.key));
     hosts.forEach(h=>(h.redirects||[]).forEach(dst=>{if(visibleHostNodes.has(h.hostname)&&visibleHostNodes.has(dst))edges.push(edge(`host:${h.hostname}`,`host:${dst}`,'REDIRECTS_TO','observed'));}));
-    return {nodes,edges,collapsed:grouped};
+    return {nodes,edges,collapsed:grouped,multiRoot,roots};
   }
 
   function layout(scene){
     const pos=new Map();
-    const rootNode=scene.nodes.find(n=>n.type==='root');
-    const families=scene.nodes.filter(n=>n.type==='family');
-    const hosts=scene.nodes.filter(n=>n.type==='host');
+    const project=scene.nodes.find(n=>n.type==='project');
+    const roots=scene.nodes.filter(n=>n.type==='root');
     const familyChildren=new Map();
     scene.edges.filter(e=>e.relation==='GROUPS').forEach(e=>{if(!familyChildren.has(e.source))familyChildren.set(e.source,[]);familyChildren.get(e.source).push(e.target);});
-    const directHosts = hosts.filter(h=>scene.edges.some(e=>e.relation==='CONTAINS'&&e.target===h.id));
-    let y=60;
-
-    families.forEach(f=>{
-      const ids=familyChildren.get(f.id)||[];
-      const block=ids.length ? Math.max(82,ids.length*58) : 58;
-      pos.set(f.id,{x:390,y:y+block/2});
-      ids.forEach((id,i)=>pos.set(id,{x:690,y:y+30+i*56}));
-      y+=block+30;
+    const rootFamilies=new Map(); const rootHosts=new Map();
+    scene.edges.forEach(e=>{
+      if(e.source.startsWith('root:')&&e.target.startsWith('family:')){if(!rootFamilies.has(e.source))rootFamilies.set(e.source,[]);rootFamilies.get(e.source).push(e.target);}
+      if(e.source.startsWith('root:')&&e.target.startsWith('host:')){if(!rootHosts.has(e.source))rootHosts.set(e.source,[]);rootHosts.get(e.source).push(e.target);}
     });
-    directHosts.forEach(h=>{pos.set(h.id,{x:scene.collapsed?470:690,y:y+24});y+=62;});
-    if(rootNode) pos.set(rootNode.id,{x:110,y:Math.max(110,Math.min(Math.max(220,y/2),520))});
+    const rootX=scene.multiRoot?330:110, familyX=scene.multiRoot?620:390, hostX=scene.multiRoot?920:690;
+    let y=55;
+    roots.forEach(r=>{
+      const famIds=rootFamilies.get(r.id)||[]; const directIds=rootHosts.get(r.id)||[];
+      const startY=y;
+      if(famIds.length||directIds.length){
+        famIds.forEach(fid=>{
+          const kids=familyChildren.get(fid)||[]; const block=kids.length?Math.max(82,kids.length*58):58;
+          pos.set(fid,{x:familyX,y:y+block/2}); kids.forEach((id,i)=>pos.set(id,{x:hostX,y:y+30+i*56})); y+=block+28;
+        });
+        directIds.forEach(id=>{pos.set(id,{x:hostX,y:y+24});y+=62;});
+        pos.set(r.id,{x:rootX,y:Math.max(startY+28,(startY+y)/2)}); y+=34;
+      }else{pos.set(r.id,{x:rootX,y:y+28});y+=82;}
+    });
+    if(project)pos.set(project.id,{x:90,y:Math.max(110,Math.min(Math.max(220,y/2),620))});
 
-    const typeX={provider:980,technology:1210,server:1440,ip:1670};
-    const rightTypes=['provider','technology','server','ip'];
-    let maxRightY=0;
+    const typeBase=hostX+290;
+    const typeX={provider:typeBase,technology:typeBase+230,server:typeBase+460,ip:typeBase+690};
+    const rightTypes=['provider','technology','server','ip']; let maxRightY=0;
     rightTypes.forEach(type=>{
-      const list=scene.nodes.filter(n=>n.type===type).map(n=>{
-        const sourceY=scene.edges.filter(e=>e.target===n.id).map(e=>pos.get(e.source)?.y).filter(v=>Number.isFinite(v));
-        return {n,desired:sourceY.length?sourceY.reduce((a,b)=>a+b,0)/sourceY.length:80};
-      }).sort((a,b)=>a.desired-b.desired||a.n.label.localeCompare(b.n.label));
-      let cursor=46;
-      list.forEach(({n,desired})=>{
-        const yy=Math.max(desired,cursor);
-        pos.set(n.id,{x:typeX[type],y:yy});
-        cursor=yy+48;
-        maxRightY=Math.max(maxRightY,yy);
-      });
+      const list=scene.nodes.filter(n=>n.type===type).map(n=>{const sourceY=scene.edges.filter(e=>e.target===n.id).map(e=>pos.get(e.source)?.y).filter(v=>Number.isFinite(v));return {n,desired:sourceY.length?sourceY.reduce((a,b)=>a+b,0)/sourceY.length:80};}).sort((a,b)=>a.desired-b.desired||a.n.label.localeCompare(b.n.label));
+      let cursor=46; list.forEach(({n,desired})=>{const yy=Math.max(desired,cursor);pos.set(n.id,{x:typeX[type],y:yy});cursor=yy+48;maxRightY=Math.max(maxRightY,yy);});
     });
-
-    // Preserve user-arranged nodes during the current session.
-    for(const n of scene.nodes){ if(manualPositions.has(n.id)) pos.set(n.id,{...manualPositions.get(n.id)}); }
+    for(const n of scene.nodes){if(manualPositions.has(n.id))pos.set(n.id,{...manualPositions.get(n.id)});}
     const activeTypes=rightTypes.filter(t=>scene.nodes.some(n=>n.type===t));
-    const width=activeTypes.length ? typeX[activeTypes[activeTypes.length-1]]+150 : 820;
-    const height=Math.max(560,y+60,maxRightY+70);
+    const width=activeTypes.length?typeX[activeTypes[activeTypes.length-1]]+150:hostX+220;
+    const height=Math.max(560,y+40,maxRightY+70);
     return {pos,width,height};
   }
 
@@ -224,9 +256,11 @@
   function canvasSize(){ return {width:Math.max(720,stage?.clientWidth||1460),height:Math.max(480,stage?.clientHeight||760)}; }
   function relatedHosts(scene,n){
     if(n.type==='host') return [n.meta];
-    if(n.type==='family') return (n.meta?.hosts||[]).map(h=>data.hosts.find(x=>x.hostname===h)).filter(Boolean);
+    if(n.type==='family') return (n.meta?.hosts||[]).map(h=>allHosts().find(x=>x.hostname===h)).filter(Boolean);
+    if(n.type==='root') return allHosts().filter(h=>(h.root_domain||rootDomain)===n.key);
+    if(n.type==='project') return allHosts();
     const ids=new Set(scene.edges.filter(e=>e.target===n.id&&e.source.startsWith('host:')).map(e=>e.source.slice(5)));
-    return data.hosts.filter(h=>ids.has(h.hostname));
+    return allHosts().filter(h=>ids.has(h.hostname));
   }
 
   function renderGraph(){
@@ -249,10 +283,10 @@
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
       const brand=['provider','technology','server'].includes(n.type)?brandVisual(n.label):null;
-      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='root'&&n.meta?.active?' active-root':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
-      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?190:(brand?210:190);
+      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?220:n.type==='project'?190:(brand?210:190);
       const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?40:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
       const hostTextX=showHostEnv?(-w/2+21):0;
@@ -280,6 +314,8 @@
       const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
 
       const activateNode=()=>{
+        if(n.type==='project'){renderNodeDetail(n,scene);return;}
+        if(n.type==='root'){if(expandedRoots.has(n.key))expandedRoots.delete(n.key);else expandedRoots.add(n.key);renderNodeDetail(n,scene);renderGraph();return;}
         if(n.type==='family'){toggleFamily(n.key);return;}
         if(n.type==='host'){
           const wasExpanded=expandedHosts.has(n.key);
@@ -310,7 +346,7 @@
         if(Date.now()<suppressClickUntil)return;
         activateNode();
       });
-      g.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='family')enterFamily(n.key);});
+      g.addEventListener('dblclick',ev=>{ev.stopPropagation();if(n.type==='family')enterFamily(n.meta?.family||n.key,n.meta?.root_domain||'');else if(n.type==='root')window.location.href=`${window.location.pathname}?root=${encodeURIComponent(n.key)}`;});
       g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();activateNode();}});
       world.appendChild(g);
     });
@@ -345,15 +381,17 @@
   }
 
   function enterFamily(name){
-    const sel=filterEl('family'); if(sel) sel.value=name;
+    const rr=arguments[1]||'';
+    setSingleFilter('family',name); if(rr)setSingleFilter('root',rr);
     if(collapseFamilies) collapseFamilies.checked=false;
     selectedHost=''; renderDetail(null); refresh(); fit();
   }
 
   function applyNodeFilter(n){
-    if(n.type==='technology'){const el=filterEl('technology');if(el)el.value=n.key;}
-    else if(n.type==='provider'){const el=filterEl('provider');if(el)el.value=n.key;}
-    else if(n.type==='server'){const el=filterEl('server');if(el)el.value=n.key;}
+    if(n.type==='technology')addFilter('technology',n.key);
+    else if(n.type==='provider')addFilter('provider',n.key);
+    else if(n.type==='server')addFilter('server',n.key);
+    else if(n.type==='root')addFilter('root',n.key);
     else if(n.type==='ip'){if(search)search.value=n.key;}
     refresh();fit();
   }
@@ -364,23 +402,24 @@
     const filterable=['technology','provider','server','ip'].includes(n.type);
     detail.innerHTML=`
       <div class="surface-detail-head"><div><span class="eyebrow">${esc(n.type.toUpperCase())}</span><h2>${esc(n.label)}</h2></div></div>
-      <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='root'?'Raíz de la superficie actualmente visible.':'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
+      <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='project'?'Vista de proyecto: contiene todos los targets/root de recon confirmados.':n.type==='root'?'Target/root de recon. Un clic abre o recoge su árbol; las cards de fases pertenecen al root activo.':'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
       <div class="surface-big-number">${esc(related.length || n.meta?.count || 0)} <small>hosts relacionados</small></div>
+      ${n.type==='root'?`<a class="button full" href="${window.location.pathname}?root=${encodeURIComponent(n.key)}">${n.meta?.active?'Target activo':'Trabajar este target →'}</a>`:''}
       ${related.length?`<section><h3>Relacionados</h3><div class="surface-related-hosts">${related.slice(0,14).map(h=>`<button type="button" data-related-host="${esc(h.hostname)}">${esc(h.hostname)}</button>`).join('')}${related.length>14?`<small>+${related.length-14} más</small>`:''}</div></section>`:''}
       ${family?'<button class="button full" type="button" data-enter-family>Enfocar solo esta familia</button>':''}
       ${filterable?'<button class="button ghost full" type="button" data-filter-node>Filtrar mapa por este nodo</button>':''}`;
-    detail.querySelector('[data-enter-family]')?.addEventListener('click',()=>enterFamily(n.key));
+    detail.querySelector('[data-enter-family]')?.addEventListener('click',()=>enterFamily(n.meta?.family||n.key,n.meta?.root_domain||''));
     detail.querySelector('[data-filter-node]')?.addEventListener('click',()=>applyNodeFilter(n));
     detail.querySelectorAll('[data-related-host]').forEach(btn=>btn.addEventListener('click',()=>{
-      const h=data.hosts.find(x=>x.hostname===btn.dataset.relatedHost);if(!h)return;
+      const h=allHosts().find(x=>x.hostname===btn.dataset.relatedHost);if(!h)return;
       selectedHost=h.hostname; expandedHosts.add(h.hostname); if(collapseFamilies) collapseFamilies.checked=false; renderDetail(h); renderGraph();
     }));
   }
 
   function renderInventory(){
     const hosts=visibleHosts(); if(visibleCount)visibleCount.textContent=String(hosts.length);
-    grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</div><div class="surface-card-meta"><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
-    grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;expandedHosts.add(selectedHost);const h=data.hosts.find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');if(collapseFamilies)collapseFamilies.checked=false;renderGraph();}));
+    grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</div><div class="surface-card-meta"><span class="surface-root-mini">${esc(h.root_domain||rootDomain)}</span><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
+    grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;expandedHosts.add(selectedHost);const h=allHosts().find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');renderGraph();}));
   }
 
   function renderRuns(){
@@ -407,10 +446,9 @@
     view.x=sx-wx*next; view.y=sy-wy*next; view.k=next; renderGraph();
   }
   function resetDrill(){
-    const fam=filterEl('family'); if(fam)fam.value='';
-    if(search)search.value=''; filterEls.forEach(el=>{if(el.dataset.filter!=='family')el.value='';});
+    if(search)search.value=''; Object.values(selectedFilters).forEach(set=>set.clear()); redrawFacets();
     if(collapseFamilies)collapseFamilies.checked=true;
-    selectedHost='';expandedHosts.clear();expandedFamilies.clear();renderDetail(null);refresh();fit();
+    selectedHost='';expandedHosts.clear();expandedFamilies.clear();expandedRoots.clear();expandedRoots.add(rootDomain);renderDetail(null);refresh();fit();
   }
   function resetLayout(){manualPositions.clear();fit();}
   function openPhaseCard(card){ const href=card?.dataset?.phaseHref; if(href) window.location.href=href; }
@@ -418,10 +456,10 @@
 
   function bind(){
     search?.addEventListener('input',refresh);
-    filterEls.forEach(el=>el.addEventListener('change',()=>{if(el.dataset.filter==='family'&&el.value&&collapseFamilies)collapseFamilies.checked=false;refresh();fit();}));
+    document.addEventListener('click',()=>document.querySelectorAll('.surface-facet-menu').forEach(x=>x.hidden=true));
     layerEls.forEach(el=>el.addEventListener('change',()=>{renderGraph();fit();}));
     collapseFamilies?.addEventListener('change',()=>{renderGraph();fit();});
-    root.querySelector('[data-filter-clear]')?.addEventListener('click',()=>{if(search)search.value='';filterEls.forEach(el=>el.value='');refresh();fit();});
+    root.querySelector('[data-filter-clear]')?.addEventListener('click',()=>{if(search)search.value='';Object.values(selectedFilters).forEach(set=>set.clear());redrawFacets();refresh();fit();});
     root.querySelector('[data-drill-reset]')?.addEventListener('click',resetDrill);
     root.querySelectorAll('[data-surface-fit]').forEach(btn=>btn.addEventListener('click',fit));
     root.querySelector('[data-surface-reset-layout]')?.addEventListener('click',resetLayout);
@@ -494,8 +532,8 @@
 
   fetch(api).then(r=>r.json()).then(payload=>{
     data=payload||data;
-    fillSelect('technology',data.filters?.technologies||[]); fillSelect('server',data.filters?.servers||[]); fillSelect('provider',data.filters?.providers||[]);
-    fillSelect('environment',data.filters?.environments||[]); fillSelect('status',data.filters?.statuses||[]); fillSelect('family',data.filters?.families||[]); fillSelect('source',data.filters?.sources||[]);
+    renderFacet('root',data.filters?.roots||data.roots||[]); renderFacet('technology',data.filters?.technologies||[]); renderFacet('server',data.filters?.servers||[]); renderFacet('provider',data.filters?.providers||[]);
+    renderFacet('environment',data.filters?.environments||[]); renderFacet('status',data.filters?.statuses||[]); renderFacet('family',data.filters?.families||[]); renderFacet('source',data.filters?.sources||[]);
     bind(); refresh(); fit();
   }).catch(err=>{stage.innerHTML=`<div class="callout warning">No pude cargar la superficie: ${esc(err.message||err)}</div>`;});
 })();

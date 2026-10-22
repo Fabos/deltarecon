@@ -1,3 +1,14 @@
+# v0.82 · Multi-target map + faceted filters
+
+- Superficie puede representar varios recon roots del mismo proyecto en un único grafo: PROJECT → ROOT → FAMILY → HOST → CONTEXT.
+- Cada root se puede abrir/cerrar de forma independiente; el root activo de las fases queda resaltado.
+- Doble clic o acción lateral permite cambiar el target/root activo sin perder los otros del mapa.
+- Un root recién agregado aparece incluso con 0 hosts para poder iniciar su pipeline desde Paso 01.
+- Filtros convertidos a facetas multiselección con buscador, conteo de opciones/hosts, selección masiva de coincidencias y limpieza individual.
+- OR dentro de una faceta (PHP o PHP:8.2.17) y AND entre facetas (Tecnología + QA + Fastly).
+- Nuevo filtro Target para aislar uno o varios roots sin salir del mapa de proyecto.
+- Inventario muestra el root al que pertenece cada hostname.
+
 # v0.81
 
 - El drill-down de hostname ahora es toggle real: primer clic despliega capas técnicas; segundo clic las recoge sin cerrar la ficha lateral ni mover el viewport.

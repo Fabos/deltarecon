@@ -1137,23 +1137,37 @@ def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
 
 def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] | None = None) -> dict:
     init_schema(conn)
-    rebuild_family_heuristics(conn, root_domain)
+    roots = list(dict.fromkeys([root_domain.lower().rstrip('.')] + [str(x).lower().rstrip('.') for x in (scopes or []) if x]))
+    for recon_root in roots:
+        rebuild_family_heuristics(conn, recon_root)
     conn.commit()
+
     hosts = _asset_rows(conn, "hostname")
-    first_party = [h for h in hosts if h["asset_key"] == root_domain.lower() or h["asset_key"].endswith("." + root_domain.lower())]
     rels = [dict(r) for r in conn.execute("SELECT * FROM recon_relationships ORDER BY id").fetchall()]
     assets_by_id = {int(r["id"]): r for typ in ("ip", "provider", "technology", "server", "hostname") for r in _asset_rows(conn, typ)}
     by_src: dict[int, list[dict]] = {}
     for r in rels:
         by_src.setdefault(int(r["src_asset_id"]), []).append(r)
-    enriched = []
-    for host in first_party:
+
+    # A hostname belongs to the most specific recon root that contains it. This
+    # keeps multiple roots in the same project map without duplicating nested
+    # hostnames if a user intentionally adds a more specific root later.
+    sorted_roots = sorted(roots, key=len, reverse=True)
+    def host_root(hostname: str) -> str | None:
+        key = str(hostname or '').lower().rstrip('.')
+        for rr in sorted_roots:
+            if key == rr or key.endswith('.' + rr):
+                return rr
+        return None
+
+    def enrich_host(host: dict, assigned_root: str) -> dict:
         m = dict(host["metadata"])
         related = by_src.get(int(host["id"]), [])
         techs=[]; providers=[]; servers=[]; ips=[]; cnames=[]; redirects=[]; sources=set(m.get("sources") or [])
         for rel in related:
             dst = assets_by_id.get(int(rel["dst_asset_id"]))
-            if not dst: continue
+            if not dst:
+                continue
             rel_source = str(rel.get("source") or "")
             if rel_source and not rel_source.startswith("heuristic:"):
                 sources.add(rel_source)
@@ -1163,8 +1177,10 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             elif rel["relation"] in {"RESOLVES_TO","OBSERVED_IP"} and dst["asset_type"] == "ip": ips.append(dst["label"])
             elif rel["relation"] == "CNAME_TO": cnames.append(dst["label"])
             elif rel["relation"] == "REDIRECTS_TO": redirects.append(dst["label"])
-        item={
-            "id": host["id"], "hostname": host["label"], "environment": m.get("environment") or "UNKNOWN", "family": m.get("family") or "other",
+        family = m.get("family") or _family_stem(host["label"], assigned_root)
+        return {
+            "id": host["id"], "hostname": host["label"], "root_domain": assigned_root,
+            "environment": m.get("environment") or "UNKNOWN", "family": family or "other",
             "status_code": m.get("status_code"), "title": m.get("title"), "url": m.get("url"), "scheme": m.get("scheme"), "port": m.get("port"),
             "http_state": m.get("http_state") or "UNKNOWN", "dns_state": m.get("dns_state") or ("RESOLVED" if ips or cnames else "DISCOVERED"),
             "webserver": m.get("webserver"), "location": m.get("location"), "cdn": bool(m.get("cdn")), "cdn_name": m.get("cdn_name"),
@@ -1172,29 +1188,46 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "ips": list(dict.fromkeys(ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),
             "sources": sorted(x for x in sources if x), "last_seen_at": host["last_seen_at"],
         }
-        enriched.append(item)
-    def uniq(field):
+
+    project_hosts=[]
+    for host in hosts:
+        rr = host_root(host["asset_key"])
+        if rr:
+            project_hosts.append(enrich_host(host, rr))
+    enriched=[h for h in project_hosts if h["root_domain"] == root_domain.lower().rstrip('.')]
+
+    def uniq(field, rows=None):
+        rows = project_hosts if rows is None else rows
         vals=[]
-        for h in enriched:
+        for h in rows:
             v=h.get(field)
             vals.extend(v if isinstance(v,list) else [v] if v not in (None,"") else [])
         return sorted(set(str(x) for x in vals if str(x)))
-    status = sorted(set(str(h["status_code"]) for h in enriched if h.get("status_code") is not None))
+
+    status = sorted(set(str(h["status_code"]) for h in project_hosts if h.get("status_code") is not None))
     family_counts: dict[str, int] = {}
-    for h in enriched:
-        fam = str(h.get("family") or "other")
-        family_counts[fam] = family_counts.get(fam, 0) + 1
-    grouped_families = sorted(f for f, count in family_counts.items() if count > 1)
+    for h in project_hosts:
+        # Families are root-local. Prefix with root for counting so two unrelated
+        # roots that happen to use "api" do not become one family.
+        key=f'{h.get("root_domain")}::{h.get("family") or "other"}'
+        family_counts[key] = family_counts.get(key, 0) + 1
+    grouped_families = [f for f, count in family_counts.items() if count > 1]
     phases = phase_progress(conn, root_domain)
     done_count = sum(1 for p in phases if p.get("state") == "done")
     total_count = len(phases)
     next_phase = next((p for p in phases if p.get("state") in {"ready", "planned", "missing_tool"}), None)
     return {
         "root_domain": root_domain,
-        "roots": list(dict.fromkeys([root_domain] + [str(x).lower().rstrip('.') for x in (scopes or []) if x])),
+        "roots": roots,
         "hosts": enriched,
-        "filters": {"technologies": uniq("technologies"), "providers": uniq("providers"), "servers": uniq("servers"), "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status},
-        "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families)},
+        "project_hosts": project_hosts,
+        "filters": {
+            "roots": roots,
+            "technologies": uniq("technologies"), "providers": uniq("providers"), "servers": uniq("servers"),
+            "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status,
+        },
+        "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies", enriched)), "providers": len(uniq("providers", enriched)), "families": len([k for k,v in family_counts.items() if k.startswith(root_domain.lower().rstrip('.')+'::') and v>1])},
+        "project_summary": {"roots": len(roots), "hosts": len(project_hosts), "http_alive": sum(1 for h in project_hosts if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families)},
         "imports": [dict(r) for r in conn.execute("SELECT * FROM recon_import_runs ORDER BY id DESC LIMIT 20").fetchall()],
         "tool_runs": [dict(r) for r in conn.execute("SELECT * FROM recon_tool_runs WHERE COALESCE(root_domain,'')=? ORDER BY id DESC LIMIT 30", (root_domain.lower().rstrip('.'),)).fetchall()],
         "phases": phases,
