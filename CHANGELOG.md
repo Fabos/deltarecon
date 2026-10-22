@@ -2117,3 +2117,11 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Un gesto con desplazamiento sigue siendo drag y conserva la posición manual sin activar/colapsar el nodo.
 - Se suprime el `click` sintético posterior al `pointerup` para evitar doble toggle.
 - Añade regresión `v076_surface_family_click_test.py`.
+
+
+## v0.77 · Host leaf context + environment badges
+
+- Clicking the last host/subdomain node remains a real drill-down action: it selects the asset, opens its evidence/detail panel and reveals enabled technical layers.
+- Host nodes now display compact environment badges directly in the graph for known environments (`DEV`, `QA`, `STG`, `PROD`, etc.).
+- `UNKNOWN` is intentionally not rendered as a badge to keep the graph clean.
+- Host node spacing/label reservation adapts when a badge is present so environment context does not cover the hostname.

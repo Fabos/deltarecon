@@ -218,12 +218,25 @@
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
       const g=svgEl('g',{class:`surface-node ${n.type}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
-      const w=n.type==='host'?230:n.type==='family'?210:n.type==='root'?190:190;
-      const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?36:32;
+      const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
+      const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
+      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?190:190;
+      const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?40:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
-      const text=svgEl('text',{x:0,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':'middle'}); text.textContent=short(n.label,n.type==='host'?31:28); g.appendChild(text);
+      const hostTextX=showHostEnv?(-w/2+21):0;
+      const text=svgEl('text',{x:hostTextX,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':showHostEnv?'start':'middle'});
+      text.textContent=short(n.label,n.type==='host'?(showHostEnv?27:31):28); g.appendChild(text);
       if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts${expandedFamilies.has(n.key)?' · abierto':''}`;g.appendChild(count);}
-      if(n.type==='host'){const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);}
+      if(n.type==='host'){
+        const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);
+        if(showHostEnv){
+          const badgeW=Math.max(36,hostEnv.length*6+14);
+          const badge=svgEl('g',{class:`surface-env-badge ${envClass(hostEnv)}`,transform:`translate(${w/2-badgeW/2-8} 0)`});
+          badge.appendChild(svgEl('rect',{x:-badgeW/2,y:-9,width:badgeW,height:18,rx:9}));
+          const badgeText=svgEl('text',{x:0,y:3,'text-anchor':'middle'});badgeText.textContent=hostEnv==='STAGING'?'STG':hostEnv;badge.appendChild(badgeText);
+          g.appendChild(badge);
+        }
+      }
       const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
 
       const activateNode=()=>{
