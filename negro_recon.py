@@ -913,8 +913,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
 
     specs = [
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
-        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","implemented":True,"tool_ok":tooling["subfinder"]["available"],"tool_names":["subfinder"],"purpose":"Descubrir nombres candidatos sin asumir que siguen vivos."},
-        {"key":"discovery_expand","title":"Ampliar descubrimiento","subtitle":"crt.sh + Amass pasivo","count":expanded,"count_label":"hosts con evidencia extra","implemented":True,"tool_ok":bool(tooling["curl"]["available"] or tooling["amass"]["available"]),"tool_names":["curl","amass"],"purpose":"Cruzar fuentes pasivas independientes para no depender de una sola enumeración."},
+        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","implemented":True,"tool_ok":tooling["subfinder"]["available"],"tool_names":["subfinder"],"optional_tool_names":["curl","amass"],"purpose":"Descubrir nombres candidatos sin asumir que siguen vivos. crt.sh/Amass son enriquecimiento opcional y no bloquean el siguiente paso.","secondary_counts":{"evidencia extra":expanded}},
         {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
         {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","implemented":False,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Encontrar nombres y relaciones adicionales en certificados sin confundirlos con hosts activos."},
@@ -950,6 +949,11 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
             info=dict(tooling.get(name) or {"available":False,"path":""})
             info["name"]=name
             tool_info.append(info)
+        optional_tool_info=[]
+        for name in spec.get("optional_tool_names",[]):
+            info=dict(tooling.get(name) or {"available":False,"path":""})
+            info["name"]=name
+            optional_tool_info.append(info)
         out.append({
             **spec,
             "number": index,
@@ -960,6 +964,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
             "state": state,
             "state_label": state_label,
             "tool_info": tool_info,
+            "optional_tool_info": optional_tool_info,
             "run_count": bundle["count"],
             "last_status": (bundle["latest"].get("status") if bundle["latest"] else None),
             "last_started_at": (bundle["latest"].get("started_at") if bundle["latest"] else None),
@@ -997,7 +1002,10 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
     if not phase:
         return None
     runs=[]
-    for item in phase.get("latest_runs") or []:
+    run_items=list(phase.get("latest_runs") or [])
+    if phase_key=="discovery":
+        run_items += list(_phase_run_bundle(conn, "discovery_expand", root_domain).get("runs") or [])
+    for item in run_items:
         run=dict(item)
         run["stdout_full"]=_read_run_text(run.get("stdout_path"))
         run["stderr_full"]=_read_run_text(run.get("stderr_path"))
@@ -1007,7 +1015,7 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
     if phase_key in {"discovery","discovery_expand","dns","http"}:
         data=surface_data(conn, root_domain)
         for h in data.get("hosts",[]):
-            if phase_key=="discovery" and "subfinder" not in (h.get("sources") or []):
+            if phase_key=="discovery" and not ({"subfinder","crtsh","amass"} & set(h.get("sources") or [])):
                 continue
             if phase_key=="discovery_expand" and not ({"crtsh","amass"} & set(h.get("sources") or [])):
                 continue

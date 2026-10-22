@@ -69,4 +69,4 @@ def test_phase_has_dedicated_audit_page_and_main_card_links_to_it():
 def test_surface_js_expands_host_layers_on_click():
     js=(ROOT/'web'/'static'/'surface.js').read_text(encoding='utf-8')
     assert 'expandedHosts.add(n.key)' in js
-    assert "if(!collapsed || expandedHosts.has(h.hostname)) addHostLayers" in js
+    assert "if(expandedHosts.has(h.hostname)) addHostLayers" in js

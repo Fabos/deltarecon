@@ -2102,3 +2102,10 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Added multi-root surface support using project scopes; authorized root domains can be added and enumerated independently inside the same project.
 - Tool runs now retain root-domain and execution-group provenance.
 - HTTP/httpx remains the technology fingerprint phase; it only receives DNS-resolved hosts, making upstream discovery coverage visible instead of hiding it.
+
+## v0.75 · Family-first graph + manual recon sequence
+- Surface map now starts family-first. Multi-host heuristic families are shown as compact nodes and singleton families are grouped under `Otros / sin agrupar`.
+- Clicking a family expands/collapses its hosts inline; double-click focuses that branch. Clicking a host then expands technical layers.
+- Increased graph-edge contrast and fixed layout spacing for expanded families.
+- Guided sequence now follows the manual workflow: Root → Subdomains → DNS validation → HTTP/technology → TLS → Historical URLs → Web depth → Infrastructure classification → Services/Nmap.
+- crt.sh/Amass are optional enrichment inside Subdomain Discovery and no longer block DNS validation.

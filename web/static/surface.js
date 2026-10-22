@@ -31,6 +31,7 @@
   let sceneExtent = {width:1460,height:760};
   const manualPositions = new Map();
   const expandedHosts = new Set();
+  const expandedFamilies = new Set();
 
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const short = (s, n=34) => String(s || '').length > n ? `${String(s).slice(0,n-1)}…` : String(s || '');
@@ -94,43 +95,53 @@
 
   function buildScene(hosts){
     const layers=selectedLayers();
-    const collapsed=!!collapseFamilies?.checked;
+    const grouped=!!collapseFamilies?.checked;
     const nodes=[]; const edges=[]; const seen=new Set();
     const add=n=>{ if(!seen.has(n.id)){seen.add(n.id);nodes.push(n);} return n.id; };
     const rootId=add(node('root',rootDomain,`ROOT · ${rootDomain}`,{count:hosts.length}));
-    const families = new Map();
+    const rawFamilies = new Map();
     hosts.forEach(h=>{
       const family=(h.family||'other').trim()||'other';
-      if(!families.has(family)) families.set(family,[]);
-      families.get(family).push(h);
+      if(!rawFamilies.has(family)) rawFamilies.set(family,[]);
+      rawFamilies.get(family).push(h);
     });
+
+    // Initial graph should be readable: real multi-host families stay separate,
+    // singleton heuristic families are collapsed into one neutral bucket.
+    const families = new Map();
+    const singletons=[];
+    for(const [family,items] of rawFamilies.entries()){
+      if(grouped && items.length===1) singletons.push(items[0]);
+      else families.set(family,items);
+    }
+    if(grouped && singletons.length) families.set('__ungrouped__',singletons);
 
     const scene={nodes,edges,add};
     [...families.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([family,items])=>{
       items.sort((a,b)=>a.hostname.localeCompare(b.hostname));
-      // A singleton "family" only adds noise. Show the host directly.
-      if(items.length===1){
-        const h=items[0];
-        const hid=add(node('host',h.hostname,h.hostname,h));
-        edges.push(edge(rootId,hid,'CONTAINS','observed'));
-        if(!collapsed || expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
+      if(!grouped){
+        items.forEach(h=>{
+          const hid=add(node('host',h.hostname,h.hostname,h));
+          edges.push(edge(rootId,hid,'CONTAINS','observed'));
+          if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
+        });
         return;
       }
-      const fid=add(node('family',family,family,{count:items.length,heuristic:true,hosts:items.map(x=>x.hostname)}));
-      edges.push(edge(rootId,fid,'POSSIBLE_FAMILY','heuristic'));
-      if(collapsed) return;
+      const isUngrouped=family==='__ungrouped__';
+      const label=isUngrouped?'Otros / sin agrupar':family;
+      const fid=add(node('family',family,label,{count:items.length,heuristic:!isUngrouped,hosts:items.map(x=>x.hostname),ungrouped:isUngrouped}));
+      edges.push(edge(rootId,fid,isUngrouped?'CONTAINS':'POSSIBLE_FAMILY',isUngrouped?'observed':'heuristic'));
+      if(!expandedFamilies.has(family)) return;
       items.forEach(h=>{
         const hid=add(node('host',h.hostname,h.hostname,h));
-        edges.push(edge(fid,hid,'GROUPS','heuristic'));
-        addHostLayers(scene,h,hid,layers);
+        edges.push(edge(fid,hid,isUngrouped?'CONTAINS':'GROUPS',isUngrouped?'observed':'heuristic'));
+        if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);
       });
     });
 
-    if(!collapsed){
-      const visibleSet=new Set(hosts.map(h=>h.hostname));
-      hosts.forEach(h=>(h.redirects||[]).forEach(dst=>{if(visibleSet.has(dst))edges.push(edge(`host:${h.hostname}`,`host:${dst}`,'REDIRECTS_TO','observed'));}));
-    }
-    return {nodes,edges,collapsed};
+    const visibleHostNodes=new Set(scene.nodes.filter(n=>n.type==='host').map(n=>n.key));
+    hosts.forEach(h=>(h.redirects||[]).forEach(dst=>{if(visibleHostNodes.has(h.hostname)&&visibleHostNodes.has(dst))edges.push(edge(`host:${h.hostname}`,`host:${dst}`,'REDIRECTS_TO','observed'));}));
+    return {nodes,edges,collapsed:grouped};
   }
 
   function layout(scene){
@@ -145,7 +156,7 @@
 
     families.forEach(f=>{
       const ids=familyChildren.get(f.id)||[];
-      const block=scene.collapsed ? 58 : Math.max(76,ids.length*56);
+      const block=ids.length ? Math.max(82,ids.length*58) : 58;
       pos.set(f.id,{x:390,y:y+block/2});
       ids.forEach((id,i)=>pos.set(id,{x:690,y:y+30+i*56}));
       y+=block+30;
@@ -211,7 +222,7 @@
       const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?36:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
       const text=svgEl('text',{x:0,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':'middle'}); text.textContent=short(n.label,n.type==='host'?31:28); g.appendChild(text);
-      if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts`;g.appendChild(count);}
+      if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts${expandedFamilies.has(n.key)?' · abierto':''}`;g.appendChild(count);}
       if(n.type==='host'){const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);}
       const title=svgEl('title'); title.textContent=`${n.label} · arrastra para reorganizar`; g.appendChild(title);
 
@@ -224,7 +235,7 @@
       g.addEventListener('click',ev=>{
         ev.stopPropagation();
         if(Date.now()<suppressClickUntil)return;
-        if(n.type==='family'){enterFamily(n.key);return;}
+        if(n.type==='family'){toggleFamily(n.key);return;}
         if(n.type==='host'){
           selectedHost=n.key;
           expandedHosts.add(n.key);
@@ -259,6 +270,16 @@
       ${h.url?`<a class="button ghost full" target="_blank" rel="noopener noreferrer" href="${esc(h.url)}">Abrir host ↗</a>`:''}`;
   }
 
+
+  function toggleFamily(name){
+    if(expandedFamilies.has(name)) expandedFamilies.delete(name);
+    else expandedFamilies.add(name);
+    selectedHost='';
+    renderDetail(null);
+    renderGraph();
+    setTimeout(fit,0);
+  }
+
   function enterFamily(name){
     const sel=filterEl('family'); if(sel) sel.value=name;
     if(collapseFamilies) collapseFamilies.checked=false;
@@ -282,7 +303,7 @@
       <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='root'?'Raíz de la superficie actualmente visible.':'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
       <div class="surface-big-number">${esc(related.length || n.meta?.count || 0)} <small>hosts relacionados</small></div>
       ${related.length?`<section><h3>Relacionados</h3><div class="surface-related-hosts">${related.slice(0,14).map(h=>`<button type="button" data-related-host="${esc(h.hostname)}">${esc(h.hostname)}</button>`).join('')}${related.length>14?`<small>+${related.length-14} más</small>`:''}</div></section>`:''}
-      ${family?'<button class="button full" type="button" data-enter-family>Investigar esta rama</button>':''}
+      ${family?'<button class="button full" type="button" data-enter-family>Enfocar solo esta familia</button>':''}
       ${filterable?'<button class="button ghost full" type="button" data-filter-node>Filtrar mapa por este nodo</button>':''}`;
     detail.querySelector('[data-enter-family]')?.addEventListener('click',()=>enterFamily(n.key));
     detail.querySelector('[data-filter-node]')?.addEventListener('click',()=>applyNodeFilter(n));
@@ -325,7 +346,7 @@
     const fam=filterEl('family'); if(fam)fam.value='';
     if(search)search.value=''; filterEls.forEach(el=>{if(el.dataset.filter!=='family')el.value='';});
     if(collapseFamilies)collapseFamilies.checked=true;
-    selectedHost='';expandedHosts.clear();renderDetail(null);refresh();fit();
+    selectedHost='';expandedHosts.clear();expandedFamilies.clear();renderDetail(null);refresh();fit();
   }
   function resetLayout(){manualPositions.clear();fit();}
   function openPhaseCard(card){ const href=card?.dataset?.phaseHref; if(href) window.location.href=href; }

@@ -12,12 +12,13 @@ from negro_web import create_app
 from fastapi.testclient import TestClient
 
 
-def test_nmap_is_late_and_expanded_discovery_precedes_dns():
+def test_nmap_is_late_and_dns_follows_discovery():
     conn=sqlite3.connect(':memory:'); conn.row_factory=sqlite3.Row
     recon.init_schema(conn)
     phases=recon.surface_data(conn,'example.com')['phases']
     keys=[p['key'] for p in phases]
-    assert keys.index('discovery_expand') < keys.index('dns') < keys.index('http') < keys.index('services')
+    assert keys.index('discovery') < keys.index('dns') < keys.index('http') < keys.index('services')
+    assert 'discovery_expand' not in keys
     assert keys.index('web') < keys.index('infra') < keys.index('services')
     assert keys[-1] == 'services'
 

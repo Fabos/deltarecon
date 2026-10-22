@@ -5603,10 +5603,12 @@ def create_app(default_domain: str, default_workspace: Path):
                 result = recon.run_phase(conn, selected_root, paths, phase)
             except (ValueError, RuntimeError) as exc:
                 msg = urllib.parse.quote(str(exc))
-                return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+                return_phase = "discovery" if phase == "discovery_expand" else phase
+                return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(return_phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
         detail = result.get("records", result.get("tools_ok", 0))
         msg = urllib.parse.quote(f"Completado · {detail} resultados")
-        return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+        return_phase = "discovery" if phase == "discovery_expand" else phase
+        return RedirectResponse(url=f"/t/{target_key}/surface/phase/{urllib.parse.quote(return_phase)}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
 
     @app.get("/t/{target_key}/surface/phase/{phase_key}", response_class=HTMLResponse)
     def surface_phase_page(request: Request, target_key: str, phase_key: str, root: str = "", scan: str = ""):
