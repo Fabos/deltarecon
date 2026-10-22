@@ -1,3 +1,15 @@
+# Development · Attack Surface MVP
+
+- Nueva vista **Superficie** separada del mapa de investigación para no mezclar infraestructura con Requests/Identities/Flows.
+- Ingesta local y normalizada de **Subfinder**, **dnsx** y **httpx JSONL**; se conserva evidencia cruda, fuente y timestamps.
+- Modelo canónico de recon con assets, evidencia y relaciones (`RESOLVES_TO`, `CNAME_TO`, `OBSERVED_IP`, `PROXIED_BY`, `HOSTED_ON`, `USES_PLATFORM`, `USES`, `SERVED_BY`, `REDIRECTS_TO`).
+- `OBSERVED_IP` nunca se promueve automáticamente a `ORIGIN_IP`.
+- Filtros por tecnología, servidor, proveedor/CDN/cloud, ambiente, status HTTP, familia heurística, fuente y búsqueda libre.
+- Vista dual **Mapa / Inventario**, capas opcionales de CDN/cloud, tecnologías, servidores e IPs.
+- Agrupación heurística de familias y ambientes claramente separada de relaciones observadas/fingerprint.
+- Primeros adapters pensados para extender después a Nmap, TLS/Nuclei y Burp sin convertir Negro en otro scanner.
+- Pruebas de regresión para ingesta, filtros y separación edge/origin.
+
 # v0.52.3 · JWT Claims Layout Hotfix
 
 - HTTP Inspector: JWT Header y Claims ahora se apilan verticalmente.

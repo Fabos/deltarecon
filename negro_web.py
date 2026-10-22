@@ -3344,6 +3344,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
             (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
+            (r"^/surface", {"anchor":"surface","title":"Superficie de ataque","question":"¿Qué sé del target y cuál es la siguiente pregunta de recon?","when":"Avanza por fases desde el dominio raíz: descubrimiento, DNS y HTTP. Negro ejecuta herramientas locales, normaliza evidencia y deja la importación manual como opción secundaria.","example":"Empieza por el dominio, descubre nombres, valida DNS, fingerprint HTTP y luego filtra PHP/Node/QA/Fastly antes de profundizar una rama.","caution":"Cada fase requiere una decisión humana. Fingerprint y heurística no son hechos absolutos y un edge/CDN nunca se trata como origin."}),
             (r"^/graph", {"anchor":"map","title":"Vistas de investigación","question":"¿Qué relación quiero explorar sin ver todo el ruido?","when":"Usa Descubrir para partir de una key o valor y abrir dónde reaparece; Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"Sigue ORD-1001 aunque reaparezca como orderId, sourceOrderId u orderRef, y observa qué endpoints, identidades, Flows u objetos conecta antes de decidir si merece una Hypothesis.","caution":"El grafo abre preguntas: coincidencia, cercanía o cambio de contexto no demuestran vulnerabilidad por sí solos."}),
             (r"^/$", default),
         ]
@@ -5569,6 +5570,57 @@ def create_app(default_domain: str, default_workspace: Path):
             if not detail:
                 raise HTTPException(status_code=404, detail="Parámetro no encontrado")
         return render(request, "parameter_detail.html", target_key, domain, workspace, detail=detail)
+
+    @app.get("/t/{target_key}/surface", response_class=HTMLResponse)
+    def surface_page(request: Request, target_key: str, imported: str = "", scan: str = ""):
+        import negro_recon as recon
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            data = recon.surface_data(conn, domain)
+        return render(request, "surface.html", target_key, domain, workspace, surface=data, imported=imported, scan=scan)
+
+    @app.post("/t/{target_key}/surface/run")
+    def surface_run_phase(request: Request, target_key: str, phase: str = Form(...), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            try:
+                result = recon.run_phase(conn, domain, paths, phase)
+            except (ValueError, RuntimeError) as exc:
+                msg = urllib.parse.quote(f"{phase}: {str(exc)}")
+                return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+        detail = result.get("records", result.get("tools_ok", 0))
+        msg = urllib.parse.quote(f"{phase}: completado · {detail} resultados")
+        return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+
+    @app.get("/api/t/{target_key}/surface", response_class=JSONResponse)
+    def surface_api(target_key: str):
+        import negro_recon as recon
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            return recon.surface_data(conn, domain)
+
+    @app.post("/t/{target_key}/surface/import")
+    async def surface_import(request: Request, target_key: str, source: str = Form("auto"), recon_file: UploadFile = File(...), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        raw = await recon_file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="El archivo supera 20 MB")
+        text = raw.decode("utf-8", errors="replace")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            try:
+                result = recon.import_text(conn, source, text, domain, recon_file.filename or "")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        msg = urllib.parse.quote(f"{result['source']}: {result['records']} registros · {result['errors']} errores")
+        return RedirectResponse(url=f"/t/{target_key}/surface?imported={msg}", status_code=303)
 
     @app.get("/t/{target_key}/graph", response_class=HTMLResponse)
     def graph_page(request: Request, target_key: str):

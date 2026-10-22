@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Superficie · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block content %}
+<section class="surface-page" data-surface-root data-api="/api/t/{{ target_key }}/surface" data-root-domain="{{ domain }}">
+  <header class="surface-head">
+    <div>
+      <p class="eyebrow">ATTACK SURFACE · GUIDED RECON</p>
+      <h1>Superficie de ataque</h1>
+      <p class="muted">Construye el mapa por etapas. Negro ejecuta las herramientas locales, conserva el comando y la evidencia, y te deja decidir cuándo profundizar.</p>
+    </div>
+    <div class="surface-head-actions">
+      <button type="button" class="button ghost" data-drill-reset>Vista general</button>
+      <button type="button" class="button ghost" data-surface-fit>Ajustar mapa</button>
+      <button type="button" class="button ghost" data-import-toggle>Importar resultados</button>
+    </div>
+  </header>
+
+  {% if scan %}<div class="callout surface-run-result">{{ scan }}</div>{% endif %}
+  {% if imported %}<div class="callout success surface-import-result">Importación completada · {{ imported }}</div>{% endif %}
+
+  <section class="surface-workflow panel">
+    <div class="surface-workflow-head">
+      <div><span class="eyebrow">RECON PROGRESIVO</span><h2>{{ domain }}</h2><p>No se lanza la siguiente fase automáticamente. Mira lo aprendido y decide cuándo continuar.</p></div>
+      <div class="surface-workflow-scope"><span>Scope</span><code>*.{{ domain }}</code></div>
+    </div>
+    <div class="surface-phase-grid">
+      {% for phase in surface.phases %}
+      <article class="surface-phase {{ phase.state }}" data-phase-card="{{ phase.key }}">
+        <div class="surface-phase-top"><span class="surface-phase-index">0{{ loop.index }}</span><span class="surface-phase-state">{{ phase.state }}</span></div>
+        <h3>{{ phase.title }}</h3>
+        <p>{{ phase.subtitle }}</p>
+        <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{% if phase.key == 'root' %}evidencias{% elif phase.key == 'discovery' %}hosts conocidos{% elif phase.key == 'dns' %}DNS resueltos{% elif phase.key == 'http' %}HTTP observados{% else %}candidatos{% endif %}</span></div>
+        {% if phase.implemented and phase.ready and phase.tool_available %}
+        <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="phase" value="{{ phase.key }}">
+          <button class="button {% if phase.state == 'ready' %}primary{% else %}ghost{% endif %}" type="submit">{% if phase.state == 'done' %}Repetir fase{% else %}Ejecutar fase{% endif %}</button>
+        </form>
+        {% elif not phase.implemented %}
+          <button class="button ghost" type="button" disabled>Próximamente</button>
+        {% elif not phase.ready %}
+          <button class="button ghost" type="button" disabled>Completa la fase anterior</button>
+        {% else %}
+          <button class="button ghost" type="button" disabled>Herramienta no disponible</button>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="surface-import panel" data-import-panel hidden>
+    <div class="surface-import-copy">
+      <span class="eyebrow">OPCIÓN AVANZADA · INGESTA LOCAL</span>
+      <h2>Importar resultados externos</h2>
+      <p>El flujo normal es ejecutar desde Negro. Usa esto si ya tienes evidencia de otra terminal, otro hunter o una ejecución anterior.</p>
+    </div>
+    <form method="post" action="{{ target_base }}/surface/import" enctype="multipart/form-data" class="surface-import-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Formato
+        <select name="source">
+          <option value="auto">Detectar automáticamente</option>
+          <option value="subfinder">Subfinder · lista de hosts</option>
+          <option value="dnsx">dnsx · A/AAAA/CNAME</option>
+          <option value="httpx">httpx · JSONL</option>
+        </select>
+      </label>
+      <label class="grow">Archivo
+        <input type="file" name="recon_file" accept=".txt,.jsonl,.json" required>
+      </label>
+      <button class="button" type="submit">Importar</button>
+    </form>
+    <small class="muted">La evidencia queda en SQLite local con fuente, timestamp y registro crudo. Importar nunca reemplaza la evidencia ya observada.</small>
+  </section>
+
+  <section class="surface-summary" data-surface-summary>
+    <article><span>Hosts</span><strong>{{ surface.summary.hosts }}</strong><small>conocidos ahora</small></article>
+    <article><span>HTTP observado</span><strong>{{ surface.summary.http_alive }}</strong><small>con respuesta</small></article>
+    <article><span>Tecnologías</span><strong>{{ surface.summary.technologies }}</strong><small>fingerprints únicos</small></article>
+    <article><span>Proveedores</span><strong>{{ surface.summary.providers }}</strong><small>CDN / cloud</small></article>
+    <article><span>Familias</span><strong>{{ surface.summary.families }}</strong><small>candidatas heurísticas</small></article>
+  </section>
+
+  <section class="surface-toolbar panel">
+    <label class="surface-search grow">Buscar
+      <input type="search" data-filter-search placeholder="host, PHP, Node.js, IIS, Fastly, 502, CNAME…" autocomplete="off">
+    </label>
+    <label>Tecnología<select data-filter="technology"><option value="">Todas</option></select></label>
+    <label>Servidor<select data-filter="server"><option value="">Todos</option></select></label>
+    <label>Proveedor<select data-filter="provider"><option value="">Todos</option></select></label>
+    <label>Ambiente<select data-filter="environment"><option value="">Todos</option></select></label>
+    <label>Status<select data-filter="status"><option value="">Todos</option></select></label>
+    <label>Familia<select data-filter="family"><option value="">Todas</option></select></label>
+    <label>Fuente<select data-filter="source"><option value="">Todas</option></select></label>
+    <button type="button" class="button ghost" data-filter-clear>Limpiar</button>
+  </section>
+
+  <div class="surface-viewbar">
+    <div class="surface-tabs" role="tablist">
+      <button type="button" class="active" data-surface-view="map">Mapa</button>
+      <button type="button" data-surface-view="inventory">Inventario</button>
+      <button type="button" data-surface-view="runs">Ejecuciones</button>
+    </div>
+    <div class="surface-layer-toggles" data-layer-controls>
+      <span>Capas:</span>
+      <label><input type="checkbox" data-collapse-families checked> Agrupar familias</label>
+      <label><input type="checkbox" data-layer="provider" checked> CDN / Cloud</label>
+      <label><input type="checkbox" data-layer="technology" checked> Tecnologías</label>
+      <label><input type="checkbox" data-layer="server"> Servidores</label>
+      <label><input type="checkbox" data-layer="ip"> IP observada</label>
+    </div>
+    <div class="surface-result-count"><b data-visible-count>0</b> hosts visibles</div>
+  </div>
+
+  <section class="surface-map-view" data-view-panel="map">
+    <div class="surface-map-shell">
+      <div class="surface-map-stage" data-map-stage>
+        <svg data-surface-svg role="img" aria-label="Mapa de superficie de ataque"></svg>
+        <div class="surface-map-empty" data-map-empty hidden>No hay activos que coincidan con estos filtros.</div>
+      </div>
+      <aside class="surface-detail" data-surface-detail>
+        <div class="surface-detail-empty">
+          <span class="surface-detail-icon">◎</span>
+          <b>Empieza por una rama</b>
+          <p>La vista general agrupa familias. Haz clic para entrar; luego filtra o selecciona un hostname para revisar evidencia.</p>
+        </div>
+      </aside>
+    </div>
+    <div class="surface-legend">
+      <span><i class="line observed"></i> Observado</span>
+      <span><i class="line fingerprint"></i> Fingerprint</span>
+      <span><i class="line heuristic"></i> Heurística</span>
+      <span class="legend-note">Origin permanece <b>desconocido</b> hasta tener evidencia directa.</span>
+    </div>
+  </section>
+
+  <section class="surface-inventory-view" data-view-panel="inventory" hidden>
+    <div class="surface-inventory-head">
+      <div><b>Inventario correlacionado</b><span>Usa filtros para convertir una superficie grande en una pregunta concreta.</span></div>
+      <button class="button ghost" type="button" data-copy-visible>Copiar hosts visibles</button>
+    </div>
+    <div class="surface-host-grid" data-host-grid></div>
+  </section>
+
+  <section class="surface-runs-view" data-view-panel="runs" hidden>
+    <div class="surface-inventory-head"><div><b>Historial de ejecución</b><span>Qué ejecutó Negro, con qué comando y qué resultado produjo.</span></div></div>
+    <div class="surface-run-list" data-run-list></div>
+  </section>
+
+  <section class="surface-foot panel">
+    <div><span class="eyebrow">PRINCIPIO</span><b>Hechos primero. Heurística después. IA para pensar sobre el mapa.</b></div>
+    <p>Negro no continúa automáticamente, no trata una IP de CDN como origin y no convierte fingerprints o agrupaciones en findings.</p>
+  </section>
+</section>
+<script src="/static/surface.js?v={{ version }}"></script>
+{% endblock %}
