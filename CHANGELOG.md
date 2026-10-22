@@ -1,3 +1,9 @@
+# v0.81
+
+- El drill-down de hostname ahora es toggle real: primer clic despliega capas técnicas; segundo clic las recoge sin cerrar la ficha lateral ni mover el viewport.
+- Se añade identidad visual local a tecnologías/proveedores/servidores conocidos (PHP, Node.js, React, Cloudflare, Fastly, AWS, GCP, SAP, Keycloak, etc.) con badge corto y color consistente.
+- La identidad visual no depende de CDNs ni logos externos; tecnologías desconocidas conservan el estilo neutro.
+
 # v0.80
 
 - Corrige Validar DNS para no convertir hosts vivos en NODATA cuando `dnsx` no produce un formato normalizable o cambia de versión.

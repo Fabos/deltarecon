@@ -1035,3 +1035,29 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .surface-env-badge.lab rect{fill:#273126!important;stroke:#89b56f!important}
 .surface-env-badge.sandbox rect{fill:#303021!important;stroke:#bbb26a!important}
 .surface-node.host.selected .surface-env-badge rect{stroke-width:1.35!important}
+
+/* v0.81 · visual identity for surface technology/provider/server nodes */
+.surface-brand-mark{pointer-events:none}.surface-brand-mark rect{stroke-width:1.1!important;vector-effect:non-scaling-stroke}.surface-brand-mark text{font-size:6.5px!important;font-weight:900!important;letter-spacing:.015em;fill:#f4f7fb!important}
+.surface-node.brand-cloudflare rect{fill:#2a2117;stroke:rgba(244,129,32,.62)}.surface-brand-mark.brand-cloudflare rect{fill:#5a2d0c!important;stroke:#f48120!important}
+.surface-node.brand-fastly rect{fill:#2b1719;stroke:rgba(238,73,79,.58)}.surface-brand-mark.brand-fastly rect{fill:#651b20!important;stroke:#ee494f!important}
+.surface-node.brand-aws rect{fill:#272117;stroke:rgba(255,169,48,.52)}.surface-brand-mark.brand-aws rect{fill:#55401b!important;stroke:#ffad32!important}
+.surface-node.brand-gcp rect{fill:#152337;stroke:rgba(66,133,244,.58)}.surface-brand-mark.brand-gcp rect{fill:#183f78!important;stroke:#6ea0f7!important}
+.surface-node.brand-microsoft rect{fill:#15262c;stroke:rgba(69,179,203,.54)}.surface-brand-mark.brand-microsoft rect{fill:#174957!important;stroke:#59c0d6!important}
+.surface-node.brand-platformsh rect{fill:#251b33;stroke:rgba(170,112,230,.54)}.surface-brand-mark.brand-platformsh rect{fill:#4a2567!important;stroke:#b77af0!important}
+.surface-node.brand-keycloak rect{fill:#172a2e;stroke:rgba(84,190,191,.55)}.surface-brand-mark.brand-keycloak rect{fill:#1b5557!important;stroke:#69d1d2!important}
+.surface-node.brand-nextjs rect{fill:#1c1e22;stroke:rgba(220,225,235,.34)}.surface-brand-mark.brand-nextjs rect{fill:#30343a!important;stroke:#e1e5ec!important}
+.surface-node.brand-nodejs rect{fill:#19271b;stroke:rgba(104,160,99,.58)}.surface-brand-mark.brand-nodejs rect{fill:#27532a!important;stroke:#78b975!important}
+.surface-node.brand-react rect{fill:#132830;stroke:rgba(97,218,251,.54)}.surface-brand-mark.brand-react rect{fill:#174b5a!important;stroke:#61dafb!important}
+.surface-node.brand-php rect{fill:#23233a;stroke:rgba(119,123,180,.65)}.surface-brand-mark.brand-php rect{fill:#41436e!important;stroke:#8d90ce!important}
+.surface-node.brand-symfony rect{fill:#202227;stroke:rgba(205,211,220,.38)}.surface-brand-mark.brand-symfony rect{fill:#373b42!important;stroke:#d5dae2!important}
+.surface-node.brand-ibexa rect{fill:#281d31;stroke:rgba(184,113,197,.48)}.surface-brand-mark.brand-ibexa rect{fill:#553061!important;stroke:#ca83d6!important}
+.surface-node.brand-sap rect{fill:#10283c;stroke:rgba(0,157,224,.62)}.surface-brand-mark.brand-sap rect{fill:#07517a!important;stroke:#18a9e8!important}
+.surface-node.brand-salesforce rect{fill:#122a36;stroke:rgba(0,161,224,.52)}.surface-brand-mark.brand-salesforce rect{fill:#07516e!important;stroke:#1bb5ec!important}
+.surface-node.brand-express rect{fill:#202225;stroke:rgba(200,205,215,.34)}.surface-brand-mark.brand-express rect{fill:#3a3d42!important;stroke:#d0d5dd!important}
+.surface-node.brand-apache rect{fill:#2c181d;stroke:rgba(209,73,94,.50)}.surface-brand-mark.brand-apache rect{fill:#642332!important;stroke:#de6175!important}
+.surface-node.brand-nginx rect{fill:#14271b;stroke:rgba(0,150,57,.55)}.surface-brand-mark.brand-nginx rect{fill:#18552d!important;stroke:#2ab85a!important}
+.surface-node.brand-varnish rect{fill:#302115;stroke:rgba(190,126,58,.52)}.surface-brand-mark.brand-varnish rect{fill:#674019!important;stroke:#d8964d!important}
+.surface-node.brand-envoy rect{fill:#20203a;stroke:rgba(112,105,215,.53)}.surface-brand-mark.brand-envoy rect{fill:#41416e!important;stroke:#8780e8!important}
+.surface-node.brand-webpack rect{fill:#132a36;stroke:rgba(96,189,255,.48)}.surface-brand-mark.brand-webpack rect{fill:#164d6c!important;stroke:#78c9ff!important}
+.surface-node.brand-bootstrap rect{fill:#281d38;stroke:rgba(121,82,179,.58)}.surface-brand-mark.brand-bootstrap rect{fill:#4b2d72!important;stroke:#9069c7!important}
+.surface-node.brand-jquery rect{fill:#16263a;stroke:rgba(7,105,173,.58)}.surface-brand-mark.brand-jquery rect{fill:#174878!important;stroke:#278acb!important}

@@ -45,6 +45,37 @@
     return 'unknown';
   };
   const envClass = env => String(env || 'UNKNOWN').toLowerCase();
+  const brandVisual = value => {
+    const text=String(value||'').toLowerCase();
+    const rules=[
+      [/cloudflare/,['cloudflare','CF']],
+      [/fastly/,['fastly','F']],
+      [/amazon web services|amazon cloudfront|amazon s3|amazon alb|aws/,['aws','AWS']],
+      [/google cloud/,['gcp','GCP']],
+      [/microsoft asp\.net|asp\.net|microsoft iis|iis windows|microsoft-httpapi|office365|microsoft/,['microsoft','MS']],
+      [/platform\.sh/,['platformsh','P.SH']],
+      [/keycloak/,['keycloak','KC']],
+      [/next\.js|nextjs/,['nextjs','N']],
+      [/node\.js|nodejs/,['nodejs','JS']],
+      [/react/,['react','⚛']],
+      [/php/,['php','PHP']],
+      [/symfony/,['symfony','SF']],
+      [/ibexa/,['ibexa','IX']],
+      [/sap/,['sap','SAP']],
+      [/salesforce/,['salesforce','SFDC']],
+      [/express/,['express','EX']],
+      [/apache/,['apache','AP']],
+      [/nginx/,['nginx','NG']],
+      [/varnish/,['varnish','V']],
+      [/envoy/,['envoy','EV']],
+      [/cloudfront/,['aws','AWS']],
+      [/webpack/,['webpack','WP']],
+      [/bootstrap/,['bootstrap','BS']],
+      [/jquery/,['jquery','jQ']]
+    ];
+    for(const [re,v] of rules){if(re.test(text))return {key:v[0],icon:v[1]};}
+    return null;
+  };
 
   function fillSelect(name, values){
     const el = root.querySelector(`[data-filter="${name}"]`);
@@ -217,15 +248,24 @@
 
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
-      const g=svgEl('g',{class:`surface-node ${n.type}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const brand=['provider','technology','server'].includes(n.type)?brandVisual(n.label):null;
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
-      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?190:190;
+      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?190:(brand?210:190);
       const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?40:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
       const hostTextX=showHostEnv?(-w/2+21):0;
-      const text=svgEl('text',{x:hostTextX,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':showHostEnv?'start':'middle'});
-      text.textContent=short(n.label,n.type==='host'?(showHostEnv?27:31):28); g.appendChild(text);
+      const branded=!!brand && n.type!=='host';
+      const textX=branded?(-w/2+44):hostTextX;
+      const text=svgEl('text',{x:textX,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':branded||showHostEnv?'start':'middle'});
+      text.textContent=short(n.label,n.type==='host'?(showHostEnv?27:31):(branded?24:28)); g.appendChild(text);
+      if(branded){
+        const mark=svgEl('g',{class:`surface-brand-mark brand-${brand.key}`,transform:`translate(${-w/2+22} 0)`});
+        mark.appendChild(svgEl('rect',{x:-15,y:-10,width:30,height:20,rx:7}));
+        const markText=svgEl('text',{x:0,y:3,'text-anchor':'middle'});markText.textContent=brand.icon;mark.appendChild(markText);
+        g.appendChild(mark);
+      }
       if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts${expandedFamilies.has(n.key)?' · abierto':''}`;g.appendChild(count);}
       if(n.type==='host'){
         const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);
@@ -242,12 +282,15 @@
       const activateNode=()=>{
         if(n.type==='family'){toggleFamily(n.key);return;}
         if(n.type==='host'){
+          const wasExpanded=expandedHosts.has(n.key);
           selectedHost=n.key;
-          expandedHosts.add(n.key);
+          if(wasExpanded) expandedHosts.delete(n.key);
+          else expandedHosts.add(n.key);
           renderDetail(n.meta);
           renderGraph();
-          // Preserve the user's current pan/zoom when drilling into a host.
-          // Re-centering is now explicit via the Ajustar/Layout controls.
+          // Host drill-down is a true toggle: first click opens technical layers,
+          // second click folds them back while keeping the evidence panel selected.
+          // The user's current pan/zoom remains untouched.
           return;
         }
         renderNodeDetail(n,scene);
