@@ -34,8 +34,9 @@
         <summary>+ Añadir dominio al proyecto / target</summary>
         <form method="post" action="{{ target_base }}/surface/scope/add">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <input type="text" name="new_root" placeholder="otro-dominio.com" required>
-          <label><input type="checkbox" name="confirm_scope" value="yes" required> Confirmo que pertenece al alcance autorizado</label>
+          <input type="text" name="new_root" placeholder="otro-dominio.com o www.otro-dominio.com" required>
+          <small class="muted">Si escribes <code>www.ejemplo.com</code>, Negro conserva ese host como seed pero enumerará desde <code>ejemplo.com</code>.</small>
+          <label><input type="checkbox" name="confirm_scope" value="yes" required> Confirmo que el root de recon resultante y sus subdominios pertenecen al alcance autorizado</label>
           <button class="button" type="submit">Añadir target</button>
         </form>
       </details>
@@ -53,11 +54,12 @@
         <h3>{{ phase.title }}</h3>
         <p>{{ phase.subtitle }}</p>
         <div class="surface-phase-count"><strong>{{ phase.count }}</strong><span>{{ phase.count_label }}</span></div>
+        {% if phase.coverage %}<div class="surface-phase-coverage"><span>Cobertura de fuentes</span><b>{{ phase.coverage.success }}/{{ phase.coverage.total }}</b><small>{{ phase.coverage.executed }} ejecutadas · {{ phase.coverage.available }} disponibles localmente</small></div>{% endif %}
         {% if phase.secondary_counts %}<div class="surface-phase-secondary">{% for key,value in phase.secondary_counts.items() %}<span>{{ key }} <b>{{ value }}</b></span>{% endfor %}</div>{% endif %}
         {% if phase.prior_evidence %}<div class="surface-prior-evidence">Hay resultados previos, pero este paso todavía no está validado dentro de la secuencia guiada.</div>{% endif %}
         <a class="surface-phase-open" href="{{ target_base }}/surface/phase/{{ phase.key }}?root={{ surface.root_domain | urlencode }}">Ver resultado y evidencia →</a>
         {% if phase.state == 'ready' and phase.tool_ok %}
-        <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action">
+        <form method="post" action="{{ target_base }}/surface/run" class="surface-phase-action" data-recon-run data-loading-label="Ejecutando {{ phase.title }}…" data-loading-tools="{{ phase.tool }}">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="phase" value="{{ phase.key }}">
           <input type="hidden" name="root" value="{{ surface.root_domain }}">
@@ -209,5 +211,6 @@
     <p>Negro no continúa automáticamente, no trata una IP de CDN como origin y no convierte fingerprints o agrupaciones en findings.</p>
   </section>
 </section>
+<script src="/static/recon_loading.js?v={{ version }}"></script>
 <script src="/static/surface.js?v={{ version }}"></script>
 {% endblock %}

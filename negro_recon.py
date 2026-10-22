@@ -647,15 +647,113 @@ def run_root_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
     return {"phase": "root", "status": "ok" if ok else "error", "tools_ok": ok, "tools_total": len(results)}
 
 
-def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240, run_group: str = "") -> dict:
-    binary = _tool_path("subfinder")
-    if not binary:
-        raise RuntimeError("Subfinder no está instalado o no está disponible en PATH.")
-    cmd = [binary, "-d", root_domain, "-all", "-silent"]
-    run = _run_tool(conn, paths, "discovery", "subfinder", cmd, timeout=timeout, root_domain=root_domain, run_group=run_group)
-    if run["status"] != "ok": raise RuntimeError(run["error"] or "Subfinder falló")
-    result = import_subfinder_text(conn, run["stdout"], root_domain, "surface-run:subfinder")
-    return {"phase": "discovery", **result, "command": cmd}
+def _historical_hosts_from_text(text: str, root_domain: str) -> list[str]:
+    """Extract first-party hostnames from URL-oriented historical output.
+
+    GAU and similar tools primarily return URLs.  Discovery only imports the
+    hostname portion here; paths stay raw evidence for the later historical /
+    content-correlation phase.
+    """
+    root = root_domain.lower().rstrip(".")
+    out: set[str] = set()
+    for raw in (text or "").splitlines():
+        value = raw.strip()
+        if not value:
+            continue
+        host = ""
+        try:
+            parsed = urlsplit(value if "://" in value else "//" + value)
+            host = (parsed.hostname or "").lower().rstrip(".")
+        except Exception:
+            host = ""
+        if host and host != root and host.endswith("." + root):
+            out.add(host)
+    return sorted(out)
+
+
+def _discovery_source_counts(conn: sqlite3.Connection, root_domain: str) -> dict[str, int]:
+    root = root_domain.lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT e.source, COUNT(DISTINCT e.asset_id) c
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.kind='discovered_hostname' AND a.asset_type='hostname'
+             AND a.asset_key!=? AND a.asset_key LIKE ?
+           GROUP BY e.source""",
+        (root, "%." + root),
+    ).fetchall()
+    return {str(r["source"]): int(r["c"] or 0) for r in rows}
+
+
+def run_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
+    """Composite hostname discovery.
+
+    One source returning zero names never means the domain has no additional
+    surface.  Run every locally available passive/historical source and merge
+    candidates before DNS validation.  Every command is persisted as its own
+    recon_tool_run inside the same run_group so the audit page can show exactly
+    what each source returned.
+    """
+    root = root_domain.lower().rstrip(".")
+    successes = 0
+    attempted = 0
+    source_results: list[dict] = []
+
+    subfinder = _tool_path("subfinder")
+    if subfinder:
+        attempted += 1
+        cmd = [subfinder, "-d", root, "-all", "-silent"]
+        run = _run_tool(conn, paths, "discovery", "subfinder", cmd, timeout=timeout, root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            result = import_subfinder_text(conn, run["stdout"], root, "surface-run:subfinder")
+            successes += 1
+            source_results.append({"source":"subfinder", **result})
+
+    curl = _tool_path("curl")
+    if curl:
+        attempted += 1
+        query = f"https://crt.sh/?q=%25.{root}&output=json"
+        cmd = [curl, "-fsSL", "--max-time", str(min(timeout, 180)), query]
+        run = _run_tool(conn, paths, "discovery", "crt.sh", cmd, timeout=min(timeout, 190), root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            hosts = [h for h in _crtsh_hosts(run["stdout"], root) if h != root]
+            result = import_discovered_hosts(conn, hosts, root, "crtsh", "surface-run:crtsh")
+            successes += 1
+            source_results.append({"source":"crtsh", **result})
+
+    amass = _tool_path("amass")
+    if amass:
+        attempted += 1
+        cmd = [amass, "enum", "-passive", "-d", root]
+        run = _run_tool(conn, paths, "discovery", "amass", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()]
+            result = import_discovered_hosts(conn, hosts, root, "amass", "surface-run:amass")
+            successes += 1
+            source_results.append({"source":"amass", **result})
+
+    gau = _tool_path("gau")
+    if gau:
+        attempted += 1
+        cmd = [gau, "--subs", root]
+        run = _run_tool(conn, paths, "discovery", "gau", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
+        if run["status"] == "ok":
+            hosts = _historical_hosts_from_text(run["stdout"], root)
+            result = import_discovered_hosts(conn, hosts, root, "gau_historical", "surface-run:gau")
+            successes += 1
+            source_results.append({"source":"gau_historical", **result})
+
+    if attempted == 0:
+        raise RuntimeError("No hay fuentes de discovery disponibles. Instala Subfinder, Amass o GAU, o habilita curl para consultar Certificate Transparency.")
+    if successes == 0:
+        raise RuntimeError("Las fuentes disponibles se ejecutaron, pero ninguna terminó correctamente. Revisa stdout/stderr en el detalle del paso.")
+
+    unique_candidates = len(_first_party_hostnames(conn, root))
+    if root in _first_party_hostnames(conn, root):
+        unique_candidates = max(0, unique_candidates - 1)
+    return {
+        "phase": "discovery", "records": unique_candidates, "sources_ok": successes,
+        "sources_attempted": attempted, "source_results": source_results,
+    }
 
 
 def _crtsh_hosts(raw: str, root_domain: str) -> list[str]:
@@ -681,41 +779,9 @@ def _crtsh_hosts(raw: str, root_domain: str) -> list[str]:
     return sorted(out)
 
 
-def run_expand_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240, run_group: str = "") -> dict:
-    """Expand passive hostname discovery with independent public sources.
-
-    crt.sh is always attempted through curl when available. Amass passive is
-    additive when installed; one source succeeding is enough for the phase.
-    """
-    root = root_domain.lower().rstrip(".")
-    total = errors = 0
-    successes = 0
-    commands: list[list[str]] = []
-
-    curl = _tool_path("curl")
-    if curl:
-        query = f"https://crt.sh/?q=%25.{root}&output=json"
-        cmd = [curl, "-fsSL", "--max-time", str(min(timeout, 180)), query]
-        commands.append(cmd)
-        run = _run_tool(conn, paths, "discovery_expand", "crt.sh", cmd, timeout=min(timeout, 190), root_domain=root, run_group=run_group)
-        if run["status"] == "ok":
-            hosts = _crtsh_hosts(run["stdout"], root)
-            result = import_discovered_hosts(conn, hosts, root, "crtsh", "surface-run:crtsh")
-            total += int(result["records"]); errors += int(result["errors"]); successes += 1
-
-    amass = _tool_path("amass")
-    if amass:
-        cmd = [amass, "enum", "-passive", "-d", root]
-        commands.append(cmd)
-        run = _run_tool(conn, paths, "discovery_expand", "amass", cmd, timeout=max(timeout, 300), root_domain=root, run_group=run_group)
-        if run["status"] == "ok":
-            hosts = [x.strip() for x in run["stdout"].splitlines() if x.strip()]
-            result = import_discovered_hosts(conn, hosts, root, "amass", "surface-run:amass")
-            total += int(result["records"]); errors += int(result["errors"]); successes += 1
-
-    if successes == 0:
-        raise RuntimeError("No pude ampliar el descubrimiento: crt.sh y Amass no produjeron una ejecución válida.")
-    return {"phase": "discovery_expand", "records": total, "errors": errors, "sources_ok": successes, "commands": commands}
+def run_expand_discovery_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 300, run_group: str = "") -> dict:
+    """Backward-compatible alias for pre-v0.84 discovery enrichment actions."""
+    return run_discovery_phase(conn, root_domain, paths, timeout=timeout, run_group=run_group)
 
 
 def _write_target_list(paths: dict, phase: str, hosts: list[str]) -> Path:
@@ -987,32 +1053,33 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     nodata = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NODATA")
     nxdomain = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NXDOMAIN")
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
-    expanded = int(conn.execute(
-        """SELECT COUNT(DISTINCT e.asset_id) c FROM recon_evidence e
-           JOIN recon_assets a ON a.id=e.asset_id
-           WHERE e.source IN ('crtsh','amass') AND a.asset_type='hostname'
-             AND (a.asset_key=? OR a.asset_key LIKE ?)""",
-        (root, "%." + root),
-    ).fetchone()["c"] or 0)
+    discovery_counts = _discovery_source_counts(conn, root)
+    discovery_sources_with_evidence = sum(1 for key in ("subfinder","crtsh","amass","gau_historical") if discovery_counts.get(key, 0) > 0)
     root_ev = int(conn.execute(
         """SELECT COUNT(*) c FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
            WHERE e.source='root_recon' AND a.asset_type='hostname' AND a.asset_key=?""",
         (root,),
     ).fetchone()["c"] or 0)
     tooling = tool_inventory()
-    phase_keys = ("root","discovery","discovery_expand","dns","http","tls","historical","web","infra","services")
+    phase_keys = ("root","discovery","discovery_expand","dns","http","tls","web","historical","infra","deep","services")
     bundles = {key: _phase_run_bundle(conn, key, root) for key in phase_keys}
 
+    discovery_available = sum(1 for name in ("subfinder","curl","amass","gau") if tooling.get(name,{}).get("available"))
+    discovery_latest_runs = list(bundles["discovery"].get("runs") or [])
+    discovery_last_tools = {str(r.get("tool")) for r in discovery_latest_runs}
+    discovery_executed = sum(1 for tool in ("subfinder","crt.sh","amass","gau") if tool in discovery_last_tools)
+    discovery_success = sum(1 for r in discovery_latest_runs if str(r.get("tool")) in {"subfinder","crt.sh","amass","gau"} and str(r.get("status")) == "ok")
     specs = [
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
-        {"key":"discovery","title":"Descubrimiento de subdominios","subtitle":"Subfinder · candidatos pasivos","count":discovered,"count_label":"hosts candidatos","implemented":True,"tool_ok":tooling["subfinder"]["available"],"tool_names":["subfinder"],"optional_tool_names":["curl","amass"],"purpose":"Descubrir nombres candidatos sin asumir que siguen vivos. crt.sh/Amass son enriquecimiento opcional y no bloquean el siguiente paso.","secondary_counts":{"evidencia extra":expanded}},
+        {"key":"discovery","title":"Descubrimiento de superficie","subtitle":"Subfinder · CT · Amass · históricos","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","amass","gau"],"purpose":"Cruzar fuentes pasivas e históricas antes de DNS. Cero resultados en una fuente no significa que no exista más superficie.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Amass":discovery_counts.get("amass",0),"Históricos":discovery_counts.get("gau_historical",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":4}},
         {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
         {"key":"tls","title":"TLS y certificados","subtitle":"SAN / issuer / fechas / relaciones","count":0,"count_label":"certificados","implemented":False,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Encontrar nombres y relaciones adicionales en certificados sin confundirlos con hosts activos."},
-        {"key":"historical","title":"Históricos y URLs","subtitle":"GAU / Wayback · rutas y hosts históricos","count":0,"count_label":"URLs históricas","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Recuperar superficie histórica y rutas que no aparecen enlazadas actualmente."},
-        {"key":"web","title":"Profundizar superficie web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar una rama elegida: rutas, well-known, enlaces y JavaScript, sin barrer todo a ciegas."},
+        {"key":"web","title":"Descubrimiento web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar hosts HTTP vivos y permitir que robots, sitemap, crawling y JavaScript retroalimenten nuevos hostnames."},
+        {"key":"historical","title":"Históricos y contenido","subtitle":"rutas antiguas · endpoints · correlación","count":0,"count_label":"artefactos históricos","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Reutilizar históricos para rutas/endpoints y contexto temporal; los hostnames históricos ya alimentan Discovery."},
         {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Decidir qué IP es edge compartido, SaaS o candidata real a infraestructura directa."},
-        {"key":"services","title":"Servicios","subtitle":"Nmap · sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","implemented":False,"tool_ok":tooling["nmap"]["available"],"tool_names":["nmap"],"purpose":"Enumerar puertos únicamente después de confirmar que el objetivo no es un CDN/SaaS compartido."},
+        {"key":"deep","title":"Enumeración profunda","subtitle":"rama elegida · señales de alto valor","count":0,"count_label":"ramas priorizadas","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Profundizar únicamente ramas priorizadas usando el contexto acumulado, sin barrer toda la superficie a ciegas."},
+        {"key":"services","title":"Servicios / Nmap","subtitle":"sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","implemented":False,"tool_ok":tooling["nmap"]["available"],"tool_names":["nmap"],"purpose":"Enumerar puertos únicamente después de confirmar que el objetivo no es un CDN/SaaS compartido."},
     ]
 
     out=[]
@@ -1095,19 +1162,38 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
         return None
     runs=[]
     run_items=list(phase.get("latest_runs") or [])
-    if phase_key=="discovery":
-        run_items += list(_phase_run_bundle(conn, "discovery_expand", root_domain).get("runs") or [])
+    if phase_key=="discovery" and len(run_items) <= 1:
+        # Preserve visibility of pre-v0.84 optional enrichment runs until the
+        # user executes the new composite discovery once.
+        legacy = list(_phase_run_bundle(conn, "discovery_expand", root_domain).get("runs") or [])
+        seen = {int(x.get("id") or 0) for x in run_items}
+        run_items += [x for x in legacy if int(x.get("id") or 0) not in seen]
     for item in run_items:
         run=dict(item)
         run["stdout_full"]=_read_run_text(run.get("stdout_path"))
         run["stderr_full"]=_read_run_text(run.get("stderr_path"))
+        if phase_key == "discovery":
+            raw = run.get("stdout_full") or ""
+            tool = str(run.get("tool") or "")
+            root = root_domain.lower().rstrip(".")
+            if tool == "subfinder":
+                hosts = {x.strip().lower().rstrip(".") for x in raw.splitlines() if x.strip()}
+                hosts = {h for h in hosts if h != root and h.endswith("." + root)}
+                run["normalized_count"] = len(hosts)
+            elif tool == "crt.sh":
+                run["normalized_count"] = len([h for h in _crtsh_hosts(raw, root) if h != root])
+            elif tool == "amass":
+                hosts = {x.strip().lower().rstrip(".") for x in raw.splitlines() if x.strip()}
+                run["normalized_count"] = len({h for h in hosts if h != root and h.endswith("." + root)})
+            elif tool == "gau":
+                run["normalized_count"] = len(_historical_hosts_from_text(raw, root))
         runs.append(run)
     normalized=[]
     root=root_domain.lower().rstrip(".")
     if phase_key in {"discovery","discovery_expand","dns","http"}:
         data=surface_data(conn, root_domain)
         for h in data.get("hosts",[]):
-            if phase_key=="discovery" and not ({"subfinder","crtsh","amass"} & set(h.get("sources") or [])):
+            if phase_key=="discovery" and not ({"subfinder","crtsh","amass","gau_historical"} & set(h.get("sources") or [])):
                 continue
             if phase_key=="discovery_expand" and not ({"crtsh","amass"} & set(h.get("sources") or [])):
                 continue
@@ -1124,7 +1210,26 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
                ORDER BY e.id""",(root,)).fetchall()
         for row in rows:
             normalized.append({"kind":row["kind"],"value":row["value"],"payload":_loads(row["raw_json"]),"observed_at":row["observed_at"]})
-    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain}
+    source_summary=[]
+    if phase_key=="discovery":
+        counts=_discovery_source_counts(conn, root)
+        latest_by_tool={str(r.get("tool")):r for r in runs}
+        inventory=tool_inventory()
+        definitions=[
+            ("subfinder","Subfinder","subfinder",bool(inventory.get("subfinder",{}).get("available"))),
+            ("crtsh","Certificate Transparency · crt.sh","crt.sh",bool(inventory.get("curl",{}).get("available"))),
+            ("amass","Amass passive","amass",bool(inventory.get("amass",{}).get("available"))),
+            ("gau_historical","Históricos · GAU","gau",bool(inventory.get("gau",{}).get("available"))),
+        ]
+        for source,label,tool,available in definitions:
+            run=latest_by_tool.get(tool)
+            source_summary.append({
+                "source":source,"label":label,"tool":tool,"available":available,
+                "executed":bool(run),"status":str(run.get("status")) if run else "",
+                "raw_count":int(run.get("record_count") or 0) if run else 0,
+                "normalized_count":int((run or {}).get("normalized_count") if run and (run or {}).get("normalized_count") is not None else counts.get(source,0)),
+            })
+    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary}
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     out = []

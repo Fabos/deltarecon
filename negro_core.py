@@ -158,6 +158,34 @@ def normalize_scopes(scopes: Iterable[str] | None, fallback_domain: str | None =
     return values
 
 
+def normalize_recon_root(scope: str | None) -> str | None:
+    """Normalize a user-selected recon root without silently widening arbitrary scopes.
+
+    A common UX mistake is pasting ``www.example.com`` when the intention is to
+    enumerate the domain tree rooted at ``example.com``.  Treat only the
+    conventional ``www.`` label specially.  Other subdomains (``api.``,
+    ``qa.``, delegated zones, etc.) remain explicit roots because promoting
+    those to the parent domain could widen authorization unexpectedly.
+    """
+    value = normalize_scope(scope or "")
+    if value and value.startswith("www.") and value.count(".") >= 2:
+        parent = value[4:]
+        return parent or value
+    return value
+
+
+def normalize_recon_roots(scopes: Iterable[str] | None, fallback_domain: str | None = None) -> list[str]:
+    values: list[str] = []
+    for item in scopes or []:
+        value = normalize_recon_root(item)
+        if value and value not in values:
+            values.append(value)
+    fallback = normalize_recon_root(fallback_domain or "")
+    if fallback and fallback not in values:
+        values.insert(0, fallback)
+    return values
+
+
 def host_matches_scope(host: str, scope: str) -> bool:
     host = str(host or "").strip().lower().rstrip(".")
     scope = normalize_scope(scope) or ""
@@ -3290,7 +3318,7 @@ def register_target(domain: str, workspace: Path, make_current: bool = True, *, 
     existing = data.setdefault("targets", {}).get(key, {})
     roots = normalize_scopes(scopes if scopes is not None else existing.get("scopes"), domain)
     display_name = str(name if name is not None else existing.get("name") or domain).strip()[:120]
-    explicit_recon_roots = normalize_scopes(recon_roots if recon_roots is not None else existing.get("recon_roots"), domain)
+    explicit_recon_roots = normalize_recon_roots(recon_roots if recon_roots is not None else existing.get("recon_roots"), domain)
     data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, "recon_roots": explicit_recon_roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
     if make_current:
         data["last_target"] = key
@@ -3312,7 +3340,7 @@ def update_target_project(key: str, *, name: str | None = None, scopes: Iterable
     target["domain"] = normalize_scope(target.get("domain")) or roots[0]
     target["name"] = str(name if name is not None else target.get("name") or target["domain"]).strip()[:120]
     target["scopes"] = roots
-    target["recon_roots"] = normalize_scopes(recon_roots if recon_roots is not None else target.get("recon_roots"), target["domain"])
+    target["recon_roots"] = normalize_recon_roots(recon_roots if recon_roots is not None else target.get("recon_roots"), target["domain"])
     data["targets"][key] = target
     targets_save(data)
     workspace = Path(str(target.get("workspace") or "")).expanduser()
@@ -3341,7 +3369,7 @@ def get_target(key: str) -> dict | None:
     out = dict(target)
     out.setdefault("name", out.get("domain", key))
     out["scopes"] = normalize_scopes(out.get("scopes") if isinstance(out.get("scopes"), list) else [], out.get("domain"))
-    out["recon_roots"] = normalize_scopes(out.get("recon_roots") if isinstance(out.get("recon_roots"), list) else [], out.get("domain"))
+    out["recon_roots"] = normalize_recon_roots(out.get("recon_roots") if isinstance(out.get("recon_roots"), list) else [], out.get("domain"))
     return out
 
 
@@ -3352,7 +3380,7 @@ def list_targets() -> list[dict]:
     for key, target in sorted(data.get("targets", {}).items(), key=lambda item: str(item[1].get("name") or item[1].get("domain") or item[0]).lower()):
         domain = target.get("domain", key)
         scopes = normalize_scopes(target.get("scopes") if isinstance(target.get("scopes"), list) else [], domain)
-        recon_roots = normalize_scopes(target.get("recon_roots") if isinstance(target.get("recon_roots"), list) else [], domain)
+        recon_roots = normalize_recon_roots(target.get("recon_roots") if isinstance(target.get("recon_roots"), list) else [], domain)
         result.append({"key": key, "name": target.get("name") or domain, "domain": domain, "scopes": scopes, "recon_roots": recon_roots, "workspace": target.get("workspace", ""), "current": key == current})
     return result
 

@@ -1,3 +1,13 @@
+# v0.84 · Composite Discovery + execution feedback
+
+- Paso 02 deja de equivaler a Subfinder: ahora cruza todas las fuentes locales disponibles antes de DNS.
+- Discovery integra Subfinder, Certificate Transparency (`crt.sh` vía curl), Amass passive y hostnames extraídos de históricos con GAU.
+- Cada herramienta se guarda como ejecución independiente dentro del mismo run group: comando exacto, rc, stdout, stderr y archivos crudos.
+- El detalle muestra cobertura de fuentes, líneas crudas y hostnames únicos normalizados por herramienta; cero resultados en una fuente no se interpreta como ausencia de superficie.
+- GAU aporta hostnames en Discovery; sus rutas/endpoints quedan conceptualmente reservados para la fase posterior de Históricos y contenido.
+- Se añade loading bloqueante con spinner al lanzar fases de recon para evitar la sensación de página congelada y dobles ejecuciones.
+- Secuencia guiada ampliada a 10 pasos: Root → Discovery → DNS → HTTP → TLS → Web → Históricos/contenido → Infra → Deep Enumeration → Servicios/Nmap.
+
 # v0.82 · Multi-target map + faceted filters
 
 - Superficie puede representar varios recon roots del mismo proyecto en un único grafo: PROJECT → ROOT → FAMILY → HOST → CONTEXT.
@@ -2162,3 +2172,10 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Host nodes now display compact environment badges directly in the graph for known environments (`DEV`, `QA`, `STG`, `PROD`, etc.).
 - `UNKNOWN` is intentionally not rendered as a badge to keep the graph clean.
 - Host node spacing/label reservation adapts when a badge is present so environment context does not cover the hostname.
+
+## v0.83 — Recon root normalization
+- `www.example.com` added as a recon target is normalized to `example.com` for domain-tree enumeration.
+- The exact `www.*` hostname is preserved as a manual seed/evidence item.
+- Existing `www.*` recon roots self-heal in Surface navigation and old `?root=www.*` URLs resolve to the canonical recon root.
+- Arbitrary subdomains such as `api.example.com` are NOT silently promoted to the parent domain, avoiding accidental scope widening.
+- Target-add UI explains the effective recon root and authorization implication.

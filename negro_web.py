@@ -5576,8 +5576,8 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("recon_roots"), domain)
-        selected_root = core.normalize_scope(root) if root else domain
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
         if selected_root not in roots:
             selected_root = domain
         with _db(paths) as conn:
@@ -5592,8 +5592,8 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("recon_roots"), domain)
-        selected_root = core.normalize_scope(root) if root else domain
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
         if selected_root not in roots:
             raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
         with _db(paths) as conn:
@@ -5615,8 +5615,8 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_recon as recon
         domain, workspace, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
-        roots = core.normalize_scopes(target.get("recon_roots"), domain)
-        selected_root = core.normalize_scope(root) if root else domain
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
         if selected_root not in roots:
             selected_root = domain
         with _db(paths) as conn:
@@ -5632,8 +5632,8 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_recon as recon
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("recon_roots"), domain)
-        selected_root = core.normalize_scope(root) if root else domain
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
         if selected_root not in roots:
             selected_root = domain
         with _db(paths) as conn:
@@ -5647,8 +5647,8 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
         target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
-        roots = core.normalize_scopes(target.get("recon_roots"), domain)
-        selected_root = core.normalize_scope(root) if root else domain
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
         if selected_root not in roots:
             raise HTTPException(status_code=400, detail="Root fuera de los roots de recon del proyecto")
         raw = await recon_file.read()
@@ -5673,13 +5673,17 @@ def create_app(default_domain: str, default_workspace: Path):
         target = core.get_target(target_key)
         if not target:
             raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-        root = core.normalize_scope(new_root)
-        if not root or not DOMAIN_RE.fullmatch(root):
+        seed = core.normalize_scope(new_root)
+        root = core.normalize_recon_root(new_root)
+        if not seed or not root or not DOMAIN_RE.fullmatch(seed) or not DOMAIN_RE.fullmatch(root):
             raise HTTPException(status_code=400, detail="Dominio inválido")
         scopes = core.normalize_scopes(target.get("scopes"), target.get("domain"))
-        recon_roots = core.normalize_scopes(target.get("recon_roots"), target.get("domain"))
-        if root not in scopes:
-            scopes.append(root)
+        recon_roots = core.normalize_recon_roots(target.get("recon_roots"), target.get("domain"))
+        # Preserve the exact seed host as authorized evidence, while the
+        # conventional www.* form enumerates from the parent recon root.
+        for scoped in (seed, root):
+            if scoped not in scopes:
+                scopes.append(scoped)
         if root not in recon_roots:
             recon_roots.append(root)
         updated = core.update_target_project(
@@ -5694,6 +5698,27 @@ def create_app(default_domain: str, default_workspace: Path):
             scopes=scopes,
             project_name=updated.get("name") or target.get("name") or target.get("domain"),
         )
+        if seed != root:
+            import negro_recon as recon
+            _, _, paths = _target_context(target_key)
+            with _db(paths) as conn:
+                recon.init_schema(conn)
+                env, env_conf = recon.detect_environment(seed)
+                hid = recon.upsert_asset(
+                    conn,
+                    "hostname",
+                    seed,
+                    seed,
+                    {
+                        "sources": ["manual_seed"],
+                        "environment": env,
+                        "environment_confidence": env_conf,
+                        "family": recon._family_stem(seed, root),
+                        "dns_state": "DISCOVERED",
+                    },
+                )
+                recon.add_evidence(conn, hid, "manual_seed", "seed_hostname", seed, {"hostname": seed, "recon_root": root})
+                conn.commit()
         return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(root)}", status_code=303)
 
     @app.get("/t/{target_key}/surface/run/{run_id}/output/{stream}", response_class=PlainTextResponse)

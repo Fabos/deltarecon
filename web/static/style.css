@@ -1076,3 +1076,16 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .surface-root-mini{color:#91b8ff!important;border:1px solid rgba(113,157,255,.14);background:rgba(92,138,225,.055)!important}
 @media(max-width:1500px){.surface-toolbar{grid-template-columns:minmax(240px,1.4fr) repeat(3,minmax(150px,1fr))}}
 @media(max-width:1050px){.surface-toolbar{grid-template-columns:repeat(2,minmax(150px,1fr))}.surface-search{grid-column:1/-1}}
+
+
+/* Guided recon v0.84: execution feedback + multi-source discovery audit */
+.surface-phase-coverage{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:7px 8px;border:1px solid rgba(112,155,255,.12);border-radius:8px;background:rgba(112,155,255,.035)}
+.surface-phase-coverage span,.surface-phase-coverage small{font-size:.62rem;color:#8391a5}.surface-phase-coverage b{color:#9fc0ff}.surface-phase-coverage.large{width:max-content;max-width:100%}
+.surface-discovery-source-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px;margin-top:10px}
+.surface-discovery-source{display:grid;gap:5px;padding:11px;border:1px solid rgba(255,255,255,.06);border-radius:10px;background:rgba(255,255,255,.015)}
+.surface-discovery-source>div{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.surface-discovery-source>div b{font-size:.75rem}.surface-discovery-source>div span{font-size:.56rem;letter-spacing:.07em;color:#7f8ba0}.surface-discovery-source strong{font-size:1.35rem}.surface-discovery-source small{color:#7f8da1;font-size:.64rem}
+.surface-discovery-source.ok{border-color:rgba(91,211,151,.2)}.surface-discovery-source.ok>div span{color:#70d6a3}.surface-discovery-source.error{border-color:rgba(255,126,126,.2)}.surface-discovery-source.error>div span{color:#f0a3a3}.surface-discovery-source.missing{opacity:.58}
+.recon-loading-overlay[hidden]{display:none!important}.recon-loading-overlay{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:rgba(5,8,13,.76);backdrop-filter:blur(4px)}
+.recon-loading-card{width:min(560px,calc(100vw - 36px));display:grid;grid-template-columns:46px 1fr;gap:16px;align-items:start;padding:20px;border:1px solid rgba(112,155,255,.28);border-radius:16px;background:#0c111a;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.recon-loading-card h2{margin:.2rem 0 .35rem;font-size:1.05rem}.recon-loading-card p,.recon-loading-card small{margin:0;color:#8e9bad}.recon-loading-spinner{width:34px;height:34px;border-radius:50%;border:3px solid rgba(112,155,255,.18);border-top-color:#7aa7ff;animation:reconSpin .85s linear infinite}
+@keyframes reconSpin{to{transform:rotate(360deg)}}.recon-is-loading{cursor:progress}
