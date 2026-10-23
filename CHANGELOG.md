@@ -1,3 +1,10 @@
+# v0.99 — Graph architecture cleanup
+
+- Deduplicate CDN/webserver fingerprints: `cloudflare` server fingerprints no longer create a second Cloudflare node when an architectural Cloudflare provider already exists.
+- Group security controls under a collapsible `SECURITY CONTROLS · N` node.
+- Group non-edge historical addresses under a collapsible `HISTORICAL INFRA · N` node; historical IPs remain evidence, not service targets.
+- Keep the first-level host architecture focused on EDGE/CDN, controls, technologies and confirmed direct/bypass paths.
+
 # v0.98 — SaaS normalization + clean edge architecture
 
 - Corrige el caso real `SALESF-3`: WHOIS ahora prefiere `Organization/OrgName` sobre `NetName`, por lo que Salesforce se reconoce como SaaS aunque ARIN muestre primero un identificador corto.

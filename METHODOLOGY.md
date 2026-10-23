@@ -465,3 +465,15 @@ A partir de v0.97, `ROOT` representa el target/scope y no un servidor. El hostna
 ### Normalización visual de edge y terceros
 
 Una misma observación puede llegar por DNS, fingerprint HTTP, WHOIS e Infrastructure Classification. Negro deduplica esos caminos: un proveedor edge aparece una sola vez por hostname y conserva las múltiples evidencias en el detalle. Controles como HSTS/Bot Management no se interpretan como backends. Las IPs actuales e históricas del edge se agrupan para conservar contexto sin convertir IPs compartidas en targets. Ownership SaaS reconocido tiene precedencia sobre coincidencias Host/SNI/contenido para evitar recomendar infraestructura de terceros para Nmap.
+
+## v0.99 — Compact architecture graph
+
+The attack-surface graph keeps architectural meaning above raw evidence density:
+
+- duplicate CDN webserver fingerprints are suppressed when the CDN/provider node already exists;
+- security controls (for example HSTS and Cloudflare Bot Management) are grouped under a collapsible `SECURITY CONTROLS` branch;
+- non-edge historical addresses are grouped under `HISTORICAL INFRA` and stay collapsed by default;
+- current/historical CDN edge addresses remain grouped under the CDN;
+- confirmed direct backends stay visually independent as the direct/bypass path.
+
+Historical infrastructure is evidence for correlation, not automatic service-enumeration scope.

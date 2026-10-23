@@ -569,3 +569,7 @@ El grafo separa el contenedor `ROOT` del hostname apex. Cuando existe edge/CDN y
 ## Surface graph normalization (v0.98)
 
 El mapa trata `ROOT` como contenedor, fusiona un mismo CDN detectado por varias fuentes y separa **controles de seguridad** (por ejemplo HSTS o Bot Management) de tecnologías de aplicación. Las IPs del CDN se agrupan en `CURRENT EDGE` y `HISTORICAL EDGE`; estas últimas se mantienen colapsadas por defecto. Findings antiguos que resulten ser infraestructura SaaS conocida se normalizan al leer y dejan de presentarse como backend propio/Nmap candidate.
+
+### Graph architecture cleanup (v0.99)
+
+Surface map drill-down now collapses security controls and non-edge historical infrastructure into dedicated groups, suppresses duplicate CDN server fingerprints, and keeps direct/backend paths visually separate from shared edge/CDN infrastructure.

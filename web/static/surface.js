@@ -187,23 +187,40 @@
     });
 
     if(layers.has('technology')) {
-      const techSeen=new Set();
+      const techSeen=new Set(), controls=[];
       (h.technologies||[]).forEach(raw=>{
         const t=String(raw||'').trim(); if(!t)return;
         const low=t.toLowerCase();
         // A plain CDN fingerprint is the same architectural fact as the provider
-        // node.  Do not render Cloudflare twice merely because httpx reported it
+        // node. Do not render Cloudflare twice merely because httpx reported it
         // once as technology and once as provider.
         if(isEdgeProvider(t) && providers.some(p=>canonProvider(p).toLowerCase()===canonProvider(t).toLowerCase()) && !/bot|waf|management|security/i.test(low)) return;
         const isControl=/\bhsts\b|strict[- ]transport|bot management|bot protection|\bwaf\b/i.test(t);
         const key=`${h.hostname}::${isControl?'control':'technology'}::${low}`;
         if(techSeen.has(key))return; techSeen.add(key);
-        const type=isControl?'control':'technology';
-        const id=add(node(type,key,t,{hostname:h.hostname,security_control:isControl}));
-        edges.push(edge(hid,id,isControl?'SECURED_BY':'USES',isControl?'security':'fingerprint'));
+        if(isControl){ controls.push({key,t}); return; }
+        const id=add(node('technology',key,t,{hostname:h.hostname}));
+        edges.push(edge(hid,id,'USES','fingerprint'));
       });
+      if(controls.length){
+        const groupKey=`${h.hostname}::security-controls`;
+        const gid=add(node('layergroup',groupKey,`SECURITY CONTROLS · ${controls.length}`,{kind:'security',count:controls.length,hostname:h.hostname,items:controls.map(x=>x.t)}));
+        edges.push(edge(hid,gid,'SECURITY_CONTROLS','security'));
+        if(expandedInfraGroups.has(groupKey)) controls.forEach(({key,t})=>{
+          const id=add(node('control',key,t,{hostname:h.hostname,security_control:true}));
+          edges.push(edge(gid,id,'SECURED_BY','security'));
+        });
+      }
     }
-    if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',`${h.hostname}::${String(s).toLowerCase()}`,s,{hostname:h.hostname}));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
+    if(layers.has('server')) (h.servers||[]).forEach(s=>{
+      const server=String(s||'').trim(); if(!server)return;
+      // httpx often reports `cloudflare` both as provider/CDN and webserver.
+      // Once an architectural edge node exists, the server fingerprint adds no
+      // information and only duplicates the graph.
+      if(isEdgeProvider(server) && providers.some(p=>canonProvider(p).toLowerCase()===canonProvider(server).toLowerCase())) return;
+      const id=add(node('server',`${h.hostname}::${server.toLowerCase()}`,server,{hostname:h.hostname}));
+      edges.push(edge(hid,id,'SERVED_BY','fingerprint'));
+    });
 
     if(layers.has('ip')) {
       const elevated=new Set([...origins,...direct]);
@@ -236,10 +253,16 @@
         const id=add(node('ip',`${h.hostname}::observed::${ip}`,ip,{historical:false,edge:false,hostname:h.hostname,ip}));
         edges.push(edge(hid,id,'OBSERVED_IP','observed'));
       });
-      (h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip) && !historicalEdge.includes(ip)).slice(0,6).forEach(ip=>{
-        const id=add(node('ip',`${h.hostname}::historical::${ip}`,ip,{historical:true,edge:false,hostname:h.hostname,ip}));
-        edges.push(edge(hid,id,'HISTORICAL_RESOLVES_TO','historical'));
-      });
+      const historicalInfra=[...new Set((h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip) && !historicalEdge.includes(ip)))];
+      if(historicalInfra.length){
+        const groupKey=`${h.hostname}::historical-infra`;
+        const gid=add(node('layergroup',groupKey,`HISTORICAL INFRA · ${historicalInfra.length}`,{kind:'historical-infra',count:historicalInfra.length,ips:historicalInfra,hostname:h.hostname}));
+        edges.push(edge(hid,gid,'HISTORICAL_INFRA','historical'));
+        if(expandedInfraGroups.has(groupKey)) historicalInfra.slice(0,12).forEach(ip=>{
+          const id=add(node('ip',`${h.hostname}::historical::${ip}`,ip,{historical:true,edge:false,hostname:h.hostname,ip}));
+          edges.push(edge(gid,id,'HISTORICAL_RESOLVES_TO','historical'));
+        });
+      }
       (h.candidate_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !(h.historical_ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',`${h.hostname}::candidate::${ip}`,ip,{candidate:true,hostname:h.hostname,ip}));edges.push(edge(hid,id,'CANDIDATE_INFRA_IP','hypothesis'));});
     }
   }
@@ -345,7 +368,7 @@
     // concrete addresses stay at the far right.  Combining node types per
     // column also prevents HSTS/Cloudflare/technology cards from overlapping.
     const columns=[
-      {x:typeBase,types:['provider','technology','control']},
+      {x:typeBase,types:['provider','technology','layergroup']},
       {x:typeBase+270,types:['edgegroup','server']},
       {x:typeBase+540,types:['ip']}
     ];
@@ -442,17 +465,17 @@
       const p=pos.get(n.id); if(!p)return;
       const brand=['provider','technology','server','control'].includes(n.type)?brandVisual(n.label):null;
       const hostConfirmed=n.type==='host' && (n.meta?.confirmed_origin_ips||[]).length>0;
-      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='host'&&hostConfirmed?' has-confirmed-origin':''}${n.type==='host'&&n.meta?.root_host?' root-host':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.confirmed?' confirmed-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}${n.type==='edgegroup'?` edgegroup-${n.meta?.kind||'current'}`:''}${scene.focusHost&&!focusIds.has(n.id)?' focus-muted':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='host'&&hostConfirmed?' has-confirmed-origin':''}${n.type==='host'&&n.meta?.root_host?' root-host':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.confirmed?' confirmed-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}${n.type==='edgegroup'?` edgegroup-${n.meta?.kind||'current'}`:''}${n.type==='layergroup'?` layergroup-${n.meta?.kind||'generic'}`:''}${scene.focusHost&&!focusIds.has(n.id)?' focus-muted':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
       const showOriginBadge=n.type==='ip' && !!n.meta?.confirmed;
-      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='edgegroup'?220:n.type==='root'?220:n.type==='project'?190:showOriginBadge?250:(brand?210:190);
-      const h=n.type==='family'&&scene.collapsed?44:n.type==='edgegroup'?42:n.type==='host'?40:showOriginBadge?44:32;
+      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:(n.type==='edgegroup'||n.type==='layergroup')?220:n.type==='root'?220:n.type==='project'?190:showOriginBadge?250:(brand?210:190);
+      const h=n.type==='family'&&scene.collapsed?44:(n.type==='edgegroup'||n.type==='layergroup')?42:n.type==='host'?40:showOriginBadge?44:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
       const hostTextX=showHostEnv?(-w/2+21):0;
       const branded=!!brand && n.type!=='host';
       const textX=showOriginBadge?(-w/2+14):(branded?(-w/2+44):hostTextX);
-      const text=svgEl('text',{x:textX,y:(scene.collapsed&&n.type==='family')||n.type==='edgegroup'?-3:4,'text-anchor':showOriginBadge||branded||showHostEnv?'start':'middle'});
+      const text=svgEl('text',{x:textX,y:(scene.collapsed&&n.type==='family')||n.type==='edgegroup'||n.type==='layergroup'?-3:4,'text-anchor':showOriginBadge||branded||showHostEnv?'start':'middle'});
       text.textContent=short(n.label,n.type==='host'?(showHostEnv?27:31):(branded?24:28)); g.appendChild(text);
       if(branded){
         const mark=svgEl('g',{class:`surface-brand-mark brand-${brand.key}`,transform:`translate(${-w/2+22} 0)`});
@@ -468,6 +491,7 @@
       }
       if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts${expandedFamilies.has(n.key)?' · abierto':''}`;g.appendChild(count);}
       if(n.type==='edgegroup'){const sub=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});sub.textContent=n.meta?.kind==='historical'?(expandedInfraGroups.has(n.key)?'históricas · abierto':'históricas · clic para abrir'):'IPs actuales';g.appendChild(sub);}
+      if(n.type==='layergroup'){const sub=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});sub.textContent=expandedInfraGroups.has(n.key)?'abierto · clic para cerrar':'clic para abrir';g.appendChild(sub);}
       if(n.type==='host'){
         const dot=svgEl('circle',{cx:-w/2+10,cy:0,r:4,class:`status-dot ${codeClass(n.meta.status_code)}`});g.appendChild(dot);
         if(showHostEnv){
@@ -508,6 +532,10 @@
             renderNodeDetail(n,scene); renderGraph(); return;
           }
           renderNodeDetail(n,scene); return;
+        }
+        if(n.type==='layergroup'){
+          if(expandedInfraGroups.has(n.key)) expandedInfraGroups.delete(n.key); else expandedInfraGroups.add(n.key);
+          renderNodeDetail(n,scene); renderGraph(); return;
         }
         renderNodeDetail(n,scene);
       };
@@ -587,9 +615,9 @@
     const filterable=['technology','provider','server','ip'].includes(n.type);
     detail.innerHTML=`
       <div class="surface-detail-head"><div><span class="eyebrow">${esc(n.type.toUpperCase())}</span><h2>${esc(n.label)}</h2></div></div>
-      <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='project'?'Vista de proyecto: contiene todos los targets/root de recon confirmados.':n.type==='root'?'Target/root de recon. Un clic abre o recoge su árbol; las cards de fases pertenecen al root activo.':n.type==='edgegroup'?(n.meta?.kind==='historical'?'IPs edge históricas observadas para este host. Son contexto de CDN, no objetivos de servicios.':'IPs edge actuales del CDN para este host. Son infraestructura compartida y no son el origin.'):'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
-      <div class="surface-big-number">${esc(n.type==='edgegroup'?(n.meta?.count||0):(related.length || n.meta?.count || 0))} <small>${n.type==='edgegroup'?'IPs': 'hosts relacionados'}</small></div>
-      ${n.type==='edgegroup'&&Array.isArray(n.meta?.ips)?`<section><h3>Direcciones</h3><div class="surface-related-hosts">${n.meta.ips.map(ip=>`<span>${esc(ip)}</span>`).join('')}</div></section>`:''}
+      <p class="muted">${family?'Agrupación heurística: sirve para reducir el mapa, no afirma que todos los hosts compartan backend.':n.type==='project'?'Vista de proyecto: contiene todos los targets/root de recon confirmados.':n.type==='root'?'Target/root de recon. Un clic abre o recoge su árbol; las cards de fases pertenecen al root activo.':n.type==='edgegroup'?(n.meta?.kind==='historical'?'IPs edge históricas observadas para este host. Son contexto de CDN, no objetivos de servicios.':'IPs edge actuales del CDN para este host. Son infraestructura compartida y no son el origin.'):n.type==='layergroup'?(n.meta?.kind==='security'?'Controles de seguridad observados en este host. Se agrupan para reducir ruido visual.':'Infraestructura histórica no confirmada. Es evidencia para correlación, no un objetivo de servicios por sí sola.'):'Nodo contextual derivado de la evidencia. Úsalo para pivotar sobre los hosts relacionados.'}</p>
+      <div class="surface-big-number">${esc((n.type==='edgegroup'||n.type==='layergroup')?(n.meta?.count||0):(related.length || n.meta?.count || 0))} <small>${(n.type==='edgegroup'||(n.type==='layergroup'&&n.meta?.kind==='historical-infra'))?'IPs':n.type==='layergroup'?'controles':'hosts relacionados'}</small></div>
+      ${(n.type==='edgegroup'||n.type==='layergroup')&&Array.isArray(n.meta?.ips)?`<section><h3>Direcciones</h3><div class="surface-related-hosts">${n.meta.ips.map(ip=>`<span>${esc(ip)}</span>`).join('')}</div></section>`:''}${n.type==='layergroup'&&Array.isArray(n.meta?.items)?`<section><h3>Controles</h3><div class="surface-related-hosts">${n.meta.items.map(x=>`<span>${esc(x)}</span>`).join('')}</div></section>`:''}
       ${n.type==='root'?`<a class="button full" href="${window.location.pathname}?root=${encodeURIComponent(n.key)}">${n.meta?.active?'Target activo':'Trabajar este target →'}</a>`:''}
       ${related.length?`<section><h3>Relacionados</h3><div class="surface-related-hosts">${related.slice(0,14).map(h=>`<button type="button" data-related-host="${esc(h.hostname)}">${esc(h.hostname)}</button>`).join('')}${related.length>14?`<small>+${related.length-14} más</small>`:''}</div></section>`:''}
       ${family?'<button class="button full" type="button" data-enter-family>Enfocar solo esta familia</button>':''}
