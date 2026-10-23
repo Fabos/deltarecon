@@ -1,3 +1,14 @@
+# v0.98 — SaaS normalization + clean edge architecture
+
+- Corrige el caso real `SALESF-3`: WHOIS ahora prefiere `Organization/OrgName` sobre `NetName`, por lo que Salesforce se reconoce como SaaS aunque ARIN muestre primero un identificador corto.
+- Compatibilidad con evidencia vieja: findings previos `DIRECT_*` cuyo owner/provider sea Salesforce/SaaS conocido se normalizan al leer como `THIRD_PARTY_PLATFORM` + `DO_NOT_SCAN_THIRD_PARTY`, sin exigir rerun para limpiar el mapa.
+- El grafo fusiona fingerprints/proveedores equivalentes de Cloudflare en un único nodo arquitectónico por hostname; un fingerprint `Cloudflare` ya no duplica el proveedor edge.
+- `Cloudflare Bot Management`, `HSTS` y controles equivalentes se representan como **Security controls**, separados de tecnologías de aplicación.
+- Las IPs edge se agrupan en `CURRENT EDGE` y `HISTORICAL EDGE`; las históricas permanecen colapsadas por defecto y se pueden desplegar desde su nodo.
+- Se elimina una llamada duplicada a `addHostLayers()` del apex que duplicaba relaciones visuales.
+- El layout técnico usa columnas combinadas para evitar cruces y solapamientos entre provider/control/edge/IP.
+- Regresión completa: 94 tests; JS válido.
+
 # v0.97 — Structural ROOT + architecture paths
 
 - El nodo `ROOT` pasa a ser exclusivamente estructural; el apex (`example.com`) se renderiza como un hostname hijo real y sus tecnologías/IPs salen de ese host, no del contenedor del target.

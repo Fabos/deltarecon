@@ -460,3 +460,8 @@ Regla de seguridad metodológica: el baseline no prueba IPs históricas automát
 ## Lectura arquitectónica del grafo
 
 A partir de v0.97, `ROOT` representa el target/scope y no un servidor. El hostname apex es un activo `HOSTNAME` hijo. Una ruta `HOST → proveedor edge → IP edge` expresa tránsito por infraestructura compartida y no convierte esas IPs en origin. Una ruta paralela `HOST → IP DIRECTA` sólo aparece cuando Infrastructure Classification ha correlacionado evidencia suficiente; sigue requiriendo validación de scope antes de enumeración de servicios.
+
+
+### Normalización visual de edge y terceros
+
+Una misma observación puede llegar por DNS, fingerprint HTTP, WHOIS e Infrastructure Classification. Negro deduplica esos caminos: un proveedor edge aparece una sola vez por hostname y conserva las múltiples evidencias en el detalle. Controles como HSTS/Bot Management no se interpretan como backends. Las IPs actuales e históricas del edge se agrupan para conservar contexto sin convertir IPs compartidas en targets. Ownership SaaS reconocido tiene precedencia sobre coincidencias Host/SNI/contenido para evitar recomendar infraestructura de terceros para Nmap.

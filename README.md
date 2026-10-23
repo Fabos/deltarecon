@@ -564,3 +564,8 @@ También puedes usar **+ Añadir IP conocida / evidencia** para guardar una dire
 ## Surface graph architecture (v0.97)
 
 El grafo separa el contenedor `ROOT` del hostname apex. Cuando existe edge/CDN y backend directo correlacionado, representa dos caminos distintos: `HOST → EDGE/CDN → EDGE IPs` y `HOST → IP DIRECTA`. Esto permite leer visualmente un posible bypass de edge sin confundir IPs compartidas con backend propio. El modo **Rama enfocada** atenúa el resto del proyecto y conserva completa la ruta técnica del host seleccionado.
+
+
+## Surface graph normalization (v0.98)
+
+El mapa trata `ROOT` como contenedor, fusiona un mismo CDN detectado por varias fuentes y separa **controles de seguridad** (por ejemplo HSTS o Bot Management) de tecnologías de aplicación. Las IPs del CDN se agrupan en `CURRENT EDGE` y `HISTORICAL EDGE`; estas últimas se mantienen colapsadas por defecto. Findings antiguos que resulten ser infraestructura SaaS conocida se normalizan al leer y dejan de presentarse como backend propio/Nmap candidate.

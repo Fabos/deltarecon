@@ -65,7 +65,7 @@ EDGE_PROVIDER_PATTERNS = (
     "stackpath", "sucuri", "bunnycdn", "cloud cdn",
 )
 SAAS_PROVIDER_PATTERNS = (
-    "salesforce", "frontify", "microsoft 365", "office 365", "github pages",
+    "salesforce", "salesf-3", "exacttarget", "frontify", "microsoft 365", "office 365", "github pages",
     "heroku", "vercel", "netlify", "pantheon", "shopify", "zendesk",
 )
 
@@ -1956,13 +1956,20 @@ def _parse_whois_bundle(text: str) -> dict[str, dict]:
         if not current: return
         raw='\n'.join(lines)
         fields={}
+        owner_candidates=[]
+        # Prefer organization/owner names over terse registry netnames.  ARIN
+        # commonly emits NetName=SALESF-3 before Organization=Salesforce, Inc.;
+        # taking the first value used to make SaaS detection miss Salesforce.
+        owner_priority={'owner':0,'organization':1,'org-name':1,'orgname':1,'org':2,'netname':3}
         for line in lines:
             if ':' not in line: continue
             k,v=line.split(':',1); key=k.strip().lower(); val=v.strip()
             if key in {'aut-num','origin','originas','asn'} and val and 'asn' not in fields: fields['asn']=val
-            if key in {'owner','org-name','orgname','org','netname','organization'} and val and 'owner' not in fields: fields['owner']=val
+            if key in owner_priority and val: owner_candidates.append((owner_priority[key],len(owner_candidates),val))
             if key in {'descr','description'} and val and 'description' not in fields: fields['description']=val
             if key=='country' and val and 'country' not in fields: fields['country']=val
+        if owner_candidates:
+            fields['owner']=sorted(owner_candidates,key=lambda x:(x[0],x[1]))[0][2]
         fields['raw']=raw
         out[current]=fields
         current=''; lines=[]
@@ -2047,6 +2054,19 @@ def infrastructure_findings(conn: sqlite3.Connection, root_domain: str) -> list[
         if key in seen: continue
         seen.add(key)
         payload=_loads(row['raw_json']); payload.update({'hostname':row['hostname'],'ip':row['ip'],'observed_at':row['observed_at']})
+        # Read-time safety normalization for projects classified by older builds.
+        # A historical DIRECT_* result must not stay Nmap-eligible after we learn
+        # that the address belongs to a known SaaS provider (e.g. SALESF-3).
+        if _provider_kind(list(payload.get('providers') or []) + [payload.get('owner','')]) == 'saas':
+            payload['classification']='THIRD_PARTY_PLATFORM'
+            payload['confidence']='HIGH'
+            payload['confidence_score']=max(float(payload.get('confidence_score') or 0),0.9)
+            payload['nmap_eligibility']='DO_NOT_SCAN_THIRD_PARTY'
+            payload['bypass_possible']=False
+            reasons=list(payload.get('reasons') or [])
+            safety='Normalizado como SaaS/tercero por provider/WHOIS; no tratar como backend propio ni candidato Nmap.'
+            if safety not in reasons: reasons.append(safety)
+            payload['reasons']=reasons
         out.append(payload)
     rank={'DIRECT_BACKEND_CANDIDATE':0,'DIRECT_INFRA_CANDIDATE':1,'EDGE_SHARED':2,'THIRD_PARTY_PLATFORM':3,'HISTORICAL_IP':4,'UNCLASSIFIED':5}
     return sorted(out,key=lambda x:(rank.get(str(x.get('classification') or ''),9),str(x.get('hostname') or ''),str(x.get('ip') or '')))

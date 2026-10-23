@@ -1148,3 +1148,13 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .surface-edge.directpath{stroke:#58efaa!important;stroke-width:2.6!important;opacity:.98;filter:drop-shadow(0 0 3px rgba(88,239,170,.28))}
 .surface-edge-label{font-size:7px;font-weight:850;letter-spacing:.055em;paint-order:stroke;stroke:#0c1115;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .surface-edge-label.edgepath{fill:#efaa55}.surface-edge-label.directpath{fill:#78f5ba}
+
+/* v0.98 · architecture clarity */
+.surface-node.control rect{fill:#211d2d;stroke:rgba(184,137,255,.46)}
+.surface-node.control text{fill:#e7ddff}
+.surface-node.edgegroup rect{fill:#122132;stroke:rgba(92,165,255,.50);stroke-width:1.25}
+.surface-node.edgegroup.edgegroup-historical rect{fill:#151b25;stroke:rgba(92,165,255,.42);stroke-dasharray:4 3}
+.surface-node.edgegroup.edgegroup-current rect{fill:#10243a;stroke:rgba(92,165,255,.68)}
+.surface-edge.security{stroke:rgba(190,147,255,.56);stroke-dasharray:5 4}
+.surface-edge.historical{stroke:rgba(104,153,218,.44);stroke-dasharray:4 5}
+.surface-node.edgegroup:hover rect,.surface-node.edgegroup:focus rect{stroke:#7fb5ff;stroke-width:1.8}
