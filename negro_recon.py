@@ -140,6 +140,32 @@ def init_schema(conn: sqlite3.Connection) -> None:
             finished_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_recon_tool_runs_phase ON recon_tool_runs(phase, id DESC);
+        CREATE TABLE IF NOT EXISTS recon_baseline_batches (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            root_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS recon_baseline_jobs (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            batch_id TEXT NOT NULL,
+            root_domain TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            current_phase TEXT,
+            step_index INTEGER NOT NULL DEFAULT 0,
+            step_total INTEGER NOT NULL DEFAULT 8,
+            completed_json TEXT NOT NULL DEFAULT '[]',
+            skipped_json TEXT NOT NULL DEFAULT '[]',
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES recon_baseline_batches(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_recon_baseline_jobs_batch ON recon_baseline_jobs(batch_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_recon_baseline_jobs_root ON recon_baseline_jobs(root_domain, seq DESC);
         """
     )
     # Lightweight migrations for projects created before guided multi-root recon.
@@ -1532,6 +1558,286 @@ done < "$1"'''.format(curl=curl)
     return {"phase":"takeover","records":len(observations),"candidates":candidates,"observations":len(observations),"items":observations}
 
 
+
+BASELINE_STEPS = (
+    ("root", "Root / contexto"),
+    ("discovery", "Discovery pasivo"),
+    ("active_discovery", "Discovery activo ligero"),
+    ("dns", "Validación DNS"),
+    ("tls", "TLS / certificados"),
+    ("dns_refresh", "DNS de SANs nuevos"),
+    ("takeover", "Señales de takeover"),
+    ("http", "HTTP / tecnologías"),
+)
+
+
+def create_baseline_batch(conn: sqlite3.Connection, roots: list[str]) -> dict:
+    """Persist a project-wide baseline batch before background workers start.
+
+    Persistence is intentional: the UI can recover progress after a browser
+    refresh and a failed root can be retried without repeating completed roots.
+    Actual execution is scheduled by the web layer, which already owns the
+    local background-job concurrency controls.
+    """
+    init_schema(conn)
+    normalized = []
+    for raw in roots or []:
+        root = str(raw or "").strip().lower().rstrip(".")
+        if root and root not in normalized:
+            normalized.append(root)
+    if not normalized:
+        raise ValueError("No hay roots de recon para ejecutar")
+    batch_id = uuid.uuid4().hex
+    now = _now()
+    conn.execute(
+        "INSERT INTO recon_baseline_batches(id,root_count,created_at) VALUES(?,?,?)",
+        (batch_id, len(normalized), now),
+    )
+    jobs = []
+    for root in normalized:
+        job_id = uuid.uuid4().hex
+        conn.execute(
+            """INSERT INTO recon_baseline_jobs(
+                   id,batch_id,root_domain,status,current_phase,step_index,step_total,
+                   completed_json,skipped_json,error,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, batch_id, root, "queued", "", 0, len(BASELINE_STEPS), "[]", "[]", "", now, now),
+        )
+        jobs.append({"id": job_id, "root_domain": root, "status": "queued"})
+    conn.commit()
+    return {"batch_id": batch_id, "jobs": jobs, "roots": normalized}
+
+
+def _baseline_update_job(conn: sqlite3.Connection, job_id: str, **values) -> None:
+    allowed = {
+        "status", "current_phase", "step_index", "step_total", "completed_json",
+        "skipped_json", "error", "started_at", "finished_at", "updated_at",
+    }
+    payload = {k: v for k, v in values.items() if k in allowed}
+    payload["updated_at"] = _now()
+    if not payload:
+        return
+    fields = ",".join(f"{k}=?" for k in payload)
+    conn.execute(f"UPDATE recon_baseline_jobs SET {fields} WHERE id=?", (*payload.values(), job_id))
+    conn.commit()
+
+
+def _baseline_pending_dns(conn: sqlite3.Connection, root_domain: str) -> int:
+    count = 0
+    root = root_domain.lower().rstrip(".")
+    for row in conn.execute("SELECT asset_key,metadata_json FROM recon_assets WHERE asset_type='hostname'").fetchall():
+        host = str(row["asset_key"] or "").lower().rstrip(".")
+        if host != root and not host.endswith("." + root):
+            continue
+        state = str(_loads(row["metadata_json"]).get("dns_state") or "DISCOVERED").upper()
+        if state not in {"RESOLVED", "NXDOMAIN", "NODATA"}:
+            count += 1
+    return count
+
+
+def _baseline_pending_http(conn: sqlite3.Connection, root_domain: str) -> int:
+    count = 0
+    root = root_domain.lower().rstrip(".")
+    for row in conn.execute("SELECT asset_key,metadata_json FROM recon_assets WHERE asset_type='hostname'").fetchall():
+        host = str(row["asset_key"] or "").lower().rstrip(".")
+        if host != root and not host.endswith("." + root):
+            continue
+        meta = _loads(row["metadata_json"])
+        if meta.get("dns_state") == "RESOLVED" and meta.get("status_code") is None:
+            count += 1
+    return count
+
+
+def run_project_baseline_root(conn: sqlite3.Connection, root_domain: str, paths: dict, job_id: str, *, force: bool = False) -> dict:
+    """Build the breadth-first attack-surface baseline for one recon root.
+
+    The baseline deliberately stops after HTTP/technology fingerprinting. It
+    skips already-valid work where possible, re-runs DNS when new discovery or
+    TLS SANs require it, and never includes Amass or deep endpoint crawling.
+    """
+    init_schema(conn)
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    row = conn.execute("SELECT id FROM recon_baseline_jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise ValueError("Job baseline inexistente")
+    started = _now()
+    _baseline_update_job(conn, job_id, status="running", started_at=started, error="")
+    completed: list[str] = []
+    skipped: list[str] = []
+    changed_surface = False
+    dns_ran = False
+
+    def mark(step_key: str, index: int, *, state: str = "running") -> None:
+        _baseline_update_job(
+            conn, job_id,
+            status=state,
+            current_phase=step_key,
+            step_index=index,
+            completed_json=json.dumps(completed, ensure_ascii=False),
+            skipped_json=json.dumps(skipped, ensure_ascii=False),
+        )
+
+    try:
+        for index, (step, _label) in enumerate(BASELINE_STEPS, start=1):
+            mark(step, index)
+            if step == "root":
+                if not force and _phase_run_bundle(conn, "root", root).get("done"):
+                    skipped.append(step)
+                else:
+                    run_root_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step)
+                continue
+
+            if step == "discovery":
+                if not force and _phase_run_bundle(conn, "discovery", root).get("done"):
+                    skipped.append(step)
+                else:
+                    run_discovery_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step); changed_surface = True
+                continue
+
+            if step == "active_discovery":
+                if not force and _phase_run_bundle(conn, "active_discovery", root).get("done"):
+                    skipped.append(step)
+                else:
+                    run_active_discovery_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step); changed_surface = True
+                continue
+
+            if step == "dns":
+                should_run = force or changed_surface or _baseline_pending_dns(conn, root) > 0 or not _phase_run_bundle(conn, "dns", root).get("done")
+                if should_run:
+                    run_dns_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step); dns_ran = True; changed_surface = False
+                else:
+                    skipped.append(step)
+                continue
+
+            if step == "tls":
+                should_run = force or dns_ran or not _phase_run_bundle(conn, "tls", root).get("done")
+                if should_run:
+                    run_tls_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step)
+                else:
+                    skipped.append(step)
+                continue
+
+            if step == "dns_refresh":
+                if _baseline_pending_dns(conn, root) > 0:
+                    run_dns_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step); dns_ran = True
+                else:
+                    skipped.append(step)
+                continue
+
+            if step == "takeover":
+                pairs = _external_cname_pairs(conn, root)
+                should_run = bool(pairs) and (force or dns_ran or not _phase_run_bundle(conn, "takeover", root).get("done"))
+                if should_run:
+                    run_takeover_analysis(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step)
+                else:
+                    skipped.append(step)
+                continue
+
+            if step == "http":
+                should_run = force or dns_ran or _baseline_pending_http(conn, root) > 0 or not _phase_run_bundle(conn, "http", root).get("done")
+                if should_run:
+                    run_http_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step)
+                else:
+                    skipped.append(step)
+                continue
+
+        _baseline_update_job(
+            conn, job_id,
+            status="done", current_phase="complete", step_index=len(BASELINE_STEPS),
+            completed_json=json.dumps(completed, ensure_ascii=False),
+            skipped_json=json.dumps(skipped, ensure_ascii=False),
+            finished_at=_now(), error="",
+        )
+        return {"root_domain": root, "status": "done", "completed": completed, "skipped": skipped}
+    except Exception as exc:
+        _baseline_update_job(
+            conn, job_id,
+            status="failed", error=str(exc)[:1200], finished_at=_now(),
+            completed_json=json.dumps(completed, ensure_ascii=False),
+            skipped_json=json.dumps(skipped, ensure_ascii=False),
+        )
+        raise
+
+
+def _baseline_job_dict(row: sqlite3.Row | dict) -> dict:
+    item = dict(row)
+    for key in ("completed_json", "skipped_json"):
+        try:
+            item[key[:-5]] = json.loads(item.get(key) or "[]")
+        except Exception:
+            item[key[:-5]] = []
+    total = max(1, int(item.get("step_total") or len(BASELINE_STEPS)))
+    index = max(0, int(item.get("step_index") or 0))
+    item["percent"] = min(100, int(round(index / total * 100)))
+    return item
+
+
+def project_baseline_data(conn: sqlite3.Connection, roots: list[str]) -> dict:
+    init_schema(conn)
+    root_values = [str(x).lower().rstrip(".") for x in roots or [] if str(x).strip()]
+    latest_batch = conn.execute("SELECT * FROM recon_baseline_batches ORDER BY seq DESC LIMIT 1").fetchone()
+    batch = dict(latest_batch) if latest_batch else None
+    jobs: list[dict] = []
+    if batch:
+        rows = conn.execute("SELECT * FROM recon_baseline_jobs WHERE batch_id=? ORDER BY seq", (batch["id"],)).fetchall()
+        jobs = [_baseline_job_dict(r) for r in rows]
+    latest_by_root: dict[str, dict] = {}
+    for root in root_values:
+        row = conn.execute("SELECT * FROM recon_baseline_jobs WHERE root_domain=? ORDER BY seq DESC LIMIT 1", (root,)).fetchone()
+        if row:
+            latest_by_root[root] = _baseline_job_dict(row)
+    counts = {"queued":0,"running":0,"done":0,"failed":0}
+    for job in jobs:
+        status = str(job.get("status") or "queued")
+        counts[status] = counts.get(status, 0) + 1
+    active = any(str(j.get("status")) in {"queued","running"} for j in jobs)
+    failed_roots = [str(j.get("root_domain")) for j in jobs if str(j.get("status")) == "failed"]
+    return {
+        "batch": batch,
+        "jobs": jobs,
+        "latest_by_root": latest_by_root,
+        "counts": counts,
+        "active": active,
+        "failed_roots": failed_roots,
+        "has_history": bool(latest_by_root),
+    }
+
+
+def recover_interrupted_baseline_jobs(conn: sqlite3.Connection) -> int:
+    """Mark persisted queue/running rows as retryable after the local worker vanished."""
+    init_schema(conn)
+    rows=conn.execute("SELECT id FROM recon_baseline_jobs WHERE status IN ('queued','running')").fetchall()
+    if not rows:
+        return 0
+    now=_now()
+    for row in rows:
+        conn.execute(
+            "UPDATE recon_baseline_jobs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?",
+            ("Proceso local interrumpido antes de completar el baseline. Usa Reintentar fallidos.",now,now,row["id"]),
+        )
+    conn.commit()
+    return len(rows)
+
+
+def failed_baseline_roots(conn: sqlite3.Connection) -> list[str]:
+    init_schema(conn)
+    latest = conn.execute("SELECT id FROM recon_baseline_batches ORDER BY seq DESC LIMIT 1").fetchone()
+    if not latest:
+        return []
+    rows = conn.execute(
+        "SELECT root_domain FROM recon_baseline_jobs WHERE batch_id=? AND status='failed' ORDER BY seq",
+        (latest["id"],),
+    ).fetchall()
+    return [str(r["root_domain"]) for r in rows]
+
 def run_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, phase: str) -> dict:
     phase = (phase or "").strip().lower()
     run_group = uuid.uuid4().hex
@@ -1931,6 +2237,46 @@ def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     return out
 
 
+
+def _host_interest(host: dict) -> dict:
+    """Deterministic triage, never a vulnerability score."""
+    score = 0
+    reasons: list[str] = []
+    env = str(host.get("environment") or "UNKNOWN").upper()
+    hostname = str(host.get("hostname") or "").lower()
+    tokens = set(re.split(r"[._-]+", hostname))
+    status = host.get("status_code")
+    sources = {str(x).lower() for x in (host.get("sources") or [])}
+
+    if str(host.get("takeover_state") or "") == "CANDIDATE":
+        score += 6; reasons.append("takeover candidate")
+    if env in {"DEV", "QA", "STAGING"}:
+        score += 3; reasons.append(f"ambiente {env}")
+    if tokens & {"api", "apis", "graphql", "gateway", "gw", "ws", "socket"}:
+        score += 2; reasons.append("superficie API")
+    if tokens & {"auth", "login", "sso", "oauth", "idp"}:
+        score += 2; reasons.append("autenticación / identidad")
+    try:
+        sc = int(status) if status is not None else None
+    except Exception:
+        sc = None
+    if sc is not None and sc >= 500:
+        score += 2; reasons.append(f"HTTP {sc}")
+    elif sc in {401, 403}:
+        score += 1; reasons.append(f"HTTP {sc}")
+    if sources & {"active_permutation", "active_bruteforce", "tls_san", "gau_historical"}:
+        score += 1; reasons.append("descubierto por pivote")
+
+    if score >= 6:
+        level = "HIGH"
+    elif score >= 3:
+        level = "MEDIUM"
+    elif score > 0:
+        level = "LOW"
+    else:
+        level = ""
+    return {"interest_score": score, "interest_level": level, "interest_reasons": reasons}
+
 def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] | None = None) -> dict:
     init_schema(conn)
     roots = list(dict.fromkeys([root_domain.lower().rstrip('.')] + [str(x).lower().rstrip('.') for x in (scopes or []) if x]))
@@ -1974,7 +2320,7 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             elif rel["relation"] == "CNAME_TO": cnames.append(dst["label"])
             elif rel["relation"] == "REDIRECTS_TO": redirects.append(dst["label"])
         family = m.get("family") or _family_stem(host["label"], assigned_root)
-        return {
+        item = {
             "id": host["id"], "hostname": host["label"], "root_domain": assigned_root,
             "environment": m.get("environment") or "UNKNOWN", "family": family or "other",
             "status_code": m.get("status_code"), "title": m.get("title"), "url": m.get("url"), "scheme": m.get("scheme"), "port": m.get("port"),
@@ -1985,6 +2331,8 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "ips": list(dict.fromkeys(ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),
             "sources": sorted(x for x in sources if x), "last_seen_at": host["last_seen_at"],
         }
+        item.update(_host_interest(item))
+        return item
 
     project_hosts=[]
     for host in hosts:
@@ -2013,6 +2361,32 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
     done_count = sum(1 for p in phases if p.get("state") == "done")
     total_count = len(phases)
     next_phase = next((p for p in phases if p.get("state") in {"ready", "planned", "missing_tool"}), None)
+    baseline = project_baseline_data(conn, roots)
+    non_prod = sum(1 for h in project_hosts if str(h.get("environment") or "").upper() in {"DEV","QA","STAGING"})
+    takeover_count = sum(1 for h in project_hosts if str(h.get("takeover_state") or "") == "CANDIDATE")
+    api_like = sum(1 for h in project_hosts if "superficie API" in (h.get("interest_reasons") or []))
+    auth_like = sum(1 for h in project_hosts if "autenticación / identidad" in (h.get("interest_reasons") or []))
+    server_errors = sum(1 for h in project_hosts if isinstance(h.get("status_code"), int) and int(h.get("status_code")) >= 500)
+    resolved_project = sum(1 for h in project_hosts if h.get("dns_state") == "RESOLVED")
+    top_interest = sorted(
+        [h for h in project_hosts if int(h.get("interest_score") or 0) > 0],
+        key=lambda h: (-int(h.get("interest_score") or 0), str(h.get("hostname") or "")),
+    )[:12]
+    root_overview=[]
+    for rr in roots:
+        rows=[h for h in project_hosts if h.get("root_domain")==rr]
+        latest=baseline.get("latest_by_root",{}).get(rr) or {}
+        root_overview.append({
+            "root_domain":rr, "hosts":len(rows),
+            "resolved":sum(1 for h in rows if h.get("dns_state")=="RESOLVED"),
+            "http_alive":sum(1 for h in rows if h.get("status_code") is not None),
+            "non_prod":sum(1 for h in rows if str(h.get("environment") or "").upper() in {"DEV","QA","STAGING"}),
+            "takeover_candidates":sum(1 for h in rows if str(h.get("takeover_state") or "")=="CANDIDATE"),
+            "baseline_status":str(latest.get("status") or "not_run"),
+            "baseline_phase":str(latest.get("current_phase") or ""),
+            "baseline_percent":int(latest.get("percent") or 0),
+            "baseline_error":str(latest.get("error") or ""),
+        })
     return {
         "root_domain": root_domain,
         "roots": roots,
@@ -2024,7 +2398,10 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status,
         },
         "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies", enriched)), "providers": len(uniq("providers", enriched)), "families": len([k for k,v in family_counts.items() if k.startswith(root_domain.lower().rstrip('.')+'::') and v>1])},
-        "project_summary": {"roots": len(roots), "hosts": len(project_hosts), "http_alive": sum(1 for h in project_hosts if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families)},
+        "project_summary": {"roots": len(roots), "hosts": len(project_hosts), "resolved": resolved_project, "http_alive": sum(1 for h in project_hosts if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families), "non_prod": non_prod, "api_like": api_like, "auth_like": auth_like, "takeover_candidates": takeover_count, "server_errors": server_errors},
+        "baseline": baseline,
+        "root_overview": root_overview,
+        "top_interest": top_interest,
         "imports": [dict(r) for r in conn.execute("SELECT * FROM recon_import_runs ORDER BY id DESC LIMIT 20").fetchall()],
         "tool_runs": [dict(r) for r in conn.execute("SELECT * FROM recon_tool_runs WHERE COALESCE(root_domain,'')=? ORDER BY id DESC LIMIT 30", (root_domain.lower().rstrip('.'),)).fetchall()],
         "phases": phases,

@@ -1,3 +1,17 @@
+## v0.90 · Project Baseline Runner + triage de scope
+
+- Nuevo **Project Baseline** para ejecutar en varios recon roots la superficie de anchura antes de profundizar: Root → passive discovery → active discovery ligero → DNS → TLS → refresh DNS de SANs → takeover signals → HTTP/tecnologías.
+- Amass queda fuera del baseline automático como enriquecimiento opcional; crawler, endpoints, JS, históricos de contenido y deep enumeration siguen siendo decisiones posteriores por host/rama.
+- Cola local limitada: los roots se ejecutan como jobs independientes y el mapa/UI sigue usable mientras otros targets continúan.
+- Estado persistente por root (`queued`, `running`, `done`, `failed`) con fase actual, porcentaje, pasos ejecutados/saltados y error; recargar el navegador no pierde el progreso persistido.
+- Baseline reanudable: evita repetir fases ya válidas, pero reejecuta DNS cuando discovery/TLS agrega hosts y HTTP cuando quedan hosts resueltos sin fingerprint.
+- Acción **Reintentar fallidos** crea un batch únicamente con los roots fallidos del último baseline.
+- Project Overview muestra roots, hosts, DNS resueltos, HTTP observado, no-PROD, API-like y candidatos de takeover.
+- Nuevo **interest score** determinista de triage (no vulnerability score) basado en señales observadas como QA/DEV/STG, API/auth, 5xx, pivotes y takeover candidate.
+- Polling ligero actualiza en vivo estado/progreso; al terminar refresca una vez para incorporar mapa, métricas y triage final.
+- Si Negro se reinicia durante un batch, jobs persistidos sin worker se convierten en fallidos recuperables para evitar estados eternamente `running`.
+- 68 tests pasan.
+
 ## v0.89 · Takeover intelligence sin repetir el pipeline
 
 - Añadido análisis transversal de **subdomain takeover** sobre CNAME externos ya observados.

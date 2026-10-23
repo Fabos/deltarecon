@@ -8,6 +8,7 @@ the same core functions used by the CLI.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import html
 import json
@@ -199,6 +200,33 @@ def _start_job(label: str, target_key: str, fn, *args, **kwargs) -> str:
 
 def _db(paths: dict[str, Path]):
     return core.db_connect(paths)
+
+
+def _run_surface_baseline_job(paths: dict[str, Path], root_domain: str, baseline_job_id: str) -> dict:
+    import negro_recon as recon
+    with _db(paths) as conn:
+        recon.init_schema(conn)
+        return recon.run_project_baseline_root(conn, root_domain, paths, baseline_job_id)
+
+
+def _run_surface_baseline_batch(paths: dict[str, Path], jobs: list[dict[str, Any]]) -> dict:
+    """Run many roots through a bounded local queue, not one thread per root."""
+    results=[]
+    max_workers=2
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="negro-baseline") as pool:
+        future_map={}
+        for item in jobs or []:
+            root_domain=str(item.get("root_domain") or "")
+            persistent_id=str(item.get("id") or "")
+            future=pool.submit(_run_surface_baseline_job, paths, root_domain, persistent_id)
+            future_map[future]=root_domain
+        for future in concurrent.futures.as_completed(future_map):
+            root_domain=future_map[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append({"root_domain":root_domain,"status":"failed","error":str(exc)[:1200]})
+    return {"roots":len(jobs or []),"done":sum(1 for r in results if r.get("status")=="done"),"failed":sum(1 for r in results if r.get("status")=="failed"),"results":results}
 
 
 def _rebuild_search_index(paths: dict[str, Path]) -> dict[str, int]:
@@ -5582,13 +5610,67 @@ def create_app(default_domain: str, default_workspace: Path):
         selected_root = core.normalize_recon_root(requested_root)
         if selected_root not in roots:
             selected_root = core.normalize_recon_root(domain)
+        with JOBS_LOCK:
+            baseline_worker_live = any(
+                j.get("target_key") == target_key
+                and str(j.get("label") or "").startswith("Project baseline")
+                and j.get("status") in {"queued","running"}
+                for j in JOBS.values()
+            )
         with _db(paths) as conn:
             recon.init_schema(conn)
             recon.attach_legacy_runs(conn, domain)
+            if not baseline_worker_live:
+                recon.recover_interrupted_baseline_jobs(conn)
             data = recon.surface_data(conn, selected_root, roots)
         response = render(request, "surface.html", target_key, domain, workspace, surface=data, imported=imported, scan=scan, manual=manual)
         response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
         return response
+
+    @app.post("/t/{target_key}/surface/baseline/start")
+    def surface_baseline_start(request: Request, target_key: str, csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
+            current = recon.project_baseline_data(conn, roots)
+            if current.get("active"):
+                msg = urllib.parse.quote("Ya hay un baseline de proyecto en ejecución")
+                return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(domain)}&scan={msg}", status_code=303)
+            batch = recon.create_baseline_batch(conn, roots)
+        _start_job(
+            f"Project baseline · {len(batch.get('jobs', []))} roots", target_key,
+            _run_surface_baseline_batch, paths, list(batch.get("jobs") or []),
+        )
+        msg = urllib.parse.quote(f"Baseline iniciado · {len(batch.get('jobs', []))} roots en cola")
+        return RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(domain)}&scan={msg}", status_code=303)
+
+    @app.post("/t/{target_key}/surface/baseline/retry")
+    def surface_baseline_retry(request: Request, target_key: str, csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            failed = recon.failed_baseline_roots(conn)
+            current = recon.project_baseline_data(conn, core.normalize_recon_roots((core.get_target(target_key) or {}).get("recon_roots"), domain))
+            if current.get("active"):
+                msg = urllib.parse.quote("Espera a que termine el baseline activo antes de reintentar")
+                return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+            if not failed:
+                msg = urllib.parse.quote("No hay roots fallidos para reintentar")
+                return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
+            batch = recon.create_baseline_batch(conn, failed)
+        _start_job(
+            f"Project baseline retry · {len(batch.get('jobs', []))} roots", target_key,
+            _run_surface_baseline_batch, paths, list(batch.get("jobs") or []),
+        )
+        msg = urllib.parse.quote(f"Reintento iniciado · {len(batch.get('jobs', []))} roots")
+        return RedirectResponse(url=f"/t/{target_key}/surface?scan={msg}", status_code=303)
 
     @app.post("/t/{target_key}/surface/run")
     def surface_run_phase(request: Request, target_key: str, phase: str = Form(...), root: str = Form(""), csrf: str = Form(...)):
@@ -5702,6 +5784,22 @@ def create_app(default_domain: str, default_workspace: Path):
         response = render(request, "surface_phase.html", target_key, domain, workspace, phase_detail=detail, scan=scan)
         response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
         return response
+
+    @app.get("/api/t/{target_key}/surface/baseline", response_class=JSONResponse)
+    def surface_baseline_api(target_key: str):
+        import negro_recon as recon
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            data = recon.surface_data(conn, domain if domain in roots else roots[0], roots)
+            return {
+                "baseline": data.get("baseline") or {},
+                "project_summary": data.get("project_summary") or {},
+                "root_overview": data.get("root_overview") or [],
+                "top_interest": data.get("top_interest") or [],
+            }
 
     @app.get("/api/t/{target_key}/surface", response_class=JSONResponse)
     def surface_api(target_key: str, root: str = ""):

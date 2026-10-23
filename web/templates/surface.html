@@ -19,6 +19,76 @@
   {% if imported %}<div class="callout success surface-import-result">Importación completada · {{ imported }}</div>{% endif %}
   {% if manual %}<div class="callout success">{{ manual }}</div>{% endif %}
 
+  <section class="surface-baseline panel" data-baseline-panel data-baseline-api="/api/t/{{ target_key }}/surface/baseline" data-baseline-active="{{ '1' if surface.baseline.active else '0' }}">
+    <div class="surface-baseline-head">
+      <div>
+        <span class="eyebrow">PROJECT BASELINE · ANCHURA ANTES DE PROFUNDIDAD</span>
+        <h2>Construir superficie de todo el scope</h2>
+        <p>Ejecuta Root → Discovery pasivo → Discovery activo ligero → DNS → TLS → refresh DNS → takeover → HTTP para todos los roots. Amass y la enumeración profunda quedan fuera.</p>
+      </div>
+      <div class="surface-baseline-actions">
+        <form method="post" action="{{ target_base }}/surface/baseline/start">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="button primary" type="submit" {% if surface.baseline.active %}disabled{% endif %}>Ejecutar baseline del scope</button>
+        </form>
+        {% if surface.baseline.failed_roots and not surface.baseline.active %}
+        <form method="post" action="{{ target_base }}/surface/baseline/retry">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="button ghost" type="submit">Reintentar fallidos · {{ surface.baseline.failed_roots|length }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    <div class="surface-baseline-metrics">
+      <article><span>Roots</span><strong data-project-metric="roots">{{ surface.project_summary.roots }}</strong></article>
+      <article><span>Hosts</span><strong data-project-metric="hosts">{{ surface.project_summary.hosts }}</strong></article>
+      <article><span>DNS resueltos</span><strong data-project-metric="resolved">{{ surface.project_summary.resolved }}</strong></article>
+      <article><span>HTTP observado</span><strong data-project-metric="http_alive">{{ surface.project_summary.http_alive }}</strong></article>
+      <article><span>No-PROD</span><strong data-project-metric="non_prod">{{ surface.project_summary.non_prod }}</strong></article>
+      <article><span>API-like</span><strong data-project-metric="api_like">{{ surface.project_summary.api_like }}</strong></article>
+      <article><span>Takeover</span><strong data-project-metric="takeover_candidates">{{ surface.project_summary.takeover_candidates }}</strong></article>
+    </div>
+    <div class="surface-baseline-statusbar">
+      <span><b data-baseline-running>{{ surface.baseline.counts.running or 0 }}</b> ejecutando</span>
+      <span><b data-baseline-queued>{{ surface.baseline.counts.queued or 0 }}</b> en cola</span>
+      <span><b data-baseline-done>{{ surface.baseline.counts.done or 0 }}</b> listos</span>
+      <span><b data-baseline-failed>{{ surface.baseline.counts.failed or 0 }}</b> fallidos</span>
+      {% if surface.baseline.active %}<em data-baseline-live>Actualizando en vivo…</em>{% else %}<em data-baseline-live></em>{% endif %}
+    </div>
+    <div class="surface-baseline-roots" data-baseline-roots>
+      {% for item in surface.root_overview %}
+      <article class="surface-baseline-root {{ item.baseline_status }}" data-baseline-root="{{ item.root_domain }}">
+        <div class="surface-baseline-root-top">
+          <a href="{{ target_base }}/surface?root={{ item.root_domain | urlencode }}"><b>{{ item.root_domain }}</b></a>
+          <span data-root-status>{{ item.baseline_status | upper | replace('_',' ') }}</span>
+        </div>
+        <div class="surface-baseline-progress"><i data-root-progress style="width: {{ item.baseline_percent }}%"></i></div>
+        <small data-root-phase>{% if item.baseline_phase %}{{ item.baseline_phase }}{% else %}Sin baseline todavía{% endif %}</small>
+        <div class="surface-baseline-root-stats">
+          <span>{{ item.hosts }} hosts</span><span>{{ item.resolved }} DNS</span><span>{{ item.http_alive }} HTTP</span>
+          {% if item.non_prod %}<span>{{ item.non_prod }} no-PROD</span>{% endif %}
+          {% if item.takeover_candidates %}<span>{{ item.takeover_candidates }} takeover</span>{% endif %}
+        </div>
+        {% if item.baseline_error %}<p class="surface-baseline-error">{{ item.baseline_error }}</p>{% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% if surface.top_interest %}
+    <details class="surface-triage" open>
+      <summary>Targets para triage · señales de interés, no vulnerabilidades</summary>
+      <div class="surface-triage-list">
+        {% for host in surface.top_interest %}
+        <a href="{{ target_base }}/surface?root={{ host.root_domain | urlencode }}" class="surface-triage-item">
+          <span><b>{{ host.hostname }}</b><small>{{ host.root_domain }}</small></span>
+          <em class="interest-{{ host.interest_level|lower }}">{{ host.interest_level }} · {{ host.interest_score }}</em>
+          <small>{{ host.interest_reasons | join(' · ') }}</small>
+        </a>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </section>
+
   <section class="surface-workflow panel">
     <div class="surface-workflow-head">
       <div><span class="eyebrow">RECON PROGRESIVO</span><h2>{{ surface.root_domain }}</h2><p>No se lanza la siguiente fase automáticamente. Mira lo aprendido y decide cuándo continuar.</p></div>

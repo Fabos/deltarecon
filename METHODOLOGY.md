@@ -376,3 +376,14 @@ Reglas metodológicas:
 ## Modo de producto después de v0.44
 
 Negro entra en uso real. Nuevas capacidades deben justificar que eliminan trabajo repetitivo o conservan contexto que hoy se pierde. Las reglas/Signals se amplían conforme se estudian vulnerabilidades **sólo cuando existe un patrón observable y automatizable con una tasa de ruido aceptable**. La lógica de negocio que dependa de intención o semántica permanece como Hypothesis/Investigation/Runner.
+
+
+## Project Baseline: anchura antes de profundidad (v0.90)
+
+Cuando un proyecto tiene varios recon roots, Negro puede construir primero una superficie comparable para todo el scope. El baseline automático termina en HTTP/tecnologías y no entra todavía a crawling, JavaScript, endpoints ni pruebas de lógica.
+
+Secuencia por root: `Root → Discovery pasivo → Discovery activo ligero → DNS → TLS → DNS de SANs nuevos → takeover signals → HTTP`. Amass permanece como enriquecimiento opcional. Cualquier hostname nuevo descubierto por TLS vuelve a DNS antes de HTTP.
+
+El baseline es reanudable: una fase ya válida se conserva; DNS/HTTP sólo se repiten cuando nueva evidencia lo exige. Los roots se ejecutan con concurrencia local limitada y cada uno conserva su estado/errores para retry.
+
+El triage posterior usa un **interest score**, no un score de vulnerabilidad. Su objetivo es responder “¿qué rama merece atención primero?” usando únicamente señales observadas: ambientes no-PROD, superficie API/auth, respuestas 5xx, pivotes de discovery y candidatos de takeover. La investigación profunda sigue siendo una decisión del hunter.

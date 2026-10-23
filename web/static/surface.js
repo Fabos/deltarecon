@@ -557,3 +557,57 @@
     bind(); refresh(); fit();
   }).catch(err=>{stage.innerHTML=`<div class="callout warning">No pude cargar la superficie: ${esc(err.message||err)}</div>`;});
 })();
+
+
+// Project baseline polling is intentionally separate from the graph renderer.
+// The graph remains usable while other roots continue in the local job queue.
+(()=>{
+  const panel=document.querySelector('[data-baseline-panel]');
+  if(!panel)return;
+  const api=panel.dataset.baselineApi;
+  let sawActive=panel.dataset.baselineActive==='1';
+  const labels={queued:'EN COLA',running:'EJECUTANDO',done:'LISTO',failed:'FALLÓ',not_run:'SIN EJECUTAR'};
+  const setText=(sel,value)=>{const el=panel.querySelector(sel);if(el)el.textContent=String(value??0);};
+  const update=payload=>{
+    const baseline=payload?.baseline||{};
+    const summary=payload?.project_summary||{};
+    const counts=baseline.counts||{};
+    setText('[data-baseline-running]',counts.running||0);
+    setText('[data-baseline-queued]',counts.queued||0);
+    setText('[data-baseline-done]',counts.done||0);
+    setText('[data-baseline-failed]',counts.failed||0);
+    Object.entries(summary).forEach(([key,value])=>{
+      const el=panel.querySelector(`[data-project-metric="${CSS.escape(key)}"]`);
+      if(el)el.textContent=String(value??0);
+    });
+    (payload?.root_overview||[]).forEach(item=>{
+      const card=panel.querySelector(`[data-baseline-root="${CSS.escape(item.root_domain||'')}"]`);
+      if(!card)return;
+      const status=item.baseline_status||'not_run';
+      card.classList.remove('queued','running','done','failed','not_run');
+      card.classList.add(status);
+      const statusEl=card.querySelector('[data-root-status]');
+      if(statusEl)statusEl.textContent=labels[status]||String(status).toUpperCase();
+      const progress=card.querySelector('[data-root-progress]');
+      if(progress)progress.style.width=`${Math.max(0,Math.min(100,Number(item.baseline_percent)||0))}%`;
+      const phase=card.querySelector('[data-root-phase]');
+      if(phase)phase.textContent=item.baseline_phase||'Sin baseline todavía';
+    });
+    const active=!!baseline.active;
+    const live=panel.querySelector('[data-baseline-live]');
+    if(live)live.textContent=active?'Actualizando en vivo…':'';
+    if(active){
+      sawActive=true;
+      window.setTimeout(poll,2200);
+    }else if(sawActive){
+      // Refresh once so the graph, triage list and per-root statistics consume
+      // the final persisted evidence instead of maintaining a second renderer.
+      window.setTimeout(()=>window.location.reload(),700);
+    }
+  };
+  const poll=()=>fetch(api,{headers:{'Accept':'application/json'}})
+    .then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json();})
+    .then(update)
+    .catch(()=>window.setTimeout(poll,4000));
+  if(sawActive)window.setTimeout(poll,900);
+})();
