@@ -186,6 +186,17 @@ def normalize_recon_roots(scopes: Iterable[str] | None, fallback_domain: str | N
     return values
 
 
+def project_recon_roots(scopes: Iterable[str] | None, fallback_domain: str | None = None) -> list[str]:
+    """Return the recon roots implied by the project's authorized scopes.
+
+    Project scope is the source of truth for Surface.  This avoids asking the
+    operator to enter the same roots twice and, importantly, means removing a
+    scope on the project also removes it from future recon execution.
+    """
+    authorized = normalize_scopes(scopes, fallback_domain)
+    return normalize_recon_roots(authorized, fallback_domain)
+
+
 def host_matches_scope(host: str, scope: str) -> bool:
     host = str(host or "").strip().lower().rstrip(".")
     scope = normalize_scope(scope) or ""
@@ -3291,6 +3302,22 @@ def targets_load() -> dict:
                 data["last_target"] = keep
             changed = True
 
+    # v0.91: project scopes are now the source of truth for Surface roots.
+    # Heal existing projects created when `scopes` and `recon_roots` were two
+    # separate lists so users do not have to re-enter their authorized roots.
+    for key, target in list(data.get("targets", {}).items()):
+        if not isinstance(target, dict):
+            continue
+        domain = normalize_scope(target.get("domain")) or ""
+        scopes = normalize_scopes(target.get("scopes") if isinstance(target.get("scopes"), list) else [], domain)
+        desired_roots = project_recon_roots(scopes, domain)
+        current_roots = normalize_recon_roots(target.get("recon_roots") if isinstance(target.get("recon_roots"), list) else [], domain)
+        if desired_roots != current_roots:
+            target["scopes"] = scopes
+            target["recon_roots"] = desired_roots
+            data["targets"][key] = target
+            changed = True
+
     # Persist migrations/healing immediately so they are truly one-time.
     if changed:
         TARGETS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -3318,8 +3345,12 @@ def register_target(domain: str, workspace: Path, make_current: bool = True, *, 
     existing = data.setdefault("targets", {}).get(key, {})
     roots = normalize_scopes(scopes if scopes is not None else existing.get("scopes"), domain)
     display_name = str(name if name is not None else existing.get("name") or domain).strip()[:120]
-    explicit_recon_roots = normalize_recon_roots(recon_roots if recon_roots is not None else existing.get("recon_roots"), domain)
-    data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, "recon_roots": explicit_recon_roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
+    # Surface roots follow project scopes automatically.  `recon_roots` is
+    # retained in the function signature for backwards compatibility, but the
+    # project scope remains authoritative so authorization and execution cannot
+    # drift apart.
+    synced_recon_roots = project_recon_roots(roots, domain)
+    data["targets"][key] = {"domain": domain, "workspace": str(workspace), "name": display_name, "scopes": roots, "recon_roots": synced_recon_roots, **({"created_at": existing.get("created_at")} if existing.get("created_at") else {})}
     if make_current:
         data["last_target"] = key
     targets_save(data)
@@ -3340,7 +3371,10 @@ def update_target_project(key: str, *, name: str | None = None, scopes: Iterable
     target["domain"] = normalize_scope(target.get("domain")) or roots[0]
     target["name"] = str(name if name is not None else target.get("name") or target["domain"]).strip()[:120]
     target["scopes"] = roots
-    target["recon_roots"] = normalize_recon_roots(recon_roots if recon_roots is not None else target.get("recon_roots"), target["domain"])
+    # Keep Surface synchronized with the currently authorized project scope.
+    # Removing a scope stops future recon against it while preserving any
+    # historical evidence already stored in the workspace database.
+    target["recon_roots"] = project_recon_roots(roots, target["domain"])
     data["targets"][key] = target
     targets_save(data)
     workspace = Path(str(target.get("workspace") or "")).expanduser()
@@ -3369,7 +3403,7 @@ def get_target(key: str) -> dict | None:
     out = dict(target)
     out.setdefault("name", out.get("domain", key))
     out["scopes"] = normalize_scopes(out.get("scopes") if isinstance(out.get("scopes"), list) else [], out.get("domain"))
-    out["recon_roots"] = normalize_recon_roots(out.get("recon_roots") if isinstance(out.get("recon_roots"), list) else [], out.get("domain"))
+    out["recon_roots"] = project_recon_roots(out["scopes"], out.get("domain"))
     return out
 
 
@@ -3380,7 +3414,7 @@ def list_targets() -> list[dict]:
     for key, target in sorted(data.get("targets", {}).items(), key=lambda item: str(item[1].get("name") or item[1].get("domain") or item[0]).lower()):
         domain = target.get("domain", key)
         scopes = normalize_scopes(target.get("scopes") if isinstance(target.get("scopes"), list) else [], domain)
-        recon_roots = normalize_recon_roots(target.get("recon_roots") if isinstance(target.get("recon_roots"), list) else [], domain)
+        recon_roots = project_recon_roots(scopes, domain)
         result.append({"key": key, "name": target.get("name") or domain, "domain": domain, "scopes": scopes, "recon_roots": recon_roots, "workspace": target.get("workspace", ""), "current": key == current})
     return result
 

@@ -530,3 +530,6 @@ El investigador decide qué significa cada valor:
 - `IGNORE`: evidencia conservada que no debe crear relaciones.
 
 Los JWT se detectan aunque aparezcan en una Response y sus claims se pueden clasificar individualmente. Las decisiones se reflejan como highlights en el HTTP y alimentan los modelos existentes de Identity/Business Objects; Negro no crea un segundo motor de relaciones.
+### Scope del proyecto y roots de Superficie
+
+Desde v0.91, los scopes guardados en el proyecto alimentan automáticamente los recon roots de Superficie. Crear un proyecto con `example.com`, `example.net` y `api.example.org` hace que esos roots aparezcan inmediatamente en Project Baseline; no deben cargarse una segunda vez. Quitar un scope lo retira de futuras ejecuciones, pero no borra la evidencia histórica ya recolectada.

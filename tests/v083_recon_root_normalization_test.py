@@ -22,6 +22,10 @@ def test_existing_www_recon_root_self_heals_when_target_is_read(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(core, 'TARGETS_PATH', Path(td) / 'targets.json')
         monkeypatch.setattr(core, 'CONFIG_PATH', Path(td) / 'config.json')
-        key = core.register_target('example.com', Path(td) / 'ws', recon_roots=['www.viveterpel.com'])
+        key = core.register_target(
+            'example.com', Path(td) / 'ws',
+            scopes=['example.com', 'www.viveterpel.com'],
+            recon_roots=['www.viveterpel.com'],
+        )
         target = core.get_target(key)
         assert target['recon_roots'] == ['example.com', 'viveterpel.com']

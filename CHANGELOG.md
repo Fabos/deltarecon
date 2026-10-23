@@ -1,3 +1,13 @@
+## v0.91 · Project scope → Surface roots automáticos
+
+- Los dominios autorizados al crear un proyecto se convierten automáticamente en **recon roots** de Superficie; ya no hay que volver a agregarlos manualmente.
+- `Project Scope` pasa a ser la fuente de verdad para los roots ejecutables del Project Baseline.
+- Editar el scope sincroniza Superficie: agregar un dominio crea su root y quitarlo impide futuras ejecuciones sobre ese root, sin borrar evidencia histórica de la base.
+- Migración automática de proyectos v0.90: si ya existían varios scopes pero sólo un recon root, al abrir Negro se reparan los roots desde el scope guardado.
+- Agregar un root desde Superficie sigue agregándolo también al scope del proyecto, manteniendo la sincronización en ambos sentidos.
+- Se mantiene la normalización segura ya existente de `www.example.com` → `example.com` para roots.
+- 71 tests pasan.
+
 ## v0.90 · Project Baseline Runner + triage de scope
 
 - Nuevo **Project Baseline** para ejecutar en varios recon roots la superficie de anchura antes de profundizar: Root → passive discovery → active discovery ligero → DNS → TLS → refresh DNS de SANs → takeover signals → HTTP/tecnologías.

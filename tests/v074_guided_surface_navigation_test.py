@@ -29,7 +29,7 @@ def test_out_of_order_http_evidence_does_not_skip_guided_steps():
     assert not http['done']
 
 
-def test_recon_roots_are_separate_from_general_scopes():
+def test_recon_roots_follow_project_scopes():
     with tempfile.TemporaryDirectory(prefix='negro-v074-roots-') as td:
         old=core.TARGETS_PATH
         try:
@@ -38,10 +38,10 @@ def test_recon_roots_are_separate_from_general_scopes():
             key=core.register_target('example.com',ws,scopes=['example.com','api.example.com','partner.invalid'])
             target=core.get_target(key)
             assert target['scopes']==['example.com','api.example.com','partner.invalid']
-            assert target['recon_roots']==['example.com']
-            core.update_target_project(key,scopes=target['scopes']+['example.net'],recon_roots=['example.com','example.net'])
+            assert target['recon_roots']==['example.com','api.example.com','partner.invalid']
+            core.update_target_project(key,scopes=target['scopes']+['example.net'])
             target=core.get_target(key)
-            assert target['recon_roots']==['example.com','example.net']
+            assert target['recon_roots']==['example.com','api.example.com','partner.invalid','example.net']
         finally:
             core.TARGETS_PATH=old
 
