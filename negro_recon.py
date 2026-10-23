@@ -2088,7 +2088,10 @@ def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: 
         owner_kind=_provider_kind([owner])
         current=bool(rels & {'RESOLVES_TO','OBSERVED_IP'})
         is_edge=(current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge'
-        is_saas=current and (provider_kind=='saas' or owner_kind=='saas')
+        # SaaS ownership is authoritative regardless of whether the relation is current,
+        # historical, or manually supplied. A historical Salesforce/other SaaS address
+        # must never be promoted to owned/direct infrastructure merely because Host/SNI works.
+        is_saas=(provider_kind=='saas' or owner_kind=='saas')
         if is_edge or is_saas: continue
         manual='CANDIDATE_INFRA_IP' in rels
         historical='HISTORICAL_RESOLVES_TO' in rels
@@ -2134,7 +2137,7 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
         if (current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge':
             classification='EDGE_SHARED'; confidence='HIGH'; score=0.95; edge_count+=1
             reasons.append('La evidencia actual identifica CDN/edge compartido; no se trata como origin ni candidato Nmap.')
-        elif current and (provider_kind=='saas' or owner_kind=='saas'):
+        elif provider_kind=='saas' or owner_kind=='saas':
             classification='THIRD_PARTY_PLATFORM'; confidence='HIGH'; score=0.9
             reasons.append('El hostname/IP está asociado a una plataforma/SaaS de tercero según proveedor o WHOIS.')
         else:

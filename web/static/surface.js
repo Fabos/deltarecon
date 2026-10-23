@@ -162,16 +162,45 @@
 
   function addHostLayers(scene, h, hid, layers){
     const {add, edges} = scene;
-    if(layers.has('provider')) (h.providers||[]).forEach(p=>{const id=add(node('provider',p,p));edges.push(edge(hid,id,'PROXIED_BY','observed'));});
+    const origins=new Set(h.possible_origin_ips||[]), confirmed=new Set(h.confirmed_origin_ips||[]), direct=new Set(h.direct_infra_ips||[]), edgeIps=new Set(h.edge_ips||[]);
+    const isEdgeProvider=p=>/cloudflare|fastly|cloudfront|akamai|imperva|incapsula|sucuri/i.test(String(p||''));
+    const providerIds=new Map();
+
+    if(layers.has('provider')) (h.providers||[]).forEach(p=>{
+      // Edge/CDN providers are host-scoped architecture nodes.  Sharing one
+      // global Cloudflare node across many hosts makes the graph look like a
+      // spider web and hides the actual request path.
+      const architecture=isEdgeProvider(p) && edgeIps.size>0;
+      const key=architecture?`${h.hostname}::${p}`:p;
+      const id=add(node('provider',key,p,{architecture,hostname:h.hostname}));
+      providerIds.set(p,id);
+      edges.push(edge(hid,id,'PROXIED_BY',architecture?'edgepath':'observed'));
+    });
     if(layers.has('technology')) (h.technologies||[]).forEach(t=>{const id=add(node('technology',t,t));edges.push(edge(hid,id,'USES','fingerprint'));});
     if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',s,s));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
     if(layers.has('ip')) {
-      const origins=new Set(h.possible_origin_ips||[]), confirmed=new Set(h.confirmed_origin_ips||[]), direct=new Set(h.direct_infra_ips||[]), edgeIps=new Set(h.edge_ips||[]);
       const elevated=new Set([...origins,...direct]);
-      [...origins].slice(0,6).forEach(ip=>{const isConfirmed=confirmed.has(ip);const id=add(node('ip',ip,ip,{origin:true,confirmed:isConfirmed}));edges.push(edge(hid,id,isConfirmed?'CONFIRMED_DIRECT_BACKEND':'POSSIBLE_ORIGIN','correlated'));});
-      [...direct].filter(ip=>!origins.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{direct:true}));edges.push(edge(hid,id,'DIRECT_INFRA_IP','hypothesis'));});
-      (h.ips||[]).filter(ip=>!elevated.has(ip)).slice(0,6).forEach(ip=>{const isEdge=edgeIps.has(ip);const id=add(node('ip',ip,ip,{historical:false,edge:isEdge}));edges.push(edge(hid,id,isEdge?'EDGE_IP':'OBSERVED_IP',isEdge?'edge':'observed'));});
-      (h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{historical:true}));edges.push(edge(hid,id,'HISTORICAL_RESOLVES_TO','historical'));});
+      const edgeProvider=(h.providers||[]).find(isEdgeProvider);
+      const edgeProviderId=edgeProvider?providerIds.get(edgeProvider):null;
+
+      [...origins].slice(0,6).forEach(ip=>{
+        const isConfirmed=confirmed.has(ip);
+        const id=add(node('ip',ip,ip,{origin:true,confirmed:isConfirmed,architecture:true}));
+        edges.push(edge(hid,id,isConfirmed?'DIRECT_BYPASS':'POSSIBLE_ORIGIN',isConfirmed?'directpath':'correlated'));
+      });
+      [...direct].filter(ip=>!origins.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{direct:true,architecture:true}));edges.push(edge(hid,id,'DIRECT_INFRA_IP','hypothesis'));});
+      (h.ips||[]).filter(ip=>!elevated.has(ip)).slice(0,6).forEach(ip=>{
+        const isEdge=edgeIps.has(ip);
+        const id=add(node('ip',ip,ip,{historical:false,edge:isEdge,architecture:isEdge}));
+        if(isEdge && edgeProviderId) edges.push(edge(edgeProviderId,id,'EDGE_IP','edge'));
+        else edges.push(edge(hid,id,isEdge?'EDGE_IP':'OBSERVED_IP',isEdge?'edge':'observed'));
+      });
+      (h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{
+        const isEdge=edgeIps.has(ip);
+        const id=add(node('ip',ip,ip,{historical:true,edge:isEdge,architecture:isEdge}));
+        if(isEdge && edgeProviderId) edges.push(edge(edgeProviderId,id,'HISTORICAL_EDGE_IP','edge'));
+        else edges.push(edge(hid,id,'HISTORICAL_RESOLVES_TO','historical'));
+      });
       (h.candidate_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !(h.historical_ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{candidate:true}));edges.push(edge(hid,id,'CANDIDATE_INFRA_IP','hypothesis'));});
     }
   }
@@ -193,17 +222,18 @@
       const rootHosts=hosts.filter(h=>(h.root_domain||rootDomain)===rr);
       const rootAsset=rootHosts.find(h=>h.hostname===rr)||null;
       const childHosts=rootHosts.filter(h=>h.hostname!==rr);
-      const rid=add(node('root',rr,`ROOT · ${rr}`,{count:childHosts.length,active:rr===rootDomain,host:rootAsset}));
+      // ROOT is structural only.  The apex/root hostname is rendered as a real
+      // HOST child so its technologies, CDN path and origin path never radiate
+      // directly from the project/root container.
+      const rid=add(node('root',rr,`ROOT · ${rr}`,{count:childHosts.length+(rootAsset?1:0),active:rr===rootDomain,host:rootAsset}));
       if(projectId) edges.push(edge(projectId,rid,'CONTAINS','observed'));
       const shouldOpen=!multiRoot || expandedRoots.has(rr);
       if(!shouldOpen)return;
-      // The recon root is also a real hostname.  Its technical context belongs
-      // directly to the ROOT node instead of being duplicated as a fake child.
-      // In branch-focus mode a child host owns the technical canvas.  Keep the
-      // root as architectural context but hide its provider/technology/IP spokes
-      // so they do not cross the focused child's relations.
-      // Legacy invariant preserved: if(rootAsset) addHostLayers(scene,rootAsset,rid,layers);
-      if(rootAsset && !(focusHost && focusRoot===rr)) addHostLayers(scene,rootAsset,rid,layers);
+      if(rootAsset){
+        const apexId=add(node('host',rootAsset.hostname,rootAsset.hostname,{...rootAsset,root_host:true}));
+        edges.push(edge(rid,apexId,'ROOT_HOST','observed'));
+        if(expandedHosts.has(rootAsset.hostname) && (!focusHost || rootAsset.hostname===focusHost)) addHostLayers(scene,rootAsset,apexId,layers);
+      }
 
       const rawFamilies=new Map();
       childHosts.forEach(h=>{
@@ -237,7 +267,7 @@
 
     const visibleHostNodes=new Set(scene.nodes.filter(n=>n.type==='host').map(n=>n.key));
     hosts.forEach(h=>(h.redirects||[]).forEach(dst=>{if(visibleHostNodes.has(h.hostname)&&visibleHostNodes.has(dst))edges.push(edge(`host:${h.hostname}`,`host:${dst}`,'REDIRECTS_TO','observed'));}));
-    return {nodes,edges,collapsed:grouped,multiRoot,roots};
+    return {nodes,edges,collapsed:grouped,multiRoot,roots,focusHost,focusRoot};
   }
 
   function layout(scene){
@@ -257,11 +287,14 @@
       const famIds=rootFamilies.get(r.id)||[]; const directIds=rootHosts.get(r.id)||[];
       const startY=y;
       if(famIds.length||directIds.length){
+        // Put the apex/root hostname first.  ROOT remains the structural parent,
+        // while the real apex host becomes the first readable branch.
+        const orderedDirect=[...directIds].sort((a,b)=>{const aa=a===`host:${r.key}`?0:1,bb=b===`host:${r.key}`?0:1;return aa-bb||a.localeCompare(b);});
+        orderedDirect.forEach(id=>{pos.set(id,{x:hostX,y:y+24});y+=62;});
         famIds.forEach(fid=>{
           const kids=familyChildren.get(fid)||[]; const block=kids.length?Math.max(82,kids.length*58):58;
           pos.set(fid,{x:familyX,y:y+block/2}); kids.forEach((id,i)=>pos.set(id,{x:hostX,y:y+30+i*56})); y+=block+28;
         });
-        directIds.forEach(id=>{pos.set(id,{x:hostX,y:y+24});y+=62;});
         pos.set(r.id,{x:rootX,y:Math.max(startY+28,(startY+y)/2)}); y+=34;
       }else{pos.set(r.id,{x:rootX,y:y+28});y+=82;}
     });
@@ -288,7 +321,17 @@
     if(n.type==='family') return (n.meta?.hosts||[]).map(h=>allHosts().find(x=>x.hostname===h)).filter(Boolean);
     if(n.type==='root') return allHosts().filter(h=>(h.root_domain||rootDomain)===n.key);
     if(n.type==='project') return allHosts();
-    const ids=new Set(scene.edges.filter(e=>e.target===n.id&&e.source.startsWith('host:')).map(e=>e.source.slice(5)));
+    // Technical nodes can be nested (HOST → Cloudflare → EDGE IP). Walk
+    // backwards until the owning host(s) are found instead of assuming every
+    // technical node is connected directly to a host.
+    const ids=new Set(), pending=[n.id], visited=new Set();
+    while(pending.length){
+      const target=pending.pop(); if(visited.has(target))continue; visited.add(target);
+      scene.edges.filter(e=>e.target===target).forEach(e=>{
+        if(e.source.startsWith('host:')) ids.add(e.source.slice(5));
+        else if(!/^(project|root|family):/.test(e.source)) pending.push(e.source);
+      });
+    }
     return allHosts().filter(h=>ids.has(h.hostname));
   }
 
@@ -310,11 +353,27 @@
     const focusIds=new Set();
     if(scene.focusHost){
       focusIds.add(`host:${scene.focusHost}`);
-      // Focus includes the selected host's technical children plus its ancestry
-      // (family/root/project). Everything else remains visible but subdued.
-      scene.edges.filter(e=>e.source===`host:${scene.focusHost}`).forEach(e=>focusIds.add(e.target));
+      // Follow the focused branch forward (HOST → CDN → EDGE IP) without
+      // walking outward from structural ROOT/family nodes or backward through
+      // shared technologies/providers. Then add only the structural ancestry
+      // (HOST ← family ← ROOT ← PROJECT). This prevents a shared jQuery/Cloudflare
+      // node from re-expanding the whole graph while focus mode is active.
       let changed=true;
-      while(changed){changed=false;scene.edges.forEach(e=>{if(focusIds.has(e.target)&&!focusIds.has(e.source)){focusIds.add(e.source);changed=true;}});}
+      while(changed){
+        changed=false;
+        scene.edges.forEach(e=>{
+          const structuralSource=/^(project|root|family):/.test(e.source);
+          if(focusIds.has(e.source)&&!structuralSource&&!focusIds.has(e.target)){focusIds.add(e.target);changed=true;}
+        });
+      }
+      changed=true;
+      while(changed){
+        changed=false;
+        scene.edges.forEach(e=>{
+          const structuralSource=/^(project|root|family):/.test(e.source);
+          if(structuralSource&&focusIds.has(e.target)&&!focusIds.has(e.source)){focusIds.add(e.source);changed=true;}
+        });
+      }
     }
     updateFocusButton(scene);
     const cs=canvasSize();
@@ -325,13 +384,18 @@
       const a=pos.get(e.source), b=pos.get(e.target); if(!a||!b)return;
       const path=svgEl('path',{d:`M ${a.x+72} ${a.y} C ${a.x+155} ${a.y}, ${b.x-155} ${b.y}, ${b.x-72} ${b.y}`,class:`surface-edge ${e.kind}${scene.focusHost && !(focusIds.has(e.source)&&focusIds.has(e.target))?' focus-muted':''}`});
       const title=svgEl('title'); title.textContent=e.relation; path.appendChild(title); world.appendChild(path);
+      if(e.kind==='directpath'||e.kind==='edgepath'){
+        const label=svgEl('text',{x:(a.x+b.x)/2,y:(a.y+b.y)/2-6,class:`surface-edge-label ${e.kind}`,'text-anchor':'middle'});
+        label.textContent=e.kind==='directpath'?'DIRECTO / BYPASS':'VÍA EDGE';
+        world.appendChild(label);
+      }
     });
 
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
       const brand=['provider','technology','server'].includes(n.type)?brandVisual(n.label):null;
       const hostConfirmed=n.type==='host' && (n.meta?.confirmed_origin_ips||[]).length>0;
-      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='host'&&hostConfirmed?' has-confirmed-origin':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.confirmed?' confirmed-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}${scene.focusHost&&!focusIds.has(n.id)?' focus-muted':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='host'&&hostConfirmed?' has-confirmed-origin':''}${n.type==='host'&&n.meta?.root_host?' root-host':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.confirmed?' confirmed-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}${scene.focusHost&&!focusIds.has(n.id)?' focus-muted':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
       const showOriginBadge=n.type==='ip' && !!n.meta?.confirmed;

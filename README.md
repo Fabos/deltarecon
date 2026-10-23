@@ -559,3 +559,8 @@ Configura sólo las claves que tengas en `~/.config/negro/secrets.env`. Nunca se
 Una IP histórica no implica origin ni autorización para Nmap. Primero debe correlacionarse con evidencia actual (por ejemplo, TLS/SNI para un hostname in-scope, contenido equivalente, ownership/ASN coherente o una relación operacional conocida) y validarse el scope. El mapa diferencia **IP actual**, **IP histórica** e **IP candidata manual**.
 
 También puedes usar **+ Añadir IP conocida / evidencia** para guardar una dirección encontrada en una reunión, JavaScript, correo o documentación. Negro la relaciona con el hostname elegido mediante `CANDIDATE_INFRA_IP`, manteniendo `Origin = UNKNOWN` hasta la fase de clasificación/correlación.
+
+
+## Surface graph architecture (v0.97)
+
+El grafo separa el contenedor `ROOT` del hostname apex. Cuando existe edge/CDN y backend directo correlacionado, representa dos caminos distintos: `HOST → EDGE/CDN → EDGE IPs` y `HOST → IP DIRECTA`. Esto permite leer visualmente un posible bypass de edge sin confundir IPs compartidas con backend propio. El modo **Rama enfocada** atenúa el resto del proyecto y conserva completa la ruta técnica del host seleccionado.

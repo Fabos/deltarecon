@@ -33,10 +33,11 @@ def test_surface_graph_has_branch_focus_and_confirmed_origin_visuals():
     html = (ROOT/'web/templates/surface.html').read_text(encoding='utf-8')
     assert 'data-surface-focus-branch' in html
     assert 'let branchFocus = true' in js
-    assert 'if(rootAsset && !(focusHost && focusRoot===rr)) addHostLayers' in js
+    assert "edges.push(edge(rid,apexId,'ROOT_HOST','observed'));" in js
+    assert 'return {nodes,edges,collapsed:grouped,multiRoot,roots,focusHost,focusRoot}' in js
     assert "(!focusHost || h.hostname===focusHost)" in js
     assert 'focus-muted' in js and '.surface-node.focus-muted' in css
     assert 'confirmed_origin_ips' in js
-    assert 'CONFIRMED_DIRECT_BACKEND' in js
+    assert 'DIRECT_BYPASS' in js
     assert 'surface-origin-badge' in js and '.surface-node.ip.confirmed-origin' in css
     assert 'IP DIRECTA CONFIRMADA' in js

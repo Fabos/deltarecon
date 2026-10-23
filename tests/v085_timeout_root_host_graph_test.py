@@ -52,5 +52,6 @@ def test_root_hostname_is_not_duplicated_as_family_child_and_gets_layers():
     js = (ROOT / 'web/static/surface.js').read_text(encoding='utf-8')
     assert "const rootAsset=rootHosts.find(h=>h.hostname===rr)||null;" in js
     assert "const childHosts=rootHosts.filter(h=>h.hostname!==rr);" in js
-    assert "if(rootAsset) addHostLayers(scene,rootAsset,rid,layers);" in js
+    assert "edges.push(edge(rid,apexId,'ROOT_HOST','observed'));" in js
+    assert "if(expandedHosts.has(rootAsset.hostname)" in js
     assert "if(n.meta?.host) renderDetail(n.meta.host); else renderNodeDetail(n,scene);" in js

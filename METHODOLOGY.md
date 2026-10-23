@@ -455,3 +455,8 @@ Services / Nmap (fase posterior)
 ```
 
 Regla de seguridad metodológica: el baseline no prueba IPs históricas automáticamente. El hunter debe activar explícitamente su correlación porque la dirección puede haber sido reasignada. Nmap nunca se dispara desde Infrastructure Classification.
+
+
+## Lectura arquitectónica del grafo
+
+A partir de v0.97, `ROOT` representa el target/scope y no un servidor. El hostname apex es un activo `HOSTNAME` hijo. Una ruta `HOST → proveedor edge → IP edge` expresa tránsito por infraestructura compartida y no convierte esas IPs en origin. Una ruta paralela `HOST → IP DIRECTA` sólo aparece cuando Infrastructure Classification ha correlacionado evidencia suficiente; sigue requiriendo validación de scope antes de enumeración de servicios.

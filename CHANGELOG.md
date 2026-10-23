@@ -1,3 +1,21 @@
+# v0.97 — Structural ROOT + architecture paths
+
+- El nodo `ROOT` pasa a ser exclusivamente estructural; el apex (`example.com`) se renderiza como un hostname hijo real y sus tecnologías/IPs salen de ese host, no del contenedor del target.
+- La rama enfocada ahora funciona realmente: `focusHost/focusRoot` se conserva al renderizar y el foco sigue la arquitectura anidada sin reabrir ramas por tecnologías compartidas.
+- Los proveedores edge/CDN se representan por hostname cuando forman parte del camino arquitectónico para evitar un único nodo Cloudflare compartido que genere spaghetti.
+- Camino explícito de edge: `HOST → Cloudflare/Fastly/... → EDGE IP`; las IPs históricas reconocidas como edge también cuelgan del proveedor.
+- Camino explícito directo: `HOST → IP DIRECTA`, con línea verde y etiqueta `DIRECTO / BYPASS`; la ruta por CDN usa `VÍA EDGE`.
+- El detalle de nodos técnicos puede resolver el hostname propietario incluso cuando la relación está anidada detrás del proveedor.
+- Regresión completa: 90 tests.
+
+# v0.96
+
+- Corrige precedencia de clasificación en Infrastructure Classification: ownership/provider SaaS conocido (por ejemplo Salesforce) gana siempre sobre señales de HTTP/TLS/hash y nunca se eleva a infraestructura directa propia.
+- Los hosts SaaS actuales, históricos o manuales quedan como `THIRD_PARTY_PLATFORM` y `DO_NOT_SCAN_THIRD_PARTY`.
+- Se evita correlación activa innecesaria contra IPs que WHOIS ya identifica como SaaS conocido.
+- Caso Panamá esperado: `terpelpanama.com → 201.225.241.35` permanece `DIRECT_BACKEND_CANDIDATE · HIGH`, mientras `*.marketing.terpelpanama.com` sobre Salesforce quedan fuera de candidatas Nmap.
+- Regresión completa: 87 tests.
+
 # v0.95 — Surface graph focus + confirmed direct backend
 
 - El mapa distingue visualmente una IP directa **confirmada por correlación fuerte**: requiere `DIRECT_BACKEND_CANDIDATE · HIGH` con TLS/SNI del hostname y SHA256 front/direct idéntico.
