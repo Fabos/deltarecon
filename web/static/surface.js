@@ -137,7 +137,7 @@
   function selectedLayers(){ return new Set(layerEls.filter(x=>x.checked).map(x=>x.dataset.layer)); }
   function filters(){ return {q:(search?.value||'').trim().toLowerCase()}; }
   function haystack(h){
-    return [h.root_domain,h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,
+    return [h.root_domain,h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,h.takeover_state,h.takeover_confidence,h.takeover_target,
       ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
   }
   function matchesSelected(h,name){
@@ -379,6 +379,7 @@
       ${isReconRoot?`<a class="button ghost full" href="${window.location.pathname}?root=${encodeURIComponent(h.hostname)}">${h.hostname===rootDomain?'Target activo':'Trabajar este target →'}</a>`:''}
       ${h.title?`<p class="surface-title">${esc(h.title)}</p>`:''}
       <div class="surface-detail-grid"><div><span>Ambiente</span><b class="env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</b></div><div><span>Familia</span><b>${esc(h.family||'—')}</b><small>heurística</small></div><div><span>DNS</span><b>${esc(h.dns_state||'UNKNOWN')}</b></div><div><span>HTTP</span><b>${esc(h.http_state||'UNKNOWN')}</b></div></div>
+      ${h.takeover_state==='CANDIDATE'?`<div class="callout warning"><b>Takeover candidate · ${esc(h.takeover_confidence||'')}</b><p>CNAME → ${esc(h.takeover_target||'—')} · claimability no validada.</p></div>`:''}
       <section><h3>Tecnologías</h3><div class="surface-chips">${tags(h.technologies,'technology')||'<span class="muted">Sin fingerprint</span>'}</div></section>
       <section><h3>Entrega / proveedor</h3><div class="surface-chips">${tags(h.providers,'provider')||'<span class="muted">No identificado</span>'}</div></section>
       <section><h3>Servidor observado</h3><div class="surface-chips">${tags(h.servers,'server')||'<span class="muted">No identificado</span>'}</div></section>

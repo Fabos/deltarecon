@@ -5653,6 +5653,35 @@ def create_app(default_domain: str, default_workspace: Path):
         response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
         return response
 
+    @app.post("/t/{target_key}/surface/takeover/analyze")
+    def surface_takeover_analyze(request: Request, target_key: str, root: str = Form(""), return_phase: str = Form("dns"), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
+        return_phase = return_phase if return_phase in {"dns", "http"} else "dns"
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
+            try:
+                result = recon.run_takeover_analysis(conn, selected_root, paths, run_group=uuid.uuid4().hex)
+                candidates = int(result.get("candidates") or 0)
+                observations = int(result.get("observations") or 0)
+                if observations:
+                    text = f"Takeover analizado · {candidates} candidatos de {observations} CNAME externos"
+                else:
+                    text = str(result.get("message") or "No hay CNAME externos observados para analizar")
+            except (ValueError, RuntimeError) as exc:
+                text = str(exc)
+        msg = urllib.parse.quote(text)
+        response = RedirectResponse(url=f"/t/{target_key}/surface/phase/{return_phase}?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
+
     @app.get("/t/{target_key}/surface/phase/{phase_key}", response_class=HTMLResponse)
     def surface_phase_page(request: Request, target_key: str, phase_key: str, root: str = "", scan: str = ""):
         import negro_recon as recon

@@ -54,6 +54,18 @@ PROVIDER_TECH = {
     "salesforce service cloud": ("Salesforce Service Cloud", "USES_PLATFORM", "saas"),
 }
 
+# Conservative signatures for *unprovisioned-service* responses.  These are
+# deliberately treated as fingerprints, not proof that the resource can be
+# claimed.  Claimability changes over time and must remain a manual validation.
+TAKEOVER_FINGERPRINTS = (
+    ("github-pages", "GitHub Pages", ("github.io",), ("there isn't a github pages site here",)),
+    ("heroku", "Heroku", ("herokudns.com", "herokuapp.com"), ("no such app",)),
+    ("aws-s3", "Amazon S3", ("s3.amazonaws.com", "s3-website", "amazonaws.com"), ("nosuchbucket", "the specified bucket does not exist")),
+    ("azure-webapps", "Azure App Service", ("azurewebsites.net",), ("404 web site not found", "web app - unavailable")),
+    ("fastly", "Fastly", ("fastly.net",), ("fastly error: unknown domain",)),
+    ("pantheon", "Pantheon", ("pantheonsite.io",), ("the gods are wise, but do not know of the site which you seek",)),
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1319,6 +1331,207 @@ def run_http_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, time
     return {"phase": "http", **result, "targets": len(hosts), "command": cmd}
 
 
+def _external_cname_pairs(conn: sqlite3.Connection, root_domain: str) -> list[tuple[str, str]]:
+    """Return observed first-party -> external CNAME edges for one recon root."""
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT DISTINCT src.asset_key host,dst.asset_key target
+           FROM recon_relationships r
+           JOIN recon_assets src ON src.id=r.src_asset_id
+           JOIN recon_assets dst ON dst.id=r.dst_asset_id
+           WHERE r.relation='CNAME_TO'
+             AND src.asset_type='hostname' AND dst.asset_type='hostname'
+             AND (src.asset_key=? OR src.asset_key LIKE ?)
+           ORDER BY src.asset_key,dst.asset_key""",
+        (root, "%." + root),
+    ).fetchall()
+    out=[]
+    for row in rows:
+        host=str(row["host"] or "").lower().rstrip(".")
+        target=str(row["target"] or "").lower().rstrip(".")
+        if not host or not target:
+            continue
+        if target == root or target.endswith("." + root):
+            continue
+        out.append((host,target))
+    return out
+
+
+def _takeover_fingerprint(target: str, body: str) -> dict | None:
+    target_l=str(target or "").lower().rstrip(".")
+    body_l=str(body or "").lower()
+    for key,label,suffixes,phrases in TAKEOVER_FINGERPRINTS:
+        target_match=any(s in target_l for s in suffixes)
+        phrase=next((p for p in phrases if p in body_l), None)
+        if target_match and phrase:
+            return {"key":key,"provider":label,"phrase":phrase}
+    return None
+
+
+def _parse_takeover_dns(text: str) -> dict[tuple[str,str], dict]:
+    out: dict[tuple[str,str], dict] = {}
+    for raw in (text or "").splitlines():
+        parts=raw.split("\t",3)
+        if len(parts) < 3:
+            continue
+        host=parts[0].strip().lower().rstrip(".")
+        target=parts[1].strip().lower().rstrip(".")
+        status=parts[2].strip().upper() or "UNKNOWN"
+        answers=[]
+        if len(parts) > 3 and parts[3].strip():
+            answers=[x.strip().rstrip(".") for x in parts[3].split(",") if x.strip()]
+        out[(host,target)]={"status":status,"answers":answers}
+    return out
+
+
+def _parse_takeover_http(text: str) -> dict[tuple[str,str], dict]:
+    out: dict[tuple[str,str], dict] = {}
+    current: tuple[str,str] | None = None
+    chunks: list[str] = []
+    for raw in (text or "").splitlines():
+        if raw.startswith("===TAKEOVER ") and raw.endswith("==="):
+            if current:
+                out[current]={"body":"\n".join(chunks)}
+            payload=raw[len("===TAKEOVER "):-3]
+            if "\t" in payload:
+                host,target=payload.split("\t",1)
+                current=(host.strip().lower().rstrip("."),target.strip().lower().rstrip("."))
+            else:
+                current=None
+            chunks=[]
+            continue
+        if raw == "===END TAKEOVER===":
+            if current:
+                out[current]={"body":"\n".join(chunks)}
+            current=None; chunks=[]
+            continue
+        if current:
+            chunks.append(raw)
+    if current:
+        out[current]={"body":"\n".join(chunks)}
+    return out
+
+
+def takeover_findings(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    """Latest takeover-analysis observation per first-party host/CNAME target."""
+    root=str(root_domain or "").strip().lower().rstrip(".")
+    rows=conn.execute(
+        """SELECT a.asset_key hostname,e.raw_json,e.observed_at,e.id
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='takeover_analysis' AND e.kind='takeover_observation'
+             AND a.asset_type='hostname' AND (a.asset_key=? OR a.asset_key LIKE ?)
+           ORDER BY e.id DESC""", (root,"%."+root)
+    ).fetchall()
+    out=[]; seen=set()
+    for row in rows:
+        payload=_loads(row["raw_json"])
+        key=(str(row["hostname"]),str(payload.get("cname_target") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        payload.update({"hostname":row["hostname"],"observed_at":row["observed_at"]})
+        out.append(payload)
+    rank={"HIGH":0,"MEDIUM":1,"LOW":2,"INFO":3}
+    return sorted(out,key=lambda x:(0 if x.get("candidate") else 1,rank.get(str(x.get("confidence") or "INFO"),9),str(x.get("hostname") or "")))
+
+
+def run_takeover_analysis(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 240, run_group: str = "") -> dict:
+    """Analyze stored CNAME evidence without rerunning the recon pipeline.
+
+    Only external CNAME destinations already observed by DNS/httpx are checked.
+    `dig` verifies whether the upstream target still exists and a small `curl`
+    probe to the authorized first-party hostname looks for conservative
+    unprovisioned-service fingerprints.  Nothing is claimed or registered.
+    """
+    init_schema(conn)
+    root=str(root_domain or "").strip().lower().rstrip(".")
+    pairs=_external_cname_pairs(conn,root)
+    if not pairs:
+        return {"phase":"takeover","records":0,"candidates":0,"observations":0,"message":"No hay CNAME externos observados para analizar."}
+
+    limit=max(1,int(os.environ.get("NEGRO_TAKEOVER_LIMIT","100") or 100))
+    pairs=pairs[:limit]
+    run_dir=Path(paths["raw"])/"surface-runs"
+    run_dir.mkdir(parents=True,exist_ok=True)
+    pair_file=run_dir/f"takeover-cnames-{re.sub(r'[^a-zA-Z0-9]+','-',root)}.tsv"
+    pair_file.write_text("\n".join(f"{h}\t{t}" for h,t in pairs)+"\n",encoding="utf-8")
+
+    dig=_tool_path("dig")
+    bash=shutil.which("bash") or "/bin/bash"
+    dns_data={}
+    if dig:
+        dns_script=r'''while IFS=$'\t' read -r host target; do
+  [ -z "$target" ] && continue
+  status=$({dig} "$target" A +time=3 +tries=1 +noall +comments 2>/dev/null | sed -n 's/.*status: \([A-Z]*\).*/\1/p' | head -1)
+  answers=$(for t in A AAAA CNAME; do {dig} "$target" "$t" +time=3 +tries=1 +short 2>/dev/null; done | sed 's/\.$//' | paste -sd, -)
+  printf '%s\t%s\t%s\t%s\n' "$host" "$target" "${{status:-UNKNOWN}}" "$answers"
+done < "$1"'''.format(dig=dig)
+        dns_run=_run_tool(conn,paths,"takeover","dig-upstream",[bash,"-lc",dns_script,"negro-takeover-dns",str(pair_file)],timeout=timeout,root_domain=root,run_group=run_group)
+        if dns_run["status"] in {"ok","partial"}:
+            dns_data=_parse_takeover_dns(dns_run["stdout"])
+
+    curl=_tool_path("curl")
+    http_data={}
+    if curl:
+        http_script=r'''while IFS=$'\t' read -r host target; do
+  [ -z "$host" ] && continue
+  printf '===TAKEOVER %s\t%s===\n' "$host" "$target"
+  out=$({curl} -ksSL --connect-timeout 4 --max-time 10 --max-redirs 3 --range 0-65535 "https://$host/" 2>&1)
+  rc=$?
+  if [ $rc -ne 0 ] || [ -z "$out" ]; then
+    out=$({curl} -sSL --connect-timeout 4 --max-time 10 --max-redirs 3 --range 0-65535 "http://$host/" 2>&1)
+  fi
+  printf '%s\n' "$out" | head -c 65536
+  printf '\n===END TAKEOVER===\n'
+done < "$1"'''.format(curl=curl)
+        http_run=_run_tool(conn,paths,"takeover","curl-fingerprint",[bash,"-lc",http_script,"negro-takeover-http",str(pair_file)],timeout=max(timeout,300),root_domain=root,run_group=run_group)
+        if http_run["status"] in {"ok","partial"}:
+            http_data=_parse_takeover_http(http_run["stdout"])
+
+    observations=[]; candidates=0
+    for host,target in pairs:
+        dns=dns_data.get((host,target),{})
+        status=str(dns.get("status") or "UNKNOWN").upper()
+        answers=list(dns.get("answers") or [])
+        body=str((http_data.get((host,target)) or {}).get("body") or "")
+        fingerprint=_takeover_fingerprint(target,body)
+        reasons=[]
+        confidence="INFO"
+        candidate=False
+        if status == "NXDOMAIN":
+            candidate=True; confidence="MEDIUM"
+            reasons.append("El CNAME externo observado apunta a un destino que actualmente responde NXDOMAIN.")
+        elif status == "NOERROR" and not answers:
+            candidate=True; confidence="LOW"
+            reasons.append("El destino del CNAME responde NOERROR pero no devolvió A/AAAA/CNAME (NODATA).")
+        if fingerprint:
+            candidate=True; confidence="HIGH"
+            reasons.append(f"Respuesta compatible con recurso no aprovisionado de {fingerprint['provider']}.")
+        if not reasons:
+            reasons.append("CNAME externo observado; el destino sigue resolviendo y no coincidió con fingerprints conservadores.")
+
+        row=conn.execute("SELECT id,metadata_json FROM recon_assets WHERE asset_type='hostname' AND asset_key=?",(host,)).fetchone()
+        if not row:
+            continue
+        payload={
+            "candidate":candidate,"confidence":confidence,"state":"CANDIDATE" if candidate else "OBSERVED_EXTERNAL_CNAME",
+            "cname_target":target,"upstream_dns_status":status,"upstream_answers":answers,
+            "fingerprint":fingerprint or {},"reasons":reasons,
+            "claimability":"NOT_VALIDATED","confirmed":False,
+        }
+        add_evidence(conn,int(row["id"]),"takeover_analysis","takeover_observation",target,payload)
+        meta=_merge_meta(_loads(row["metadata_json"]),{
+            "takeover_state":payload["state"],"takeover_confidence":confidence if candidate else "",
+            "takeover_target":target if candidate else "",
+        })
+        conn.execute("UPDATE recon_assets SET metadata_json=?,last_seen_at=? WHERE id=?",(json.dumps(meta,ensure_ascii=False),_now(),row["id"]))
+        observations.append({"hostname":host,**payload})
+        if candidate:
+            candidates += 1
+    conn.commit()
+    return {"phase":"takeover","records":len(observations),"candidates":candidates,"observations":len(observations),"items":observations}
+
+
 def run_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, phase: str) -> dict:
     phase = (phase or "").strip().lower()
     run_group = uuid.uuid4().hex
@@ -1422,6 +1635,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
     nodata = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NODATA")
     nxdomain = sum(1 for h in first if (h.get("metadata") or {}).get("dns_state") == "NXDOMAIN")
     http = sum(1 for h in first if (h.get("metadata") or {}).get("status_code") is not None)
+    takeover_candidates = sum(1 for x in takeover_findings(conn, root) if x.get("candidate"))
     discovery_counts = _discovery_source_counts(conn, root)
     discovery_sources_with_evidence = sum(1 for key in ("subfinder","crtsh","amass","gau_historical","manual") if discovery_counts.get(key, 0) > 0)
     active_count = int(discovery_counts.get("active_permutation", 0)) + int(discovery_counts.get("active_bruteforce", 0))
@@ -1451,7 +1665,7 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
         {"key":"root","title":"Dominio raíz","subtitle":"WHOIS · DNS · HTTP inicial","count":root_ev,"count_label":"evidencias","implemented":True,"tool_ok":all(tooling[x]["available"] for x in ("dig","curl")),"tool_names":["whois","dig","curl"],"purpose":"Crear la línea base del dominio raíz antes de descubrir nombres."},
         {"key":"discovery","title":"Discovery pasivo de hosts","subtitle":"Subfinder · CT · históricos · Amass opcional","count":discovered,"count_label":"hosts únicos candidatos","implemented":True,"tool_ok":bool(discovery_available),"tool_names":["subfinder","curl","gau"],"optional_tool_names":["amass"],"purpose":"Cruzar fuentes pasivas e históricas antes de generar tráfico DNS activo. Amass es enriquecimiento opcional y no bloquea el flujo.","secondary_counts":{"fuentes con evidencia":discovery_sources_with_evidence,"Subfinder":discovery_counts.get("subfinder",0),"CT":discovery_counts.get("crtsh",0),"Históricos":discovery_counts.get("gau_historical",0),"Amass opcional":discovery_counts.get("amass",0),"Manual":discovery_counts.get("manual",0)},"coverage":{"success":discovery_success,"executed":discovery_executed,"available":discovery_available,"total":3}},
         {"key":"active_discovery","title":"Discovery activo de hosts","subtitle":"AlterX · DNS wordlist · wildcard filtering","count":active_count,"count_label":"hosts activos añadidos","implemented":True,"tool_ok":bool(tooling["dnsx"]["available"]),"tool_names":["dnsx"],"optional_tool_names":["alterx"],"purpose":"Generar candidatos plausibles a partir de patrones reales y una wordlist corta; incorporar únicamente nombres que resuelven.","secondary_counts":{"Permutaciones":discovery_counts.get("active_permutation",0),"DNS brute force":discovery_counts.get("active_bruteforce",0)}},
-        {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA y relacionar CNAME/IP observadas.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain}},
+        {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA, relacionar CNAME/IP y permitir análisis de dangling DNS para takeover.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain,"Takeover candidatos":takeover_candidates}},
         {"key":"tls","title":"TLS y certificados","subtitle":"SAN · issuer · fechas · certificados compartidos","count":tls_certs,"count_label":"certificados observados","implemented":True,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Extraer SANs y relaciones de certificados; cualquier hostname nuevo vuelve a DNS antes de HTTP.","secondary_counts":{"SAN hosts":discovery_counts.get("tls_san",0)}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
         {"key":"web","title":"Descubrimiento web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar hosts HTTP vivos y permitir que robots, sitemap, crawling y JavaScript retroalimenten nuevos hostnames."},
@@ -1695,7 +1909,18 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
             "raw_count":0,"raw_label":"SANs","optional":False,"hosts":san_hosts,
             "normalized_count":len(san_hosts),"rerunnable":False,
         })
-    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary}
+    takeover={}
+    if phase_key in {"dns","http"}:
+        takeover_runs=list(_phase_run_bundle(conn,"takeover",root).get("runs") or [])
+        takeover={
+            "findings":takeover_findings(conn,root),
+            "runs":takeover_runs,
+            "executed":bool(takeover_runs),
+            "external_cnames":len(_external_cname_pairs(conn,root)),
+            "tool_ok":bool(inventory.get("dig",{}).get("available") or inventory.get("curl",{}).get("available")),
+        }
+        takeover["candidates"]=sum(1 for x in takeover["findings"] if x.get("candidate"))
+    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary,"takeover":takeover}
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     out = []
@@ -1754,6 +1979,7 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "environment": m.get("environment") or "UNKNOWN", "family": family or "other",
             "status_code": m.get("status_code"), "title": m.get("title"), "url": m.get("url"), "scheme": m.get("scheme"), "port": m.get("port"),
             "http_state": m.get("http_state") or "UNKNOWN", "dns_state": m.get("dns_state") or ("RESOLVED" if ips or cnames else "DISCOVERED"),
+            "takeover_state": m.get("takeover_state") or "", "takeover_confidence": m.get("takeover_confidence") or "", "takeover_target": m.get("takeover_target") or "",
             "webserver": m.get("webserver"), "location": m.get("location"), "cdn": bool(m.get("cdn")), "cdn_name": m.get("cdn_name"),
             "technologies": list(dict.fromkeys(techs or m.get("tech") or [])), "providers": list(dict.fromkeys(providers)), "servers": list(dict.fromkeys(servers)),
             "ips": list(dict.fromkeys(ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),

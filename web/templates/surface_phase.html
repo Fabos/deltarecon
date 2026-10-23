@@ -77,6 +77,71 @@
     </section>
     {% endif %}
 
+    {% if phase.key in ['dns','http'] %}
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">SUBDOMAIN TAKEOVER</p>
+          <h2>Dangling DNS y recursos desprovisionados</h2>
+          <p class="muted small">Negro reutiliza los CNAME ya observados. Sólo consulta sus destinos y hace un probe ligero a los hostnames candidatos; no vuelve a ejecutar Subfinder, dnsx completo ni httpx completo y nunca intenta reclamar recursos.</p>
+        </div>
+        <span>{{ phase_detail.takeover.candidates or 0 }}</span>
+      </div>
+
+      <div class="surface-phase-secondary large">
+        <span>CNAME externos <b>{{ phase_detail.takeover.external_cnames or 0 }}</b></span>
+        <span>Candidatos <b>{{ phase_detail.takeover.candidates or 0 }}</b></span>
+        <span>Estado <b>{% if phase_detail.takeover.executed %}ANALIZADO{% else %}SIN ANALIZAR{% endif %}</b></span>
+      </div>
+
+      {% if phase_detail.takeover.findings %}
+      <div class="surface-normalized-list">
+        {% for item in phase_detail.takeover.findings %}
+        <article>
+          <div>
+            <b>{{ item.hostname }}</b>
+            <small>{% if item.candidate %}CANDIDATO · {{ item.confidence }}{% else %}OBSERVADO · SIN SEÑAL DE TAKEOVER{% endif %}</small>
+          </div>
+          <div class="surface-normalized-meta">
+            <span>CNAME → {{ item.cname_target }}</span>
+            <span>Upstream DNS {{ item.upstream_dns_status }}</span>
+            {% if item.fingerprint and item.fingerprint.provider %}<span>Fingerprint {{ item.fingerprint.provider }}</span>{% endif %}
+            <span>Claimability {{ item.claimability }}</span>
+          </div>
+          {% if item.reasons %}<details class="surface-source-hosts"><summary>Ver interpretación</summary><div>{% for reason in item.reasons %}<code>{{ reason }}</code>{% endfor %}</div></details>{% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% elif phase_detail.takeover.executed %}
+      <div class="empty-state compact"><strong>No hay candidatos en la última evidencia.</strong><span>Los CNAME externos observados no mostraron dangling DNS ni fingerprints conservadores de recurso desprovisionado.</span></div>
+      {% else %}
+      <div class="callout info"><b>Aún no se ha ejecutado este análisis.</b><p>Puede usar la evidencia DNS/HTTP que ya tienes guardada. Si no existen CNAME externos, no hará probes innecesarios.</p></div>
+      {% endif %}
+
+      {% if phase_detail.takeover.runs %}
+      <details class="surface-source-hosts">
+        <summary>Ver ejecución técnica del análisis</summary>
+        <div>
+          {% for run in phase_detail.takeover.runs %}
+          <code>{{ run.tool }} · {{ run.status }} · {{ run.command }}</code>
+          <small><a href="{{ target_base }}/surface/run/{{ run.id }}/output/stdout" target="_blank" rel="noopener">STDOUT crudo ↗</a>{% if run.stderr_path %} · <a href="{{ target_base }}/surface/run/{{ run.id }}/output/stderr" target="_blank" rel="noopener">STDERR crudo ↗</a>{% endif %}</small>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
+      {% if phase_detail.takeover.tool_ok %}
+      <form method="post" action="{{ target_base }}/surface/takeover/analyze" data-recon-run data-loading-label="Analizando candidatos de takeover…" data-loading-tools="dig · curl">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="root" value="{{ phase_detail.root_domain }}">
+        <input type="hidden" name="return_phase" value="{{ phase.key }}">
+        <button class="button ghost" type="submit">{% if phase_detail.takeover.executed %}Reanalizar takeover{% else %}Analizar takeover con evidencia actual{% endif %}</button>
+      </form>
+      {% endif %}
+      <p class="muted small">Un candidato no es un takeover confirmado. Negro deja <b>claimability = NOT_VALIDATED</b>; la confirmación siempre requiere validación manual del proveedor y autorización.</p>
+    </section>
+    {% endif %}
+
     <section class="panel">
       <div class="panel-head"><div><p class="eyebrow">EVIDENCIA NORMALIZADA</p><h2>Lo que Negro incorporó al mapa</h2><p class="muted small">La salida cruda queda arriba; aquí ves cómo fue interpretada sin convertir inferencias en hechos.</p></div><span>{{ phase_detail.normalized|length }}</span></div>
       {% if phase_detail.normalized %}

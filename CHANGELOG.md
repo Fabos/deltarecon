@@ -1,3 +1,13 @@
+## v0.89 · Takeover intelligence sin repetir el pipeline
+
+- Añadido análisis transversal de **subdomain takeover** sobre CNAME externos ya observados.
+- No vuelve a ejecutar Subfinder, dnsx completo ni httpx completo: consulta únicamente destinos CNAME con `dig` y hace un probe ligero con `curl` a los hostnames candidatos.
+- Clasifica `NXDOMAIN`/`NODATA` del upstream y fingerprints conservadores de recursos desprovisionados (GitHub Pages, Heroku, S3, Azure App Service, Fastly y Pantheon).
+- Todo resultado queda como **CANDIDATE**; `claimability` permanece `NOT_VALIDATED` y nunca se registra como takeover confirmado automáticamente.
+- El detalle de DNS/HTTP muestra CNAME externo, estado del upstream, fingerprint, confianza, razones y auditoría de comandos/STDOUT/STDERR.
+- Los hosts candidatos aparecen también en el panel lateral del mapa.
+- 63 tests pasan.
+
 # v0.87 · Discovery resilience
 
 - crt.sh retries transient HTTP failures before giving up. HTTP 429/5xx/timeouts are classified as `unavailable`, not as successful zero-result discovery.
