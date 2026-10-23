@@ -369,7 +369,11 @@
     // column also prevents HSTS/Cloudflare/technology cards from overlapping.
     const columns=[
       {x:typeBase,types:['provider','technology','layergroup']},
-      {x:typeBase+270,types:['edgegroup','server']},
+      // Expanded SECURITY CONTROLS children are real graph nodes.  They need
+      // their own layout column (to the right of the group) just like expanded
+      // historical groups do; otherwise the nodes exist but have no position
+      // and appear as if the group did not open.
+      {x:typeBase+270,types:['edgegroup','server','control']},
       {x:typeBase+540,types:['ip']}
     ];
     let maxRightY=0, lastActiveX=hostX+220;

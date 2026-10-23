@@ -1,3 +1,10 @@
+# v0.100 — Security Controls expansion fix
+
+- Fixed `SECURITY CONTROLS` expand/collapse in the attack-surface graph.
+- The group toggle state was already working, but expanded `control` nodes had no layout column and therefore were not visible.
+- Expanded controls now render in the second technical column, to the right of the group, preserving the same interaction model as historical groups.
+- Added regression coverage for the layout and shared expand-state handler.
+
 # v0.99 — Graph architecture cleanup
 
 - Deduplicate CDN/webserver fingerprints: `cloudflare` server fingerprints no longer create a second Cloudflare node when an architectural Cloudflare provider already exists.
