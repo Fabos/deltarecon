@@ -5764,6 +5764,29 @@ def create_app(default_domain: str, default_workspace: Path):
         response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
         return response
 
+    @app.post("/t/{target_key}/surface/infra/correlate-historical")
+    def surface_infra_correlate_historical(request: Request, target_key: str, root: str = Form(""), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "scopes": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera del scope del proyecto")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            recon.attach_legacy_runs(conn, domain)
+            try:
+                result = recon.run_infrastructure_phase(conn, selected_root, paths, run_group=uuid.uuid4().hex, probe_historical=True)
+                text = f"Infraestructura correlacionada · {int(result.get('direct_candidates') or 0)} candidatos directos · {int(result.get('edge_ips') or 0)} edge"
+            except (ValueError, RuntimeError) as exc:
+                text = str(exc)
+        msg = urllib.parse.quote(text)
+        response = RedirectResponse(url=f"/t/{target_key}/surface/phase/infra?root={urllib.parse.quote(selected_root)}&scan={msg}", status_code=303)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
+
     @app.get("/t/{target_key}/surface/phase/{phase_key}", response_class=HTMLResponse)
     def surface_phase_page(request: Request, target_key: str, phase_key: str, root: str = "", scan: str = ""):
         import negro_recon as recon
@@ -5915,6 +5938,31 @@ def create_app(default_domain: str, default_workspace: Path):
             recon.init_schema(conn)
             result = recon.add_manual_hostnames(conn, selected_root, tokens, note)
         msg = urllib.parse.quote(f"{result['added']} host(s) manual(es) agregado(s) · quedan pendientes de DNS")
+        response = RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&manual={msg}", status_code=303)
+        response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
+        return response
+
+
+    @app.post("/t/{target_key}/surface/ip/add")
+    def surface_add_manual_ip(request: Request, target_key: str, manual_ip: str = Form(...), hostname: str = Form(""), note: str = Form(""), root: str = Form(""), csrf: str = Form(...)):
+        import negro_recon as recon
+        verify_csrf(csrf)
+        domain, _, paths = _target_context(target_key)
+        target = core.get_target(target_key) or {"domain": domain, "recon_roots": [domain]}
+        roots = core.normalize_recon_roots(target.get("recon_roots"), domain)
+        selected_root = core.normalize_recon_root(root) if root else core.normalize_recon_root(domain)
+        if selected_root not in roots:
+            raise HTTPException(status_code=400, detail="Root fuera de los roots de recon del proyecto")
+        host = str(hostname or selected_root).strip().lower().rstrip('.')
+        if not DOMAIN_RE.fullmatch(host) or not (host == selected_root or host.endswith('.' + selected_root)):
+            raise HTTPException(status_code=400, detail="Hostname asociado fuera del root activo")
+        with _db(paths) as conn:
+            recon.init_schema(conn)
+            try:
+                result = recon.add_manual_ip_candidate(conn, selected_root, manual_ip, hostname=host, note=note)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        msg = urllib.parse.quote(f"IP candidata {result['ip']} agregada a {result['hostname']} · pendiente de correlación")
         response = RedirectResponse(url=f"/t/{target_key}/surface?root={urllib.parse.quote(selected_root)}&manual={msg}", status_code=303)
         response.set_cookie("negro_surface_root", selected_root, max_age=60*60*24*365, path=f"/t/{target_key}", samesite="lax")
         return response

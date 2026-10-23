@@ -397,3 +397,7 @@ Con esta entrega quedan completas las fases funcionales principales planteadas. 
 - Search/Object/Hunt/Map integration.
 - Prominent intelligence markers + “Sólo con inteligencia” in the map.
 - Retrospective technique coverage architecture prepared; full checklist system intentionally deferred.
+
+
+### Completado en v0.93
+- Infrastructure Classification: edge/SaaS/direct/backend candidate, correlación TLS/HTTP/content y gate explícito antes de Nmap.

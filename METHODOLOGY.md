@@ -387,3 +387,67 @@ Secuencia por root: `Root → Discovery pasivo → Discovery activo ligero → D
 El baseline es reanudable: una fase ya válida se conserva; DNS/HTTP sólo se repiten cuando nueva evidencia lo exige. Los roots se ejecutan con concurrencia local limitada y cada uno conserva su estado/errores para retry.
 
 El triage posterior usa un **interest score**, no un score de vulnerabilidad. Su objetivo es responder “¿qué rama merece atención primero?” usando únicamente señales observadas: ambientes no-PROD, superficie API/auth, respuestas 5xx, pivotes de discovery y candidatos de takeover. La investigación profunda sigue siendo una decisión del hunter.
+
+
+## DNS/IP histórico → candidato de infraestructura → servicios
+
+Esta etapa ocurre después de haber entendido DNS/TLS/HTTP actuales y antes de Infrastructure Classification. La pregunta no es “¿qué IP escaneo?”, sino “¿qué direcciones estuvieron relacionadas con este hostname y cuáles siguen teniendo sentido hoy?”.
+
+Cadena de evidencia recomendada:
+
+```text
+CURRENT DNS → CDN/edge
+        +
+HISTORICAL_RESOLVES_TO → IP antigua
+        +
+ownership / ASN
+        +
+TLS SNI match / mismo contenido / señal operacional
+        ↓
+DIRECT_BACKEND_CANDIDATE
+        ↓
+validación explícita de scope
+        ↓
+service enumeration / Nmap
+```
+
+Reglas metodológicas:
+
+1. `HISTORICAL_RESOLVES_TO` nunca equivale a `RESOLVES_TO`.
+2. Una IP histórica puede haber sido reasignada; no se prueba automáticamente durante el baseline.
+3. Un CDN edge actual no se usa como sustituto del origin.
+4. `CANDIDATE_INFRA_IP` preserva conocimiento manual sin fingir que una herramienta lo descubrió.
+5. Nmap llega sólo después de correlación y validación de scope sobre la IP concreta; nunca se amplía por inferencia al /24 o ASN del proveedor.
+
+
+## Infrastructure Classification · v0.93
+
+Esta fase es un **motor de correlación**, no un scanner de puertos. Puede ejecutarse apenas existen DNS actual, HTTP/TLS e IPs históricas/manuales; más adelante puede repetirse si Web Discovery o históricos de contenido aportan nueva infraestructura.
+
+Clasificaciones:
+
+- `EDGE_SHARED`: CDN/edge compartido (Cloudflare, Fastly, Akamai, CloudFront, etc.). No usar su IP como sustituto del origin ni como objetivo Nmap.
+- `THIRD_PARTY_PLATFORM`: infraestructura SaaS/plataforma de tercero. Se conserva la relación, pero no se eleva a infraestructura propia.
+- `HISTORICAL_IP`: evidencia histórica sin correlación activa; nunca implica origin actual.
+- `DIRECT_INFRA_CANDIDATE`: IP actual/directa o que responde al Host/SNI, pero aún sin prueba fuerte de ser backend de la misma app.
+- `DIRECT_BACKEND_CANDIDATE`: evidencia correlacionada fuerte como TLS hostname match, contenido SHA256 idéntico o señales HTTP consistentes.
+
+Cadena típica detrás de CDN:
+
+```text
+CURRENT_A -> Cloudflare edge
+HISTORICAL_A / CANDIDATE_INFRA_IP -> 201.x.x.x
+                 |
+                 + WHOIS/ASN no-CDN
+                 + curl --resolve -> 200
+                 + TLS/SNI -> SAN del hostname
+                 + SHA256 contenido -> MATCH
+                 v
+DIRECT_BACKEND_CANDIDATE
+                 v
+CANDIDATE_AFTER_SCOPE_VALIDATION
+                 v
+Services / Nmap (fase posterior)
+```
+
+Regla de seguridad metodológica: el baseline no prueba IPs históricas automáticamente. El hunter debe activar explícitamente su correlación porque la dirección puede haber sido reasignada. Nmap nunca se dispara desde Infrastructure Classification.

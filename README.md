@@ -1,3 +1,8 @@
+
+## v0.93 · Infrastructure Classification
+
+Después de `DNS / IP histórico`, Negro puede convertir evidencia de red en una explicación de arquitectura: edge compartido, tercero/SaaS, infraestructura directa o backend/origin candidato. Usa WHOIS/ASN, `curl --resolve`, TLS/SNI y comparación de contenido; no ejecuta Nmap. Las IPs históricas permanecen pasivas hasta una acción explícita del hunter. Una IP sólo queda como candidata para servicios cuando la correlación es suficiente y todavía requiere validación de scope.
+
 ## v0.52.3 · JWT Claims Layout Hotfix
 
 > Current build: **v0.52.3** — HTTP Inspector mantiene Identity Learning + JWT Rotation y corrige el filtrado visual: los resultados no coincidentes se ocultan realmente aunque las cards usen `display:grid`. El buscador de Valores dinámicos usa el mismo fallback robusto.
@@ -533,3 +538,20 @@ Los JWT se detectan aunque aparezcan en una Response y sus claims se pueden clas
 ### Scope del proyecto y roots de Superficie
 
 Desde v0.91, los scopes guardados en el proyecto alimentan automáticamente los recon roots de Superficie. Crear un proyecto con `example.com`, `example.net` y `api.example.org` hace que esos roots aparezcan inmediatamente en Project Baseline; no deben cargarse una segunda vez. Quitar un scope lo retira de futuras ejecuciones, pero no borra la evidencia histórica ya recolectada.
+
+
+## v0.92 · DNS/IP histórico antes de Infrastructure Classification
+
+El baseline de Superficie ahora añade, después de HTTP, un paso pasivo de **DNS / IP histórico**. Su objetivo es responder: “¿qué direcciones se han observado antes para este root o sus hostnames?” sin tratarlas como infraestructura actual. Las relaciones se registran como `HISTORICAL_RESOLVES_TO`; `RESOLVES_TO` queda reservado para observaciones DNS actuales.
+
+Fuentes integradas:
+
+- `urlscan` como fuente base de scans históricos; `URLSCAN_API_KEY` es opcional y aumenta la cuota.
+- VirusTotal `domain/resolutions` cuando existe `VIRUSTOTAL_API_KEY`.
+- SecurityTrails DNS history tipo A cuando existe `SECURITYTRAILS_API_KEY`.
+
+Configura sólo las claves que tengas en `~/.config/negro/secrets.env`. Nunca se persiste el valor de las claves en `command_json`; los comandos auditables contienen únicamente referencias a variables de entorno.
+
+Una IP histórica no implica origin ni autorización para Nmap. Primero debe correlacionarse con evidencia actual (por ejemplo, TLS/SNI para un hostname in-scope, contenido equivalente, ownership/ASN coherente o una relación operacional conocida) y validarse el scope. El mapa diferencia **IP actual**, **IP histórica** e **IP candidata manual**.
+
+También puedes usar **+ Añadir IP conocida / evidencia** para guardar una dirección encontrada en una reunión, JavaScript, correo o documentación. Negro la relaciona con el hostname elegido mediante `CANDIDATE_INFRA_IP`, manteniendo `Origin = UNKNOWN` hasta la fase de clasificación/correlación.

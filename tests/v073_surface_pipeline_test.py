@@ -19,7 +19,7 @@ def test_nmap_is_late_and_dns_follows_discovery():
     keys=[p['key'] for p in phases]
     assert keys.index('discovery') < keys.index('dns') < keys.index('http') < keys.index('services')
     assert 'discovery_expand' not in keys
-    assert keys.index('web') < keys.index('infra') < keys.index('services')
+    assert keys.index('historical_dns') < keys.index('infra') < keys.index('web') < keys.index('services')
     assert keys[-1] == 'services'
 
 

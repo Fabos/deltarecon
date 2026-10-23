@@ -24,7 +24,7 @@
       <div>
         <span class="eyebrow">PROJECT BASELINE · ANCHURA ANTES DE PROFUNDIDAD</span>
         <h2>Construir superficie de todo el scope</h2>
-        <p>Ejecuta Root → Discovery pasivo → Discovery activo ligero → DNS → TLS → refresh DNS → takeover → HTTP para todos los roots. Amass y la enumeración profunda quedan fuera.</p>
+        <p>Ejecuta Root → Discovery pasivo → Discovery activo ligero → DNS → TLS → refresh DNS → takeover → HTTP → DNS/IP histórico para todos los roots. Amass, correlación activa de origins y enumeración profunda quedan fuera.</p>
       </div>
       <div class="surface-baseline-actions">
         <form method="post" action="{{ target_base }}/surface/baseline/start">
@@ -44,9 +44,11 @@
       <article><span>Hosts</span><strong data-project-metric="hosts">{{ surface.project_summary.hosts }}</strong></article>
       <article><span>DNS resueltos</span><strong data-project-metric="resolved">{{ surface.project_summary.resolved }}</strong></article>
       <article><span>HTTP observado</span><strong data-project-metric="http_alive">{{ surface.project_summary.http_alive }}</strong></article>
+      <article><span>IPs históricas</span><strong data-project-metric="historical_ips">{{ surface.project_summary.historical_ips or 0 }}</strong></article>
       <article><span>No-PROD</span><strong data-project-metric="non_prod">{{ surface.project_summary.non_prod }}</strong></article>
       <article><span>API-like</span><strong data-project-metric="api_like">{{ surface.project_summary.api_like }}</strong></article>
       <article><span>Takeover</span><strong data-project-metric="takeover_candidates">{{ surface.project_summary.takeover_candidates }}</strong></article>
+      <article><span>Infra directa</span><strong data-project-metric="direct_infra_candidates">{{ surface.project_summary.direct_infra_candidates or 0 }}</strong><small>scope validation</small></article>
     </div>
     <div class="surface-baseline-statusbar">
       <span><b data-baseline-running>{{ surface.baseline.counts.running or 0 }}</b> ejecutando</span>
@@ -65,7 +67,7 @@
         <div class="surface-baseline-progress"><i data-root-progress style="width: {{ item.baseline_percent }}%"></i></div>
         <small data-root-phase>{% if item.baseline_phase %}{{ item.baseline_phase }}{% else %}Sin baseline todavía{% endif %}</small>
         <div class="surface-baseline-root-stats">
-          <span>{{ item.hosts }} hosts</span><span>{{ item.resolved }} DNS</span><span>{{ item.http_alive }} HTTP</span>
+          <span>{{ item.hosts }} hosts</span><span>{{ item.resolved }} DNS</span><span>{{ item.http_alive }} HTTP</span>{% if item.historical_ips %}<span>{{ item.historical_ips }} IP hist.</span>{% endif %}
           {% if item.non_prod %}<span>{{ item.non_prod }} no-PROD</span>{% endif %}
           {% if item.takeover_candidates %}<span>{{ item.takeover_candidates }} takeover</span>{% endif %}
         </div>
@@ -126,6 +128,24 @@
           <button class="button" type="submit">Agregar al inventario</button>
         </form>
       </details>
+      <details class="surface-root-add surface-manual-add">
+        <summary>+ Añadir IP conocida / evidencia</summary>
+        <form method="post" action="{{ target_base }}/surface/ip/add">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="root" value="{{ surface.root_domain }}">
+          <label>IP pública
+            <input type="text" name="manual_ip" placeholder="201.225.241.35" required>
+          </label>
+          <label>Hostname al que crees que podría estar relacionada
+            <input type="text" name="hostname" value="{{ surface.root_domain }}" required>
+          </label>
+          <label>Contexto / de dónde salió
+            <input type="text" name="note" placeholder="Ej. reunión, JS, correo, documento, histórico…">
+          </label>
+          <small class="muted">Se guarda como <b>CANDIDATE_INFRA_IP</b>. Negro no la llama origin ni la habilita para Nmap hasta correlacionarla.</small>
+          <button class="button" type="submit">Agregar evidencia IP</button>
+        </form>
+      </details>
     </div>
     {% if surface.manual_hosts %}
     <div class="surface-manual-known">
@@ -133,6 +153,16 @@
       <div class="surface-manual-known-list">
         {% for item in surface.manual_hosts %}
         <span><code>{{ item.hostname }}</code>{% if item.note %}<small>{{ item.note }}</small>{% endif %}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% if surface.manual_ips %}
+    <div class="surface-manual-known">
+      <div class="surface-manual-known-head"><span>IPs candidatas añadidas manualmente · {{ surface.root_domain }}</span><b>{{ surface.manual_ips|length }}</b></div>
+      <div class="surface-manual-known-list">
+        {% for item in surface.manual_ips %}
+        <span><code>{{ item.ip }}</code><small>{{ item.hostname }}{% if item.note %} · {{ item.note }}{% endif %}</small></span>
         {% endfor %}
       </div>
     </div>

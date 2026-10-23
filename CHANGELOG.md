@@ -1,3 +1,30 @@
+## v0.93 · Infrastructure Classification end-to-end
+
+- Implementado el paso **Clasificar infraestructura** inmediatamente después de DNS/IP histórico, antes de crawling/endpoints profundos.
+- Clasifica por relación hostname↔IP, no sólo por el hostname: `EDGE_SHARED`, `THIRD_PARTY_PLATFORM`, `DIRECT_INFRA_CANDIDATE`, `DIRECT_BACKEND_CANDIDATE`, `HISTORICAL_IP` o `UNCLASSIFIED`.
+- Enriquecimiento pasivo con WHOIS/ASN/owner; Cloudflare/Fastly/Akamai/etc. se mantienen como edge compartido y SaaS/terceros no se elevan a origin.
+- Correlación ligera de IPs actuales/manuales con `curl --resolve`, TLS/SNI vía OpenSSL, SHA256 de contenido, `Last-Modified`, status y server.
+- IP histórica **no se prueba activamente por defecto**. Nueva acción explícita “Correlacionar también IPs históricas” para el hunter autorizado.
+- Una coincidencia fuerte crea relación `POSSIBLE_ORIGIN`; una IP actual no-CDN puede quedar como `DIRECT_INFRA_IP`; edge y terceros usan relaciones separadas.
+- Nmap sigue fuera de esta fase. Sólo `DIRECT_*` con confianza suficiente reciben `CANDIDATE_AFTER_SCOPE_VALIDATION`; edge/terceros quedan `DO_NOT_SCAN_*`.
+- El mapa distingue visualmente possible origin, direct infra, historical IP y shared edge, y el panel del host explica la evidencia y elegibilidad.
+- Project Overview añade **Infra directa** y el interest score considera backends/direct infra correlacionados.
+- 80 tests pasan.
+
+## v0.92 · DNS/IP histórico + evidencia de infraestructura candidata
+
+- Nuevo paso **DNS / IP histórico** inmediatamente después de HTTP y antes de web/deep enumeration.
+- El Project Baseline ahora termina con una búsqueda pasiva de infraestructura histórica para mejorar el triage antes de escoger targets profundos.
+- Fuente base: **urlscan Search API** (cuota pública limitada; `URLSCAN_API_KEY` opcional).
+- Fuentes opcionales por API key: **VirusTotal domain resolutions** (`VIRUSTOTAL_API_KEY`) y **SecurityTrails DNS history A** (`SECURITYTRAILS_API_KEY`).
+- Las IPs históricas se guardan como relación `HISTORICAL_RESOLVES_TO`, separadas de `RESOLVES_TO`; nunca se convierten automáticamente en origin.
+- Se preserva fecha/source/ASN cuando la fuente los entrega y cada fuente conserva command/stdout/stderr para auditoría.
+- El mapa muestra IP actual, IP histórica y evidencia manual de IP por separado.
+- Nuevo formulario **Añadir IP conocida / evidencia**: guarda una IP pública encontrada en reunión, JS, correo, documentación, etc. como `CANDIDATE_INFRA_IP`, sin afirmar que sea origin.
+- Las IPs históricas/manuales alimentan el triage, pero **no habilitan Nmap automáticamente**: una IP antigua puede haber sido reasignada y debe correlacionarse/validarse dentro del scope.
+- Baseline ampliado a 9 pasos internos y flujo guiado a 12 pasos visibles.
+- 77 tests pasan.
+
 ## v0.91 · Project scope → Surface roots automáticos
 
 - Los dominios autorizados al crear un proyecto se convierten automáticamente en **recon roots** de Superficie; ya no hay que volver a agregarlos manualmente.

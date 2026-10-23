@@ -50,16 +50,17 @@
 
     {% if phase_detail.source_summary %}
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">{% if phase.key == 'discovery' %}COBERTURA DE DISCOVERY PASIVO{% elif phase.key == 'active_discovery' %}DISCOVERY ACTIVO{% elif phase.key == 'tls' %}NOMBRES DESDE CERTIFICADOS{% else %}FUENTES{% endif %}</p><h2>Qué aportó cada fuente</h2><p class="muted small">Aquí ves no sólo el conteo: puedes desplegar la lista exacta de hostnames que cada fuente incorporó. Cero en una fuente no equivale a “no existe”.</p></div></div>
+      <div class="panel-head"><div><p class="eyebrow">{% if phase.key == 'discovery' %}COBERTURA DE DISCOVERY PASIVO{% elif phase.key == 'active_discovery' %}DISCOVERY ACTIVO{% elif phase.key == 'tls' %}NOMBRES DESDE CERTIFICADOS{% else %}FUENTES{% endif %}</p><h2>Qué aportó cada fuente</h2><p class="muted small">Aquí ves no sólo el conteo: puedes desplegar la lista exacta de elementos normalizados que cada fuente incorporó. Cero en una fuente no equivale a “no existe”.</p></div></div>
       <div class="surface-discovery-source-grid">
       {% for source in phase_detail.source_summary %}
         <article class="surface-discovery-source {% if source.status == 'ok' %}ok{% elif source.status == 'partial' %}partial{% elif source.status == 'timeout' %}timeout{% elif source.status == 'unavailable' %}unavailable{% elif source.executed %}error{% elif source.available %}idle{% else %}missing{% endif %}">
           <div><b>{{ source.label }}</b><span>{% if source.optional %}OPCIONAL · {% endif %}{% if source.status == 'ok' %}OK{% elif source.status == 'partial' %}PARCIAL{% elif source.status == 'timeout' %}TIMEOUT{% elif source.status == 'unavailable' %}NO DISPONIBLE AHORA{% elif source.executed %}ERROR{% elif source.available %}SIN EJECUTAR{% else %}NO DISPONIBLE{% endif %}</span></div>
           <strong>{% if source.status == 'unavailable' %}—{% else %}{{ source.normalized_count }}{% endif %}</strong>
-          <small>{% if source.status == 'unavailable' %}resultado desconocido · la fuente no respondió correctamente{% else %}hosts únicos{% if source.executed %} · {{ source.raw_count }} {{ source.raw_label or 'líneas crudas' }}{% endif %}{% endif %}</small>
+          <small>{% if source.status == 'unavailable' %}resultado desconocido · la fuente no respondió correctamente{% else %}{{ source.item_label or 'hostname' }}{% if source.normalized_count != 1 %}s{% endif %} únicos{% if source.executed %} · {{ source.raw_count }} {{ source.raw_label or 'líneas crudas' }}{% endif %}{% endif %}</small>
+          {% if source.note %}<p class="muted small">{{ source.note }}</p>{% endif %}
           {% if source.hosts %}
           <details class="surface-source-hosts">
-            <summary>Ver {{ source.hosts|length }} hostname{% if source.hosts|length != 1 %}s{% endif %}</summary>
+            <summary>Ver {{ source.hosts|length }} {{ source.item_label or 'hostname' }}{% if source.hosts|length != 1 %}s{% endif %}</summary>
             <div>{% for host in source.hosts %}<code>{{ host }}</code>{% endfor %}</div>
           </details>
           {% elif source.executed and source.status == 'ok' %}<p class="muted small">La fuente terminó correctamente pero no añadió hostnames.</p>{% endif %}
@@ -74,6 +75,64 @@
         </article>
       {% endfor %}
       </div>
+    </section>
+    {% endif %}
+
+    {% if phase.key == 'historical_dns' %}
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">EVIDENCIA HISTÓRICA</p><h2>Resoluciones e IPs observadas anteriormente</h2><p class="muted small">Una IP histórica puede revelar un origin antiguo o actual, pero también puede haber sido reasignada. Negro la conserva como evidencia pasiva y no la convierte en target de Nmap automáticamente.</p></div><span>{{ phase.count }}</span></div>
+      {% if phase_detail.normalized %}
+      <div class="surface-normalized-list">
+        {% for item in phase_detail.normalized %}
+        <article><div><b>{{ item.hostname }}</b><small>{{ item.source }}</small></div><div class="surface-normalized-meta"><span>IP {{ item.ip }}</span>{% if item.first_seen %}<span>first {{ item.first_seen }}</span>{% endif %}{% if item.last_seen %}<span>last {{ item.last_seen }}</span>{% endif %}{% if item.asn %}<span>{{ item.asn }} {{ item.asn_name }}</span>{% endif %}</div></article>
+        {% endfor %}
+      </div>
+      {% else %}<div class="empty-state"><strong>Sin IPs históricas normalizadas todavía.</strong><span>La ausencia de resultados en una fuente no demuestra que nunca existiera otra resolución.</span></div>{% endif %}
+    </section>
+    {% endif %}
+
+    {% if phase.key == 'infra' %}
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">INFRASTRUCTURE CLASSIFICATION</p><h2>Cómo encaja cada IP en la arquitectura</h2><p class="muted small">Negro correlaciona DNS actual, IPs históricas/manuales, ASN/owner, TLS/SNI, HTTP directo y contenido. No ejecuta Nmap aquí.</p></div><span>{{ phase_detail.infrastructure.direct_candidates or 0 }}</span></div>
+      <div class="surface-phase-secondary large">
+        <span>Directas <b>{{ phase_detail.infrastructure.direct_candidates or 0 }}</b></span>
+        <span>Edge compartido <b>{{ phase_detail.infrastructure.edge_ips or 0 }}</b></span>
+        <span>Terceros/SaaS <b>{{ phase_detail.infrastructure.third_party or 0 }}</b></span>
+        <span>Históricas pendientes <b>{{ phase_detail.infrastructure.pending_historical or 0 }}</b></span>
+        <span>Candidatas Nmap <b>{{ phase_detail.infrastructure.nmap_candidates or 0 }}</b></span>
+      </div>
+      {% if phase_detail.infrastructure.findings %}
+      <div class="surface-normalized-list infra-classification-list">
+        {% for item in phase_detail.infrastructure.findings %}
+        <article>
+          <div><b>{{ item.hostname }}</b><small>{{ item.classification }} · {{ item.confidence }}</small></div>
+          <div class="surface-normalized-meta">
+            <span>IP {{ item.ip }}</span>
+            {% if item.asn %}<span>{{ item.asn }}</span>{% endif %}
+            {% if item.owner %}<span>{{ item.owner }}</span>{% endif %}
+            {% if item.direct_https_status %}<span>HTTPS directo {{ item.direct_https_status }}</span>{% endif %}
+            {% if item.direct_server %}<span>{{ item.direct_server }}</span>{% endif %}
+            {% if item.tls_hostname_match %}<span>TLS/SNI MATCH</span>{% endif %}
+            {% if item.content_hash_match %}<span>SHA256 MATCH</span>{% endif %}
+            {% if item.last_modified_match %}<span>Last-Modified MATCH</span>{% endif %}
+            {% if item.bypass_possible %}<span>POSIBLE BYPASS DE EDGE</span>{% endif %}
+          </div>
+          <div class="surface-phase-secondary compact"><span>Nmap <b>{{ item.nmap_eligibility }}</b></span><span>Confianza <b>{{ item.confidence_score }}</b></span></div>
+          {% if item.reasons %}<details class="surface-source-hosts"><summary>Ver razonamiento y evidencia</summary><div>{% for reason in item.reasons %}<code>{{ reason }}</code>{% endfor %}</div></details>{% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}<div class="empty-state"><strong>Aún no hay infraestructura clasificada.</strong><span>Ejecuta el paso para convertir las IPs actuales/manuales en roles. Las IPs históricas permanecen pasivas hasta que decidas correlacionarlas.</span></div>{% endif %}
+
+      {% if phase_detail.infrastructure.pending_historical %}
+      <div class="callout warning"><b>Hay IPs históricas sin prueba activa.</b><p>Una IP antigua puede haber sido reasignada. Sólo usa esta acción si tienes autorización para correlacionar esas IPs con los hostnames del scope. Negro hará únicamente HTTP/TLS ligero; todavía no ejecutará Nmap.</p></div>
+      <form method="post" action="{{ target_base }}/surface/infra/correlate-historical" data-recon-run data-loading-label="Correlacionando IPs históricas…" data-loading-tools="WHOIS · curl --resolve · OpenSSL">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="root" value="{{ phase_detail.root_domain }}">
+        <button class="button ghost" type="submit">Correlacionar también IPs históricas</button>
+      </form>
+      {% endif %}
+      <p class="muted small">La etiqueta <b>CANDIDATE_AFTER_SCOPE_VALIDATION</b> significa “vale la pena considerar Nmap después de confirmar autorización/propiedad”; nunca autoriza el escaneo por sí sola.</p>
     </section>
     {% endif %}
 
@@ -142,6 +201,7 @@
     </section>
     {% endif %}
 
+    {% if phase.key != 'infra' %}
     <section class="panel">
       <div class="panel-head"><div><p class="eyebrow">EVIDENCIA NORMALIZADA</p><h2>Lo que Negro incorporó al mapa</h2><p class="muted small">La salida cruda queda arriba; aquí ves cómo fue interpretada sin convertir inferencias en hechos.</p></div><span>{{ phase_detail.normalized|length }}</span></div>
       {% if phase_detail.normalized %}
@@ -166,6 +226,7 @@
         <div class="empty-state compact"><strong>No hay evidencia normalizada todavía.</strong><span>Esto puede ser correcto si la herramienta devolvió cero resultados; revisa la salida cruda antes de concluir.</span></div>
       {% endif %}
     </section>
+    {% endif %}
   </div>
 
   <aside class="surface-phase-side">

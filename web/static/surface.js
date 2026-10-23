@@ -138,7 +138,7 @@
   function filters(){ return {q:(search?.value||'').trim().toLowerCase()}; }
   function haystack(h){
     return [h.root_domain,h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,h.takeover_state,h.takeover_confidence,h.takeover_target,
-      ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
+      ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.historical_ips||[]),...(h.candidate_ips||[]),...(h.possible_origin_ips||[]),...(h.direct_infra_ips||[]),...(h.edge_ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
   }
   function matchesSelected(h,name){
     const sel=selectedFilters[name]; if(!sel||!sel.size)return true;
@@ -163,7 +163,15 @@
     if(layers.has('provider')) (h.providers||[]).forEach(p=>{const id=add(node('provider',p,p));edges.push(edge(hid,id,'PROXIED_BY','observed'));});
     if(layers.has('technology')) (h.technologies||[]).forEach(t=>{const id=add(node('technology',t,t));edges.push(edge(hid,id,'USES','fingerprint'));});
     if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',s,s));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
-    if(layers.has('ip')) (h.ips||[]).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip));edges.push(edge(hid,id,'OBSERVED_IP','observed'));});
+    if(layers.has('ip')) {
+      const origins=new Set(h.possible_origin_ips||[]), direct=new Set(h.direct_infra_ips||[]), edgeIps=new Set(h.edge_ips||[]);
+      const elevated=new Set([...origins,...direct]);
+      [...origins].slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{origin:true}));edges.push(edge(hid,id,'POSSIBLE_ORIGIN','correlated'));});
+      [...direct].filter(ip=>!origins.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{direct:true}));edges.push(edge(hid,id,'DIRECT_INFRA_IP','hypothesis'));});
+      (h.ips||[]).filter(ip=>!elevated.has(ip)).slice(0,6).forEach(ip=>{const isEdge=edgeIps.has(ip);const id=add(node('ip',ip,ip,{historical:false,edge:isEdge}));edges.push(edge(hid,id,isEdge?'EDGE_IP':'OBSERVED_IP',isEdge?'edge':'observed'));});
+      (h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{historical:true}));edges.push(edge(hid,id,'HISTORICAL_RESOLVES_TO','historical'));});
+      (h.candidate_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !(h.historical_ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{candidate:true}));edges.push(edge(hid,id,'CANDIDATE_INFRA_IP','hypothesis'));});
+    }
   }
 
   function buildScene(hosts){
@@ -294,7 +302,7 @@
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
       const brand=['provider','technology','server'].includes(n.type)?brandVisual(n.label):null;
-      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='root'&&n.meta?.active?' active-root':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
       const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?220:n.type==='project'?190:(brand?210:190);
@@ -372,7 +380,7 @@
   function tags(items,cls=''){return (items||[]).map(x=>`<span class="surface-chip ${cls}">${esc(x)}</span>`).join('');}
   function renderDetail(h){
     if(!h){detail.innerHTML='<div class="surface-detail-empty"><span class="surface-detail-icon">◎</span><b>Selecciona una rama</b><p>Abre una familia o hostname para reducir ruido y revisar evidencia.</p></div>';return;}
-    const sharedEdge=(h.providers||[]).some(x=>/cloudflare|fastly|cloudfront/i.test(x));
+    const sharedEdge=(h.providers||[]).some(x=>/cloudflare|fastly|cloudfront|akamai/i.test(x)) || (h.edge_ips||[]).length>0;
     const isReconRoot=(data.roots||[]).includes(h.hostname);
     detail.innerHTML=`
       <div class="surface-detail-head"><div><span class="eyebrow">${isReconRoot?'ROOT / HOSTNAME':'HOSTNAME'}</span><h2>${esc(h.hostname)}</h2></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">HTTP ?</span>'}</div>
@@ -383,9 +391,10 @@
       <section><h3>Tecnologías</h3><div class="surface-chips">${tags(h.technologies,'technology')||'<span class="muted">Sin fingerprint</span>'}</div></section>
       <section><h3>Entrega / proveedor</h3><div class="surface-chips">${tags(h.providers,'provider')||'<span class="muted">No identificado</span>'}</div></section>
       <section><h3>Servidor observado</h3><div class="surface-chips">${tags(h.servers,'server')||'<span class="muted">No identificado</span>'}</div></section>
-      <section><h3>DNS / red</h3><dl class="surface-kv"><dt>IP observada</dt><dd>${(h.ips||[]).map(esc).join('<br>')||'—'}</dd><dt>CNAME</dt><dd>${(h.cnames||[]).map(esc).join('<br>')||'—'}</dd><dt>Origin</dt><dd><b>UNKNOWN</b> <small>no se infiere desde edge/CDN</small></dd></dl></section>
+      <section><h3>DNS / red</h3><dl class="surface-kv"><dt>IP actual observada</dt><dd>${(h.ips||[]).map(esc).join('<br>')||'—'}</dd><dt>IP histórica</dt><dd>${(h.historical_ips||[]).map(ip=>`<span class="surface-historical-ip">${esc(ip)} · HISTÓRICA</span>`).join('<br>')||'—'}</dd><dt>IP candidata manual</dt><dd>${(h.candidate_ips||[]).map(ip=>`<span>${esc(ip)} · SIN CORRELACIONAR</span>`).join('<br>')||'—'}</dd><dt>CNAME</dt><dd>${(h.cnames||[]).map(esc).join('<br>')||'—'}</dd><dt>Possible origin</dt><dd>${(h.possible_origin_ips||[]).map(ip=>`<b>${esc(ip)}</b> · HIGH/CORRELATED`).join('<br>')||'UNKNOWN'}</dd><dt>Direct infra</dt><dd>${(h.direct_infra_ips||[]).map(ip=>`${esc(ip)} · CANDIDATE`).join('<br>')||'—'}</dd></dl></section>
+      ${(h.infrastructure||[]).length?`<section><h3>Infrastructure Classification</h3><div class="surface-infra-list">${(h.infrastructure||[]).map(x=>`<div><b>${esc(x.ip||'')}</b><span>${esc(x.classification||'UNCLASSIFIED')} · ${esc(x.confidence||'')}</span><small>${x.tls_hostname_match?'TLS/SNI match · ':''}${x.content_hash_match?'SHA256 match · ':''}${x.owner?esc(x.owner):''}</small><em>Nmap: ${esc(x.nmap_eligibility||'NOT_READY')}</em></div>`).join('')}</div></section>`:''}
       ${h.location?`<section><h3>Redirect</h3><code class="surface-code">${esc(h.location)}</code></section>`:''}
-      <section><h3>Siguiente lectura</h3><div class="surface-action-note ${sharedEdge?'caution':''}">${sharedEdge?'Nmap no se recomienda sobre la IP observada: parece edge/CDN compartido. Profundiza por hostname, TLS, HTTP o busca origin con evidencia.':'Este host no está marcado como edge compartido. Antes de Nmap, valida propiedad/scope y si la IP es realmente infraestructura directa.'}</div></section>
+      <section><h3>Siguiente lectura</h3><div class="surface-action-note ${(h.nmap_candidate_ips||[]).length?'':'caution'}">${(h.nmap_candidate_ips||[]).length?`Hay ${h.nmap_candidate_ips.length} IP(s) candidata(s) para enumeración de servicios DESPUÉS de validar scope: ${(h.nmap_candidate_ips||[]).map(esc).join(', ')}.`:(sharedEdge?'Nmap no se recomienda sobre la IP observada: parece edge/CDN compartido. Profundiza por hostname, TLS, HTTP o busca origin con evidencia.':'Aún no hay una IP elevada por Infrastructure Classification. Valida propiedad/scope y correlación antes de Nmap.')}</div></section>
       <section><h3>Evidencia</h3><div class="surface-chips">${tags(h.sources,'source')}</div><small class="muted">Última observación: ${esc(h.last_seen_at||'—')}</small></section>
       ${h.url?`<a class="button ghost full" target="_blank" rel="noopener noreferrer" href="${esc(h.url)}">Abrir host ↗</a>`:''}`;
   }

@@ -7,9 +7,10 @@ import sqlite3
 import shutil
 import subprocess
 import uuid
+import ipaddress
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 
 ENV_PATTERNS = (
     ("DEV", re.compile(r"(?:^|[._-])(dev|development|sandbox|lab)(?:$|[._-])", re.I)),
@@ -57,6 +58,17 @@ PROVIDER_TECH = {
 # Conservative signatures for *unprovisioned-service* responses.  These are
 # deliberately treated as fingerprints, not proof that the resource can be
 # claimed.  Claimability changes over time and must remain a manual validation.
+
+
+EDGE_PROVIDER_PATTERNS = (
+    "cloudflare", "fastly", "akamai", "cloudfront", "imperva", "incapsula",
+    "stackpath", "sucuri", "bunnycdn", "cloud cdn",
+)
+SAAS_PROVIDER_PATTERNS = (
+    "salesforce", "frontify", "microsoft 365", "office 365", "github pages",
+    "heroku", "vercel", "netlify", "pantheon", "shopify", "zendesk",
+)
+
 TAKEOVER_FINGERPRINTS = (
     ("github-pages", "GitHub Pages", ("github.io",), ("there isn't a github pages site here",)),
     ("heroku", "Heroku", ("herokudns.com", "herokuapp.com"), ("no such app",)),
@@ -154,7 +166,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'queued',
             current_phase TEXT,
             step_index INTEGER NOT NULL DEFAULT 0,
-            step_total INTEGER NOT NULL DEFAULT 8,
+            step_total INTEGER NOT NULL DEFAULT 9,
             completed_json TEXT NOT NULL DEFAULT '[]',
             skipped_json TEXT NOT NULL DEFAULT '[]',
             error TEXT,
@@ -740,6 +752,48 @@ def manual_hostname_entries(conn: sqlite3.Connection, root_domain: str) -> list[
         out.append({"hostname":host,"note":str(raw.get("note") or ""),"observed_at":row["observed_at"]})
     return out
 
+
+
+def add_manual_ip_candidate(conn: sqlite3.Connection, root_domain: str, ip_value: str, *, hostname: str = "", note: str = "") -> dict:
+    """Attach a hunter-known public IP as unverified infrastructure evidence.
+
+    This intentionally does *not* create RESOLVES_TO or POSSIBLE_ORIGIN_OF.
+    The relation only says that the hunter has a reason to correlate this IP
+    with an in-scope hostname.
+    """
+    init_schema(conn)
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    ip = _public_ip(ip_value)
+    if not ip:
+        raise ValueError("La IP debe ser una dirección pública válida")
+    host = _first_party_hostname(hostname or root, root)
+    if not host:
+        raise ValueError("El hostname asociado debe pertenecer al root activo")
+    hid = upsert_asset(conn, "hostname", host, host, {"sources": ["manual_ip"]})
+    iid = upsert_asset(conn, "ip", ip, ip, {"sources": ["manual_ip"], "candidate": True})
+    payload = {"hostname": host, "ip": ip, "note": str(note or ""), "root_domain": root}
+    evidence_id = add_evidence(conn, hid, "manual_ip", "candidate_infrastructure_ip", ip, payload)
+    link(conn, hid, "CANDIDATE_INFRA_IP", iid, "manual_ip", confidence=0.35, confidence_type="manual", evidence_id=evidence_id)
+    conn.commit()
+    return {"hostname": host, "ip": ip, "note": str(note or ""), "relation": "CANDIDATE_INFRA_IP"}
+
+
+def manual_ip_entries(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    root = root_domain.lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT a.asset_key hostname,e.value ip,e.raw_json,e.observed_at
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='manual_ip' AND e.kind='candidate_infrastructure_ip'
+             AND a.asset_type='hostname' AND (a.asset_key=? OR a.asset_key LIKE ?)
+           ORDER BY e.id DESC""",
+        (root, "%." + root),
+    ).fetchall()
+    out=[]
+    for row in rows:
+        raw=_loads(row["raw_json"])
+        out.append({"hostname":str(row["hostname"]),"ip":str(row["ip"] or ""),"note":str(raw.get("note") or ""),"observed_at":str(row["observed_at"])})
+    return out
+
 def _first_party_hostnames(conn: sqlite3.Connection, root_domain: str, *, resolved_only: bool = False) -> list[str]:
     values = []
     for row in conn.execute("SELECT asset_key,metadata_json FROM recon_assets WHERE asset_type='hostname' ORDER BY asset_key").fetchall():
@@ -815,6 +869,295 @@ def _historical_hosts_from_text(text: str, root_domain: str) -> list[str]:
             out.add(host)
     return sorted(out)
 
+
+
+
+def _public_ip(value: str) -> str:
+    """Return a canonical globally-routable IP or an empty string."""
+    try:
+        ip = ipaddress.ip_address(str(value or "").strip())
+    except ValueError:
+        return ""
+    return str(ip) if ip.is_global else ""
+
+
+def _first_party_hostname(value: str, root_domain: str) -> str:
+    host = str(value or "").strip().lower().rstrip(".")
+    root = str(root_domain or "").strip().lower().rstrip(".")
+    if host == root or host.endswith("." + root):
+        return host
+    return ""
+
+
+def _parse_urlscan_history(text: str, root_domain: str) -> list[dict]:
+    """Normalize historical page IP observations returned by urlscan Search."""
+    try:
+        payload = json.loads(text or "{}")
+    except Exception:
+        return []
+    rows = payload.get("results") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        page = item.get("page") if isinstance(item.get("page"), dict) else {}
+        task = item.get("task") if isinstance(item.get("task"), dict) else {}
+        host = _first_party_hostname(page.get("domain") or task.get("domain") or "", root_domain)
+        ip = _public_ip(page.get("ip") or "")
+        if not host or not ip:
+            continue
+        observed = str(task.get("time") or item.get("date") or "")
+        key = (host, ip, observed)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "hostname": host,
+            "ip": ip,
+            "observed_at_source": observed,
+            "first_seen": observed,
+            "last_seen": observed,
+            "asn": str(page.get("asn") or ""),
+            "asn_name": str(page.get("asnname") or ""),
+            "country": str(page.get("country") or ""),
+            "source": "urlscan_history",
+            "source_kind": "historical_web_scan",
+        })
+    return out
+
+
+def _parse_virustotal_resolutions(text: str, root_domain: str) -> list[dict]:
+    """Normalize VT domain resolution relationship objects."""
+    try:
+        payload = json.loads(text or "{}")
+    except Exception:
+        return []
+    rows = payload.get("data") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in rows:
+        attrs = item.get("attributes") if isinstance(item, dict) and isinstance(item.get("attributes"), dict) else {}
+        host = _first_party_hostname(attrs.get("host_name") or root_domain, root_domain)
+        ip = _public_ip(attrs.get("ip_address") or "")
+        if not host or not ip:
+            continue
+        raw_date = attrs.get("date")
+        observed = ""
+        try:
+            if raw_date not in (None, ""):
+                observed = datetime.fromtimestamp(int(raw_date), tz=timezone.utc).isoformat()
+        except Exception:
+            observed = str(raw_date or "")
+        key = (host, ip, observed)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "hostname": host,
+            "ip": ip,
+            "observed_at_source": observed,
+            "first_seen": observed,
+            "last_seen": observed,
+            "resolver": str(attrs.get("resolver") or "VirusTotal"),
+            "source": "virustotal_history",
+            "source_kind": "historical_dns_resolution",
+        })
+    return out
+
+
+def _walk_dicts(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_dicts(child)
+
+
+def _parse_securitytrails_history(text: str, root_domain: str) -> list[dict]:
+    """Best-effort parser for SecurityTrails DNS-history responses.
+
+    Their history response has evolved over time, so this intentionally accepts
+    both record/value objects and nested values while preserving the raw record.
+    """
+    try:
+        payload = json.loads(text or "{}")
+    except Exception:
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    root = root_domain.lower().rstrip(".")
+    for obj in _walk_dicts(payload):
+        first_seen = str(obj.get("first_seen") or obj.get("firstSeen") or "")
+        last_seen = str(obj.get("last_seen") or obj.get("lastSeen") or "")
+        candidates = []
+        for key in ("ip", "ip_address", "value"):
+            val = obj.get(key)
+            if isinstance(val, str):
+                candidates.append(val)
+        values = obj.get("values")
+        if isinstance(values, list):
+            for val in values:
+                if isinstance(val, str):
+                    candidates.append(val)
+                elif isinstance(val, dict):
+                    for k in ("ip", "ip_address", "value"):
+                        if isinstance(val.get(k), str):
+                            candidates.append(val.get(k))
+        for candidate in candidates:
+            ip = _public_ip(candidate)
+            if not ip:
+                continue
+            key = (root, ip, first_seen, last_seen)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "hostname": root,
+                "ip": ip,
+                "observed_at_source": last_seen or first_seen,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "source": "securitytrails_history",
+                "source_kind": "historical_dns_resolution",
+            })
+    return out
+
+
+def _historical_resolution_exists(conn: sqlite3.Connection, hostname: str, ip: str, source: str, observed: str) -> bool:
+    row = conn.execute(
+        """SELECT 1 FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE a.asset_type='hostname' AND a.asset_key=? AND e.source=?
+             AND e.kind='historical_resolution' AND e.value=? AND COALESCE(e.raw_json,'') LIKE ? LIMIT 1""",
+        (hostname, source, ip, f'%"observed_at_source": "{observed}"%'),
+    ).fetchone()
+    return bool(row)
+
+
+def import_historical_resolutions(conn: sqlite3.Connection, records: list[dict], root_domain: str) -> dict:
+    """Persist passive historical host→IP relationships without claiming origin."""
+    root = root_domain.lower().rstrip(".")
+    added = 0
+    unique_ips: set[str] = set()
+    unique_hosts: set[str] = set()
+    for rec in records or []:
+        host = _first_party_hostname(rec.get("hostname") or root, root)
+        ip = _public_ip(rec.get("ip") or "")
+        source = str(rec.get("source") or "historical_dns")
+        observed = str(rec.get("observed_at_source") or rec.get("last_seen") or rec.get("first_seen") or "")
+        if not host or not ip:
+            continue
+        if _historical_resolution_exists(conn, host, ip, source, observed):
+            unique_ips.add(ip); unique_hosts.add(host)
+            continue
+        hid = upsert_asset(conn, "hostname", host, host, {"sources": [source]})
+        iid = upsert_asset(conn, "ip", ip, ip, {"sources": [source], "historical": True})
+        payload = dict(rec)
+        payload["root_domain"] = root
+        evidence_id = add_evidence(conn, hid, source, "historical_resolution", ip, payload)
+        link(conn, hid, "HISTORICAL_RESOLVES_TO", iid, source, confidence=0.72, confidence_type="historical", evidence_id=evidence_id)
+        added += 1
+        unique_ips.add(ip); unique_hosts.add(host)
+    conn.commit()
+    return {"records": added, "ips": sorted(unique_ips), "hosts": sorted(unique_hosts)}
+
+
+def historical_resolution_rows(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    root = root_domain.lower().rstrip(".")
+    rows = conn.execute(
+        """SELECT a.asset_key hostname,e.source,e.value ip,e.raw_json,e.observed_at
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.kind='historical_resolution' AND a.asset_type='hostname'
+             AND (a.asset_key=? OR a.asset_key LIKE ?)
+           ORDER BY e.id DESC""",
+        (root, "%." + root),
+    ).fetchall()
+    out=[]
+    for row in rows:
+        raw=_loads(row["raw_json"])
+        out.append({
+            "hostname": str(row["hostname"]), "ip": str(row["ip"] or ""), "source": str(row["source"]),
+            "first_seen": str(raw.get("first_seen") or ""), "last_seen": str(raw.get("last_seen") or ""),
+            "observed_at_source": str(raw.get("observed_at_source") or ""), "observed_at": str(row["observed_at"]),
+            "asn": str(raw.get("asn") or ""), "asn_name": str(raw.get("asn_name") or ""), "country": str(raw.get("country") or ""),
+        })
+    return out
+
+
+def _historical_source_records(tool: str, text: str, root_domain: str) -> list[dict]:
+    if tool == "urlscan-history":
+        return _parse_urlscan_history(text, root_domain)
+    if tool == "virustotal-resolutions":
+        return _parse_virustotal_resolutions(text, root_domain)
+    if tool == "securitytrails-history-a":
+        return _parse_securitytrails_history(text, root_domain)
+    return []
+
+
+def run_historical_dns_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 90, run_group: str = "") -> dict:
+    """Collect passive historical IP observations before infrastructure triage.
+
+    No historical IP is actively probed here.  The output is evidence for later
+    correlation, because an old address may have been reassigned to a third party.
+    """
+    init_schema(conn)
+    root = root_domain.lower().rstrip(".")
+    curl = _tool_path("curl")
+    if not curl:
+        raise RuntimeError("curl no está disponible")
+    group = run_group or uuid.uuid4().hex
+    runs=[]; imported=[]
+
+    # urlscan historical website scans: usable with a small unauthenticated quota;
+    # URLSCAN_API_KEY increases quota without placing the secret in command_json.
+    query = quote(f"page.domain:{root}", safe="")
+    urlscan_script = (
+        'hdr=(); if [ -n "$URLSCAN_API_KEY" ]; then hdr=(-H "api-key: $URLSCAN_API_KEY"); fi; '
+        f'exec "$1" -fsSL --retry 2 --retry-delay 2 --max-time {int(timeout)} "${{hdr[@]}}" '
+        f'"https://urlscan.io/api/v1/search/?q={query}&size=100"'
+    )
+    run=_run_tool(conn, paths, "historical_dns", "urlscan-history", ["bash","-lc",urlscan_script,"negro-urlscan",curl], timeout=timeout+10, root_domain=root, run_group=group)
+    runs.append(run)
+    if run["status"] == "ok":
+        records=_parse_urlscan_history(run["stdout"], root)
+        imported.append({"source":"urlscan_history", **import_historical_resolutions(conn, records, root)})
+
+    if os.environ.get("VIRUSTOTAL_API_KEY", "").strip():
+        vt_script=(
+            f'exec "$1" -fsSL --retry 2 --retry-delay 2 --max-time {int(timeout)} '
+            '-H "x-apikey: $VIRUSTOTAL_API_KEY" '
+            f'"https://www.virustotal.com/api/v3/domains/{root}/resolutions?limit=40"'
+        )
+        run=_run_tool(conn, paths, "historical_dns", "virustotal-resolutions", ["bash","-lc",vt_script,"negro-vt",curl], timeout=timeout+10, root_domain=root, run_group=group)
+        runs.append(run)
+        if run["status"] == "ok":
+            records=_parse_virustotal_resolutions(run["stdout"], root)
+            imported.append({"source":"virustotal_history", **import_historical_resolutions(conn, records, root)})
+
+    if os.environ.get("SECURITYTRAILS_API_KEY", "").strip():
+        st_script=(
+            f'exec "$1" -fsSL --retry 2 --retry-delay 2 --max-time {int(timeout)} '
+            '-H "APIKEY: $SECURITYTRAILS_API_KEY" '
+            f'"https://api.securitytrails.com/v1/history/{root}/dns/a"'
+        )
+        run=_run_tool(conn, paths, "historical_dns", "securitytrails-history-a", ["bash","-lc",st_script,"negro-st",curl], timeout=timeout+10, root_domain=root, run_group=group)
+        runs.append(run)
+        if run["status"] == "ok":
+            records=_parse_securitytrails_history(run["stdout"], root)
+            imported.append({"source":"securitytrails_history", **import_historical_resolutions(conn, records, root)})
+
+    rows=historical_resolution_rows(conn, root)
+    return {
+        "phase":"historical_dns", "records":len(rows), "unique_ips":len({x["ip"] for x in rows if x.get("ip")}),
+        "sources":imported, "runs":len(runs),
+        "warning":"IPs históricas son evidencia pasiva; no se prueban ni se consideran origin automáticamente.",
+    }
 
 def _discovery_source_counts(conn: sqlite3.Connection, root_domain: str) -> dict[str, int]:
     root = root_domain.lower().rstrip(".")
@@ -1559,6 +1902,312 @@ done < "$1"'''.format(curl=curl)
 
 
 
+def _infra_provider_context(conn: sqlite3.Connection, host_id: int) -> dict:
+    providers=[]; relations=[]
+    rows=conn.execute(
+        """SELECT r.relation,a.label,a.metadata_json FROM recon_relationships r
+           JOIN recon_assets a ON a.id=r.dst_asset_id
+           WHERE r.src_asset_id=? AND a.asset_type='provider'
+             AND r.relation IN ('PROXIED_BY','HOSTED_ON','USES_PLATFORM')""", (host_id,)
+    ).fetchall()
+    for row in rows:
+        providers.append(str(row['label'] or ''))
+        relations.append(str(row['relation'] or ''))
+    return {'providers':list(dict.fromkeys(x for x in providers if x)), 'provider_relations':relations}
+
+
+def _infra_candidate_pairs(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    root=str(root_domain or '').strip().lower().rstrip('.')
+    rows=conn.execute(
+        """SELECT src.id host_id,src.asset_key hostname,dst.id ip_id,dst.asset_key ip,
+                  r.relation,r.source,r.confidence,r.confidence_type,src.metadata_json
+           FROM recon_relationships r
+           JOIN recon_assets src ON src.id=r.src_asset_id
+           JOIN recon_assets dst ON dst.id=r.dst_asset_id
+           WHERE src.asset_type='hostname' AND dst.asset_type='ip'
+             AND r.relation IN ('RESOLVES_TO','OBSERVED_IP','HISTORICAL_RESOLVES_TO','CANDIDATE_INFRA_IP')
+             AND (src.asset_key=? OR src.asset_key LIKE ?)
+           ORDER BY src.asset_key,dst.asset_key,r.id""", (root,'%.'+root)
+    ).fetchall()
+    grouped={}
+    for row in rows:
+        host=str(row['hostname'] or '').lower().rstrip('.')
+        ip=_public_ip(row['ip'])
+        if not host or not ip:
+            continue
+        key=(host,ip)
+        item=grouped.setdefault(key,{
+            'hostname':host,'ip':ip,'host_id':int(row['host_id']),'ip_id':int(row['ip_id']),
+            'relations':[],'sources':[],'metadata':_loads(row['metadata_json']),
+        })
+        rel=str(row['relation'] or '')
+        src=str(row['source'] or '')
+        if rel and rel not in item['relations']: item['relations'].append(rel)
+        if src and src not in item['sources']: item['sources'].append(src)
+    for item in grouped.values():
+        item.update(_infra_provider_context(conn,item['host_id']))
+    return list(grouped.values())
+
+
+def _parse_whois_bundle(text: str) -> dict[str, dict]:
+    out={}; current=''; lines=[]
+    def flush():
+        nonlocal current,lines
+        if not current: return
+        raw='\n'.join(lines)
+        fields={}
+        for line in lines:
+            if ':' not in line: continue
+            k,v=line.split(':',1); key=k.strip().lower(); val=v.strip()
+            if key in {'aut-num','origin','originas','asn'} and val and 'asn' not in fields: fields['asn']=val
+            if key in {'owner','org-name','orgname','org','netname','organization'} and val and 'owner' not in fields: fields['owner']=val
+            if key in {'descr','description'} and val and 'description' not in fields: fields['description']=val
+            if key=='country' and val and 'country' not in fields: fields['country']=val
+        fields['raw']=raw
+        out[current]=fields
+        current=''; lines=[]
+    for raw in (text or '').splitlines():
+        line=raw.rstrip()
+        if line.startswith('===WHOIS ') and line.endswith('==='):
+            flush(); current=line[len('===WHOIS '):-3].strip(); lines=[]; continue
+        if line=='===END WHOIS===':
+            flush(); continue
+        if current: lines.append(line)
+    flush(); return out
+
+
+def _parse_infra_probe_bundle(text: str) -> dict[tuple[str,str], dict]:
+    out={}; current=None; data={}; cert_lines=[]
+    def flush():
+        nonlocal current,data,cert_lines
+        if not current: return
+        data['cert_text']='\n'.join(cert_lines)
+        sans=[]
+        for line in cert_lines:
+            sans.extend(re.findall(r'DNS:([^,\\s]+)',line,re.I))
+        data['cert_sans']=sorted({x.strip().lower().rstrip('.') for x in sans if x.strip()})
+        subject=next((x.split('=',1)[1].strip() for x in cert_lines if x.lower().startswith('subject=')), '')
+        issuer=next((x.split('=',1)[1].strip() for x in cert_lines if x.lower().startswith('issuer=')), '')
+        data['cert_subject']=subject; data['cert_issuer']=issuer
+        out[current]=dict(data)
+        current=None; data={}; cert_lines=[]
+    for raw in (text or '').splitlines():
+        line=raw.rstrip('\n')
+        if line.startswith('===INFRA ') and line.endswith('==='):
+            flush(); payload=line[len('===INFRA '):-3]
+            if '\t' in payload:
+                host,ip=payload.split('\t',1); current=(host.strip().lower().rstrip('.'),ip.strip())
+            continue
+        if line=='===END INFRA===':
+            flush(); continue
+        if not current: continue
+        if line.startswith('CERT\t'):
+            cert_lines.append(line.split('\t',1)[1]); continue
+        if '\t' in line:
+            k,v=line.split('\t',1); data[k.strip().lower()]=v.strip()
+    flush(); return out
+
+
+def _cert_matches_hostname(hostname: str, names: list[str]) -> bool:
+    host=str(hostname or '').lower().rstrip('.')
+    for raw in names or []:
+        name=str(raw or '').lower().rstrip('.')
+        if not name: continue
+        if name==host: return True
+        if name.startswith('*.'):
+            suffix=name[2:]
+            if host.endswith('.'+suffix) and host.count('.')==suffix.count('.')+1:
+                return True
+    return False
+
+
+def _provider_kind(labels: list[str]) -> str:
+    text=' '.join(str(x or '').lower() for x in labels)
+    if any(x in text for x in EDGE_PROVIDER_PATTERNS): return 'edge'
+    if any(x in text for x in SAAS_PROVIDER_PATTERNS): return 'saas'
+    return ''
+
+
+def infrastructure_findings(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
+    root=str(root_domain or '').strip().lower().rstrip('.')
+    rows=conn.execute(
+        """SELECT a.asset_key hostname,e.value ip,e.raw_json,e.observed_at,e.id
+           FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
+           WHERE e.source='infra_analysis' AND e.kind='infrastructure_classification'
+             AND a.asset_type='hostname' AND (a.asset_key=? OR a.asset_key LIKE ?)
+           ORDER BY e.id DESC""", (root,'%.'+root)
+    ).fetchall()
+    out=[]; seen=set()
+    for row in rows:
+        key=(str(row['hostname']),str(row['ip'] or ''))
+        if key in seen: continue
+        seen.add(key)
+        payload=_loads(row['raw_json']); payload.update({'hostname':row['hostname'],'ip':row['ip'],'observed_at':row['observed_at']})
+        out.append(payload)
+    rank={'DIRECT_BACKEND_CANDIDATE':0,'DIRECT_INFRA_CANDIDATE':1,'EDGE_SHARED':2,'THIRD_PARTY_PLATFORM':3,'HISTORICAL_IP':4,'UNCLASSIFIED':5}
+    return sorted(out,key=lambda x:(rank.get(str(x.get('classification') or ''),9),str(x.get('hostname') or ''),str(x.get('ip') or '')))
+
+
+def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 600, run_group: str = '', *, probe_historical: bool = False) -> dict:
+    """Correlate current/manual/historical IP evidence into infrastructure roles.
+
+    Current and explicitly manual candidate IPs may receive lightweight HTTP/TLS
+    correlation. Historical-only IPs stay passive unless `probe_historical=True`
+    is an explicit hunter action, because an old address may have been reassigned.
+    This phase never runs Nmap.
+    """
+    init_schema(conn)
+    root=str(root_domain or '').strip().lower().rstrip('.')
+    pairs=_infra_candidate_pairs(conn,root)
+    if not pairs:
+        return {'phase':'infra','records':0,'direct_candidates':0,'message':'No hay IPs actuales, históricas o manuales para clasificar.'}
+    group=run_group or uuid.uuid4().hex
+    bash=shutil.which('bash') or '/bin/bash'; whois=_tool_path('whois'); curl=_tool_path('curl'); openssl=_tool_path('openssl')
+    run_dir=Path(paths['raw'])/'surface-runs'; run_dir.mkdir(parents=True,exist_ok=True)
+
+    # WHOIS/ASN enrichment is passive and safe for all unique candidate IPs.
+    whois_data={}
+    ips=sorted({p['ip'] for p in pairs})[:max(1,int(os.environ.get('NEGRO_INFRA_WHOIS_LIMIT','50') or 50))]
+    if whois and ips:
+        ip_file=run_dir/f'infra-ips-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.txt'; ip_file.write_text('\n'.join(ips)+'\n',encoding='utf-8')
+        timeout_bin=shutil.which('timeout') or 'timeout'
+        script='''while IFS= read -r ip; do [ -z "$ip" ] && continue; echo "===WHOIS $ip==="; {timeout} 8 {whois} "$ip" 2>/dev/null || true; echo "===END WHOIS==="; done < "$1"'''.format(timeout=timeout_bin,whois=whois)
+        wrun=_run_tool(conn,paths,'infra','whois-enrichment',[bash,'-lc',script,'negro-infra-whois',str(ip_file)],timeout=min(max(timeout,90),600),root_domain=root,run_group=group)
+        if wrun['status'] in {'ok','partial'}: whois_data=_parse_whois_bundle(wrun['stdout'])
+
+    # Decide which pairs are eligible for active correlation.
+    probe_pairs=[]
+    probe_limit=max(1,int(os.environ.get('NEGRO_INFRA_PROBE_LIMIT','30') or 30))
+    for item in pairs:
+        rels=set(item['relations']); meta=item['metadata']; provider_kind=_provider_kind(item.get('providers') or [])
+        owner=str((whois_data.get(item['ip']) or {}).get('owner') or '')
+        owner_kind=_provider_kind([owner])
+        current=bool(rels & {'RESOLVES_TO','OBSERVED_IP'})
+        is_edge=(current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge'
+        is_saas=current and provider_kind=='saas'
+        if is_edge or is_saas: continue
+        manual='CANDIDATE_INFRA_IP' in rels
+        historical='HISTORICAL_RESOLVES_TO' in rels
+        if current or manual or (historical and probe_historical):
+            probe_pairs.append(item)
+        if len(probe_pairs)>=probe_limit: break
+
+    probe_data={}
+    if probe_pairs and curl and openssl:
+        pair_file=run_dir/f'infra-probe-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.tsv'
+        pair_file.write_text('\n'.join(f"{x['hostname']}\t{x['ip']}" for x in probe_pairs)+'\n',encoding='utf-8')
+        timeout_bin=shutil.which('timeout') or 'timeout'
+        script=r'''while IFS=$'\t' read -r host ip; do
+  [ -z "$host" ] && continue
+  tmp=$(mktemp -d)
+  echo "===INFRA $host\t$ip==="
+  front_code=$({curl} -skL --max-time 12 -D "$tmp/front.h" -o "$tmp/front.b" -w '%{{http_code}}' "https://$host/" 2>/dev/null || true)
+  direct_code=$({curl} -skL --max-time 12 --resolve "$host:443:$ip" -D "$tmp/direct.h" -o "$tmp/direct.b" -w '%{{http_code}}' "https://$host/" 2>/dev/null || true)
+  http_code=$({curl} -sL --max-time 10 --resolve "$host:80:$ip" -D "$tmp/http.h" -o "$tmp/http.b" -w '%{{http_code}}' "http://$host/" 2>/dev/null || true)
+  front_hash=""; direct_hash=""; http_hash=""
+  [ -s "$tmp/front.b" ] && front_hash=$(sha256sum "$tmp/front.b" | awk '{{print $1}}')
+  [ -s "$tmp/direct.b" ] && direct_hash=$(sha256sum "$tmp/direct.b" | awk '{{print $1}}')
+  [ -s "$tmp/http.b" ] && http_hash=$(sha256sum "$tmp/http.b" | awk '{{print $1}}')
+  front_lm=$(awk -F': ' 'tolower($1)=="last-modified"{{gsub("\\r","");print $2;exit}}' "$tmp/front.h" 2>/dev/null)
+  direct_lm=$(awk -F': ' 'tolower($1)=="last-modified"{{gsub("\\r","");print $2;exit}}' "$tmp/direct.h" 2>/dev/null)
+  direct_server=$(awk -F': ' 'tolower($1)=="server"{{gsub("\\r","");print $2;exit}}' "$tmp/direct.h" 2>/dev/null)
+  printf 'FRONT_CODE\t%s\nDIRECT_HTTPS_CODE\t%s\nDIRECT_HTTP_CODE\t%s\nFRONT_HASH\t%s\nDIRECT_HTTPS_HASH\t%s\nDIRECT_HTTP_HASH\t%s\nFRONT_LAST_MODIFIED\t%s\nDIRECT_LAST_MODIFIED\t%s\nDIRECT_SERVER\t%s\n' "$front_code" "$direct_code" "$http_code" "$front_hash" "$direct_hash" "$http_hash" "$front_lm" "$direct_lm" "$direct_server"
+  cert=$({timeout_bin} 10 {openssl} s_client -connect "$ip:443" -servername "$host" -showcerts </dev/null 2>/dev/null | {openssl} x509 -noout -subject -issuer -ext subjectAltName 2>/dev/null || true)
+  if [ -n "$cert" ]; then while IFS= read -r line; do printf 'CERT\t%s\n' "$line"; done <<< "$cert"; fi
+  rm -rf "$tmp"
+  echo "===END INFRA==="
+done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
+        prun=_run_tool(conn,paths,'infra','direct-correlation',[bash,'-lc',script,'negro-infra-probe',str(pair_file)],timeout=timeout,root_domain=root,run_group=group)
+        if prun['status'] in {'ok','partial'}: probe_data=_parse_infra_probe_bundle(prun['stdout'])
+
+    observations=[]; direct_candidates=0; edge_count=0; pending_historical=0
+    for item in pairs:
+        host=item['hostname']; ip=item['ip']; rels=set(item['relations']); meta=item['metadata']; pdata=probe_data.get((host,ip),{})
+        who=whois_data.get(ip) or {}; providers=item.get('providers') or []
+        provider_kind=_provider_kind(providers); owner_kind=_provider_kind([who.get('owner','')])
+        current=bool(rels & {'RESOLVES_TO','OBSERVED_IP'}); historical='HISTORICAL_RESOLVES_TO' in rels; manual='CANDIDATE_INFRA_IP' in rels
+        classification='UNCLASSIFIED'; confidence='LOW'; score=0.2; reasons=[]
+        if (current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge':
+            classification='EDGE_SHARED'; confidence='HIGH'; score=0.95; edge_count+=1
+            reasons.append('La evidencia actual identifica CDN/edge compartido; no se trata como origin ni candidato Nmap.')
+        elif current and provider_kind=='saas':
+            classification='THIRD_PARTY_PLATFORM'; confidence='HIGH'; score=0.9
+            reasons.append('El hostname está asociado a una plataforma/SaaS de tercero.')
+        else:
+            direct_https=str(pdata.get('direct_https_code') or '000')
+            direct_http=str(pdata.get('direct_http_code') or '000')
+            direct_ok=any(x.isdigit() and 200 <= int(x) < 500 for x in (direct_https,direct_http))
+            front_hash=str(pdata.get('front_hash') or '')
+            direct_hash=str(pdata.get('direct_https_hash') or pdata.get('direct_http_hash') or '')
+            exact_hash=bool(front_hash and direct_hash and front_hash==direct_hash)
+            same_lm=bool(pdata.get('front_last_modified') and pdata.get('front_last_modified')==pdata.get('direct_last_modified'))
+            cert_match=_cert_matches_hostname(host,pdata.get('cert_sans') or [])
+            if current:
+                classification='DIRECT_INFRA_CANDIDATE'; confidence='HIGH'; score=0.84
+                reasons.append('La IP es una resolución A/AAAA actual y no está clasificada como CDN/SaaS compartido.')
+            elif historical and not pdata:
+                classification='HISTORICAL_IP'; confidence='LOW'; score=0.35; pending_historical+=1
+                reasons.append('IP histórica conservada pasivamente; requiere correlación explícita antes de tratarla como infraestructura actual.')
+            elif manual and not pdata:
+                classification='UNCLASSIFIED'; confidence='LOW'; score=0.35
+                reasons.append('IP aportada manualmente; no fue posible correlacionarla activamente en esta ejecución.')
+            if exact_hash:
+                classification='DIRECT_BACKEND_CANDIDATE'; confidence='HIGH'; score=max(score,0.98)
+                reasons.append('El contenido servido directamente por la IP tiene SHA256 idéntico al hostname por su ruta normal.')
+            if cert_match:
+                if classification not in {'EDGE_SHARED','THIRD_PARTY_PLATFORM'}:
+                    classification='DIRECT_BACKEND_CANDIDATE'; confidence='HIGH' if direct_ok else 'MEDIUM'; score=max(score,0.90 if direct_ok else 0.76)
+                reasons.append('El certificado presentado por la IP con SNI contiene el hostname analizado.')
+            if same_lm and direct_ok:
+                if classification not in {'EDGE_SHARED','THIRD_PARTY_PLATFORM'}:
+                    classification='DIRECT_BACKEND_CANDIDATE'; confidence='HIGH' if cert_match else 'MEDIUM'; score=max(score,0.82 if cert_match else 0.68)
+                reasons.append('La respuesta directa comparte Last-Modified con la ruta normal del hostname.')
+            if direct_ok and classification in {'UNCLASSIFIED','HISTORICAL_IP'}:
+                classification='DIRECT_INFRA_CANDIDATE'; confidence='MEDIUM'; score=max(score,0.55)
+                reasons.append('La IP responde directamente al Host/SNI del hostname, pero aún falta una correlación más fuerte.')
+        bypass_possible=bool(meta.get('cdn')) and classification=='DIRECT_BACKEND_CANDIDATE'
+        if bypass_possible:
+            reasons.append('El hostname normalmente pasa por CDN/edge, pero esta IP sirve evidencia correlacionada directamente; posible bypass del edge.')
+        if classification in {'DIRECT_BACKEND_CANDIDATE','DIRECT_INFRA_CANDIDATE'} and score>=0.7:
+            nmap='CANDIDATE_AFTER_SCOPE_VALIDATION'; direct_candidates+=1
+        elif classification=='EDGE_SHARED': nmap='DO_NOT_SCAN_SHARED_EDGE'
+        elif classification=='THIRD_PARTY_PLATFORM': nmap='DO_NOT_SCAN_THIRD_PARTY'
+        else: nmap='NOT_READY'
+        payload={
+            'classification':classification,'confidence':confidence,'confidence_score':round(score,2),'relations':sorted(rels),
+            'sources':item['sources'],'providers':providers,'asn':who.get('asn',''),'owner':who.get('owner',''),'country':who.get('country',''),
+            'direct_https_status':pdata.get('direct_https_code',''),'direct_http_status':pdata.get('direct_http_code',''),
+            'direct_server':pdata.get('direct_server',''),'tls_hostname_match':_cert_matches_hostname(host,pdata.get('cert_sans') or []),
+            'cert_sans':pdata.get('cert_sans') or [],'content_hash_match':bool(pdata.get('front_hash') and (pdata.get('front_hash')==pdata.get('direct_https_hash') or pdata.get('front_hash')==pdata.get('direct_http_hash'))),
+            'last_modified_match':bool(pdata.get('front_last_modified') and pdata.get('front_last_modified')==pdata.get('direct_last_modified')),
+            'bypass_possible':bypass_possible,'nmap_eligibility':nmap,'historical_probe_enabled':bool(probe_historical),'reasons':reasons,
+        }
+        hid=item['host_id']; iid=item['ip_id']
+        evid=add_evidence(conn,hid,'infra_analysis','infrastructure_classification',ip,payload)
+        conn.execute("DELETE FROM recon_relationships WHERE src_asset_id=? AND dst_asset_id=? AND source='infra_analysis' AND relation IN ('EDGE_IP','THIRD_PARTY_INFRA','DIRECT_INFRA_IP','POSSIBLE_ORIGIN')",(hid,iid))
+        if classification=='EDGE_SHARED': relation='EDGE_IP'; ctype='observed'
+        elif classification=='THIRD_PARTY_PLATFORM': relation='THIRD_PARTY_INFRA'; ctype='observed'
+        elif classification=='DIRECT_BACKEND_CANDIDATE': relation='POSSIBLE_ORIGIN'; ctype='correlated'
+        elif classification=='DIRECT_INFRA_CANDIDATE': relation='DIRECT_INFRA_IP'; ctype='inference'
+        else: relation=''; ctype='inference'
+        if relation: link(conn,hid,relation,iid,'infra_analysis',confidence=score,confidence_type=ctype,evidence_id=evid)
+        # Enrich the IP asset with passive ownership metadata without claiming ownership of the application.
+        row=conn.execute("SELECT metadata_json FROM recon_assets WHERE id=?",(iid,)).fetchone()
+        imeta=_merge_meta(_loads(row['metadata_json']) if row else {},{'sources':['infra_analysis'],'asn':who.get('asn'),'network_owner':who.get('owner'),'country':who.get('country')})
+        conn.execute("UPDATE recon_assets SET metadata_json=?,last_seen_at=? WHERE id=?",(json.dumps(imeta,ensure_ascii=False),_now(),iid))
+        observations.append({'hostname':host,'ip':ip,**payload})
+    conn.commit()
+    # Always persist a deterministic classifier run so the guided phase is marked
+    # complete even when every IP was classified from existing evidence and no
+    # external probe was necessary.
+    summary_path=run_dir/f'infra-classifier-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.stdout.txt'
+    summary_path.write_text(json.dumps({'records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'probe_historical':bool(probe_historical)},ensure_ascii=False,indent=2),encoding='utf-8')
+    stderr_path=run_dir/f'infra-classifier-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.stderr.txt'; stderr_path.write_text('',encoding='utf-8')
+    _record_tool_run(conn,'infra','classifier',['internal:infra-classifier'], 'ok', 0, len(observations), str(summary_path), str(stderr_path), '', _now(), _now(), root_domain=root, run_group=group)
+    conn.commit()
+    return {'phase':'infra','records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'items':observations,'probe_historical':bool(probe_historical)}
+
+
 BASELINE_STEPS = (
     ("root", "Root / contexto"),
     ("discovery", "Discovery pasivo"),
@@ -1568,6 +2217,7 @@ BASELINE_STEPS = (
     ("dns_refresh", "DNS de SANs nuevos"),
     ("takeover", "Señales de takeover"),
     ("http", "HTTP / tecnologías"),
+    ("historical_dns", "DNS / IP histórico"),
 )
 
 
@@ -1749,6 +2399,14 @@ def run_project_baseline_root(conn: sqlite3.Connection, root_domain: str, paths:
                     skipped.append(step)
                 continue
 
+            if step == "historical_dns":
+                if not force and _phase_run_bundle(conn, "historical_dns", root).get("done"):
+                    skipped.append(step)
+                else:
+                    run_historical_dns_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step)
+                continue
+
         _baseline_update_job(
             conn, job_id,
             status="done", current_phase="complete", step_index=len(BASELINE_STEPS),
@@ -1848,6 +2506,8 @@ def run_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, phase: st
     if phase == "dns": return run_dns_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "tls": return run_tls_phase(conn, root_domain, paths, run_group=run_group)
     if phase == "http": return run_http_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "historical_dns": return run_historical_dns_phase(conn, root_domain, paths, run_group=run_group)
+    if phase == "infra": return run_infrastructure_phase(conn, root_domain, paths, run_group=run_group)
     raise ValueError(f"Fase no soportada: {phase}")
 
 
@@ -1950,13 +2610,15 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
            WHERE e.source='openssl' AND e.kind='tls_certificate' AND a.asset_type='hostname'
              AND (a.asset_key=? OR a.asset_key LIKE ?)""", (root, "%." + root)
     ).fetchone()["c"] or 0)
+    historical_rows = historical_resolution_rows(conn, root)
+    historical_ip_count = len({x.get("ip") for x in historical_rows if x.get("ip")})
     root_ev = int(conn.execute(
         """SELECT COUNT(*) c FROM recon_evidence e JOIN recon_assets a ON a.id=e.asset_id
            WHERE e.source='root_recon' AND a.asset_type='hostname' AND a.asset_key=?""",
         (root,),
     ).fetchone()["c"] or 0)
     tooling = tool_inventory()
-    phase_keys = ("root","discovery","discovery_expand","active_discovery","dns","tls","http","web","historical","infra","deep","services")
+    phase_keys = ("root","discovery","discovery_expand","active_discovery","dns","tls","http","historical_dns","infra","web","historical","deep","services")
     bundles = {key: _phase_run_bundle(conn, key, root) for key in phase_keys}
 
     # Base passive discovery is intentionally fast: Subfinder + CT + GAU.
@@ -1974,9 +2636,10 @@ def phase_progress(conn: sqlite3.Connection, root_domain: str) -> list[dict]:
         {"key":"dns","title":"Validar DNS","subtitle":"dnsx · A / AAAA / CNAME + estado DNS","count":resolved,"count_label":"DNS resueltos","implemented":True,"tool_ok":tooling["dnsx"]["available"],"tool_names":["dnsx","dig"],"purpose":"Separar nombres actuales de NXDOMAIN/NODATA, relacionar CNAME/IP y permitir análisis de dangling DNS para takeover.","secondary_counts":{"NODATA":nodata,"NXDOMAIN":nxdomain,"Takeover candidatos":takeover_candidates}},
         {"key":"tls","title":"TLS y certificados","subtitle":"SAN · issuer · fechas · certificados compartidos","count":tls_certs,"count_label":"certificados observados","implemented":True,"tool_ok":tooling["openssl"]["available"],"tool_names":["openssl"],"purpose":"Extraer SANs y relaciones de certificados; cualquier hostname nuevo vuelve a DNS antes de HTTP.","secondary_counts":{"SAN hosts":discovery_counts.get("tls_san",0)}},
         {"key":"http","title":"Descubrir HTTP y tecnologías","subtitle":"httpx · status / title / tech / CDN / redirects","count":http,"count_label":"HTTP observados","implemented":True,"tool_ok":tooling["httpx"]["available"],"tool_names":["httpx"],"purpose":"Convertir hosts DNS en aplicaciones observables y fingerprint técnico estructurado."},
+        {"key":"historical_dns","title":"DNS / IP histórico","subtitle":"urlscan · VirusTotal · SecurityTrails · relaciones históricas","count":historical_ip_count,"count_label":"IPs históricas únicas","implemented":True,"tool_ok":tooling["curl"]["available"],"tool_names":["curl"],"purpose":"Buscar IPs observadas históricamente para el root y sus hosts sin probarlas activamente. Son candidatos de correlación, no origins ni objetivos Nmap automáticos.","secondary_counts":{"observaciones":len(historical_rows),"fuentes":len({x.get('source') for x in historical_rows if x.get('source')})}},
+        {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / backend candidato / elegibilidad Nmap","count":sum(1 for x in infrastructure_findings(conn, root) if x.get('classification') in {'DIRECT_BACKEND_CANDIDATE','DIRECT_INFRA_CANDIDATE'}),"count_label":"candidatos directos","implemented":True,"tool_ok":bool(tooling["curl"]["available"] and tooling["openssl"]["available"]),"tool_names":["curl","openssl"],"optional_tool_names":["whois"],"purpose":"Correlacionar IPs actuales, manuales e históricas con ASN/owner, TLS/SNI, HTTP directo y contenido. Clasifica edge/SaaS/directo sin ejecutar Nmap."},
         {"key":"web","title":"Descubrimiento web","subtitle":"robots · sitemap · crawler · JavaScript","count":0,"count_label":"artefactos web","implemented":False,"tool_ok":True,"tool_names":["curl"],"purpose":"Profundizar hosts HTTP vivos y permitir que robots, sitemap, crawling y JavaScript retroalimenten nuevos hostnames."},
         {"key":"historical","title":"Históricos y contenido","subtitle":"rutas antiguas · endpoints · parámetros · correlación","count":0,"count_label":"artefactos históricos","implemented":False,"tool_ok":bool(tooling["gau"]["available"] or tooling["curl"]["available"]),"tool_names":["gau","curl"],"purpose":"Reutilizar las URLs históricas ya recolectadas para rutas, endpoints, parámetros y contexto temporal; nuevos hosts vuelven a DNS."},
-        {"key":"infra","title":"Clasificar infraestructura","subtitle":"edge / SaaS / origin candidato / IP directa","count":0,"count_label":"candidatos directos","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Decidir qué IP es edge compartido, SaaS o candidata real a infraestructura directa."},
         {"key":"deep","title":"Enumeración profunda","subtitle":"rama elegida · señales de alto valor","count":0,"count_label":"ramas priorizadas","implemented":False,"tool_ok":True,"tool_names":[],"purpose":"Profundizar únicamente ramas priorizadas usando el contexto acumulado, sin barrer toda la superficie a ciegas."},
         {"key":"services","title":"Servicios / Nmap","subtitle":"sólo infraestructura directa validada","count":0,"count_label":"candidatos Nmap","implemented":False,"tool_ok":tooling["nmap"]["available"],"tool_names":["nmap"],"purpose":"Enumerar puertos únicamente después de confirmar que el objetivo no es un CDN/SaaS compartido."},
     ]
@@ -2131,6 +2794,10 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
             tls_rows = _parse_tls_bundle(raw, root)
             run["normalized_count"] = len([x for x in tls_rows if x.get("fingerprint")])
             run["normalized_label"] = "certificados parseados"
+        elif phase_key == "historical_dns":
+            hist_rows = _historical_source_records(tool, raw, root)
+            run["normalized_count"] = len({x.get("ip") for x in hist_rows if x.get("ip")})
+            run["normalized_label"] = "IPs históricas normalizadas"
         runs.append(run)
 
     normalized=[]
@@ -2160,6 +2827,10 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
         for row in rows:
             raw=_loads(row["raw_json"])
             normalized.append({"hostname":row["hostname"],"tls":raw,"observed_at":row["observed_at"],"dns_state":"TLS"})
+    elif phase_key=="historical_dns":
+        normalized.extend(historical_resolution_rows(conn, root))
+    elif phase_key=="infra":
+        normalized.extend(infrastructure_findings(conn, root))
     elif phase_key=="root":
         rows=conn.execute(
             """SELECT e.kind,e.value,e.raw_json,e.observed_at FROM recon_evidence e
@@ -2215,6 +2886,36 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
             "raw_count":0,"raw_label":"SANs","optional":False,"hosts":san_hosts,
             "normalized_count":len(san_hosts),"rerunnable":False,
         })
+    elif phase_key=="historical_dns":
+        hist=historical_resolution_rows(conn, root)
+        defs=[
+            ("urlscan_history","urlscan · scans históricos","urlscan-history",bool(inventory.get("curl",{}).get("available")),False,"sin API key usa cuota pública limitada"),
+            ("virustotal_history","VirusTotal · resolutions","virustotal-resolutions",bool(os.environ.get("VIRUSTOTAL_API_KEY","").strip()),True,"requiere VIRUSTOTAL_API_KEY"),
+            ("securitytrails_history","SecurityTrails · DNS history A","securitytrails-history-a",bool(os.environ.get("SECURITYTRAILS_API_KEY","").strip()),True,"requiere SECURITYTRAILS_API_KEY"),
+        ]
+        for source,label,tool,available,optional,note in defs:
+            run=latest_by_tool.get(tool)
+            rows=[x for x in hist if x.get("source")==source]
+            ips=sorted({str(x.get("ip")) for x in rows if x.get("ip")})
+            source_summary.append({
+                "source":source,"label":label,"tool":tool,"available":available,
+                "executed":bool(run),"status":str(run.get("status")) if run else "",
+                "raw_count":int(run.get("record_count") or 0) if run else 0,
+                "raw_label":"líneas/respuesta histórica","optional":optional,"hosts":ips,
+                "item_label":"IP","normalized_count":len(ips),"rerunnable":False,"note":note,
+            })
+    infrastructure={}
+    if phase_key=="infra":
+        findings=infrastructure_findings(conn,root)
+        infrastructure={
+            "findings":findings,
+            "direct_candidates":sum(1 for x in findings if x.get("classification") in {"DIRECT_BACKEND_CANDIDATE","DIRECT_INFRA_CANDIDATE"}),
+            "edge_ips":sum(1 for x in findings if x.get("classification")=="EDGE_SHARED"),
+            "third_party":sum(1 for x in findings if x.get("classification")=="THIRD_PARTY_PLATFORM"),
+            "pending_historical":sum(1 for x in findings if x.get("classification")=="HISTORICAL_IP"),
+            "nmap_candidates":sum(1 for x in findings if x.get("nmap_eligibility")=="CANDIDATE_AFTER_SCOPE_VALIDATION"),
+            "runs":runs,
+        }
     takeover={}
     if phase_key in {"dns","http"}:
         takeover_runs=list(_phase_run_bundle(conn,"takeover",root).get("runs") or [])
@@ -2226,7 +2927,7 @@ def phase_detail_data(conn: sqlite3.Connection, root_domain: str, phase_key: str
             "tool_ok":bool(inventory.get("dig",{}).get("available") or inventory.get("curl",{}).get("available")),
         }
         takeover["candidates"]=sum(1 for x in takeover["findings"] if x.get("candidate"))
-    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary,"takeover":takeover}
+    return {"phase":phase,"runs":runs,"normalized":normalized,"root_domain":root_domain,"source_summary":source_summary,"takeover":takeover,"infrastructure":infrastructure}
 
 def _asset_rows(conn: sqlite3.Connection, asset_type: str) -> list[dict]:
     out = []
@@ -2266,6 +2967,12 @@ def _host_interest(host: dict) -> dict:
         score += 1; reasons.append(f"HTTP {sc}")
     if sources & {"active_permutation", "active_bruteforce", "tls_san", "gau_historical"}:
         score += 1; reasons.append("descubierto por pivote")
+    if host.get("historical_ips"):
+        score += 1; reasons.append("IP histórica para correlacionar")
+    if host.get("possible_origin_ips"):
+        score += 4; reasons.append("backend/origin candidato correlacionado")
+    elif host.get("direct_infra_ips"):
+        score += 2; reasons.append("infraestructura directa candidata")
 
     if score >= 6:
         level = "HIGH"
@@ -2302,10 +3009,15 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
                 return rr
         return None
 
+    infra_by_host: dict[str, list[dict]] = {}
+    for rr in roots:
+        for finding in infrastructure_findings(conn, rr):
+            infra_by_host.setdefault(str(finding.get("hostname") or ""), []).append(finding)
+
     def enrich_host(host: dict, assigned_root: str) -> dict:
         m = dict(host["metadata"])
         related = by_src.get(int(host["id"]), [])
-        techs=[]; providers=[]; servers=[]; ips=[]; cnames=[]; redirects=[]; sources=set(m.get("sources") or [])
+        techs=[]; providers=[]; servers=[]; ips=[]; historical_ips=[]; candidate_ips=[]; cnames=[]; redirects=[]; sources=set(m.get("sources") or [])
         for rel in related:
             dst = assets_by_id.get(int(rel["dst_asset_id"]))
             if not dst:
@@ -2317,6 +3029,8 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             elif rel["relation"] in {"PROXIED_BY", "HOSTED_ON", "USES_PLATFORM"}: providers.append(dst["label"])
             elif rel["relation"] == "SERVED_BY": servers.append(dst["label"])
             elif rel["relation"] in {"RESOLVES_TO","OBSERVED_IP"} and dst["asset_type"] == "ip": ips.append(dst["label"])
+            elif rel["relation"] == "HISTORICAL_RESOLVES_TO" and dst["asset_type"] == "ip": historical_ips.append(dst["label"])
+            elif rel["relation"] == "CANDIDATE_INFRA_IP" and dst["asset_type"] == "ip": candidate_ips.append(dst["label"])
             elif rel["relation"] == "CNAME_TO": cnames.append(dst["label"])
             elif rel["relation"] == "REDIRECTS_TO": redirects.append(dst["label"])
         family = m.get("family") or _family_stem(host["label"], assigned_root)
@@ -2328,7 +3042,12 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "takeover_state": m.get("takeover_state") or "", "takeover_confidence": m.get("takeover_confidence") or "", "takeover_target": m.get("takeover_target") or "",
             "webserver": m.get("webserver"), "location": m.get("location"), "cdn": bool(m.get("cdn")), "cdn_name": m.get("cdn_name"),
             "technologies": list(dict.fromkeys(techs or m.get("tech") or [])), "providers": list(dict.fromkeys(providers)), "servers": list(dict.fromkeys(servers)),
-            "ips": list(dict.fromkeys(ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),
+            "ips": list(dict.fromkeys(ips)), "historical_ips": list(dict.fromkeys(historical_ips)), "candidate_ips": list(dict.fromkeys(candidate_ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),
+            "infrastructure": infra_by_host.get(host["label"], []),
+            "possible_origin_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="DIRECT_BACKEND_CANDIDATE"],
+            "direct_infra_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="DIRECT_INFRA_CANDIDATE"],
+            "edge_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="EDGE_SHARED"],
+            "nmap_candidate_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("nmap_eligibility")=="CANDIDATE_AFTER_SCOPE_VALIDATION"],
             "sources": sorted(x for x in sources if x), "last_seen_at": host["last_seen_at"],
         }
         item.update(_host_interest(item))
@@ -2368,6 +3087,8 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
     auth_like = sum(1 for h in project_hosts if "autenticación / identidad" in (h.get("interest_reasons") or []))
     server_errors = sum(1 for h in project_hosts if isinstance(h.get("status_code"), int) and int(h.get("status_code")) >= 500)
     resolved_project = sum(1 for h in project_hosts if h.get("dns_state") == "RESOLVED")
+    historical_ips_project = len({ip for h in project_hosts for ip in (h.get("historical_ips") or [])})
+    direct_infra_project = len({(h.get("hostname"), ip) for h in project_hosts for ip in (h.get("nmap_candidate_ips") or [])})
     top_interest = sorted(
         [h for h in project_hosts if int(h.get("interest_score") or 0) > 0],
         key=lambda h: (-int(h.get("interest_score") or 0), str(h.get("hostname") or "")),
@@ -2380,8 +3101,10 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "root_domain":rr, "hosts":len(rows),
             "resolved":sum(1 for h in rows if h.get("dns_state")=="RESOLVED"),
             "http_alive":sum(1 for h in rows if h.get("status_code") is not None),
+            "historical_ips":len({ip for h in rows for ip in (h.get("historical_ips") or [])}),
             "non_prod":sum(1 for h in rows if str(h.get("environment") or "").upper() in {"DEV","QA","STAGING"}),
             "takeover_candidates":sum(1 for h in rows if str(h.get("takeover_state") or "")=="CANDIDATE"),
+            "direct_infra_candidates":len({(h.get("hostname"),ip) for h in rows for ip in (h.get("nmap_candidate_ips") or [])}),
             "baseline_status":str(latest.get("status") or "not_run"),
             "baseline_phase":str(latest.get("current_phase") or ""),
             "baseline_percent":int(latest.get("percent") or 0),
@@ -2398,7 +3121,7 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "environments": uniq("environment"), "families": uniq("family"), "sources": uniq("sources"), "statuses": status,
         },
         "summary": {"hosts": len(enriched), "http_alive": sum(1 for h in enriched if h.get("status_code") is not None), "technologies": len(uniq("technologies", enriched)), "providers": len(uniq("providers", enriched)), "families": len([k for k,v in family_counts.items() if k.startswith(root_domain.lower().rstrip('.')+'::') and v>1])},
-        "project_summary": {"roots": len(roots), "hosts": len(project_hosts), "resolved": resolved_project, "http_alive": sum(1 for h in project_hosts if h.get("status_code") is not None), "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families), "non_prod": non_prod, "api_like": api_like, "auth_like": auth_like, "takeover_candidates": takeover_count, "server_errors": server_errors},
+        "project_summary": {"roots": len(roots), "hosts": len(project_hosts), "resolved": resolved_project, "http_alive": sum(1 for h in project_hosts if h.get("status_code") is not None), "historical_ips": historical_ips_project, "technologies": len(uniq("technologies")), "providers": len(uniq("providers")), "families": len(grouped_families), "non_prod": non_prod, "api_like": api_like, "auth_like": auth_like, "takeover_candidates": takeover_count, "direct_infra_candidates": direct_infra_project, "server_errors": server_errors},
         "baseline": baseline,
         "root_overview": root_overview,
         "top_interest": top_interest,
@@ -2408,4 +3131,5 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
         "phase_summary": {"done": done_count, "total": total_count, "percent": int(round((done_count / total_count) * 100)) if total_count else 0, "next": next_phase},
         "tooling": tool_inventory(),
         "manual_hosts": manual_hostname_entries(conn, root_domain),
+        "manual_ips": manual_ip_entries(conn, root_domain),
     }
