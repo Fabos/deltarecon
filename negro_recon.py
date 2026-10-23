@@ -1995,8 +1995,12 @@ def _parse_infra_probe_bundle(text: str) -> dict[tuple[str,str], dict]:
         line=raw.rstrip('\n')
         if line.startswith('===INFRA ') and line.endswith('==='):
             flush(); payload=line[len('===INFRA '):-3]
+            # v0.93 emitted a literal \\t in some shells; accept both historical
+            # output and the real tab emitted by v0.94+.
             if '\t' in payload:
                 host,ip=payload.split('\t',1); current=(host.strip().lower().rstrip('.'),ip.strip())
+            elif '\\t' in payload:
+                host,ip=payload.split('\\t',1); current=(host.strip().lower().rstrip('.'),ip.strip())
             continue
         if line=='===END INFRA===':
             flush(); continue
@@ -2084,7 +2088,7 @@ def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: 
         owner_kind=_provider_kind([owner])
         current=bool(rels & {'RESOLVES_TO','OBSERVED_IP'})
         is_edge=(current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge'
-        is_saas=current and provider_kind=='saas'
+        is_saas=current and (provider_kind=='saas' or owner_kind=='saas')
         if is_edge or is_saas: continue
         manual='CANDIDATE_INFRA_IP' in rels
         historical='HISTORICAL_RESOLVES_TO' in rels
@@ -2100,7 +2104,7 @@ def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: 
         script=r'''while IFS=$'\t' read -r host ip; do
   [ -z "$host" ] && continue
   tmp=$(mktemp -d)
-  echo "===INFRA $host\t$ip==="
+  printf '===INFRA %s\t%s===\n' "$host" "$ip"
   front_code=$({curl} -skL --max-time 12 -D "$tmp/front.h" -o "$tmp/front.b" -w '%{{http_code}}' "https://$host/" 2>/dev/null || true)
   direct_code=$({curl} -skL --max-time 12 --resolve "$host:443:$ip" -D "$tmp/direct.h" -o "$tmp/direct.b" -w '%{{http_code}}' "https://$host/" 2>/dev/null || true)
   http_code=$({curl} -sL --max-time 10 --resolve "$host:80:$ip" -D "$tmp/http.h" -o "$tmp/http.b" -w '%{{http_code}}' "http://$host/" 2>/dev/null || true)
@@ -2130,9 +2134,9 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
         if (current and (bool(meta.get('cdn')) or provider_kind=='edge')) or owner_kind=='edge':
             classification='EDGE_SHARED'; confidence='HIGH'; score=0.95; edge_count+=1
             reasons.append('La evidencia actual identifica CDN/edge compartido; no se trata como origin ni candidato Nmap.')
-        elif current and provider_kind=='saas':
+        elif current and (provider_kind=='saas' or owner_kind=='saas'):
             classification='THIRD_PARTY_PLATFORM'; confidence='HIGH'; score=0.9
-            reasons.append('El hostname está asociado a una plataforma/SaaS de tercero.')
+            reasons.append('El hostname/IP está asociado a una plataforma/SaaS de tercero según proveedor o WHOIS.')
         else:
             direct_https=str(pdata.get('direct_https_code') or '000')
             direct_http=str(pdata.get('direct_http_code') or '000')
@@ -2145,9 +2149,13 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
             if current:
                 classification='DIRECT_INFRA_CANDIDATE'; confidence='HIGH'; score=0.84
                 reasons.append('La IP es una resolución A/AAAA actual y no está clasificada como CDN/SaaS compartido.')
-            elif historical and not pdata:
-                classification='HISTORICAL_IP'; confidence='LOW'; score=0.35; pending_historical+=1
-                reasons.append('IP histórica conservada pasivamente; requiere correlación explícita antes de tratarla como infraestructura actual.')
+            elif historical:
+                classification='HISTORICAL_IP'; confidence='LOW'; score=0.35
+                if not pdata:
+                    pending_historical+=1
+                    reasons.append('IP histórica conservada pasivamente; requiere correlación explícita antes de tratarla como infraestructura actual.')
+                else:
+                    reasons.append('La IP histórica fue probada, pero permanece histórica hasta que TLS/contenido/headers aporten correlación fuerte con el hostname actual.')
             elif manual and not pdata:
                 classification='UNCLASSIFIED'; confidence='LOW'; score=0.35
                 reasons.append('IP aportada manualmente; no fue posible correlacionarla activamente en esta ejecución.')
@@ -2162,7 +2170,7 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
                 if classification not in {'EDGE_SHARED','THIRD_PARTY_PLATFORM'}:
                     classification='DIRECT_BACKEND_CANDIDATE'; confidence='HIGH' if cert_match else 'MEDIUM'; score=max(score,0.82 if cert_match else 0.68)
                 reasons.append('La respuesta directa comparte Last-Modified con la ruta normal del hostname.')
-            if direct_ok and classification in {'UNCLASSIFIED','HISTORICAL_IP'}:
+            if direct_ok and classification=='UNCLASSIFIED':
                 classification='DIRECT_INFRA_CANDIDATE'; confidence='MEDIUM'; score=max(score,0.55)
                 reasons.append('La IP responde directamente al Host/SNI del hostname, pero aún falta una correlación más fuerte.')
         bypass_possible=bool(meta.get('cdn')) and classification=='DIRECT_BACKEND_CANDIDATE'
@@ -3045,6 +3053,11 @@ def surface_data(conn: sqlite3.Connection, root_domain: str, scopes: list[str] |
             "ips": list(dict.fromkeys(ips)), "historical_ips": list(dict.fromkeys(historical_ips)), "candidate_ips": list(dict.fromkeys(candidate_ips)), "cnames": list(dict.fromkeys(cnames)), "redirects": list(dict.fromkeys(redirects)),
             "infrastructure": infra_by_host.get(host["label"], []),
             "possible_origin_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="DIRECT_BACKEND_CANDIDATE"],
+            # UI-level confirmation stays deliberately stricter than the generic
+            # DIRECT_BACKEND_CANDIDATE class: require both the hostname in TLS/SNI
+            # and an exact front/direct content hash match.  This keeps a vivid
+            # "direct backend confirmed" badge from being driven by one weak signal.
+            "confirmed_origin_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="DIRECT_BACKEND_CANDIDATE" and x.get("confidence")=="HIGH" and x.get("tls_hostname_match") and x.get("content_hash_match")],
             "direct_infra_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="DIRECT_INFRA_CANDIDATE"],
             "edge_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("classification")=="EDGE_SHARED"],
             "nmap_candidate_ips": [x.get("ip") for x in infra_by_host.get(host["label"], []) if x.get("nmap_eligibility")=="CANDIDATE_AFTER_SCOPE_VALIDATION"],

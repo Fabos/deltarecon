@@ -294,6 +294,7 @@
         <button type="button" class="button ghost compact" data-surface-zoom-in title="Acercar">+</button>
         <button type="button" class="button ghost" data-surface-fit>⌖ Ajustar</button>
         <button type="button" class="button ghost" data-surface-reset-layout>↺ Layout</button>
+        <button type="button" class="button ghost active" data-surface-focus-branch title="Al abrir un host, oculta capas técnicas del root y atenúa ramas no activas">◉ Rama enfocada</button>
         <button type="button" class="button ghost" data-surface-fullscreen>⛶ Pantalla completa</button>
       </div>
     </div>
@@ -301,7 +302,7 @@
       <div class="surface-map-stage" data-map-stage>
         <svg data-surface-svg role="img" aria-label="Mapa de superficie de ataque"></svg>
         <div class="surface-map-empty" data-map-empty hidden><b>No hay activos que coincidan con estos filtros.</b><span>Quita filtros o vuelve a la vista general.</span></div>
-        <div class="surface-map-hint">clic target = abrir/recoger · clic familia = abrir/recoger · clic host = expandir/recoger capas · arrastrar fondo = mover · rueda = zoom</div>
+        <div class="surface-map-hint">clic host = expandir/enfocar/recoger capas · “Rama enfocada” reduce ruido del root · arrastrar fondo = mover · rueda = zoom</div>
       </div>
       <aside class="surface-detail" data-surface-detail>
         <div class="surface-detail-empty">
@@ -315,7 +316,8 @@
       <span><i class="line observed"></i> Observado</span>
       <span><i class="line fingerprint"></i> Fingerprint</span>
       <span><i class="line heuristic"></i> Heurística</span>
-      <span class="legend-note">Origin permanece <b>desconocido</b> hasta tener evidencia directa.</span>
+      <span><i class="line confirmed-origin"></i> IP directa confirmada</span>
+      <span class="legend-note">“Confirmada” en el mapa exige correlación fuerte TLS/SNI + contenido; Nmap sigue sujeto a scope.</span>
     </div>
   </section>
 

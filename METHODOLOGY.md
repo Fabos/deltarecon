@@ -1,3 +1,7 @@
+## Lectura del mapa: foco de rama y backend directo
+
+Al investigar un hostname hijo, Negro usa **Rama enfocada** para evitar que las tecnologías/proveedores/IPs del root crucen las relaciones del host activo. El resto del árbol se atenúa pero no desaparece. `IP DIRECTA` es una marca visual conservadora: sólo se muestra cuando la correlación de Infrastructure Classification combina TLS/SNI del hostname con contenido front/direct idéntico; sigue siendo obligatorio validar scope antes de enumerar servicios.
+
 # Negro Recon — Metodología v0.41.5
 
 

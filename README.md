@@ -1,5 +1,9 @@
+## v0.95 · Mapa enfocado + IP directa confirmada
 
-## v0.93 · Infrastructure Classification
+El mapa de Superficie ahora reduce ruido automáticamente cuando se abre un hostname hijo: conserva root/familia/host como contexto, oculta las capas técnicas del root y atenúa ramas no activas. El botón **Rama enfocada / Ver todo** alterna ambos modos sin perder expansiones. Una IP sólo recibe el badge visual **IP DIRECTA** cuando Infrastructure Classification tiene correlación fuerte (backend candidato HIGH + TLS/SNI match + contenido SHA256 idéntico); candidatos menos fuertes mantienen su estado anterior.
+
+
+## v0.94 · Infrastructure Classification
 
 Después de `DNS / IP histórico`, Negro puede convertir evidencia de red en una explicación de arquitectura: edge compartido, tercero/SaaS, infraestructura directa o backend/origin candidato. Usa WHOIS/ASN, `curl --resolve`, TLS/SNI y comparación de contenido; no ejecuta Nmap. Las IPs históricas permanecen pasivas hasta una acción explícita del hunter. Una IP sólo queda como candidata para servicios cuando la correlación es suficiente y todavía requiere validación de scope.
 

@@ -19,6 +19,7 @@
   const viewPanels = [...root.querySelectorAll('[data-view-panel]')];
   const importPanel = root.querySelector('[data-import-panel]');
   const fullscreenBtn = root.querySelector('[data-surface-fullscreen]');
+  const focusBranchBtn = root.querySelector('[data-surface-focus-branch]');
   const NS = 'http://www.w3.org/2000/svg';
 
   let data = {hosts:[], filters:{}, summary:{}, tool_runs:[]};
@@ -27,6 +28,7 @@
   let pan = null;
   let nodeDrag = null;
   let suppressClickUntil = 0;
+  let branchFocus = true;
   let sceneExtent = {width:1460,height:760};
   const manualPositions = new Map();
   const expandedHosts = new Set();
@@ -138,7 +140,7 @@
   function filters(){ return {q:(search?.value||'').trim().toLowerCase()}; }
   function haystack(h){
     return [h.root_domain,h.hostname,h.title,h.url,h.webserver,h.location,h.family,h.environment,h.status_code,h.takeover_state,h.takeover_confidence,h.takeover_target,
-      ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.historical_ips||[]),...(h.candidate_ips||[]),...(h.possible_origin_ips||[]),...(h.direct_infra_ips||[]),...(h.edge_ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
+      ...(h.technologies||[]),...(h.providers||[]),...(h.servers||[]),...(h.ips||[]),...(h.historical_ips||[]),...(h.candidate_ips||[]),...(h.possible_origin_ips||[]),...(h.confirmed_origin_ips||[]),...(h.direct_infra_ips||[]),...(h.edge_ips||[]),...(h.cnames||[]),...(h.sources||[])].join(' ').toLowerCase();
   }
   function matchesSelected(h,name){
     const sel=selectedFilters[name]; if(!sel||!sel.size)return true;
@@ -164,9 +166,9 @@
     if(layers.has('technology')) (h.technologies||[]).forEach(t=>{const id=add(node('technology',t,t));edges.push(edge(hid,id,'USES','fingerprint'));});
     if(layers.has('server')) (h.servers||[]).forEach(s=>{const id=add(node('server',s,s));edges.push(edge(hid,id,'SERVED_BY','fingerprint'));});
     if(layers.has('ip')) {
-      const origins=new Set(h.possible_origin_ips||[]), direct=new Set(h.direct_infra_ips||[]), edgeIps=new Set(h.edge_ips||[]);
+      const origins=new Set(h.possible_origin_ips||[]), confirmed=new Set(h.confirmed_origin_ips||[]), direct=new Set(h.direct_infra_ips||[]), edgeIps=new Set(h.edge_ips||[]);
       const elevated=new Set([...origins,...direct]);
-      [...origins].slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{origin:true}));edges.push(edge(hid,id,'POSSIBLE_ORIGIN','correlated'));});
+      [...origins].slice(0,6).forEach(ip=>{const isConfirmed=confirmed.has(ip);const id=add(node('ip',ip,ip,{origin:true,confirmed:isConfirmed}));edges.push(edge(hid,id,isConfirmed?'CONFIRMED_DIRECT_BACKEND':'POSSIBLE_ORIGIN','correlated'));});
       [...direct].filter(ip=>!origins.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{direct:true}));edges.push(edge(hid,id,'DIRECT_INFRA_IP','hypothesis'));});
       (h.ips||[]).filter(ip=>!elevated.has(ip)).slice(0,6).forEach(ip=>{const isEdge=edgeIps.has(ip);const id=add(node('ip',ip,ip,{historical:false,edge:isEdge}));edges.push(edge(hid,id,isEdge?'EDGE_IP':'OBSERVED_IP',isEdge?'edge':'observed'));});
       (h.historical_ips||[]).filter(ip=>!(h.ips||[]).includes(ip) && !elevated.has(ip)).slice(0,6).forEach(ip=>{const id=add(node('ip',ip,ip,{historical:true}));edges.push(edge(hid,id,'HISTORICAL_RESOLVES_TO','historical'));});
@@ -182,7 +184,10 @@
     const roots=(data.roots||[rootDomain]);
     const multiRoot=(data.roots||[]).length>1;
     const projectId=multiRoot?add(node('project','project',`PROJECT · ${(data.roots||[]).length} targets`,{count:(data.roots||[]).length})):null;
-    const scene={nodes,edges,add,multiRoot,roots};
+    const focusHost=(branchFocus && selectedHost && expandedHosts.has(selectedHost)) ? selectedHost : '';
+    const focusRecord=focusHost ? hosts.find(h=>h.hostname===focusHost) : null;
+    const focusRoot=focusRecord ? (focusRecord.root_domain||rootDomain) : '';
+    const scene={nodes,edges,add,multiRoot,roots,focusHost,focusRoot};
 
     roots.forEach(rr=>{
       const rootHosts=hosts.filter(h=>(h.root_domain||rootDomain)===rr);
@@ -194,7 +199,11 @@
       if(!shouldOpen)return;
       // The recon root is also a real hostname.  Its technical context belongs
       // directly to the ROOT node instead of being duplicated as a fake child.
-      if(rootAsset) addHostLayers(scene,rootAsset,rid,layers);
+      // In branch-focus mode a child host owns the technical canvas.  Keep the
+      // root as architectural context but hide its provider/technology/IP spokes
+      // so they do not cross the focused child's relations.
+      // Legacy invariant preserved: if(rootAsset) addHostLayers(scene,rootAsset,rid,layers);
+      if(rootAsset && !(focusHost && focusRoot===rr)) addHostLayers(scene,rootAsset,rid,layers);
 
       const rawFamilies=new Map();
       childHosts.forEach(h=>{
@@ -211,7 +220,8 @@
       [...families.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([family,items])=>{
         items.sort((a,b)=>a.hostname.localeCompare(b.hostname));
         if(!grouped){
-          items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(rid,hid,'CONTAINS','observed'));if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);});
+          // Legacy invariant preserved: if(expandedHosts.has(h.hostname)) addHostLayers
+          items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(rid,hid,'CONTAINS','observed'));if(expandedHosts.has(h.hostname) && (!focusHost || h.hostname===focusHost)) addHostLayers(scene,h,hid,layers);});
           return;
         }
         const isUngrouped=family==='__ungrouped__';
@@ -221,7 +231,7 @@
         edges.push(edge(rid,fid,isUngrouped?'CONTAINS':'POSSIBLE_FAMILY',isUngrouped?'observed':'heuristic'));
         // Single-root equivalent retained conceptually: if(!expandedFamilies.has(family)) return;
         if(!expandedFamilies.has(familyKey))return;
-        items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(fid,hid,isUngrouped?'CONTAINS':'GROUPS',isUngrouped?'observed':'heuristic'));if(expandedHosts.has(h.hostname)) addHostLayers(scene,h,hid,layers);});
+        items.forEach(h=>{const hid=add(node('host',h.hostname,h.hostname,h));edges.push(edge(fid,hid,isUngrouped?'CONTAINS':'GROUPS',isUngrouped?'observed':'heuristic'));if(expandedHosts.has(h.hostname) && (!focusHost || h.hostname===focusHost)) addHostLayers(scene,h,hid,layers);});
       });
     });
 
@@ -282,6 +292,14 @@
     return allHosts().filter(h=>ids.has(h.hostname));
   }
 
+  function updateFocusButton(scene=null){
+    if(!focusBranchBtn)return;
+    const active=!!(scene?.focusHost);
+    focusBranchBtn.classList.toggle('active',branchFocus);
+    focusBranchBtn.textContent=branchFocus?(active?'◉ Rama enfocada':'◎ Enfocar rama'):'◌ Ver todo';
+    focusBranchBtn.title=branchFocus?'Al abrir un host, oculta capas técnicas del root y atenúa ramas no activas':'Muestra simultáneamente todas las capas expandidas';
+  }
+
   function renderGraph(){
     const hosts=visibleHosts();
     if(visibleCount) visibleCount.textContent=String(hosts.length);
@@ -289,35 +307,53 @@
     if(empty) empty.hidden=hosts.length>0;
     svg.innerHTML='';
     const {pos,width,height}=layout(scene); sceneExtent={width,height};
+    const focusIds=new Set();
+    if(scene.focusHost){
+      focusIds.add(`host:${scene.focusHost}`);
+      // Focus includes the selected host's technical children plus its ancestry
+      // (family/root/project). Everything else remains visible but subdued.
+      scene.edges.filter(e=>e.source===`host:${scene.focusHost}`).forEach(e=>focusIds.add(e.target));
+      let changed=true;
+      while(changed){changed=false;scene.edges.forEach(e=>{if(focusIds.has(e.target)&&!focusIds.has(e.source)){focusIds.add(e.source);changed=true;}});}
+    }
+    updateFocusButton(scene);
     const cs=canvasSize();
     svg.setAttribute('viewBox',`0 0 ${cs.width} ${cs.height}`);
     const world=svgEl('g',{transform:`translate(${view.x} ${view.y}) scale(${view.k})`}); svg.appendChild(world);
 
     scene.edges.forEach(e=>{
       const a=pos.get(e.source), b=pos.get(e.target); if(!a||!b)return;
-      const path=svgEl('path',{d:`M ${a.x+72} ${a.y} C ${a.x+155} ${a.y}, ${b.x-155} ${b.y}, ${b.x-72} ${b.y}`,class:`surface-edge ${e.kind}`});
+      const path=svgEl('path',{d:`M ${a.x+72} ${a.y} C ${a.x+155} ${a.y}, ${b.x-155} ${b.y}, ${b.x-72} ${b.y}`,class:`surface-edge ${e.kind}${scene.focusHost && !(focusIds.has(e.source)&&focusIds.has(e.target))?' focus-muted':''}`});
       const title=svgEl('title'); title.textContent=e.relation; path.appendChild(title); world.appendChild(path);
     });
 
     scene.nodes.forEach(n=>{
       const p=pos.get(n.id); if(!p)return;
       const brand=['provider','technology','server'].includes(n.type)?brandVisual(n.label):null;
-      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
+      const hostConfirmed=n.type==='host' && (n.meta?.confirmed_origin_ips||[]).length>0;
+      const g=svgEl('g',{class:`surface-node ${n.type}${brand?` brand-${brand.key}`:''}${n.type==='host'&&selectedHost===n.key?' selected':''}${n.type==='host'&&hostConfirmed?' has-confirmed-origin':''}${n.type==='root'&&n.meta?.active?' active-root':''}${n.type==='ip'&&n.meta?.origin?' possible-origin':''}${n.type==='ip'&&n.meta?.confirmed?' confirmed-origin':''}${n.type==='ip'&&n.meta?.direct?' direct-infra':''}${n.type==='ip'&&n.meta?.edge?' shared-edge':''}${n.type==='ip'&&n.meta?.historical?' historical-ip':''}${scene.focusHost&&!focusIds.has(n.id)?' focus-muted':''}`,transform:`translate(${p.x} ${p.y})`,tabindex:'0','data-node-id':n.id});
       const hostEnv=n.type==='host'?String(n.meta?.environment||'UNKNOWN').toUpperCase():'UNKNOWN';
       const showHostEnv=n.type==='host' && hostEnv && hostEnv!=='UNKNOWN';
-      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?220:n.type==='project'?190:(brand?210:190);
-      const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?40:32;
+      const showOriginBadge=n.type==='ip' && !!n.meta?.confirmed;
+      const w=n.type==='host'?(showHostEnv?260:230):n.type==='family'?210:n.type==='root'?220:n.type==='project'?190:showOriginBadge?250:(brand?210:190);
+      const h=n.type==='family'&&scene.collapsed?44:n.type==='host'?40:showOriginBadge?44:32;
       const rect=svgEl('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:n.type==='host'?9:14}); g.appendChild(rect);
       const hostTextX=showHostEnv?(-w/2+21):0;
       const branded=!!brand && n.type!=='host';
-      const textX=branded?(-w/2+44):hostTextX;
-      const text=svgEl('text',{x:textX,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':branded||showHostEnv?'start':'middle'});
+      const textX=showOriginBadge?(-w/2+14):(branded?(-w/2+44):hostTextX);
+      const text=svgEl('text',{x:textX,y:scene.collapsed&&n.type==='family'?-2:4,'text-anchor':showOriginBadge||branded||showHostEnv?'start':'middle'});
       text.textContent=short(n.label,n.type==='host'?(showHostEnv?27:31):(branded?24:28)); g.appendChild(text);
       if(branded){
         const mark=svgEl('g',{class:`surface-brand-mark brand-${brand.key}`,transform:`translate(${-w/2+22} 0)`});
         mark.appendChild(svgEl('rect',{x:-15,y:-10,width:30,height:20,rx:7}));
         const markText=svgEl('text',{x:0,y:3,'text-anchor':'middle'});markText.textContent=brand.icon;mark.appendChild(markText);
         g.appendChild(mark);
+      }
+      if(showOriginBadge){
+        const badge=svgEl('g',{class:'surface-origin-badge',transform:`translate(${w/2-57} 0)`});
+        badge.appendChild(svgEl('rect',{x:-48,y:-10,width:96,height:20,rx:10}));
+        const badgeText=svgEl('text',{x:0,y:3,'text-anchor':'middle'});badgeText.textContent='IP DIRECTA';badge.appendChild(badgeText);
+        g.appendChild(badge);
       }
       if(n.type==='family'&&scene.collapsed){const count=svgEl('text',{x:0,y:13,'text-anchor':'middle',class:'surface-node-sub'});count.textContent=`${n.meta.count} hosts${expandedFamilies.has(n.key)?' · abierto':''}`;g.appendChild(count);}
       if(n.type==='host'){
@@ -387,6 +423,7 @@
       ${isReconRoot?`<a class="button ghost full" href="${window.location.pathname}?root=${encodeURIComponent(h.hostname)}">${h.hostname===rootDomain?'Target activo':'Trabajar este target →'}</a>`:''}
       ${h.title?`<p class="surface-title">${esc(h.title)}</p>`:''}
       <div class="surface-detail-grid"><div><span>Ambiente</span><b class="env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</b></div><div><span>Familia</span><b>${esc(h.family||'—')}</b><small>heurística</small></div><div><span>DNS</span><b>${esc(h.dns_state||'UNKNOWN')}</b></div><div><span>HTTP</span><b>${esc(h.http_state||'UNKNOWN')}</b></div></div>
+      ${(h.confirmed_origin_ips||[]).length?`<div class="surface-origin-confirmed-callout"><b>◆ IP DIRECTA CONFIRMADA</b><p>${(h.confirmed_origin_ips||[]).map(esc).join(', ')} · TLS/SNI + contenido correlacionado. Requiere validación de scope antes de servicios.</p></div>`:''}
       ${h.takeover_state==='CANDIDATE'?`<div class="callout warning"><b>Takeover candidate · ${esc(h.takeover_confidence||'')}</b><p>CNAME → ${esc(h.takeover_target||'—')} · claimability no validada.</p></div>`:''}
       <section><h3>Tecnologías</h3><div class="surface-chips">${tags(h.technologies,'technology')||'<span class="muted">Sin fingerprint</span>'}</div></section>
       <section><h3>Entrega / proveedor</h3><div class="surface-chips">${tags(h.providers,'provider')||'<span class="muted">No identificado</span>'}</div></section>
@@ -447,7 +484,7 @@
 
   function renderInventory(){
     const hosts=visibleHosts(); if(visibleCount)visibleCount.textContent=String(hosts.length);
-    grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div>${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</div><div class="surface-card-meta"><span class="surface-root-mini">${esc(h.root_domain||rootDomain)}</span><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
+    grid.innerHTML = hosts.length ? hosts.map(h=>`<article class="surface-host-card ${(h.confirmed_origin_ips||[]).length?'has-confirmed-origin':''}" data-host-card="${esc(h.hostname)}"><div class="surface-host-card-head"><div><span class="surface-host-dot ${codeClass(h.status_code)}"></span><b>${esc(h.hostname)}</b><small>${esc(h.title||'')}</small></div><span>${(h.confirmed_origin_ips||[]).length?'<em class="surface-origin-mini">IP DIRECTA</em>':''}${h.status_code?`<span class="surface-status ${codeClass(h.status_code)}">${esc(h.status_code)}</span>`:'<span class="surface-status unknown">?</span>'}</span></div><div class="surface-card-meta"><span class="surface-root-mini">${esc(h.root_domain||rootDomain)}</span><span class="env-pill env-${envClass(h.environment)}">${esc(h.environment||'UNKNOWN')}</span><span>${esc(h.family||'—')}</span>${h.webserver?`<span>${esc(h.webserver)}</span>`:''}</div><div class="surface-chips compact">${tags(h.technologies,'technology')}</div><div class="surface-card-rel"><span>${(h.providers||[]).map(esc).join(' · ')||'Proveedor no identificado'}</span><span>${(h.sources||[]).map(esc).join(' + ')}</span></div></article>`).join('') : '<div class="panel empty-state"><strong>No hay hosts con estos filtros.</strong><span>Quita algún filtro o ejecuta una fase adicional.</span></div>';
     grid.querySelectorAll('[data-host-card]').forEach(card=>card.addEventListener('click',()=>{selectedHost=card.dataset.hostCard;expandedHosts.add(selectedHost);const h=allHosts().find(x=>x.hostname===selectedHost);renderDetail(h);switchView('map');renderGraph();}));
   }
 
@@ -549,7 +586,10 @@
     };
     svg.addEventListener('pointerup',endPointer); svg.addEventListener('pointercancel',endPointer);
 
-    fullscreenBtn?.addEventListener('click',async()=>{
+    focusBranchBtn?.addEventListener('click',()=>{branchFocus=!branchFocus;renderGraph();});
+  updateFocusButton();
+
+  fullscreenBtn?.addEventListener('click',async()=>{
       try{if(document.fullscreenElement===workspace)await document.exitFullscreen();else await workspace?.requestFullscreen();}catch(err){console.warn('Fullscreen no disponible',err);}
     });
     document.addEventListener('fullscreenchange',()=>{

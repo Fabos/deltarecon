@@ -1,3 +1,22 @@
+# v0.95 — Surface graph focus + confirmed direct backend
+
+- El mapa distingue visualmente una IP directa **confirmada por correlación fuerte**: requiere `DIRECT_BACKEND_CANDIDATE · HIGH` con TLS/SNI del hostname y SHA256 front/direct idéntico.
+- Las IPs confirmadas usan borde/glow verde y badge `IP DIRECTA`; el hostname relacionado también queda resaltado y el panel muestra `IP DIRECTA CONFIRMADA`.
+- Nuevo modo **Rama enfocada** (activo por defecto): al expandir un hostname hijo, oculta temporalmente las capas técnicas del root del mismo target y sólo muestra las capas del host enfocado.
+- Las ramas no activas permanecen visibles pero atenuadas para conservar contexto sin convertir el mapa en spaghetti.
+- Toggle `Rama enfocada / Ver todo` permite recuperar todas las capas previamente expandidas sin perder el estado.
+- La vista inventario también resalta hosts con backend directo confirmado.
+- Nmap no se habilita por el estilo visual: sigue requiriendo `CANDIDATE_AFTER_SCOPE_VALIDATION`.
+- Regresión completa: 85 tests; JS y templates Jinja validados.
+
+# v0.94 — Infrastructure correlation fix
+
+- Corrige el parser del probe de infraestructura: v0.93 podía emitir `\t` literal en `===INFRA host\tip===`, por lo que HTTP/TLS/hash se veían en el crudo pero no llegaban al clasificador. v0.94 emite tab real y acepta ambos formatos por compatibilidad.
+- Un owner WHOIS reconocido como SaaS (por ejemplo Salesforce) ahora se clasifica como `THIRD_PARTY_PLATFORM` y `DO_NOT_SCAN_THIRD_PARTY`, aunque el hostname no trajera provider metadata suficiente.
+- Las IPs históricas probadas que sólo responden HTTP pero no correlacionan por TLS/contenido permanecen `HISTORICAL_IP`; no se elevan por disponibilidad solamente.
+- Caso esperado de Panamá: una IP histórica no-CDN con SAN válido + contenido SHA256 idéntico sube a `DIRECT_BACKEND_CANDIDATE` y `CANDIDATE_AFTER_SCOPE_VALIDATION`.
+- Regresión completa: 83 tests.
+
 ## v0.93 · Infrastructure Classification end-to-end
 
 - Implementado el paso **Clasificar infraestructura** inmediatamente después de DNS/IP histórico, antes de crawling/endpoints profundos.

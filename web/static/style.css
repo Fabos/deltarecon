@@ -1125,3 +1125,19 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .surface-edge.edge{stroke:rgba(92,165,255,.55);stroke-dasharray:5 4}
 .surface-infra-list{display:grid;gap:8px}.surface-infra-list>div{display:grid;gap:2px;padding:9px 10px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.025)}
 .surface-infra-list span,.surface-infra-list small,.surface-infra-list em{font-size:11px}.surface-infra-list em{font-style:normal;color:var(--muted)}
+
+/* v0.95 · focused branch + direct-backend visual identity */
+[data-surface-focus-branch].active{border-color:rgba(181,243,107,.32);background:rgba(181,243,107,.075);color:#dfffc8}
+.surface-edge.focus-muted{opacity:.12!important;stroke-width:.8!important}
+.surface-node.focus-muted{opacity:.22;filter:saturate(.45)}
+.surface-node.focus-muted:hover{opacity:.72;filter:none}
+.surface-node.has-confirmed-origin rect{stroke:#6bf2b2!important;stroke-width:2!important;filter:drop-shadow(0 0 7px rgba(74,235,167,.24))}
+.surface-node.ip.confirmed-origin rect{fill:#0c2b21!important;stroke:#63f0b0!important;stroke-width:2.5!important;filter:drop-shadow(0 0 10px rgba(77,240,177,.34))}
+.surface-node.ip.confirmed-origin text{fill:#e9fff6!important}
+.surface-origin-badge{pointer-events:none}.surface-origin-badge rect{fill:#123b2d!important;stroke:#69f1b2!important;stroke-width:1.1!important}.surface-origin-badge text{font-size:6.7px!important;font-weight:900!important;letter-spacing:.04em;fill:#eafff5!important}
+.surface-origin-confirmed-callout{display:grid;gap:4px;margin:12px 0;padding:10px 11px;border:1px solid rgba(99,240,176,.38);border-left:3px solid #63f0b0;border-radius:10px;background:linear-gradient(90deg,rgba(53,190,129,.11),rgba(53,190,129,.025));box-shadow:0 0 20px rgba(53,190,129,.05)}
+.surface-origin-confirmed-callout b{font-size:.72rem;color:#8ff7c7;letter-spacing:.035em}.surface-origin-confirmed-callout p{margin:0;font-size:.7rem;line-height:1.45;color:#b9d7ca}
+.surface-host-card.has-confirmed-origin{border-color:rgba(99,240,176,.3);box-shadow:inset 3px 0 0 rgba(99,240,176,.72)}
+.surface-host-card-head>span{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.surface-origin-mini{font-style:normal;font-size:.54rem;font-weight:850;letter-spacing:.05em;color:#8ff7c7;border:1px solid rgba(99,240,176,.28);border-radius:999px;padding:3px 6px;background:rgba(99,240,176,.07)}
+.surface-legend .line.confirmed-origin{border-top-color:#63f0b0;border-top-width:3px}
