@@ -2072,11 +2072,13 @@ def infrastructure_findings(conn: sqlite3.Connection, root_domain: str) -> list[
     return sorted(out,key=lambda x:(rank.get(str(x.get('classification') or ''),9),str(x.get('hostname') or ''),str(x.get('ip') or '')))
 
 
-def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 600, run_group: str = '', *, probe_historical: bool = False) -> dict:
+def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: dict, timeout: int = 600, run_group: str = '', *, probe_historical: bool = False, active_correlation: bool = True) -> dict:
     """Correlate current/manual/historical IP evidence into infrastructure roles.
 
     Current and explicitly manual candidate IPs may receive lightweight HTTP/TLS
-    correlation. Historical-only IPs stay passive unless `probe_historical=True`
+    correlation when `active_correlation=True`. Project-wide baseline runs set it
+    to False: WHOIS/ASN/provider classification still runs, but no direct Host/SNI
+    probes are sent. Historical-only IPs stay passive unless `probe_historical=True`
     is an explicit hunter action, because an old address may have been reassigned.
     This phase never runs Nmap.
     """
@@ -2084,7 +2086,7 @@ def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: 
     root=str(root_domain or '').strip().lower().rstrip('.')
     pairs=_infra_candidate_pairs(conn,root)
     if not pairs:
-        return {'phase':'infra','records':0,'direct_candidates':0,'message':'No hay IPs actuales, históricas o manuales para clasificar.'}
+        return {'phase':'infra','records':0,'direct_candidates':0,'active_correlation':bool(active_correlation),'probe_historical':bool(probe_historical),'message':'No hay IPs actuales, históricas o manuales para clasificar.'}
     group=run_group or uuid.uuid4().hex
     bash=shutil.which('bash') or '/bin/bash'; whois=_tool_path('whois'); curl=_tool_path('curl'); openssl=_tool_path('openssl')
     run_dir=Path(paths['raw'])/'surface-runs'; run_dir.mkdir(parents=True,exist_ok=True)
@@ -2115,7 +2117,7 @@ def run_infrastructure_phase(conn: sqlite3.Connection, root_domain: str, paths: 
         if is_edge or is_saas: continue
         manual='CANDIDATE_INFRA_IP' in rels
         historical='HISTORICAL_RESOLVES_TO' in rels
-        if current or manual or (historical and probe_historical):
+        if active_correlation and (current or manual or (historical and probe_historical)):
             probe_pairs.append(item)
         if len(probe_pairs)>=probe_limit: break
 
@@ -2211,7 +2213,7 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
             'direct_server':pdata.get('direct_server',''),'tls_hostname_match':_cert_matches_hostname(host,pdata.get('cert_sans') or []),
             'cert_sans':pdata.get('cert_sans') or [],'content_hash_match':bool(pdata.get('front_hash') and (pdata.get('front_hash')==pdata.get('direct_https_hash') or pdata.get('front_hash')==pdata.get('direct_http_hash'))),
             'last_modified_match':bool(pdata.get('front_last_modified') and pdata.get('front_last_modified')==pdata.get('direct_last_modified')),
-            'bypass_possible':bypass_possible,'nmap_eligibility':nmap,'historical_probe_enabled':bool(probe_historical),'reasons':reasons,
+            'bypass_possible':bypass_possible,'nmap_eligibility':nmap,'historical_probe_enabled':bool(probe_historical),'active_correlation_enabled':bool(active_correlation),'reasons':reasons,
         }
         hid=item['host_id']; iid=item['ip_id']
         evid=add_evidence(conn,hid,'infra_analysis','infrastructure_classification',ip,payload)
@@ -2232,11 +2234,11 @@ done < "$1"'''.format(curl=curl,timeout_bin=timeout_bin,openssl=openssl)
     # complete even when every IP was classified from existing evidence and no
     # external probe was necessary.
     summary_path=run_dir/f'infra-classifier-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.stdout.txt'
-    summary_path.write_text(json.dumps({'records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'probe_historical':bool(probe_historical)},ensure_ascii=False,indent=2),encoding='utf-8')
+    summary_path.write_text(json.dumps({'records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'probe_historical':bool(probe_historical),'active_correlation':bool(active_correlation)},ensure_ascii=False,indent=2),encoding='utf-8')
     stderr_path=run_dir/f'infra-classifier-{re.sub(r"[^a-zA-Z0-9]+","-",root)}.stderr.txt'; stderr_path.write_text('',encoding='utf-8')
     _record_tool_run(conn,'infra','classifier',['internal:infra-classifier'], 'ok', 0, len(observations), str(summary_path), str(stderr_path), '', _now(), _now(), root_domain=root, run_group=group)
     conn.commit()
-    return {'phase':'infra','records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'items':observations,'probe_historical':bool(probe_historical)}
+    return {'phase':'infra','records':len(observations),'direct_candidates':direct_candidates,'edge_ips':edge_count,'pending_historical':pending_historical,'items':observations,'probe_historical':bool(probe_historical),'active_correlation':bool(active_correlation)}
 
 
 BASELINE_STEPS = (
@@ -2249,6 +2251,7 @@ BASELINE_STEPS = (
     ("takeover", "Señales de takeover"),
     ("http", "HTTP / tecnologías"),
     ("historical_dns", "DNS / IP histórico"),
+    ("infra", "Clasificación de infraestructura pasiva"),
 )
 
 
@@ -2332,9 +2335,10 @@ def _baseline_pending_http(conn: sqlite3.Connection, root_domain: str) -> int:
 def run_project_baseline_root(conn: sqlite3.Connection, root_domain: str, paths: dict, job_id: str, *, force: bool = False) -> dict:
     """Build the breadth-first attack-surface baseline for one recon root.
 
-    The baseline deliberately stops after HTTP/technology fingerprinting. It
-    skips already-valid work where possible, re-runs DNS when new discovery or
-    TLS SANs require it, and never includes Amass or deep endpoint crawling.
+    The baseline deliberately stops after passive infrastructure classification.
+    It skips already-valid work where possible, re-runs DNS when new discovery or
+    TLS SANs require it, and never includes Amass, active historical-IP correlation,
+    Nmap, or deep endpoint crawling.
     """
     init_schema(conn)
     root = str(root_domain or "").strip().lower().rstrip(".")
@@ -2347,6 +2351,7 @@ def run_project_baseline_root(conn: sqlite3.Connection, root_domain: str, paths:
     skipped: list[str] = []
     changed_surface = False
     dns_ran = False
+    historical_ran = False
 
     def mark(step_key: str, index: int, *, state: str = "running") -> None:
         _baseline_update_job(
@@ -2435,7 +2440,19 @@ def run_project_baseline_root(conn: sqlite3.Connection, root_domain: str, paths:
                     skipped.append(step)
                 else:
                     run_historical_dns_phase(conn, root, paths, run_group=uuid.uuid4().hex)
+                    completed.append(step); historical_ran = True
+                continue
+
+            if step == "infra":
+                should_run = force or historical_ran or not _phase_run_bundle(conn, "infra", root).get("done")
+                if should_run:
+                    run_infrastructure_phase(
+                        conn, root, paths, run_group=uuid.uuid4().hex,
+                        probe_historical=False, active_correlation=False,
+                    )
                     completed.append(step)
+                else:
+                    skipped.append(step)
                 continue
 
         _baseline_update_job(

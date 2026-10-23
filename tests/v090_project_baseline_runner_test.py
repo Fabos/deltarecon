@@ -64,6 +64,11 @@ def test_baseline_root_runs_breadth_pipeline_and_refreshes_dns_after_tls(monkeyp
         calls.append('takeover'); return {'records':1,'candidates':1}
     def historical_dns(conn,root,paths,**kw):
         calls.append('historical_dns'); return {'records':1,'unique_ips':1}
+    def infra(conn,root,paths,**kw):
+        calls.append('infra')
+        assert kw.get('probe_historical') is False
+        assert kw.get('active_correlation') is False
+        return {'records':1,'direct_candidates':1,'active_correlation':False}
     def http(conn,root,paths,**kw):
         calls.append('http')
         for host in recon._first_party_hostnames(conn,root,resolved_only=True):
@@ -80,10 +85,11 @@ def test_baseline_root_runs_breadth_pipeline_and_refreshes_dns_after_tls(monkeyp
     monkeypatch.setattr(recon,'run_takeover_analysis',takeover)
     monkeypatch.setattr(recon,'run_http_phase',http)
     monkeypatch.setattr(recon,'run_historical_dns_phase',historical_dns)
+    monkeypatch.setattr(recon,'run_infrastructure_phase',infra)
 
     result=recon.run_project_baseline_root(conn,'example.com',{'raw':str(tmp_path/'raw')},job['id'])
     assert result['status']=='done'
-    assert calls==['root','discovery','active_discovery','dns','tls','dns','takeover','http','historical_dns']
+    assert calls==['root','discovery','active_discovery','dns','tls','dns','takeover','http','historical_dns','infra']
     state=recon.project_baseline_data(conn,['example.com'])['latest_by_root']['example.com']
     assert state['status']=='done'
     assert state['percent']==100

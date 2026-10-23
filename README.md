@@ -544,6 +544,12 @@ Los JWT se detectan aunque aparezcan en una Response y sus claims se pueden clas
 Desde v0.91, los scopes guardados en el proyecto alimentan automáticamente los recon roots de Superficie. Crear un proyecto con `example.com`, `example.net` y `api.example.org` hace que esos roots aparezcan inmediatamente en Project Baseline; no deben cargarse una segunda vez. Quitar un scope lo retira de futuras ejecuciones, pero no borra la evidencia histórica ya recolectada.
 
 
+## v0.101 · Project Baseline hasta clasificación de infraestructura
+
+El baseline multi-root termina ahora en **Infrastructure Classification pasiva**. Después de recolectar DNS/IP histórico, Negro hace WHOIS/ASN y usa DNS/provider/owner ya observados para separar `EDGE_SHARED`, `THIRD_PARTY_PLATFORM`, `DIRECT_INFRA_CANDIDATE`, `HISTORICAL_IP` y `UNCLASSIFIED`. En este modo de batch no ejecuta correlación directa con `curl --resolve`/TLS contra IPs candidatas y nunca prueba IPs históricas. La correlación activa permanece disponible cuando el hunter abre manualmente el Paso 08.
+
+Esto mantiene la frontera: **anchura y clasificación automática; profundidad y pivots activos bajo decisión humana**.
+
 ## v0.92 · DNS/IP histórico antes de Infrastructure Classification
 
 El baseline de Superficie ahora añade, después de HTTP, un paso pasivo de **DNS / IP histórico**. Su objetivo es responder: “¿qué direcciones se han observado antes para este root o sus hostnames?” sin tratarlas como infraestructura actual. Las relaciones se registran como `HISTORICAL_RESOLVES_TO`; `RESOLVES_TO` queda reservado para observaciones DNS actuales.

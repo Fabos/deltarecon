@@ -456,6 +456,8 @@ Services / Nmap (fase posterior)
 
 Regla de seguridad metodológica: el baseline no prueba IPs históricas automáticamente. El hunter debe activar explícitamente su correlación porque la dirección puede haber sido reasignada. Nmap nunca se dispara desde Infrastructure Classification.
 
+Desde v0.101, el Project Baseline sí ejecuta **Infrastructure Classification en modo pasivo** después de DNS/IP histórico: WHOIS/ASN + provider/owner + relaciones actuales permiten clasificar y priorizar el proyecto, pero `active_correlation=False` evita `curl --resolve`/TLS directo durante el batch. La correlación activa queda reservada al Paso 08 manual.
+
 
 ## Lectura arquitectónica del grafo
 

@@ -1,3 +1,11 @@
+## v0.101 · Project Baseline termina en Infrastructure Classification pasiva
+
+- `Ejecutar baseline del scope` ahora continúa después de DNS/IP histórico hasta **08 · Infrastructure Classification**.
+- Nuevo modo `active_correlation=False` para Infrastructure Classification: conserva WHOIS/ASN/provider y clasificación edge/SaaS/directa, pero no ejecuta `curl --resolve`/TLS directo contra IPs candidatas durante el batch multi-root.
+- Las IPs históricas siguen siendo estrictamente pasivas en el baseline (`probe_historical=False`); correlacionarlas activamente continúa siendo una acción explícita del hunter.
+- Amass, Nmap, crawler, JS/endpoints y deep enumeration siguen fuera del Project Baseline.
+- Si el Paso 07 se vuelve a ejecutar y aporta nueva evidencia histórica, el Paso 08 pasivo se recalcula automáticamente para ese root.
+
 # v0.100 — Security Controls expansion fix
 
 - Fixed `SECURITY CONTROLS` expand/collapse in the attack-surface graph.
