@@ -98,10 +98,31 @@
     </div>
   </div>
 
+  {% set bulk_removed = request.query_params.get('bulk_removed', '0')|int %}
+  {% set bulk_blocked = request.query_params.get('bulk_blocked', '0')|int %}
+  {% if bulk_removed or bulk_blocked %}
+  <div class="flow-bulk-result {% if bulk_blocked %}has-warning{% endif %}">
+    {% if bulk_removed %}<b>{{ bulk_removed }} Step(s) quitado(s) del Flow.</b>{% endif %}
+    {% if bulk_blocked %}<span>{{ bulk_blocked }} no se quitaron porque tienen Runs, variables o bindings asociados.</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <form class="flow-bulk-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/steps/remove" method="post" data-flow-bulk-form onsubmit="return window.confirmFlowBulkRemove ? window.confirmFlowBulkRemove(this) : confirm('¿Quitar los Steps seleccionados del Flow? Las Requests HTTP seguirán guardadas en Negro.')">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="flow-bulk-toolbar" data-flow-bulk-toolbar>
+      <label class="flow-select-all"><input type="checkbox" data-flow-select-all> <span>Seleccionar todo</span></label>
+      <span class="muted small" data-flow-selection-count>0 seleccionados</span>
+      <button class="button ghost danger-button" type="submit" data-flow-bulk-remove disabled>Quitar seleccionadas del Flow</button>
+      <button class="button ghost" type="button" data-flow-clear-selection disabled>Limpiar selección</button>
+      <small>Quita sólo la pertenencia al Flow; no borra las Requests capturadas.</small>
+    </div>
+  </form>
+
   <div class="flow-timeline minimal-timeline flow-sortable" data-flow-sortable data-flow-id="{{ flow_data.flow.id }}" data-csrf="{{ csrf_token }}">
   {% for s in flow_data.steps %}
     <article class="flow-step minimal-flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}" data-flow-step-id="{{ s.id }}" data-position="{{ s.position }}">
-      <button class="flow-drag-handle" type="button" draggable="true" data-drag-handle aria-label="Arrastrar Step {{ s.position }}" title="Arrastra para mover">⋮⋮</button>
+      <label class="flow-step-select" title="Seleccionar Step {{ s.position }}"><input type="checkbox" value="{{ s.id }}" data-flow-select-step aria-label="Seleccionar Step {{ s.position }}"></label>
+      <button class="flow-drag-handle" type="button" data-drag-handle aria-label="Arrastrar Step {{ s.position }}" title="Mantén y arrastra para mover"><span aria-hidden="true">⠿</span></button>
       <div class="flow-step-index" data-step-index>{{ s.position }}</div>
       <div class="flow-step-main">
         <div class="flow-step-head human-step-head">
@@ -216,25 +237,51 @@
   const list=document.querySelector('[data-flow-sortable]');
   if(!list) return;
 
-  let dragged=null;
-  let originalPosition=null;
-  let snapshot=[];
+  const bulkForm=document.querySelector('[data-flow-bulk-form]');
+  const selectAll=bulkForm?.querySelector('[data-flow-select-all]');
+  const selectionCount=bulkForm?.querySelector('[data-flow-selection-count]');
+  const bulkRemove=bulkForm?.querySelector('[data-flow-bulk-remove]');
+  const clearSelection=bulkForm?.querySelector('[data-flow-clear-selection]');
+  const selections=()=>[...list.querySelectorAll('[data-flow-select-step]')];
+  const selected=()=>selections().filter(input=>input.checked);
+  const refreshSelection=()=>{
+    const chosen=selected().length;
+    const total=selections().length;
+    if(selectionCount) selectionCount.textContent=`${chosen} seleccionado${chosen===1?'':'s'}`;
+    if(bulkRemove) bulkRemove.disabled=chosen===0;
+    if(clearSelection) clearSelection.disabled=chosen===0;
+    if(selectAll){
+      selectAll.checked=total>0 && chosen===total;
+      selectAll.indeterminate=chosen>0 && chosen<total;
+    }
+    selections().forEach(input=>input.closest('[data-flow-step-id]')?.classList.toggle('is-selected',input.checked));
+  };
+  selectAll?.addEventListener('change',()=>{selections().forEach(input=>input.checked=selectAll.checked);refreshSelection();});
+  list.addEventListener('change',(event)=>{if(event.target.matches?.('[data-flow-select-step]')) refreshSelection();});
+  clearSelection?.addEventListener('click',()=>{selections().forEach(input=>input.checked=false);refreshSelection();});
+  window.confirmFlowBulkRemove=()=>{
+    const chosen=selected().length;
+    if(!chosen) return false;
+    return confirm(`¿Quitar ${chosen} Step${chosen===1?'':'s'} del Flow?\n\nLas Requests HTTP originales seguirán guardadas en Negro.`);
+  };
+  bulkForm?.addEventListener('submit',()=>{
+    bulkForm.querySelectorAll('input[data-generated-step-id]').forEach(node=>node.remove());
+    selected().forEach(input=>{
+      const hidden=document.createElement('input');
+      hidden.type='hidden'; hidden.name='step_ids'; hidden.value=input.value; hidden.dataset.generatedStepId='1';
+      bulkForm.appendChild(hidden);
+    });
+  });
+  refreshSelection();
 
+  let drag=null;
   const steps=()=>[...list.querySelectorAll('[data-flow-step-id]')];
   const refreshNumbers=()=>steps().forEach((step,index)=>{
     const badge=step.querySelector('[data-step-index]');
     if(badge) badge.textContent=String(index+1);
   });
-  const restore=()=>{
-    snapshot.forEach(node=>list.appendChild(node));
-    refreshNumbers();
-  };
-  const cleanup=()=>{
-    if(dragged) dragged.classList.remove('is-dragging','is-saving');
-    list.classList.remove('is-sorting');
-    dragged=null; originalPosition=null; snapshot=[];
-  };
-  const afterElement=(y)=>{
+  const restore=(snapshot)=>{snapshot.forEach(node=>list.appendChild(node));refreshNumbers();};
+  const afterElement=(y,dragged)=>{
     const candidates=steps().filter(el=>el!==dragged);
     let closest={offset:Number.NEGATIVE_INFINITY,element:null};
     for(const el of candidates){
@@ -244,61 +291,81 @@
     }
     return closest.element;
   };
+  const finishVisual=()=>{
+    if(!drag) return;
+    drag.step.classList.remove('is-dragging','is-saving');
+    drag.handle.classList.remove('is-grabbing');
+    list.classList.remove('is-sorting');
+  };
+  const cancelDrag=()=>{
+    if(!drag) return;
+    restore(drag.snapshot);
+    finishVisual();
+    drag=null;
+  };
+  const saveDrag=async()=>{
+    if(!drag) return;
+    const current=drag;
+    const targetPosition=steps().indexOf(current.step)+1;
+    if(!current.moved || targetPosition===current.originalPosition){
+      restore(current.snapshot);
+      finishVisual();
+      drag=null;
+      return;
+    }
+    current.step.classList.add('is-saving');
+    const body=new URLSearchParams({csrf:list.dataset.csrf,target_position:String(targetPosition)});
+    try{
+      const response=await fetch(`${location.pathname.replace(/\/flows\/\d+.*$/,'')}/flows/${list.dataset.flowId}/step/${current.step.dataset.flowStepId}/move`,{
+        method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()
+      });
+      if(!response.ok) throw new Error(`HTTP ${response.status}`);
+      window.location.hash=`flow-step-${current.step.dataset.flowStepId}`;
+      window.location.reload();
+    }catch(error){
+      restore(current.snapshot);
+      finishVisual();
+      drag=null;
+      alert('No se pudo guardar el nuevo orden. El Flow volvió a su posición anterior.');
+    }
+  };
 
-  list.addEventListener('dragstart',(event)=>{
-    const handle=event.target.closest('[data-drag-handle]');
-    if(!handle) return;
-    dragged=handle.closest('[data-flow-step-id]');
-    if(!dragged) return;
-    snapshot=steps();
-    originalPosition=snapshot.indexOf(dragged)+1;
-    dragged.classList.add('is-dragging');
-    list.classList.add('is-sorting');
-    event.dataTransfer.effectAllowed='move';
-    event.dataTransfer.setData('text/plain',dragged.dataset.flowStepId);
+  list.addEventListener('pointerdown',(event)=>{
+    const handle=event.target.closest?.('[data-drag-handle]');
+    if(!handle || event.button!==0) return;
+    const step=handle.closest('[data-flow-step-id]');
+    if(!step) return;
+    event.preventDefault();
+    drag={
+      step,handle,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,
+      lastY:event.clientY,moved:false,snapshot:steps(),originalPosition:steps().indexOf(step)+1
+    };
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList.add('is-grabbing');
   });
 
-  list.addEventListener('dragover',(event)=>{
-    if(!dragged) return;
+  list.addEventListener('pointermove',(event)=>{
+    if(!drag || event.pointerId!==drag.pointerId) return;
+    drag.lastY=event.clientY;
+    if(!drag.moved){
+      if(Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)<4) return;
+      drag.moved=true;
+      drag.step.classList.add('is-dragging');
+      list.classList.add('is-sorting');
+    }
     event.preventDefault();
-    event.dataTransfer.dropEffect='move';
-    const after=afterElement(event.clientY);
-    if(after) list.insertBefore(dragged,after); else list.appendChild(dragged);
+    const after=afterElement(event.clientY,drag.step);
+    if(after) list.insertBefore(drag.step,after); else list.appendChild(drag.step);
     refreshNumbers();
   });
 
-  list.addEventListener('drop',async(event)=>{
-    if(!dragged) return;
-    event.preventDefault();
-    const step=dragged;
-    const stepId=step.dataset.flowStepId;
-    const targetPosition=steps().indexOf(step)+1;
-    if(targetPosition===originalPosition){ cleanup(); return; }
-
-    step.classList.add('is-saving');
-    const body=new URLSearchParams({
-      csrf:list.dataset.csrf,
-      target_position:String(targetPosition)
-    });
-    try{
-      const response=await fetch(`${location.pathname.replace(/\/flows\/\d+.*$/,'')}/flows/${list.dataset.flowId}/step/${stepId}/move`,{
-        method:'POST',
-        headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-        body:body.toString()
-      });
-      if(!response.ok) throw new Error(`HTTP ${response.status}`);
-      window.location.hash=`flow-step-${stepId}`;
-      window.location.reload();
-    }catch(error){
-      window.alert('No se pudo mover el Step. Se restaurará el orden anterior.');
-      window.location.reload();
-    }
+  list.addEventListener('pointerup',(event)=>{
+    if(!drag || event.pointerId!==drag.pointerId) return;
+    drag.handle.releasePointerCapture?.(event.pointerId);
+    void saveDrag();
   });
-
-  list.addEventListener('dragend',()=>{
-    if(dragged && !dragged.classList.contains('is-saving')) restore();
-    cleanup();
-  });
+  list.addEventListener('pointercancel',(event)=>{if(drag && event.pointerId===drag.pointerId) cancelDrag();});
+  window.addEventListener('blur',cancelDrag);
 })();
 </script>
 {% endblock %}

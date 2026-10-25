@@ -5318,6 +5318,17 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
 
+    @app.post("/t/{target_key}/flows/{flow_id}/steps/remove")
+    def flow_steps_remove_bulk(request: Request, target_key: str, flow_id: int, step_ids: list[int] = Form([]), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            result = flow_tools.remove_steps_bulk(conn, int(flow_id), step_ids)
+        removed = len(result.get("removed") or [])
+        blocked = len(result.get("blocked") or [])
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}?bulk_removed={removed}&bulk_blocked={blocked}#flow-sequence", status_code=303)
+
     @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/move")
     def flow_step_move(request: Request, target_key: str, flow_id: int, step_id: int, target_position: int = Form(...), csrf: str = Form(...)):
         import negro_flows as flow_tools

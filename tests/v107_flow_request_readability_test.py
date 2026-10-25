@@ -22,5 +22,6 @@ def test_flow_steps_force_full_width_and_ellipsis_long_paths():
 
 def test_drag_handle_remains_the_drag_entrypoint():
     text = (ROOT / 'web/templates/flow_detail.html').read_text()
-    assert 'draggable="true" data-drag-handle' in text
-    assert "const handle=event.target.closest('[data-drag-handle]');" in text
+    assert 'data-drag-handle' in text
+    assert "event.target.closest?.('[data-drag-handle]')" in text
+    assert 'setPointerCapture' in text

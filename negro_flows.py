@@ -472,6 +472,35 @@ def remove_step(conn, flow_id: int, step_id: int) -> None:
     conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now_iso(), int(flow_id)))
 
 
+def remove_steps_bulk(conn, flow_id: int, step_ids) -> dict[str, object]:
+    """Remove several editable Steps without deleting captured HTTP evidence.
+
+    Steps that already participate in Runs or runtime bindings are preserved and
+    reported as blocked instead of aborting the entire cleanup operation.
+    """
+    init_schema(conn)
+    unique_ids = []
+    seen = set()
+    for raw in step_ids or []:
+        try:
+            sid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if sid > 0 and sid not in seen:
+            seen.add(sid)
+            unique_ids.append(sid)
+
+    removed = []
+    blocked = []
+    for sid in unique_ids:
+        try:
+            remove_step(conn, int(flow_id), sid)
+            removed.append(sid)
+        except ValueError as exc:
+            blocked.append({"step_id": sid, "reason": str(exc)})
+    return {"removed": removed, "blocked": blocked}
+
+
 def delete_flow(conn, flow_id: int) -> dict[str, int | str]:
     """Delete one Flow without deleting captured HTTP evidence.
 

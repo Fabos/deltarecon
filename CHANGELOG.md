@@ -1,3 +1,10 @@
+## v0.108.0 — Flow bulk cleanup + reliable reordering
+
+- Añade selección múltiple de Steps con **Seleccionar todo**, contador y **Quitar seleccionadas del Flow**. Las Requests HTTP originales nunca se borran.
+- La limpieza masiva conserva Steps que ya tengan Runs, variables o bindings y reporta cuántos quedaron bloqueados.
+- Sustituye el drag HTML5 por reordenamiento con **Pointer Events**, un handle más grande y captura del puntero para que el gesto sea consistente.
+- El orden se previsualiza mientras arrastras, se persiste sólo al soltar y se restaura automáticamente si falla el guardado.
+
 ## v0.107.0 — Flow request readability
 
 - Corrige Steps capturados que podían colapsar a ancho mínimo en Flow Detail.
