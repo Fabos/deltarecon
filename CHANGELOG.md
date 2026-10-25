@@ -1,3 +1,23 @@
+## v0.110.0 — Live Runs + Scenario runtime inheritance
+
+- Flow y Scenario muestran una timeline de ejecución en vivo mientras cada Step se procesa.
+- `Reproducir flujo` arranca el Run inmediatamente en background y la pantalla actualiza progreso sin esperar al final.
+- Los Scenarios heredan las Flow Variables, bindings y extractores del Flow base.
+- `MANUAL_INPUT` (OTP/códigos/valores humanos) pausa también un Scenario exactamente en el Step que lo consume.
+- Un Scenario pausado persiste contexto, cookies, valores extraídos y cursor; al ingresar el OTP continúa desde ese Step sin repetir lo anterior.
+- Los valores `PREVIOUS_RESPONSE` producidos por el Flow alimentan Steps posteriores del Scenario antes de aplicar las mutaciones específicas del experimento.
+- `Crear prueba` deja de estar escondido en un `<details>`: ahora es una tarjeta visible con nombre/pregunta y opciones avanzadas secundarias.
+- Los Steps del Scenario muestran explícitamente cuándo heredaron un input manual (`✋ Pide otp`).
+- Añade endpoints live JSON para Flow Runs y Scenario Runs usados por polling ligero de la UI.
+- Añade regresión `v110_live_scenario_runtime_test.py`; suite completa en verde.
+
+## v0.109.0 — Flow request parameter context
+
+- Los Steps del Flow muestran parámetros observados de query y body para distinguir llamadas repetidas al mismo endpoint.
+- La fila compacta enseña hasta 6 parámetros y permite desplegar el resto con `+N más`.
+- Los valores sensibles usan el `value_preview` ya enmascarado; Flow nunca renderiza `value_raw` en esta vista.
+- No se muestran headers/cookies en la tarjeta para mantener la historia del Flow legible; el HTTP completo sigue en **Ver HTTP**.
+
 ## v0.108.0 — Flow bulk cleanup + reliable reordering
 
 - Añade selección múltiple de Steps con **Seleccionar todo**, contador y **Quitar seleccionadas del Flow**. Las Requests HTTP originales nunca se borran.

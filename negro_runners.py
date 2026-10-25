@@ -176,6 +176,14 @@ def init_schema(conn) -> None:
     _safe_add_column("runner_runs", "target_flow_step_id", "INTEGER")
     _safe_add_column("runner_runs", "is_baseline", "INTEGER NOT NULL DEFAULT 0")
     _safe_add_column("runner_runs", "label", "TEXT")
+    # v0.110: Scenario Runs are resumable just like Flow reproductions.
+    # Runtime state is persisted so MANUAL_INPUT can pause the run without
+    # losing cookies/variables already produced by previous Steps.
+    _safe_add_column("runner_runs", "cursor_position", "INTEGER NOT NULL DEFAULT 0")
+    _safe_add_column("runner_runs", "runtime_context_json", "TEXT NOT NULL DEFAULT '{}'")
+    _safe_add_column("runner_runs", "waiting_variable_id", "INTEGER")
+    _safe_add_column("runner_runs", "waiting_prompt", "TEXT")
+    _safe_add_column("runner_runs", "waiting_sensitive", "INTEGER NOT NULL DEFAULT 0")
     # FastAPI can initialize Runner schema from more than one request/thread at
     # the same time.  SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
     # so two initializers can both observe a missing column and race.  Re-read
@@ -448,9 +456,10 @@ def get_runner(conn, runner_id: int) -> dict[str, Any] | None:
             fid=int(s["flow_step_id"])
             s["flow_inputs"]=runtime.get("step_inputs",{}).get(fid,[])
             s["flow_outputs"]=runtime.get("step_outputs",{}).get(fid,[])
+            s["manual_inputs"]=[x for x in s["flow_inputs"] if str(x.get("source_type") or "").upper()=="MANUAL_INPUT"]
     except Exception:
         for s in steps:
-            s["flow_inputs"]=[]; s["flow_outputs"]=[]
+            s["flow_inputs"]=[]; s["flow_outputs"]=[]; s["manual_inputs"]=[]
     source_flows=[dict(x) for x in conn.execute(
         """SELECT rfs.flow_id,rfs.sequence,f.name,f.description,
                   (SELECT COUNT(*) FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
@@ -918,6 +927,109 @@ def _run_context_snapshot(conn, runner: dict[str,Any], steps: list[dict[str,Any]
     }
 
 
+
+def _scenario_initial_context(conn, steps: list[dict[str,Any]]) -> dict[str,Any]:
+    """Seed a Scenario Run with the reusable runtime values from its source Flows."""
+    import negro_flow_runtime as flow_runtime
+    context: dict[str,Any] = {}
+    flow_ids=sorted({int(s.get("flow_id") or 0) for s in steps if int(s.get("flow_id") or 0)})
+    for flow_id in flow_ids:
+        for variable in flow_runtime._variables_for_flow(conn,flow_id):
+            name=str(variable.get("name") or "")
+            if not name or name in context:
+                continue
+            st=str(variable.get("source_type") or "CONSTANT").upper()
+            if st == "CONSTANT":
+                context[name]=str(variable.get("default_value") or "")
+            elif st == "GENERATED":
+                context[name]=flow_runtime._generated_value(str(variable.get("generated_type") or "token"))
+    return context
+
+
+def create_runner_run(conn, runner_id: int, *, hypothesis_id: int | None = None,
+                      target_flow_step_id: int | None = None) -> int:
+    """Create the durable Scenario Run before background execution starts.
+
+    Creating the row synchronously lets the UI render/poll the Run immediately,
+    and lets execution pause safely for MANUAL_INPUT without losing state.
+    """
+    data=get_runner(conn,int(runner_id))
+    if not data:
+        raise ValueError("Escenario no encontrado")
+    runner=data["runner"]; steps=data["steps"]
+    if hypothesis_id is None and runner.get("hypothesis_id"):
+        hypothesis_id=int(runner["hypothesis_id"])
+    if target_flow_step_id is None and runner.get("target_flow_step_id"):
+        target_flow_step_id=int(runner["target_flow_step_id"])
+    if hypothesis_id is not None:
+        linked=conn.execute("SELECT 1 FROM runner_hypotheses WHERE runner_id=? AND hypothesis_id=?",
+                            (int(runner_id),int(hypothesis_id))).fetchone()
+        if not linked:
+            raise ValueError("La Hipótesis seleccionada no está asociada a este Escenario")
+    if target_flow_step_id is not None and not any(int(s.get("flow_step_id") or 0)==int(target_flow_step_id) for s in steps):
+        raise ValueError("El Step objetivo no pertenece al Escenario")
+    planned=sum(0 if st["action"]=="omit" else (int(st["repeat_count"]) if st["action"]=="repeat" else 1) for st in steps)
+    cap=min(100,int(runner.get("max_requests") or 30))
+    if planned>cap:
+        raise ValueError(f"El Escenario intentaría {planned} Requests y su límite es {cap}. Ajusta repeticiones o el límite antes de ejecutar.")
+    now=now_iso()
+    context_snapshot=_run_context_snapshot(conn,runner,steps,hypothesis_id=hypothesis_id,target_flow_step_id=target_flow_step_id)
+    runtime_context=_scenario_initial_context(conn,steps)
+    cur=conn.execute("""INSERT INTO runner_runs(runner_id,identity_id,hypothesis_id,target_flow_step_id,context_snapshot_json,
+                        status,execution_class,counts_as_test,cursor_position,runtime_context_json,started_at,created_at,updated_at)
+                        VALUES(?,?,?,?,?,'queued','pending',0,0,?,?,?,?)""",
+                     (int(runner_id),runner.get("identity_id"),hypothesis_id,target_flow_step_id,
+                      json.dumps(context_snapshot,ensure_ascii=False),json.dumps(runtime_context,ensure_ascii=False),now,now,now))
+    return int(cur.lastrowid)
+
+
+def provide_runner_input(conn, runner_id: int, run_id: int, variable_id: int, value: str) -> None:
+    """Provide a Flow MANUAL_INPUT value to a paused Scenario Run."""
+    import negro_flow_runtime as flow_runtime
+    init_schema(conn); flow_runtime.init_schema(conn)
+    run=conn.execute("SELECT * FROM runner_runs WHERE id=? AND runner_id=?",(int(run_id),int(runner_id))).fetchone()
+    variable=conn.execute("SELECT * FROM flow_variables WHERE id=?",(int(variable_id),)).fetchone()
+    if not run or not variable:
+        raise ValueError("Input/Run inválido")
+    if str(variable["source_type"] or "").upper() != "MANUAL_INPUT":
+        raise ValueError("La variable no es un input manual")
+    valid=conn.execute("""SELECT 1 FROM runner_steps rs JOIN flow_steps fs ON fs.id=rs.flow_step_id
+                          WHERE rs.runner_id=? AND fs.flow_id=? LIMIT 1""",
+                       (int(runner_id),int(variable["flow_id"]))).fetchone()
+    if not valid:
+        raise ValueError("La variable no pertenece a un Flow de este Escenario")
+    context=_load_json(run["runtime_context_json"],{})
+    context[str(variable["name"])]=str(value)
+    conn.execute("""UPDATE runner_runs SET runtime_context_json=?,waiting_variable_id=NULL,waiting_prompt=NULL,
+                    waiting_sensitive=0,status='queued',execution_class='pending',updated_at=? WHERE id=?""",
+                 (json.dumps(context,ensure_ascii=False),now_iso(),int(run_id)))
+
+
+def scenario_live_data(conn, runner_id: int, run_id: int) -> dict[str,Any]:
+    data=get_runner_run(conn,int(run_id))
+    if not data or int(data["run"].get("runner_id") or 0) != int(runner_id):
+        raise ValueError("Run no pertenece a este Escenario")
+    run=data["run"]
+    return {
+        "run": {
+            "id": int(run["id"]), "status": str(run.get("status") or ""),
+            "execution_class": str(run.get("execution_class") or "pending"),
+            "cursor_position": int(run.get("cursor_position") or 0),
+            "waiting_variable_id": run.get("waiting_variable_id"),
+            "waiting_prompt": run.get("waiting_prompt") or "",
+            "waiting_sensitive": bool(run.get("waiting_sensitive")),
+            "error": run.get("error") or "",
+        },
+        "attempts": [{
+            "id": int(a["id"]), "position": int(a.get("position") or 0),
+            "method": a.get("method") or a.get("flow_method") or "",
+            "path": urllib.parse.urlsplit(str(a.get("url") or "")).path or a.get("flow_path") or "",
+            "status_code": a.get("status_code"), "elapsed_ms": a.get("elapsed_ms"),
+            "execution_class": a.get("execution_class") or "pending", "error": a.get("error") or "",
+            "repeat_index": int(a.get("repeat_index") or 1),
+        } for a in data.get("attempts",[])],
+    }
+
 def get_runner_run(conn, run_id: int) -> dict[str,Any] | None:
     init_schema(conn)
     row=conn.execute(
@@ -930,6 +1042,16 @@ def get_runner_run(conn, run_id: int) -> dict[str,Any] | None:
     run=dict(row)
     run["summary"]=_load_json(run.get("summary_json"),{})
     run["context"]=_load_json(run.get("context_snapshot_json"),{})
+    run["runtime_context"]=_load_json(run.get("runtime_context_json"),{})
+    if run.get("waiting_variable_id"):
+        try:
+            v=conn.execute("SELECT name,prompt,sensitive FROM flow_variables WHERE id=?",(int(run["waiting_variable_id"]),)).fetchone()
+            if v:
+                run["waiting_variable_name"]=str(v["name"] or "")
+                run["waiting_prompt"]=run.get("waiting_prompt") or str(v["prompt"] or v["name"] or "Input requerido")
+                run["waiting_sensitive"]=bool(run.get("waiting_sensitive") or v["sensitive"])
+        except Exception:
+            pass
     attempts=[]
     for ar in conn.execute(
         """SELECT rrr.*,rs.position,rs.flow_step_id,rs.alias_label,rs.role_label_override,fs.label flow_label,fs.role_label,fs.checkpoint_label,o.method flow_method,r.path flow_path,ii.name identity_name
@@ -1356,7 +1478,7 @@ def _postprocess_exchange(conn, exchange_id: int, resource_id: int, host_id: int
 
 
 def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis_id: int | None = None,
-                   target_flow_step_id: int | None = None) -> dict[str,Any]:
+                   target_flow_step_id: int | None = None, run_id: int | None = None) -> dict[str,Any]:
     """Execute a bounded investigation Runner.
 
     v0.41 prefers the existing Negro Burp Bridge as transport. This makes replay
@@ -1373,34 +1495,38 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
     import negro_core as core
     import negro_flows as flow_tools
 
+    import negro_flow_runtime as flow_runtime
+
     cfg=transport_settings()
     with core.db_connect(paths) as conn:
         data=get_runner(conn,int(runner_id))
-        if not data: raise ValueError("Runner no encontrado")
+        if not data: raise ValueError("Escenario no encontrado")
         runner=data["runner"]; steps=data["steps"]
+        if run_id is None:
+            run_id=create_runner_run(conn,int(runner_id),hypothesis_id=hypothesis_id,target_flow_step_id=target_flow_step_id)
+        run_row=conn.execute("SELECT * FROM runner_runs WHERE id=? AND runner_id=?",(int(run_id),int(runner_id))).fetchone()
+        if not run_row:
+            raise ValueError("Run no pertenece a este Escenario")
+        run_state=dict(run_row)
+        if str(run_state.get("status") or "") in {"completed","failed","aborted"}:
+            existing=get_runner_run(conn,int(run_id))
+            return {"run_id":int(run_id),"runner_id":int(runner_id),"status":str(run_state.get("status") or ""),"existing":existing}
+        if hypothesis_id is None and run_state.get("hypothesis_id"):
+            hypothesis_id=int(run_state["hypothesis_id"])
+        if target_flow_step_id is None and run_state.get("target_flow_step_id"):
+            target_flow_step_id=int(run_state["target_flow_step_id"])
         if hypothesis_id is None and runner.get("hypothesis_id"):
             hypothesis_id=int(runner["hypothesis_id"])
         if target_flow_step_id is None and runner.get("target_flow_step_id"):
             target_flow_step_id=int(runner["target_flow_step_id"])
-        if hypothesis_id is not None:
-            linked=conn.execute("SELECT 1 FROM runner_hypotheses WHERE runner_id=? AND hypothesis_id=?",
-                                (int(runner_id),int(hypothesis_id))).fetchone()
-            if not linked:
-                raise ValueError("La Hipótesis seleccionada no está asociada a este Runner")
-        if target_flow_step_id is not None and not any(int(s.get("flow_step_id") or 0)==int(target_flow_step_id) for s in steps):
-            raise ValueError("El Step objetivo no pertenece al Runner")
         planned=sum(0 if st["action"]=="omit" else (int(st["repeat_count"]) if st["action"]=="repeat" else 1) for st in steps)
         cap=min(100,int(runner.get("max_requests") or 30))
         if planned>cap:
-            raise ValueError(f"El Runner intentaría {planned} Requests y su límite es {cap}. Ajusta repeticiones o el límite antes de ejecutar.")
-        now=now_iso()
-        context_snapshot=_run_context_snapshot(conn,runner,steps,hypothesis_id=hypothesis_id,target_flow_step_id=target_flow_step_id)
-        cur=conn.execute("""INSERT INTO runner_runs(runner_id,identity_id,hypothesis_id,target_flow_step_id,context_snapshot_json,
-                            status,execution_class,counts_as_test,started_at,created_at,updated_at)
-                            VALUES(?,?,?,?,?,'running','pending',0,?,?,?)""",
-                         (int(runner_id),runner.get("identity_id"),hypothesis_id,target_flow_step_id,
-                          json.dumps(context_snapshot,ensure_ascii=False),now,now,now))
-        run_id=int(cur.lastrowid)
+            raise ValueError(f"El Escenario intentaría {planned} Requests y su límite es {cap}. Ajusta repeticiones o el límite antes de ejecutar.")
+        runtime_context=_load_json(run_state.get("runtime_context_json"),{})
+        cursor_position=int(run_state.get("cursor_position") or 0)
+        conn.execute("""UPDATE runner_runs SET status='running',waiting_variable_id=NULL,waiting_prompt=NULL,waiting_sensitive=0,
+                        execution_class='pending',updated_at=? WHERE id=?""",(now_iso(),int(run_id)))
 
     # Even Burp-transport Runs use an isolated cookie jar so Set-Cookie rotations
     # can be carried into later Flow steps without mutating browser/Burp state.
@@ -1408,13 +1534,19 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
     session.trust_env=False
     if cfg["mode"] != "burp_bridge":
         session=_build_session(cfg)
-    extracted: dict[int,dict[str,str]]={}
+    cookiejar=runtime_context.get("__cookiejar") if isinstance(runtime_context.get("__cookiejar"),dict) else {}
+    for ck,cv in cookiejar.items():
+        session.cookies.set(str(ck),str(cv))
+    extracted_raw=runtime_context.get("__runner_extracted") if isinstance(runtime_context.get("__runner_extracted"),dict) else {}
+    extracted: dict[int,dict[str,str]]={int(k):dict(v) for k,v in extracted_raw.items() if str(k).isdigit() and isinstance(v,dict)}
     request_count=0; statuses=[]; errors=[]; exchange_ids=[]; execution_classes=[]
-    first_cookie_seed=True; result_flow_id=None; stop_after_transport_error=False
+    first_cookie_seed=not bool(cookiejar); result_flow_id=run_state.get("result_flow_id"); stop_after_transport_error=False
     try:
         for step in steps:
             if stop_after_transport_error:
                 break
+            if int(step.get("position") or 0) <= cursor_position:
+                continue
             if step["action"]=="omit":
                 continue
             repeats=int(step["repeat_count"] or 1) if step["action"]=="repeat" else 1
@@ -1423,10 +1555,55 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                 if stop_after_transport_error:
                     break
                 with core.db_connect(paths) as conn:
-                    effective_identity_id=step.get("identity_id") or runner.get("identity_id")
-                    raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),effective_identity_id)
-                    vars_for_step=[dict(v) for v in conn.execute("SELECT * FROM runner_variables WHERE target_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall()]
+                    source_flow=conn.execute("SELECT identity_id FROM flows WHERE id=?",(int(step.get("flow_id") or runner["flow_id"]),)).fetchone()
+                    effective_identity_id=step.get("identity_id") or runner.get("identity_id") or (source_flow["identity_id"] if source_flow else None)
+                    flow_bindings=flow_runtime._bindings_for_step(conn,int(step["flow_step_id"]))
+                    # When a Flow defines runtime bindings, start from the captured raw request so
+                    # those bindings remain authoritative (the same semantics as Reproducir Flow).
+                    # Without bindings, preserve the Scenario's existing full Identity rewrite.
+                    raw,base_url=_decode_raw_request(conn,int(step["exchange_id"]),None if flow_bindings else effective_identity_id)
                     resolved_for_request=[]
+                    for binding in flow_bindings:
+                        variable_row=conn.execute("SELECT * FROM flow_variables WHERE id=?",(int(binding["variable_id"]),)).fetchone()
+                        variable=dict(variable_row) if variable_row else None
+                        if not variable:
+                            continue
+                        value=flow_runtime._resolve_variable(conn,variable,runtime_context,default_identity_id=effective_identity_id)
+                        if value is None and int(variable.get("required") or 0):
+                            if str(variable.get("source_type") or "").upper()=="MANUAL_INPUT":
+                                conn.execute("""UPDATE runner_runs SET status='waiting_input',waiting_variable_id=?,waiting_prompt=?,waiting_sensitive=?,
+                                                runtime_context_json=?,cursor_position=?,execution_class='pending',updated_at=? WHERE id=?""",
+                                             (int(variable["id"]),str(variable.get("prompt") or variable.get("name") or "Input requerido"),
+                                              1 if int(variable.get("sensitive") or 0) else 0,json.dumps(runtime_context,ensure_ascii=False),
+                                              int(cursor_position),now_iso(),int(run_id)))
+                                return {"run_id":int(run_id),"runner_id":int(runner_id),"status":"waiting_input",
+                                        "waiting_variable_id":int(variable["id"]),"waiting_prompt":str(variable.get("prompt") or variable.get("name") or "Input requerido")}
+                            raise ValueError(f"Falta variable {variable.get('name')} del Flow; source={variable.get('source_type')}")
+                        if value is None:
+                            value=""
+                        replacement=str(value)
+                        if str(binding.get("target_name") or "").lower()=="authorization":
+                            old_value=str(binding.get("target_value") or "")
+                            old_bearer=old_value.lower().startswith("bearer ")
+                            new_bearer=replacement.lower().startswith("bearer ")
+                            if old_bearer and not new_bearer:
+                                replacement="Bearer "+replacement
+                            elif new_bearer and not old_bearer:
+                                replacement=replacement.split(" ",1)[1]
+                        raw=_replace_value(raw,str(binding.get("target_value") or ""),replacement)
+                        resolved_for_request.append({"name":str(variable.get("name") or binding.get("target_name") or ""),
+                                                     "mode":f"flow:{str(variable.get('source_type') or '').lower()}",
+                                                     "value_preview":flow_runtime._mask(str(value)) if int(variable.get("sensitive") or 0) else _value_preview(str(variable.get("name") or ""),value),
+                                                     "source_runner_step_id":None})
+                    explicit_auth_binding=any(str(b.get("target_name") or "").lower()=="authorization" for b in flow_bindings)
+                    if flow_bindings and effective_identity_id and not explicit_auth_binding:
+                        identity_auth=flow_runtime._resolve_identity_value(conn,int(effective_identity_id),"auth:Authorization")
+                        if identity_auth:
+                            raw=re.sub(r"(?im)^(Authorization\s*:\s*)[^\r\n]*$",lambda m:m.group(1)+str(identity_auth),raw)
+
+                    # Scenario-local variables are applied after the inherited Flow runtime.
+                    # They are the explicit experiment mutation and therefore win on conflict.
+                    vars_for_step=[dict(v) for v in conn.execute("SELECT * FROM runner_variables WHERE target_runner_step_id=? ORDER BY id",(int(step["id"]),)).fetchall()]
                     for var in vars_for_step:
                         mode=str(var["mode"]); new_value=None
                         if mode=="values":
@@ -1524,7 +1701,7 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                     statuses.append(status)
                     actual_headers=dict(raw_headers)
                     result=core.upsert_http_observation(paths,domain,url=url,method=method,source="negro_runner",status_code=status,
-                        authenticated=bool(runner.get("identity_id")),request_content_type=next((v for k,v in actual_headers.items() if k.lower()=="content-type"),None),
+                        authenticated=bool(effective_identity_id),request_content_type=next((v for k,v in actual_headers.items() if k.lower()=="content-type"),None),
                         response_content_type=_header_value(response_headers,"Content-Type"),tool="RUNNER",request_b64=canonical_request_b64,response_b64=response_b64,
                         request_headers=_headers_list(actual_headers),response_headers=response_headers,query=dict(urllib.parse.parse_qsl(request_line.query,keep_blank_values=True)),
                         response_body_b64=response_body_b64)
@@ -1557,6 +1734,23 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                                         extracted_for_request.append({"name":str(v.get("source_name") or f"regex:{int(v['id'])}"),"mode":"response_regex",
                                                                       "value_preview":_value_preview(str(v.get("source_name") or "regex"),val)})
                                 except re.error: pass
+                        # Inherit Flow outputs as well: a Scenario is a mutation of the
+                        # Flow, not a second runtime. Values produced by an earlier Flow
+                        # Step (JWT, challengeId, orderId...) feed later Scenario Steps.
+                        for fv_row in conn.execute("SELECT * FROM flow_variables WHERE producer_step_id=? ORDER BY id",(int(step["flow_step_id"]),)).fetchall():
+                            fv=dict(fv_row)
+                            if str(fv.get("source_type") or "").upper() != "PREVIOUS_RESPONSE":
+                                continue
+                            val=flow_runtime._extract_value(str(fv.get("extraction_type") or "json"),str(fv.get("extraction_expr") or ""),response_text,response_headers)
+                            if val is not None:
+                                runtime_context[str(fv["name"])]=val
+                                extracted_for_request.append({"name":str(fv["name"]),"mode":"flow:previous_response",
+                                                              "value_preview":flow_runtime._mask(val) if int(fv.get("sensitive") or 0) else _value_preview(str(fv["name"]),val)})
+                            elif int(fv.get("required") or 0):
+                                error=f"No se pudo extraer {fv.get('name')} del Flow ({fv.get('extraction_type')}:{fv.get('extraction_expr')})"
+                                errors.append(error); exec_class="runner_error"; execution_classes[-1]="runner_error"; stop_after_transport_error=True
+                        runtime_context["__runner_extracted"]={str(k):v for k,v in extracted.items()}
+                        runtime_context["__cookiejar"]={c.name:c.value for c in session.cookies}
                 else:
                     if status is not None and not error:
                         error=transport_detail.get("reason") or f"HTTP {status} clasificado como {exec_class}"
@@ -1575,7 +1769,21 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                         (run_id,int(step["id"]),rep_idx,exid,status,elapsed,error,exec_class,method,url,canonical_request_b64,response_b64,
                          json.dumps(transport_detail,ensure_ascii=False),json.dumps(resolved_for_request,ensure_ascii=False),
                          json.dumps(extracted_for_request,ensure_ascii=False),effective_identity_id,now_iso()))
+                    runtime_context["__runner_extracted"]={str(k):v for k,v in extracted.items()}
+                    runtime_context["__cookiejar"]={c.name:c.value for c in session.cookies}
+                    if rep_idx==repeats and not error and exec_class=="application_response":
+                        cursor_position=int(step.get("position") or cursor_position)
+                    conn.execute("""UPDATE runner_runs SET cursor_position=?,runtime_context_json=?,updated_at=? WHERE id=?""",
+                                 (int(cursor_position),json.dumps(runtime_context,ensure_ascii=False),now_iso(),int(run_id)))
 
+        # Summarize the durable Run, not only the current resume segment.
+        with core.db_connect(paths) as conn:
+            persisted=[dict(x) for x in conn.execute("SELECT * FROM runner_run_requests WHERE run_id=? ORDER BY id",(int(run_id),)).fetchall()]
+        request_count=len(persisted)
+        statuses=[int(x["status_code"]) for x in persisted if x.get("status_code") is not None]
+        execution_classes=[str(x.get("execution_class") or "runner_error") for x in persisted]
+        exchange_ids=[int(x["exchange_id"]) for x in persisted if x.get("exchange_id") is not None]
+        errors=[str(x.get("error") or "") for x in persisted if x.get("error")]
         app_count=sum(1 for c in execution_classes if c=="application_response")
         failure_classes=[c for c in execution_classes if c!="application_response"]
         if request_count and not failure_classes and app_count==request_count and request_count==planned:
@@ -1598,8 +1806,11 @@ def execute_runner(paths: dict[str,Any], domain: str, runner_id: int, hypothesis
                      "statuses":statuses,"errors":len(errors),"signals":sig_count,"exchange_ids":exchange_ids[:100],
                      "execution_class":run_class,"counts_as_test":bool(counts_as_test),"transport":cfg,
                      "stopped_early":bool(stop_after_transport_error and request_count < planned)}
-            conn.execute("""UPDATE runner_runs SET status='completed',execution_class=?,counts_as_test=?,summary_json=?,finished_at=?,updated_at=? WHERE id=?""",
-                         (run_class,counts_as_test,json.dumps(summary,ensure_ascii=False),now_iso(),now_iso(),run_id))
+            conn.execute("""UPDATE runner_runs SET status='completed',execution_class=?,counts_as_test=?,summary_json=?,
+                            runtime_context_json=?,cursor_position=?,waiting_variable_id=NULL,waiting_prompt=NULL,waiting_sensitive=0,
+                            finished_at=?,updated_at=? WHERE id=?""",
+                         (run_class,counts_as_test,json.dumps(summary,ensure_ascii=False),json.dumps(runtime_context,ensure_ascii=False),
+                          int(cursor_position),now_iso(),now_iso(),run_id))
             conn.execute("UPDATE runners SET status='ready',updated_at=? WHERE id=?",(now_iso(),int(runner_id)))
         return {"run_id":run_id,"runner_id":int(runner_id),"result_flow_id":result_flow_id,**summary}
     except Exception as exc:

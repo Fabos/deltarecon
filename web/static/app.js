@@ -777,3 +777,70 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   });
   apply();
 })();
+
+// v0.110 · live Flow/Scenario execution timeline.
+(()=>{
+  const root=document.querySelector('[data-scenario-live],[data-flow-live]');
+  if(!root) return;
+  const url=root.dataset.liveUrl;
+  const initialStatus=String(root.dataset.runStatus||'');
+  const total=Math.max(0,Number(root.dataset.liveTotal||0));
+  const stepsRoot=root.querySelector('[data-live-steps]');
+  const count=root.querySelector('[data-live-count]');
+  const progress=root.querySelector('[data-live-progress]');
+  const badge=root.querySelector('[data-live-status-badge]');
+  const title=root.querySelector('[data-live-title]');
+  const escLive=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const labels={queued:'Preparando…',running:'Ejecutando…',waiting_input:'Esperando input',waiting_prerequisite:'Esperando requisito',completed:'Completado',failed:'Falló',aborted:'Abortado'};
+  let stopped=false;
+  const render=(data)=>{
+    const run=data.run||{};
+    const items=Array.isArray(data.attempts)?data.attempts:(Array.isArray(data.steps)?data.steps:[]);
+    const status=String(run.status||'');
+    if(count) count.textContent=String(items.length);
+    if(progress) progress.style.width=`${total?Math.min(100,(items.length/total)*100):0}%`;
+    if(badge){badge.textContent=labels[status]||status;badge.className=`badge run-state state-${escLive(status)}`;}
+    if(title){
+      if(status==='waiting_input') title.textContent='Esperando tu input';
+      else if(status==='completed') title.textContent=root.hasAttribute('data-scenario-live')?'Prueba terminada':'Reproducción terminada';
+      else if(status==='failed') title.textContent='Run detenido';
+      else title.textContent=root.hasAttribute('data-scenario-live')?'Ejecutando prueba…':'Ejecutando Flow…';
+    }
+    if(stepsRoot){
+      const html=items.map((s,idx)=>{
+        const pos=Number(s.position||idx+1);
+        const method=escLive(s.method||'');
+        const path=escLive(s.path||'');
+        const code=s.status_code==null?'…':`HTTP ${escLive(s.status_code)}`;
+        const elapsed=s.elapsed_ms==null?'':`${escLive(s.elapsed_ms)} ms`;
+        const err=s.error?`<small class="error">${escLive(s.error)}</small>`:'';
+        return `<div class="live-run-step ${s.error?'has-error':''}"><span class="live-step-number">${pos}</span><b>${method} <code title="${path}">${path}</code></b><span class="badge">${code}</span><small>${elapsed}</small>${err}</div>`;
+      }).join('');
+      const next=(status==='running'||status==='queued') && items.length<total?`<div class="live-run-step is-running"><span class="live-step-number">${items.length+1}</span><b>Ejecutando siguiente Step…</b><span class="spinner-dot">●</span></div>`:'';
+      stepsRoot.innerHTML=html+next || '<div class="live-run-empty">Preparando ejecución…</div>';
+    }
+    // A server-rendered refresh is needed to expose the secure input form and,
+    // once done, the complete evidence/history. Do it only when the page was
+    // loaded in a different state so terminal pages do not reload forever.
+    if(status==='waiting_input' && initialStatus!=='waiting_input'){
+      stopped=true; window.setTimeout(()=>window.location.reload(),250); return;
+    }
+    if(['completed','failed','aborted'].includes(status)){
+      stopped=true;
+      if(initialStatus!==status) window.setTimeout(()=>window.location.reload(),500);
+    }
+  };
+  const poll=async()=>{
+    if(stopped||!url) return;
+    try{
+      const res=await fetch(url,{headers:{Accept:'application/json'},cache:'no-store'});
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      render(await res.json());
+    }catch(err){
+      const empty=root.querySelector('[data-live-empty]');
+      if(empty) empty.textContent=`No pude actualizar el Run: ${err.message}`;
+    }
+    if(!stopped) window.setTimeout(poll,650);
+  };
+  if(!['completed','failed','aborted','waiting_input'].includes(initialStatus)) poll();
+})();

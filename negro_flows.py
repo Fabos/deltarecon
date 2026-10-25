@@ -628,6 +628,53 @@ def _business_observations(conn, exchange_id: int, *, limit: int = 30) -> list[d
     return out
 
 
+def _request_parameter_observations(conn, exchange_id: int, *, limit: int = 80) -> list[dict[str, Any]]:
+    """Compact request-only parameters for Flow cards.
+
+    Flow must let a hunter distinguish repeated calls to the same endpoint
+    without opening the full HTTP message.  Parameter observations already
+    carry a masked preview for sensitive values, so never use value_raw here.
+    """
+    rows = [dict(r) for r in conn.execute(
+        """SELECT p.id,p.name,p.normalized_name,p.location,p.value_preview
+             FROM parameter_observations p
+             WHERE p.exchange_id=?
+               AND (p.location='query' OR p.location='form' OR p.location='multipart' OR p.location LIKE 'json:%')
+             ORDER BY CASE
+                        WHEN p.location='query' THEN 0
+                        WHEN p.location LIKE 'json:%' THEN 1
+                        WHEN p.location='form' THEN 2
+                        ELSE 3
+                      END, p.id""",
+        (int(exchange_id),),
+    ).fetchall()]
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or row.get("normalized_name") or "").strip()
+        if not name:
+            continue
+        value = str(row.get("value_preview") or "")
+        location = str(row.get("location") or "")
+        key = (name.lower(), value, location)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "name": name[:120],
+            "value": value[:180],
+            "location": location[:120],
+            "kind": "query" if location == "query" else ("body" if location.startswith("json:") else location),
+            "important": any(h in str(row.get("normalized_name") or "").lower() for h in BUSINESS_VALUE_HINTS),
+        })
+        if len(out) >= max(1, int(limit)):
+            break
+    # Keep URL/query values first, then business identifiers/state/amounts, then
+    # the remaining body fields. Stable id order is preserved within a group.
+    out.sort(key=lambda x: (0 if x["kind"] == "query" else 1, 0 if x["important"] else 1))
+    return out
+
+
 def _step_row(conn, step_row) -> dict[str, Any]:
     row = conn.execute(
         """SELECT fs.*,e.status_code,e.first_seen_at,o.method,o.resource_id,r.path,h.hostname,
@@ -645,6 +692,7 @@ def _step_row(conn, step_row) -> dict[str, Any]:
     item = dict(row)
     item["signature"] = _signature(item)
     item["business_values"] = _business_observations(conn, int(item["exchange_id"]))
+    item["request_parameters"] = _request_parameter_observations(conn, int(item["exchange_id"]))
     item["state_values"] = [x for x in item["business_values"] if x.get("is_state")]
     item["identifier_values"] = [x for x in item["business_values"] if x.get("is_identifier")]
     return item

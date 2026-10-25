@@ -63,17 +63,19 @@
   <span><b>Run</b><small>qué ocurrió al ejecutar</small></span>
 </section>
 
-<details class="panel scenario-create-card" id="create-scenario">
-  <summary><span><b>Crear prueba (Escenario)</b><small>Parte de este Flow y cambia sólo lo necesario para responder una pregunta.</small></span><span>＋</span></summary>
-  <form class="scenario-create-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post">
+<section class="panel scenario-create-card scenario-create-visible" id="create-scenario">
+  <div class="panel-head scenario-create-head">
+    <div><p class="eyebrow">NUEVA PRUEBA</p><h2>¿Qué quieres probar sobre este Flow?</h2><p class="muted small">Negro copia la secuencia como Escenario. El Flow original no cambia; después modificas sólo el Step que te interesa.</p></div>
+    <span class="badge">Flow → Escenario</span>
+  </div>
+  <form class="scenario-create-form scenario-create-fast" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <label><span>Nombre</span><input name="alias" required placeholder="Vendedor B acepta Order de A"></label>
-    <label class="grow"><span>Qué quieres probar <small>(opcional)</small></span><input name="description" placeholder="Una frase que explique el escenario"></label>
-    <label><span>Identity normal <small>(opcional)</small></span><select name="identity_id"><option value="">Heredar del Flow</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-    <label><span>Hypothesis <small>(opcional)</small></span><select name="hypothesis_id"><option value="">Sin Hypothesis</option>{% for h in hypotheses %}<option value="{{ h.id }}">#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select></label>
-    <button class="button" type="submit">Crear prueba</button>
+    <label class="scenario-name-field"><span>Nombre de la prueba</span><input id="scenario-name" name="alias" required placeholder="Ej. Emitir ticket sin pago / User B consulta Order A"></label>
+    <label class="grow"><span>Pregunta <small>(opcional)</small></span><input name="description" placeholder="¿Qué comportamiento quieres comprobar?"></label>
+    <button class="button" type="submit">+ Crear escenario</button>
+    <details class="scenario-create-options"><summary>Opciones</summary><div class="form-row"><label><span>Identity normal</span><select name="identity_id"><option value="">Heredar del Flow</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label><label><span>Hypothesis</span><select name="hypothesis_id"><option value="">Sin Hypothesis</option>{% for h in hypotheses %}<option value="{{ h.id }}">#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select></label></div></details>
   </form>
-</details>
+</section>
 
 {% if flow_runners %}
 <section class="flow-scenarios-strip">
@@ -135,6 +137,15 @@
               <span class="flow-status {% if s.status_code and s.status_code >= 200 and s.status_code < 300 %}is-ok{% elif s.status_code and s.status_code >= 400 %}is-error{% endif %}">{{ s.status_code or '—' }}</span>
               <span class="flow-request-id">Request #{{ s.exchange_id }}</span>
             </div>
+            {% if s.request_parameters %}
+            <div class="flow-request-params" aria-label="Parámetros observados en la Request">
+              <span class="flow-param-label">PARÁMETROS</span>
+              {% for p in s.request_parameters[:6] %}<span class="flow-param-chip kind-{{ p.kind }}" title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>=<code>{{ p.value }}</code></span>{% endfor %}
+              {% if s.request_parameters|length > 6 %}
+              <details class="flow-param-more"><summary>+{{ s.request_parameters|length - 6 }} más</summary><div class="flow-param-popover">{% for p in s.request_parameters[6:] %}<span class="flow-param-chip kind-{{ p.kind }}" title="{{ p.location }}"><b>{{ p.name }}</b>=<code>{{ p.value }}</code></span>{% endfor %}</div></details>
+              {% endif %}
+            </div>
+            {% endif %}
             {% if s.notes %}<p class="human-step-note" title="{{ s.notes }}">{{ s.notes }}</p>{% endif %}
             {% if s.hostname %}<small class="flow-host">{{ s.hostname }}</small>{% endif %}
           </div>

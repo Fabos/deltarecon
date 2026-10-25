@@ -18,6 +18,11 @@ Runner     = motor interno
 Run        = qué ocurrió al ejecutar
 ```
 
+## Live Runs y runtime compartido Flow → Scenario
+
+Un Scenario es una variante del Flow, por lo que reutiliza sus variables dinámicas. Si el Flow pide un OTP, extrae un JWT o encadena un identificador desde una respuesta anterior, el Scenario conserva ese comportamiento y aplica después sus cambios experimentales. Flow Runs y Scenario Runs muestran el progreso Step a Step y pueden pausar/reanudar inputs manuales sin reiniciar la secuencia.
+
+
 ## v0.103 · Flow directo: agregar, arrastrar y limpiar
 
 Flow prioriza ahora la historia del proceso sobre la configuración. Para editar una secuencia: **agrega una Request → arrastra el Step → listo**. El movimiento conserva el `flow_step_id`, así que no recrea Steps ni rompe referencias existentes. `Mover por número` queda como fallback dentro de `⋯`.
@@ -54,6 +59,7 @@ Después de `DNS / IP histórico`, Negro puede convertir evidencia de red en una
 ### UX principal
 
 - **Flow** responde sólo “¿cómo funciona este proceso?”: secuencia limpia, alias/rol/nota, `USA / PRODUCE`, `Ver HTTP` y menú `⋯`.
+- Los Steps de Flow muestran contexto compacto de parámetros de request (query/body) para distinguir llamadas al mismo endpoint sin abrir el HTTP completo.
 - La captura/edición de evidencia, variables manuales, IA, mapa, comparaciones y demás herramientas quedan colapsadas o dentro de menús secundarios.
 - La acción de seguir IDs como Objects desaparece del Flow: Objects sigue viviendo en su módulo y en HTTP Inspector.
 - **Escenario** es el nombre visible de Runner. Un Escenario puede usar uno o varios Flows sin copiar físicamente esos Flows.

@@ -4778,8 +4778,12 @@ def create_app(default_domain: str, default_workspace: Path):
     def flow_runtime_run_start(target_key: str, flow_id: int, csrf: str = Form(...)):
         import negro_flow_runtime as rt
         verify_csrf(csrf); domain,_,paths=_target_context(target_key)
-        with _db(paths) as conn: run_id=rt.create_run(conn,int(flow_id))
-        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+        with _db(paths) as conn:
+            run_id=rt.create_run(conn,int(flow_id))
+            flow=conn.execute("SELECT name FROM flows WHERE id=?",(int(flow_id),)).fetchone()
+            flow_name=str(flow["name"] if flow else f"Flow #{flow_id}")
+        job_id=_start_job(f"Reproducir Flow · {flow_name}",target_key,rt.advance_run,paths,domain,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}?job={job_id}#live-run",status_code=303)
 
     @app.get("/t/{target_key}/flow-runs/{run_id}", response_class=HTMLResponse)
     def flow_runtime_run_page(request: Request, target_key: str, run_id: int):
@@ -4803,16 +4807,36 @@ def create_app(default_domain: str, default_workspace: Path):
     def flow_runtime_run_continue(target_key: str, run_id: int, csrf: str = Form(...)):
         import negro_flow_runtime as rt
         verify_csrf(csrf); domain,_,paths=_target_context(target_key)
-        rt.advance_run(paths,domain,int(run_id))
-        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+        job_id=_start_job(f"Continuar Flow Run #{run_id}",target_key,rt.advance_run,paths,domain,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}?job={job_id}#live-run",status_code=303)
 
     @app.post("/t/{target_key}/flow-runs/{run_id}/input")
     def flow_runtime_run_input(target_key: str, run_id: int, variable_id: int = Form(...), value: str = Form(...), csrf: str = Form(...)):
         import negro_flow_runtime as rt
         verify_csrf(csrf); domain,_,paths=_target_context(target_key)
         with _db(paths) as conn: rt.provide_input(conn,int(run_id),int(variable_id),value)
-        rt.advance_run(paths,domain,int(run_id))
-        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}",status_code=303)
+        job_id=_start_job(f"Continuar Flow Run #{run_id}",target_key,rt.advance_run,paths,domain,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/flow-runs/{run_id}?job={job_id}#live-run",status_code=303)
+
+    @app.get("/api/t/{target_key}/flow-runs/{run_id}/live", response_class=JSONResponse)
+    def flow_runtime_run_live(target_key: str, run_id: int):
+        import negro_flow_runtime as rt
+        _,_,paths=_target_context(target_key)
+        data=rt.get_run_by_paths(paths,int(run_id))
+        run=data.get("run") or {}
+        if str(run.get("status") or "") == "missing":
+            raise HTTPException(status_code=404,detail="Run no encontrado")
+        return {
+            "run": {"id":int(run.get("id") or run_id),"status":run.get("status") or "",
+                    "cursor_position":int(run.get("cursor_position") or 0),
+                    "waiting_variable_id":run.get("waiting_variable_id"),
+                    "waiting_prompt":run.get("waiting_prompt") or run.get("waiting_variable_name") or "",
+                    "error":run.get("error") or ""},
+            "steps": [{"position":int(st.get("position") or 0),"method":st.get("method") or "",
+                       "path":st.get("path") or "","status":st.get("status") or "",
+                       "status_code":st.get("status_code"),"elapsed_ms":st.get("elapsed_ms"),
+                       "error":st.get("error") or ""} for st in data.get("steps",[])]
+        }
 
     @app.post("/t/{target_key}/flows/{flow_id}/runtime/default-identity")
     def flow_runtime_default_identity(target_key: str, flow_id: int, identity_id: str = Form(""), csrf: str = Form(...)):
@@ -4848,7 +4872,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return render(request, "runners.html", target_key, domain, workspace, runners=runners)
 
     @app.get("/t/{target_key}/runners/{runner_id}", response_class=HTMLResponse)
-    def runner_detail_page(request: Request, target_key: str, runner_id: int, job: str = ""):
+    def runner_detail_page(request: Request, target_key: str, runner_id: int, job: str = "", run: str = ""):
         import negro_runners as runner_tools
         import negro_identity as identity_tools
         domain, workspace, paths = _target_context(target_key)
@@ -4860,6 +4884,9 @@ def create_app(default_domain: str, default_workspace: Path):
             hypotheses=[dict(x) for x in conn.execute("SELECT id,title,status FROM leads_v2 ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()]
             source_ids={int(x.get("flow_id") or 0) for x in data.get("source_flows",[])}
             available_flows=[dict(x) for x in conn.execute("SELECT id,name,description FROM flows ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall() if int(x["id"]) not in source_ids]
+            live_run=runner_tools.get_runner_run(conn,int(run)) if str(run).isdigit() else None
+            if live_run and int(live_run["run"].get("runner_id") or 0) != int(runner_id):
+                live_run=None
         planned = sum(0 if s["action"] == "omit" else (int(s["repeat_count"] or 1) if s["action"] == "repeat" else 1) for s in data["steps"])
         active_steps = sum(1 for s in data["steps"] if s["action"] != "omit")
         now_ts=datetime.now(timezone.utc).timestamp()
@@ -4876,9 +4903,11 @@ def create_app(default_domain: str, default_workspace: Path):
             "last_seen_seconds_ago": round(max(0.0,now_ts-bridge_seen),2) if bridge_id else None,
         }
         baseline_run=next((x for x in data.get("runs",[]) if bool(x.get("is_baseline"))),None)
+        manual_input_count=sum(len(s.get("manual_inputs") or []) for s in data.get("steps",[]))
         return render(request, "runner_detail.html", target_key, domain, workspace, runner_data=data, identities=identities,
                       hypotheses=hypotheses, available_flows=available_flows, planned_requests=planned, active_steps=active_steps, job=job,
-                      baseline_run=baseline_run, transport=runner_tools.transport_settings(), bridge_status=bridge_status)
+                      live_run=live_run, manual_input_count=manual_input_count, baseline_run=baseline_run,
+                      transport=runner_tools.transport_settings(), bridge_status=bridge_status)
 
     @app.post("/t/{target_key}/investigations/{investigation_id}/runner")
     def investigation_create_runner(target_key: str, investigation_id: int, flow_id: int = Form(...), hypothesis_id: str = Form(""), alias: str = Form(...), description: str = Form(""), expected_support: str = Form(""), expected_refute: str = Form(""), csrf: str = Form(...)):
@@ -5188,15 +5217,42 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_runners as runner_tools
         verify_csrf(csrf)
         domain, _, paths = _target_context(target_key)
-        with _db(paths) as conn:
-            data = runner_tools.get_runner(conn, int(runner_id))
-            if not data:
-                raise HTTPException(status_code=404, detail="Escenario no encontrado")
-            alias = str(data["runner"]["alias"])
         hid=int(hypothesis_id) if str(hypothesis_id).isdigit() else None
         tid=int(target_flow_step_id) if str(target_flow_step_id).isdigit() else None
-        job_id = _start_job(f"Escenario · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id), hid, tid)
-        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?job={job_id}", status_code=303)
+        try:
+            with _db(paths) as conn:
+                data=runner_tools.get_runner(conn,int(runner_id))
+                if not data:
+                    raise HTTPException(status_code=404,detail="Escenario no encontrado")
+                alias=str(data["runner"]["alias"])
+                run_id=runner_tools.create_runner_run(conn,int(runner_id),hypothesis_id=hid,target_flow_step_id=tid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        job_id=_start_job(f"Escenario · {alias}",target_key,runner_tools.execute_runner,paths,domain,int(runner_id),hid,tid,int(run_id))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?run={run_id}&job={job_id}#live-run",status_code=303)
+
+    @app.post("/t/{target_key}/runners/{runner_id}/runs/{run_id}/input")
+    def runner_run_input(target_key: str, runner_id: int, run_id: int, variable_id: int = Form(...), value: str = Form(...), csrf: str = Form(...)):
+        import negro_runners as runner_tools
+        verify_csrf(csrf); domain,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                runner_tools.provide_runner_input(conn,int(runner_id),int(run_id),int(variable_id),value)
+                data=runner_tools.get_runner(conn,int(runner_id)); alias=str(data["runner"]["alias"] if data else f"Escenario #{runner_id}")
+            job_id=_start_job(f"Escenario · {alias}",target_key,runner_tools.execute_runner,paths,domain,int(runner_id),None,None,int(run_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400,detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?run={run_id}&job={job_id}#live-run",status_code=303)
+
+    @app.get("/api/t/{target_key}/runners/{runner_id}/runs/{run_id}/live", response_class=JSONResponse)
+    def runner_run_live(target_key: str, runner_id: int, run_id: int):
+        import negro_runners as runner_tools
+        _,_,paths=_target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                return runner_tools.scenario_live_data(conn,int(runner_id),int(run_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404,detail=str(exc))
 
     @app.post("/t/{target_key}/runners/{runner_id}/runs/{run_id}/baseline")
     def runner_run_set_baseline(target_key: str, runner_id: int, run_id: int, csrf: str = Form(...)):

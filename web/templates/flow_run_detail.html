@@ -6,6 +6,12 @@
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows/{{ run_data.run.flow_id }}#flow-runtime">← Flow</a>{% if run_data.run.status in ['queued','running','waiting_prerequisite'] %}<form action="{{ target_base }}/flow-runs/{{ run_data.run.id }}/continue" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">▶ {{ 'Continuar reproducción' if run_data.run.status!='queued' else 'Iniciar reproducción' }}</button></form>{% endif %}</div>
 </section>
 
+<section class="panel live-run-panel" id="live-run" data-flow-live data-live-url="/api/t/{{ target_key }}/flow-runs/{{ run_data.run.id }}/live" data-run-status="{{ run_data.run.status }}" data-live-total="{{ flow_steps|length }}">
+  <div class="panel-head"><div><p class="eyebrow">REPRODUCCIÓN EN VIVO</p><h2 data-live-title>{% if run_data.run.status=='waiting_input' %}Esperando tu input{% elif run_data.run.status in ['completed','failed'] %}Reproducción terminada{% else %}Ejecutando Flow…{% endif %}</h2><p class="muted small">Los Steps aparecen a medida que se ejecutan; no necesitas esperar al final para saber dónde va.</p></div><span class="badge run-state state-{{ run_data.run.status }}" data-live-status-badge>{{ run_data.run.status }}</span></div>
+  <div class="live-run-progress"><div class="live-run-progress-bar"><span data-live-progress style="width: {{ ((run_data.steps|length / flow_steps|length * 100) if flow_steps else 0)|round(0) }}%"></span></div><small><b data-live-count>{{ run_data.steps|length }}</b> / {{ flow_steps|length }} Step(s)</small></div>
+  <div class="live-run-steps" data-live-steps>{% for s in run_data.steps %}<div class="live-run-step {% if s.error %}has-error{% endif %}"><span class="live-step-number">{{ s.position }}</span><b>{{ s.method }} <code>{{ s.path }}</code></b><span class="badge">HTTP {{ s.status_code or '—' }}</span><small>{{ s.elapsed_ms or 0 }} ms</small></div>{% else %}<div class="live-run-empty" data-live-empty>Preparando Step 1…</div>{% endfor %}</div>
+</section>
+
 {% if run_data.run.status == 'waiting_input' %}
 <section class="panel callout warning run-waiting-input">
   <p class="eyebrow">FLOW PAUSED</p><h2>Input required</h2><p><b>{{ run_data.run.waiting_prompt or run_data.run.waiting_variable_name }}</b></p>
