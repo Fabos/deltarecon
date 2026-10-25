@@ -1,3 +1,12 @@
+## v0.104 · Flow → Escenario → Run UX
+
+- `Ejecutar Flow` pasa a **Reproducir flujo**.
+- Desde Flow, la acción principal de testing pasa a **Crear prueba (Escenario)**.
+- Dentro del Escenario, la acción principal es **Ejecutar prueba**.
+- Requests y Replay dejan de presentar `Runner` como acción visible.
+- `Runner` se conserva únicamente como nombre técnico interno para compatibilidad de rutas, DB y workspaces.
+- Flow, Escenario y Run muestran el mismo modelo mental en UI: observado → prueba → resultado.
+
 ## v0.102 · Flow Editor — captura primero, limpia la historia después
 
 - El Flow Detail expone la edición de secuencia como parte principal del trabajo, no escondida en herramientas secundarias.

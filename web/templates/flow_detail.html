@@ -17,27 +17,33 @@
   </div>
   <div class="page-actions flow-primary-actions">
     {% if flow_data.flow.capture_status == 'capturing' %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener captura</button></form>{% endif %}
-    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">▶ Ejecutar Flow</button></form>
-    <a class="button" href="#create-scenario">+ Crear escenario</a>
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">▶ Reproducir flujo</button></form>
+    <a class="button" href="#create-scenario">+ Crear prueba</a>
     <a class="button ghost" href="{{ target_base }}/flows">← Flujos</a>
   </div>
 </section>
 
+<section class="scenario-model-strip flow-model-strip" aria-label="Modelo mental de Flow">
+  <span class="active"><b>Flow</b><small>lo que ocurrió</small></span><i>→</i>
+  <span><b>Escenario</b><small>lo que quiero probar</small></span><i>→</i>
+  <span><b>Run</b><small>qué ocurrió al ejecutar</small></span>
+</section>
+
 <details class="panel scenario-create-card" id="create-scenario">
-  <summary><span><b>Crear escenario desde este Flow</b><small>Una versión reutilizable donde cambias sólo lo que quieres probar.</small></span><span>＋</span></summary>
+  <summary><span><b>Crear prueba (Escenario)</b><small>Parte de este Flow y cambia sólo lo necesario para responder una pregunta.</small></span><span>＋</span></summary>
   <form class="scenario-create-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
     <label><span>Nombre</span><input name="alias" required placeholder="Vendedor B acepta Order de A"></label>
     <label class="grow"><span>Qué quieres probar <small>(opcional)</small></span><input name="description" placeholder="Una frase que explique el escenario"></label>
     <label><span>Identity normal <small>(opcional)</small></span><select name="identity_id"><option value="">Heredar del Flow</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
     <label><span>Hypothesis <small>(opcional)</small></span><select name="hypothesis_id"><option value="">Sin Hypothesis</option>{% for h in hypotheses %}<option value="{{ h.id }}">#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select></label>
-    <button class="button" type="submit">Crear escenario</button>
+    <button class="button" type="submit">Crear prueba</button>
   </form>
 </details>
 
 {% if flow_runners %}
 <section class="flow-scenarios-strip">
-  <div class="flow-scenarios-label"><b>Escenarios basados en este Flow</b><a href="{{ target_base }}/runners">Ver todos →</a></div>
+  <div class="flow-scenarios-label"><b>Pruebas basadas en este Flow</b><a href="{{ target_base }}/runners">Ver todos →</a></div>
   <div class="flow-scenarios-list">{% for r in flow_runners[:6] %}<a href="{{ target_base }}/runners/{{ r.id }}"><b>{{ r.alias }}</b><small>{{ r.run_count }} run(s){% if r.source_flow_count and r.source_flow_count>1 %} · {{ r.source_flow_count }} Flows{% endif %}</small></a>{% endfor %}</div>
 </section>
 {% endif %}
@@ -122,7 +128,7 @@
 </details>
 
 <details class="panel flow-collapsible-section">
-  <summary><span><b>Cómo se ejecuta este Flow</b><small>Identity por defecto, requisitos y Runs recientes.</small></span><span>＋</span></summary>
+  <summary><span><b>Cómo se reproduce este Flow</b><small>Configuración para repetir el proceso normal: Identity, requisitos y Runs recientes.</small></span><span>＋</span></summary>
   <div class="runtime-grid compact-runtime-grid">
     <article class="runtime-card"><h3>Identity por defecto</h3><form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/default-identity" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="identity_id"><option value="">Sin Identity fija</option>{% for i in identities %}<option value="{{ i.id }}" {% if flow_data.flow.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select><button class="button secondary">Guardar</button></form></article>
     <article class="runtime-card"><h3>Flows requeridos</h3>{% for p in flow_runtime.prerequisites %}<div class="runtime-row"><span>{{ p.prerequisite_name }}</span><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites/{{ p.prerequisite_flow_id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button">×</button></form></div>{% else %}<p class="muted small">Ninguno.</p>{% endfor %}{% if reusable_flows %}<form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="prerequisite_flow_id">{% for f in reusable_flows %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select><button class="button ghost">+ Añadir</button></form>{% endif %}</article>
@@ -150,7 +156,7 @@
   <summary><span><b>Administrar Flow</b><small>Acciones poco frecuentes.</small></span><span>＋</span></summary>
   <div class="flow-danger-row">
     <div><b>Eliminar este Flow</b><p class="muted small">Borra la secuencia y su configuración asociada. Las Requests HTTP originales permanecen en Negro.</p></div>
-    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar este Flow? Las Requests HTTP originales NO se borrarán. Los escenarios y Runs ligados directamente a este Flow también pueden eliminarse.')">
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar este Flow? Las Requests HTTP originales NO se borrarán. Las pruebas (Escenarios) y Runs ligados directamente a este Flow también pueden eliminarse.')">
       <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="confirm_delete" value="delete">
       <button class="button danger" type="submit">Eliminar Flow</button>
     </form>

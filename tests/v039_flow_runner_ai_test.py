@@ -101,7 +101,7 @@ def main():
             assert 'Cupón · reutilización' in flow_page.text
             runner_page=client.get(f'/t/{key}/runners/{rid}')
             assert runner_page.status_code==200
-            assert 'Qué hará este escenario' in runner_page.text and 'Ejecutar escenario' in runner_page.text
+            assert 'Qué hará esta prueba' in runner_page.text and 'Ejecutar prueba' in runner_page.text
             assert 'Variables manuales del escenario'.lower() in runner_page.text.lower()
             listing=client.get(f'/t/{key}/runners')
             assert listing.status_code==200 and 'Pruebas reutilizables' in listing.text

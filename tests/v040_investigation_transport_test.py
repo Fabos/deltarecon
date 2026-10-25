@@ -116,7 +116,7 @@ def main():
       client=TestClient(create_app(domain,workspace))
       page=client.get(f'/t/{key}/resource/{int(ex["resource_id"])}?exchange={int(ex["exchange_id"])}')
       assert page.status_code==200,page.text[:500]
-      for label in ('＋ Entity','👁 Crear Regla','◆ Hipótesis','▶ Runner','Investigación','Finding'):
+      for label in ('＋ Entity','👁 Crear Regla','◆ Hipótesis','▶ Crear prueba','Investigación','Finding'):
         assert label in page.text,label
       assert 'Crear Señal' not in page.text
       assert 'REQUEST COMPLETA' in page.text and 'RESPONSE COMPLETA' in page.text

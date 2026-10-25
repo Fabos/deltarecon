@@ -79,7 +79,7 @@ def main():
             client=TestClient(create_app(domain,ws))
             flow_page=client.get(f'/t/{key}/flows/{f1}')
             assert flow_page.status_code==200
-            assert 'Crear escenario desde este Flow' in flow_page.text
+            assert 'Crear prueba (Escenario)' in flow_page.text
             assert 'Así funciona el proceso' in flow_page.text
             assert 'Seguir identificador como Objeto de negocio' not in flow_page.text
             assert 'Editar captura y herramientas' in flow_page.text
@@ -87,7 +87,7 @@ def main():
             assert listing.status_code==200 and 'Pruebas reutilizables' in listing.text and 'Prueba cruzada' in listing.text
             detail=client.get(f'/t/{key}/runners/{rid}')
             assert detail.status_code==200
-            assert 'Flows del escenario' in detail.text and 'Login' in detail.text and 'Compra' in detail.text
+            assert 'Flows usados' in detail.text and 'Login' in detail.text and 'Compra' in detail.text
             assert 'Crear orden como Carlos' in detail.text and 'Carlos' in detail.text
             inspect=client.get(f'/t/{key}/exchange/{int(e1["exchange_id"])}/inspect?flow_id={f1}&flow_step_id={s1}')
             assert inspect.status_code==200

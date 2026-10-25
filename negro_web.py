@@ -82,7 +82,7 @@ UI_LABELS = {
     "AI": "IA", "ENGINE": "Motor", "MANUAL": "Manual", "custom_signal": "Regla personalizada",
     "resource": "Recurso", "host": "Host", "operation": "Método", "exchange": "Request", "identity": "Identidad",
     "js_asset": "JavaScript", "observation": "Observación",
-    "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp", "negro_runner": "Negro Runner",
+    "burp_proxy": "Burp Proxy", "burp_repeater": "Burp Repeater", "burp_other": "Burp", "negro_runner": "Negro Escenario",
     "request": "Request", "response": "Respuesta", "cluster": "Grupo", "target": "Proyecto",
     "authorization": "Autorización", "business_logic": "Lógica de negocio", "state_transition": "Transición de estado",
     "cors": "CORS", "oauth": "OAuth/OIDC", "javascript": "JavaScript", "api": "API", "feature_flag": "Banderas de función", "other": "Otro",
@@ -1045,7 +1045,7 @@ def _investigation_timeline(conn, investigation_id: int, *, limit: int = 120) ->
             if f: items.append({"at":at,"kind":"finding","title":"Finding asociado","detail":str(f["title"]),"href":f"finding/{eid}","relation":rel})
         elif typ=="runner":
             r=conn.execute("SELECT alias,description FROM runners WHERE id=?",(eid,)).fetchone()
-            if r: items.append({"at":at,"kind":"runner","title":f"Runner · {r['alias']}","detail":str(r["description"] or "Experimento"),"href":f"runners/{eid}","relation":rel})
+            if r: items.append({"at":at,"kind":"runner","title":f"Escenario · {r['alias']}","detail":str(r["description"] or "Experimento"),"href":f"runners/{eid}","relation":rel})
         elif typ=="flow":
             f=conn.execute("SELECT name FROM flows WHERE id=?",(eid,)).fetchone()
             if f: items.append({"at":at,"kind":"flow","title":"Flujo asociado","detail":str(f["name"]),"href":f"flows/{eid}","relation":rel})
@@ -3368,9 +3368,9 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/parameters$", {"anchor":"parameters","title":"Explorador de parámetros","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
             (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Matriz de autorización","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
             (r"^/identities", {"anchor":"identities","title":"Contextos de identidad","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
-            (r"^/runners", {"anchor":"runners","title":"Escenarios","question":"¿Cómo preparo o modifico un proceso sin tocar el Flow base?","when":"Crea un Escenario desde uno o varios Flows cuando quieras reproducir el proceso y cambiar sólo lo interesante para tu prueba.","example":"Compra completa → Escenario “Vendedor B acepta Order A” → cambia Identity sólo en el Step objetivo.","caution":"Escenario reutiliza el Flow; Run es una ejecución concreta. Una Hipótesis es contexto opcional, no un requisito."}),
+            (r"^/runners", {"anchor":"runners","title":"Escenarios","question":"¿Qué quiero probar sobre un Flow que ya observé?","when":"Crea un Escenario cuando quieras probar una variante: omitir un Step, cambiar Identity, editar HTTP o repetir una acción sin modificar el Flow original.","example":"Flow: compra normal. Escenario: “Vendedor B acepta Order A”. Run: resultado concreto de ejecutar esa prueba.","caution":"Flow = lo que ocurrió. Escenario = la prueba. Run = el resultado. Runner es sólo el motor interno y no necesitas gestionarlo."}),
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
-            (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué historia de negocio forman estas requests?","when":"Cuando una vulnerabilidad posible depende de secuencia y no de una sola request.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
+            (r"^/flows", {"anchor":"flows","title":"Flujos","question":"¿Qué ocurrió realmente en este proceso y en qué orden?","when":"Cuando quieres guardar la historia normal del negocio antes de crear variantes de prueba.","example":"En el lab puedes capturar acceso a un Order → invoice → cancel, o un proceso administrativo multi-step, y comparar Ana/Diego.","caution":"Start Flow abre una ventana de candidatos; tú decides Include/Ignore y los límites reales."}),
             (r"^/objects", {"anchor":"objects","title":"Objetos de negocio","question":"¿Cuál es la misma 'cosa' de negocio a través de muchas Requests?","when":"Úsalo para seguir una instancia estable como Order 123, User 101 o Invoice 77 aunque cambie de endpoint, host o alias.","example":"Order 123 puede aparecer como /api/orders/123, orderId=123 y /orders/123/invoice. Ana es la Identity; Order 123 es el Business Object; ownerId=101 es una propiedad del objeto.","caution":"No todo campo id es un objeto. Enseña sólo tipos que tengan significado estable en el negocio."}),
             (r"^/surface", {"anchor":"surface","title":"Superficie de ataque","question":"¿Qué sé del target y cuál es la siguiente pregunta de recon?","when":"Avanza por fases desde el dominio raíz: descubrimiento, DNS y HTTP. Negro ejecuta herramientas locales, normaliza evidencia y deja la importación manual como opción secundaria.","example":"Empieza por el dominio, descubre nombres, valida DNS, fingerprint HTTP y luego filtra PHP/Node/QA/Fastly antes de profundizar una rama.","caution":"Cada fase requiere una decisión humana. Fingerprint y heurística no son hechos absolutos y un edge/CDN nunca se trata como origin."}),
             (r"^/graph", {"anchor":"map","title":"Vistas de investigación","question":"¿Qué relación quiero explorar sin ver todo el ruido?","when":"Usa Descubrir para partir de una key o valor y abrir dónde reaparece; Superficie para inventario, Identidad para actor, Flow para secuencia, Objeto para una cosa concreta y Atención para diferencias que merecen volver a mirar.","example":"Sigue ORD-1001 aunque reaparezca como orderId, sourceOrderId u orderRef, y observa qué endpoints, identidades, Flows u objetos conecta antes de decidir si merece una Hypothesis.","caution":"El grafo abre preguntas: coincidencia, cercanía o cambio de contexto no demuestran vulnerabilidad por sí solos."}),
@@ -4756,7 +4756,7 @@ def create_app(default_domain: str, default_workspace: Path):
         domain,workspace,paths=_target_context(target_key)
         with _db(paths) as conn:
             data=rt.get_run(conn,int(run_id))
-            if not data: raise HTTPException(status_code=404,detail="Flow Run no encontrado")
+            if not data: raise HTTPException(status_code=404,detail="Run de reproducción no encontrado")
             run=data["run"]
             runtime=rt.flow_runtime_data(conn,int(run["flow_id"]))
             identities=[dict(x) for x in conn.execute("SELECT id,name FROM identities ORDER BY name,id").fetchall()]
@@ -4824,7 +4824,7 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             data = runner_tools.get_runner(conn, int(runner_id))
             if not data:
-                raise HTTPException(status_code=404, detail="Runner no encontrado")
+                raise HTTPException(status_code=404, detail="Escenario no encontrado")
             identities = identity_tools.list_identities(conn)
             hypotheses=[dict(x) for x in conn.execute("SELECT id,title,status FROM leads_v2 ORDER BY updated_at DESC,id DESC LIMIT 300").fetchall()]
             source_ids={int(x.get("flow_id") or 0) for x in data.get("source_flows",[])}
@@ -4936,12 +4936,12 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.post("/t/{target_key}/ai-ideas/{idea_id}/runner")
     def ai_idea_to_runner(target_key: str, idea_id: int, csrf: str = Form(...)):
         verify_csrf(csrf)
-        raise HTTPException(status_code=410, detail="Una Idea IA no crea un Runner directamente. Conviértela primero en Hipótesis; el Runner es una forma de probar una Hipótesis humana.")
+        raise HTTPException(status_code=410, detail="Una Idea IA no crea una prueba directamente. Conviértela primero en Hipótesis y después crea un Escenario.")
 
     @app.post("/t/{target_key}/flows/{flow_id}/runners/from-ai")
     def runner_create_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), create_hypothesis: str = Form("1"), csrf: str = Form(...)):
         verify_csrf(csrf)
-        raise HTTPException(status_code=410, detail="La IA sólo propone Ideas. Convierte la Idea en Hipótesis antes de crear un Runner.")
+        raise HTTPException(status_code=410, detail="La IA sólo propone Ideas. Convierte la Idea en Hipótesis antes de crear un Escenario de prueba.")
 
     @app.post("/t/{target_key}/flows/{flow_id}/hypothesis/from-ai")
     def flow_hypothesis_from_ai(request: Request, target_key: str, flow_id: int, idea_json: str = Form(...), csrf: str = Form(...)):
@@ -5004,7 +5004,7 @@ def create_app(default_domain: str, default_workspace: Path):
                                 JOIN resources r ON r.id=o.resource_id WHERE rs.runner_id=? AND rs.action!='omit' ORDER BY rs.position LIMIT 1""",(int(runner_id),)).fetchone()
             latest=conn.execute("""SELECT id,status,job_kind,error,response_status,elapsed_ms,created_at,claimed_at,finished_at,bridge_instance_id
                                    FROM burp_repeater_queue WHERE job_kind='execute' ORDER BY id DESC LIMIT 1""").fetchone()
-        if not row: raise HTTPException(status_code=400,detail="El Runner no tiene pasos activos")
+        if not row: raise HTTPException(status_code=400,detail="El Escenario no tiene pasos activos")
         cfg=runner_tools.transport_settings()
         if cfg.get("mode") == "burp_bridge":
             now_ts=datetime.now(timezone.utc).timestamp()
@@ -5018,7 +5018,7 @@ def create_app(default_domain: str, default_workspace: Path):
             if not active:
                 notes.append("No hay una extensión Negro Burp Bridge activa. Carga/reemplaza el JAR v0.27.0+ y deja Burp abierto.")
             elif not ready:
-                notes.append(f"Burp Bridge {version or '?'} está conectado, pero Runner requiere v0.27.0 o superior.")
+                notes.append(f"Burp Bridge {version or '?'} está conectado, pero la ejecución de Escenarios requiere v0.27.0 o superior.")
             else:
                 notes.append("Burp Bridge está listo. El próximo Run se enviará desde Burp usando su propia pila DNS/TCP/TLS/proxy.")
             return {
@@ -5160,11 +5160,11 @@ def create_app(default_domain: str, default_workspace: Path):
         with _db(paths) as conn:
             data = runner_tools.get_runner(conn, int(runner_id))
             if not data:
-                raise HTTPException(status_code=404, detail="Runner no encontrado")
+                raise HTTPException(status_code=404, detail="Escenario no encontrado")
             alias = str(data["runner"]["alias"])
         hid=int(hypothesis_id) if str(hypothesis_id).isdigit() else None
         tid=int(target_flow_step_id) if str(target_flow_step_id).isdigit() else None
-        job_id = _start_job(f"Runner · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id), hid, tid)
+        job_id = _start_job(f"Escenario · {alias}", target_key, runner_tools.execute_runner, paths, domain, int(runner_id), hid, tid)
         return RedirectResponse(url=f"/t/{target_key}/runners/{runner_id}?job={job_id}", status_code=303)
 
     @app.post("/t/{target_key}/runners/{runner_id}/runs/{run_id}/baseline")

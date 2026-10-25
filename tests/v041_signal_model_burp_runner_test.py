@@ -58,7 +58,7 @@ def main():
 
       page=client.get(f'/t/{key}/resource/{int(ex["resource_id"])}?exchange={int(ex["exchange_id"])}')
       assert page.status_code==200
-      for label in ('👁 Crear Regla','＋ Entity','◆ Hipótesis','▶ Runner','Investigación','Finding'):
+      for label in ('👁 Crear Regla','＋ Entity','◆ Hipótesis','▶ Crear prueba','Investigación','Finding'):
         assert label in page.text,label
       assert 'Crear Señal' not in page.text and f'/exchange/{int(ex["exchange_id"])}/signal' not in page.text
       blocked=client.post(f'/t/{key}/exchange/{int(ex["exchange_id"])}/signal',data={'csrf':'bad'})

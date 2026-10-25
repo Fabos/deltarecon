@@ -60,9 +60,9 @@ def main():
             fp=client.get(f'/t/{key}/parameters/follow/{int(ob["id"])}'); assert fp.status_code==200 and 'Guardar esta exploración' in fp.text
             dp=client.get(f'/t/{key}/parameters/diff?a={int(b["exchange_id"])}&b={int(c["exchange_id"])}'); assert dp.status_code==200 and 'Guardar esta comparación' in dp.text
             ip=client.get(f'/t/{key}/investigations/{iid}'); assert ip.status_code==200
-            assert '03 · EXPLORACIONES' in ip.text and 'Exploración · usos de orderId' in ip.text and '+ Crear experimento Runner' in ip.text
+            assert '03 · EXPLORACIONES' in ip.text and 'Exploración · usos de orderId' in ip.text and '+ Crear prueba (Escenario)' in ip.text
             rp=client.get(f'/t/{key}/runners/{rid}'); assert rp.status_code==200
-            assert 'Qué pregunta intenta responder este Runner' in rp.text and 'HTTP 2xx y cambio persistente' in rp.text
+            assert 'Qué pregunta intenta responder esta prueba' in rp.text and 'HTTP 2xx y cambio persistente' in rp.text
         finally: core.TARGETS_PATH=old
 
     css=(ROOT/'web/static/style.css').read_text(); js=(ROOT/'web/static/graph.js').read_text()

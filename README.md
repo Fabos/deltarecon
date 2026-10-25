@@ -1,3 +1,23 @@
+## v0.104 · Flow → Escenario → Run, sin pensar en Runner
+
+La interfaz separa explícitamente responsabilidades: **Flow = lo que ocurrió**, **Escenario = lo que quieres probar**, **Run = el resultado de una ejecución**. `Runner` permanece como nombre técnico interno/DB para conservar compatibilidad, pero deja de ser una acción o concepto protagonista.
+
+- `Ejecutar Flow` pasa a **Reproducir flujo**.
+- `Crear escenario` desde Flow se presenta como **Crear prueba (Escenario)**.
+- Dentro del Escenario, la acción principal es **Ejecutar prueba**.
+- Requests y Replay dejan de mostrar `Runner` como acción visible.
+- Un Flow reproducido sigue creando un Run de evidencia, pero la UI lo llama **Reproducción** para distinguirlo de una prueba modificada.
+- Rutas `/runners`, tablas y APIs internas se conservan para no romper workspaces ni integraciones.
+
+Modelo mental visible:
+
+```text
+Flow       = lo que ocurrió
+Escenario  = lo que quiero probar
+Runner     = motor interno
+Run        = qué ocurrió al ejecutar
+```
+
 ## v0.103 · Flow directo: agregar, arrastrar y limpiar
 
 Flow prioriza ahora la historia del proceso sobre la configuración. Para editar una secuencia: **agrega una Request → arrastra el Step → listo**. El movimiento conserva el `flow_step_id`, así que no recrea Steps ni rompe referencias existentes. `Mover por número` queda como fallback dentro de `⋯`.

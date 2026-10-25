@@ -689,7 +689,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
         <h3>${esc(idea.question||idea.alias||'Pregunta de lógica')}</h3>
         <p class="flow-idea-rationale">${esc(idea.rationale||'')}</p>
         <div class="flow-idea-goal"><b>Qué intentamos comprobar</b><span>${esc(idea.test_goal||'')}</span></div>
-        ${steps||vars?`<div class="runner-draft-preview"><b>Runner sugerido · ${esc(idea.alias||'Borrador')}</b><div>${steps}${vars}</div></div>`:''}
+        ${steps||vars?`<div class="runner-draft-preview"><b>Escenario sugerido · ${esc(idea.alias||'Borrador')}</b><div>${steps}${vars}</div></div>`:''}
         <details><summary>Por qué / qué falta</summary><div class="grid two"><div><b>Hechos</b><ul>${facts||'<li>Sin hechos adicionales.</li>'}</ul></div><div><b>Incógnitas</b><ul>${unknowns||'<li>Sin incógnitas listadas.</li>'}</ul></div></div>${review?`<div><b>Revisar antes de ejecutar</b><ul>${review}</ul></div>`:''}<p><b>Confirmaría interés si:</b> ${esc(idea.confirm_if||'')}</p><p><b>Descartaría si:</b> ${esc(idea.discard_if||'')}</p></details>
         <div class="flow-idea-actions">
           <form action="${base}/flows/${flowId}/hypothesis/from-ai" method="post"><input type="hidden" name="csrf" value="${esc(csrf)}"><textarea name="idea_json" hidden>${payload}</textarea><button class="btn-secondary" type="submit">◆ Convertir en Hipótesis</button></form>
@@ -708,11 +708,11 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
       if(initial && Array.isArray(initial.ideas) && initial.ideas.length){status.textContent=`Historial disponible${initial.created_at?' · última exploración '+initial.created_at:''}. Las Ideas persistentes están debajo.`;}
     }catch(_e){}
     estimateBtn?.addEventListener('click',async()=>{
-      estimateBtn.disabled=true; status.textContent='Construyendo contexto del Flow y de los Runners previos…';
+      estimateBtn.disabled=true; status.textContent='Construyendo contexto del Flow y de las pruebas previas…';
       try{
         const u=new URL(root.dataset.estimateUrl,location.origin);u.searchParams.set('model',model?.value||'');
         const r=await fetch(u,{headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
-        status.innerHTML=`<b>${d.cached?'Análisis cacheado':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':money(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens<br><small>Incluye secuencia, HTTP sanitizado, Signals, estados y memoria de Runners previos con muestras de Runs recientes.</small>`;
+        status.innerHTML=`<b>${d.cached?'Análisis cacheado':'Costo máximo estimado'}</b> · ${d.cached?'COP $0':money(d.max_total_cop_est)} · entrada ≈ ${Number(d.input_tokens_est||0).toLocaleString('es-CO')} tokens<br><small>Incluye secuencia, HTTP sanitizado, Signals, estados y memoria de pruebas previas con muestras de Runs recientes.</small>`;
         runBtn?.removeAttribute('hidden');
       }catch(err){status.textContent=`No pude estimar: ${err.message}`;}finally{estimateBtn.disabled=false;}
     });
@@ -721,7 +721,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
       try{
         const fd=new FormData();fd.set('csrf',csrf);fd.set('confirm_cost','yes');fd.set('model',model?.value||'');
         const r=await fetch(root.dataset.runUrl,{method:'POST',body:fd,headers:{Accept:'application/json'}});const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);
-        while(true){await new Promise(x=>setTimeout(x,1200));const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();if(job.status==='done'){status.textContent='Ideas guardadas en el historial. Actualizando…';location.href=location.pathname+'#ai-ideas-history';break;}if(job.status==='error')throw new Error(job.error||'La IA falló');status.textContent='IA analizando Requests/Responses, Runners anteriores y estado del Flow…';}
+        while(true){await new Promise(x=>setTimeout(x,1200));const jr=await fetch(d.job_url,{headers:{Accept:'application/json'}});const job=await jr.json();if(job.status==='done'){status.textContent='Ideas guardadas en el historial. Actualizando…';location.href=location.pathname+'#ai-ideas-history';break;}if(job.status==='error')throw new Error(job.error||'La IA falló');status.textContent='IA analizando Requests/Responses, pruebas anteriores y estado del Flow…';}
       }catch(err){status.textContent=`Error: ${err.message}`;}finally{runBtn.disabled=false;}
     });
   }
@@ -729,7 +729,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const jobBox=document.querySelector('[data-runner-job]');
   if(jobBox){
     const id=jobBox.dataset.jobId;const text=jobBox.querySelector('[data-runner-job-status]');
-    const poll=async()=>{try{const r=await fetch(`/api/jobs/${encodeURIComponent(id)}`,{headers:{Accept:'application/json'}});const d=await r.json();if(d.status==='done'){if(text)text.textContent='Runner terminado. Actualizando evidencia…';setTimeout(()=>{const u=new URL(location.href);u.searchParams.delete('job');location.href=u.toString()+'#runner-history';},450);return;}if(d.status==='error'){if(text)text.textContent=`Error: ${d.error||'Runner falló'}`;return;}if(text)text.textContent='Ejecutando secuencialmente…';setTimeout(poll,1200);}catch(err){if(text)text.textContent=`No pude consultar el estado: ${err.message}`;}};poll();
+    const poll=async()=>{try{const r=await fetch(`/api/jobs/${encodeURIComponent(id)}`,{headers:{Accept:'application/json'}});const d=await r.json();if(d.status==='done'){if(text)text.textContent='Prueba terminada. Actualizando evidencia…';setTimeout(()=>{const u=new URL(location.href);u.searchParams.delete('job');location.href=u.toString()+'#runner-history';},450);return;}if(d.status==='error'){if(text)text.textContent=`Error: ${d.error||'La prueba falló'}`;return;}if(text)text.textContent='Ejecutando secuencialmente…';setTimeout(poll,1200);}catch(err){if(text)text.textContent=`No pude consultar el estado: ${err.message}`;}};poll();
   }
 })();
 
@@ -738,7 +738,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   document.querySelectorAll('[data-transport-diagnose]').forEach(btn=>{
     btn.addEventListener('click',async()=>{
       const out=btn.closest('.transport-diagnostic')?.querySelector('[data-transport-result]');
-      btn.disabled=true;if(out)out.textContent='Comprobando transporte del Runner…';
+      btn.disabled=true;if(out)out.textContent='Comprobando transporte de la prueba…';
       try{
         const r=await fetch(btn.dataset.url,{headers:{Accept:'application/json'}});
         const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);

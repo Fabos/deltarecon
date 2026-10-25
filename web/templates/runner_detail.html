@@ -15,12 +15,12 @@
     </div>
   </div>
   <div class="page-actions">
-    <form action="{{ target_base }}/runners/{{ r.id }}/execute" method="post" onsubmit="return confirm('¿Ejecutar este escenario ahora?');"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="hypothesis_id" value="{{ r.hypothesis_id or '' }}"><input type="hidden" name="target_flow_step_id" value="{{ r.target_flow_step_id or '' }}"><button class="button" type="submit" {% if planned_requests>r.max_requests %}disabled{% endif %}>▶ Ejecutar escenario</button></form>
+    <form action="{{ target_base }}/runners/{{ r.id }}/execute" method="post" onsubmit="return confirm('¿Ejecutar esta prueba ahora?');"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="hypothesis_id" value="{{ r.hypothesis_id or '' }}"><input type="hidden" name="target_flow_step_id" value="{{ r.target_flow_step_id or '' }}"><button class="button" type="submit" {% if planned_requests>r.max_requests %}disabled{% endif %}>▶ Ejecutar prueba</button></form>
     <a class="button ghost" href="{{ target_base }}/runners">← Escenarios</a>
   </div>
 </section>
 
-{% if job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Ejecutando escenario…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Esta página se actualizará al terminar.</p></section>{% endif %}
+{% if job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Ejecutando prueba…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Al terminar aparecerá un Run con la evidencia de esta ejecución.</p></section>{% endif %}
 
 <details class="panel flow-collapsible-section scenario-overview" id="scenario-flows">
   <summary><span><b>Flows usados · {{ runner_data.source_flows|length }}</b><small>El Escenario puede encadenar varios procesos sin copiarlos.</small></span><span>＋</span></summary>
@@ -49,7 +49,7 @@
 </section>
 
 <section class="panel scenario-steps-panel">
-  <div class="panel-head"><div><p class="eyebrow">STEPS</p><h2>Qué hará este escenario</h2><p class="muted small">Modifica sólo lo que necesites. El Flow base no cambia.</p></div><span>{{ active_steps }} activos</span></div>
+  <div class="panel-head"><div><p class="eyebrow">STEPS</p><h2>Qué hará esta prueba</h2><p class="muted small">Este es el Escenario: una variante del Flow. Modifica sólo lo necesario; el Flow original no cambia.</p></div><span>{{ active_steps }} activos</span></div>
   <div class="runner-step-list scenario-step-list">
   {% for s in runner_data.steps %}
     <article id="scenario-step-{{ s.id }}" class="runner-step scenario-step {% if s.action=='omit' %}runner-step-omit{% endif %} {% if r.target_flow_step_id==s.flow_step_id %}scenario-target-step{% endif %} {% if s.patches %}scenario-step-modified{% endif %}">
@@ -94,11 +94,11 @@
   {% for run in runner_data.runs %}
     {% set valid=run.counts_as_test %}
     <article class="runner-run outcome-{{ run.outcome }} execution-{{ run.execution_class }} {% if not valid %}run-not-counted{% endif %} {% if run.is_baseline %}runner-run-baseline{% endif %}">
-      <div class="runner-run-main"><b>{% if run.is_baseline %}★ {% endif %}Run #{{ run.id }}</b><span class="badge execution-chip execution-{{ run.execution_class }}">{{ {'application_response':'Aplicativo','transport_error':'Transporte','timeout':'Timeout','dns_error':'DNS','tls_error':'TLS','proxy_error':'Proxy','runner_error':'Runner','pending':'Pendiente'}.get(run.execution_class,run.execution_class) }}</span><small>{{ run.request_count }} Requests{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div>
+      <div class="runner-run-main"><b>{% if run.is_baseline %}★ {% endif %}Run #{{ run.id }}</b><span class="badge execution-chip execution-{{ run.execution_class }}">{{ {'application_response':'Aplicativo','transport_error':'Transporte','timeout':'Timeout','dns_error':'DNS','tls_error':'TLS','proxy_error':'Proxy','runner_error':'Error interno','pending':'Pendiente'}.get(run.execution_class,run.execution_class) }}</span><small>{{ run.request_count }} Requests{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div>
       <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/runs/{{ run.id }}">Abrir Run</a>{% if baseline_run and baseline_run.id != run.id %}<a class="button small-button" href="{{ target_base }}/runners/runs/compare?a={{ baseline_run.id }}&b={{ run.id }}">Comparar con baseline</a>{% endif %}{% if not run.is_baseline and run.counts_as_test %}<form action="{{ target_base }}/runners/{{ r.id }}/runs/{{ run.id }}/baseline" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button">Usar como baseline</button></form>{% endif %}</div>
       {% if run.context.hypothesis or run.context.target_step %}<div class="run-context-summary">{% if run.context.hypothesis %}<span class="badge">◆ {{ run.context.hypothesis.title }}</span>{% endif %}{% if run.context.target_step %}<span class="badge class-interesting">🎯 {{ run.context.target_step.name }}</span>{% endif %}</div>{% endif %}
     </article>
-  {% else %}<div class="empty-state compact"><strong>Sin Runs todavía.</strong><span>Ejecuta el Escenario; luego marca el comportamiento normal como baseline.</span></div>{% endfor %}
+  {% else %}<div class="empty-state compact"><strong>Sin Runs todavía.</strong><span>Ejecuta la prueba; cada ejecución quedará guardada como un Run.</span></div>{% endfor %}
   </div>
 </section>
 

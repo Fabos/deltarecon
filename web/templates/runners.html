@@ -2,16 +2,16 @@
 {% block title %}Escenarios · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">ESCENARIOS</p><h1>Pruebas reutilizables</h1><p class="muted">Un Escenario parte de uno o varios Flows y guarda sólo tus cambios: Identity, Step objetivo, repeticiones, omisiones o variables. Ejecutarlo crea un Run.</p></div>
+  <div><p class="eyebrow">ESCENARIOS</p><h1>Pruebas reutilizables</h1><p class="muted">Un <b>Escenario</b> es una prueba: parte de uno o varios Flows y guarda sólo lo que cambias. Al ejecutarlo, Negro crea un <b>Run</b> con el resultado.</p></div>
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows">Ver Flows</a></div>
 </section>
 
 <section class="scenario-model-strip">
-  <span><b>Flow</b><small>cómo funciona</small></span><i>→</i><span class="active"><b>Escenario</b><small>qué modifico o preparo</small></span><i>→</i><span><b>Run</b><small>qué ocurrió</small></span><span class="scenario-hypothesis-note"><b>◆ Hypothesis</b><small>opcional</small></span>
+  <span><b>Flow</b><small>lo que ocurrió</small></span><i>→</i><span class="active"><b>Escenario</b><small>lo que quiero probar</small></span><i>→</i><span><b>Run</b><small>resultado de una ejecución</small></span><span class="scenario-hypothesis-note"><b>◆ Hypothesis</b><small>opcional</small></span>
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">BIBLIOTECA</p><h2>{{ runners|length }} escenario{{ '' if runners|length == 1 else 's' }}</h2><p class="muted small">Los creas desde un Flow. No duplican el Flow: guardan una receta de cambios sobre él.</p></div></div>
+  <div class="panel-head"><div><p class="eyebrow">BIBLIOTECA</p><h2>{{ runners|length }} escenario{{ '' if runners|length == 1 else 's' }}</h2><p class="muted small">Los creas desde un Flow. No duplican el proceso: guardan únicamente la variante que quieres probar.</p></div></div>
   <div class="runner-grid scenario-grid">
   {% for r in runners %}
     <a class="runner-card scenario-card" href="{{ target_base }}/runners/{{ r.id }}">
@@ -20,7 +20,7 @@
       <div class="runner-card-meta"><span>{{ r.run_count }} run(s)</span>{% if r.identity_name %}<span>{{ r.identity_name }}</span>{% endif %}{% if r.hypothesis_count %}<span>◆ {{ r.hypothesis_count }} Hypothesis</span>{% endif %}{% if r.interesting_runs %}<span class="intel-hot">{{ r.interesting_runs }} interesante(s)</span>{% endif %}</div>
     </a>
   {% else %}
-    <div class="empty-state"><strong>Todavía no tienes escenarios.</strong><span>Abre un Flow y pulsa <b>Crear escenario</b>. Empieza con un nombre y modifica sólo lo que quieras probar.</span><a class="button" href="{{ target_base }}/flows">Ir a Flows</a></div>
+    <div class="empty-state"><strong>Todavía no tienes escenarios.</strong><span>Abre un Flow y pulsa <b>Crear prueba</b>. Negro creará el Escenario; modifica sólo lo que quieras comprobar.</span><a class="button" href="{{ target_base }}/flows">Ir a Flows</a></div>
   {% endfor %}
   </div>
 </section>

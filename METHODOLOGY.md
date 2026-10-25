@@ -269,6 +269,16 @@ La Authorization Matrix es descriptiva: sólo muestra lo que Burp observó bajo 
 
 ## Flow Workbench
 
+### Modelo mental: Flow → Escenario → Run
+
+- **Flow** conserva el proceso observado tal como ocurrió.
+- **Escenario** es una variante deliberada para probar una pregunta.
+- **Runner** es sólo el motor interno que ejecuta; no es una decisión del hunter.
+- **Run** conserva el resultado y la evidencia de una ejecución concreta.
+
+En la práctica: observa/corrige el Flow → crea una prueba → ejecuta → revisa el Run.
+
+
 Responde: **¿qué historia de negocio forman varias Requests?**
 
 Un Flow es una secuencia manual/observada, por ejemplo:

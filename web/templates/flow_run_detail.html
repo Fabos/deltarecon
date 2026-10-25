@@ -2,14 +2,14 @@
 {% block title %}Run #{{ run_data.run.id }} · {{ run_data.run.flow_name }} · Negro{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
-  <div><p class="eyebrow">FLOW RUN #{{ run_data.run.id }}</p><h1>{{ run_data.run.flow_name }}</h1><p class="muted">Ejecución aislada. Sus variables y overrides no modifican el Flow base.</p><div class="hero-meta"><span class="badge run-state state-{{ run_data.run.status }}">{{ run_data.run.status }}</span><span class="badge">Step {{ run_data.run.cursor_position }}</span>{% if run_data.run.parent_run_id %}<span class="badge">Prerequisite Run</span>{% endif %}</div></div>
-  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows/{{ run_data.run.flow_id }}#flow-runtime">← Flow</a>{% if run_data.run.status in ['queued','running','waiting_prerequisite'] %}<form action="{{ target_base }}/flow-runs/{{ run_data.run.id }}/continue" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">▶ {{ 'Continuar' if run_data.run.status!='queued' else 'Iniciar Run' }}</button></form>{% endif %}</div>
+  <div><p class="eyebrow">REPRODUCCIÓN · RUN #{{ run_data.run.id }}</p><h1>{{ run_data.run.flow_name }}</h1><p class="muted">Reproducción del Flow normal. Este Run guarda qué ocurrió; sus variables y overrides no modifican el Flow base.</p><div class="hero-meta"><span class="badge run-state state-{{ run_data.run.status }}">{{ run_data.run.status }}</span><span class="badge">Step {{ run_data.run.cursor_position }}</span>{% if run_data.run.parent_run_id %}<span class="badge">Prerequisite Run</span>{% endif %}</div></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/flows/{{ run_data.run.flow_id }}#flow-runtime">← Flow</a>{% if run_data.run.status in ['queued','running','waiting_prerequisite'] %}<form action="{{ target_base }}/flow-runs/{{ run_data.run.id }}/continue" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button" type="submit">▶ {{ 'Continuar reproducción' if run_data.run.status!='queued' else 'Iniciar reproducción' }}</button></form>{% endif %}</div>
 </section>
 
 {% if run_data.run.status == 'waiting_input' %}
 <section class="panel callout warning run-waiting-input">
   <p class="eyebrow">FLOW PAUSED</p><h2>Input required</h2><p><b>{{ run_data.run.waiting_prompt or run_data.run.waiting_variable_name }}</b></p>
-  <form class="form-row" action="{{ target_base }}/flow-runs/{{ run_data.run.id }}/input" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="variable_id" value="{{ run_data.run.waiting_variable_id }}"><input name="value" {% if run_data.run.waiting_sensitive %}type="password"{% endif %} autocomplete="off" required placeholder="Valor para {{ run_data.run.waiting_variable_name }}"><button class="button">Continuar Run</button></form>
+  <form class="form-row" action="{{ target_base }}/flow-runs/{{ run_data.run.id }}/input" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="variable_id" value="{{ run_data.run.waiting_variable_id }}"><input name="value" {% if run_data.run.waiting_sensitive %}type="password"{% endif %} autocomplete="off" required placeholder="Valor para {{ run_data.run.waiting_variable_name }}"><button class="button">Continuar reproducción</button></form>
   <small>El valor se aplica únicamente a este Run. No cambia la definición permanente de la variable.</small>
 </section>
 {% elif run_data.run.status == 'waiting_prerequisite' %}
@@ -17,7 +17,7 @@
 {% endif %}
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">RUN CONTEXT</p><h2>Valores de esta ejecución</h2><p class="muted small">Cada Run tiene su propio contexto. Los valores sensibles sólo se muestran enmascarados en la evidencia de Steps.</p></div><span>{{ run_data.run.context_display|length }} valores</span></div>
+  <div class="panel-head"><div><p class="eyebrow">CONTEXTO DEL RUN</p><h2>Valores de esta reproducción</h2><p class="muted small">Cada Run tiene su propio contexto. Los valores sensibles sólo se muestran enmascarados en la evidencia de Steps.</p></div><span>{{ run_data.run.context_display|length }} valores</span></div>
   <div class="run-context-grid">{% for k,v in run_data.run.context_display.items() %}<div class="context-pill"><b>{{ k }}</b><code>{{ v if v|length < 80 else v[:35] ~ '…' }}</code></div>{% else %}<p class="empty">Todavía no hay valores resueltos.</p>{% endfor %}</div>
   {% if run_data.run.exported_context %}<div class="runtime-section-head"><div><p class="eyebrow">EXPORTS</p><h3>Disponibles para Flows dependientes</h3></div></div><div class="run-context-grid">{% for k,v in run_data.run.exported_context_display.items() %}<div class="context-pill export"><b>{{ k }}</b><code>{{ v if v|length < 80 else v[:35] ~ '…' }}</code></div>{% endfor %}</div>{% endif %}
 </section>
