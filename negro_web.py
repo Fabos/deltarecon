@@ -4576,6 +4576,21 @@ def create_app(default_domain: str, default_workspace: Path):
             flow_id = flow_tools.start_capture(conn, name, description=description, identity_id=iid, source="web")
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
 
+    @app.post("/t/{target_key}/flows/{flow_id}/capture/start")
+    def flow_capture_resume(request: Request, target_key: str, flow_id: int, csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.resume_capture(conn, int(flow_id), source="web")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(
+            url=f"/t/{target_key}/flows/{flow_id}?capture_started=1#flow-sequence",
+            status_code=303,
+        )
+
     @app.post("/t/{target_key}/flows/{flow_id}/capture/stop")
     def flow_capture_stop(request: Request, target_key: str, flow_id: int, csrf: str = Form(...)):
         import negro_flows as flow_tools
@@ -4583,10 +4598,19 @@ def create_app(default_domain: str, default_workspace: Path):
         _, _, paths = _target_context(target_key)
         try:
             with _db(paths) as conn:
-                flow_tools.stop_capture(conn, int(flow_id))
+                result = flow_tools.stop_capture(conn, int(flow_id))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+        # Make Stop Capture visibly meaningful. Previously this redirected to the
+        # same page with no feedback, so an empty capture looked like the button
+        # had done nothing at all. Query params keep the operation stateless and
+        # backward compatible with old workspaces/routes.
+        steps = int((result or {}).get("steps") or 0)
+        added = int((result or {}).get("session_added") or (result or {}).get("added") or 0)
+        return RedirectResponse(
+            url=f"/t/{target_key}/flows/{flow_id}?capture_stopped=1&captured_steps={steps}&capture_added={added}#flow-sequence",
+            status_code=303,
+        )
 
     @app.get("/t/{target_key}/flows/add", response_class=HTMLResponse)
     def flow_add_page(request: Request, target_key: str, exchange_id: int):
@@ -4667,10 +4691,17 @@ def create_app(default_domain: str, default_workspace: Path):
                        ORDER BY bo.last_seen_at DESC,bo.id DESC LIMIT 300""").fetchall()]
             except Exception:
                 business_objects=[]
+        capture_stopped = str(request.query_params.get("capture_stopped") or "") == "1"
+        capture_started = str(request.query_params.get("capture_started") or "") == "1"
+        raw_captured_steps = str(request.query_params.get("captured_steps") or "")
+        captured_steps = int(raw_captured_steps) if raw_captured_steps.isdigit() else None
+        raw_capture_added = str(request.query_params.get("capture_added") or "")
+        capture_added = int(raw_capture_added) if raw_capture_added.isdigit() else None
         return render(request, "flow_detail.html", target_key, domain, workspace, flow_data=data,
                       flow_runners=flow_runners, logic_ai_latest=logic_ai_latest, logic_ai_batches=logic_ai_batches,
                       flow_investigations=flow_investigations, active_investigations=active_investigations, settings=intel.load_settings(),
-                      flow_runtime=runtime,reusable_flows=reusable_flows,identities=identities,hypotheses=hypotheses,business_objects=business_objects)
+                      flow_runtime=runtime,reusable_flows=reusable_flows,identities=identities,hypotheses=hypotheses,business_objects=business_objects,
+                      capture_stopped=capture_stopped,capture_started=capture_started,captured_steps=captured_steps,capture_added=capture_added)
 
 
 

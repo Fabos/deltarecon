@@ -462,7 +462,7 @@ Desde Burp, clic derecho → **Negro → Flow**:
 - `End Flow here…`
 - `Create Flow from selected exchanges…`
 
-Desde la web, **Start Flow** abre una Capture Window y **Stop Flow** guarda todo lo observado como candidatos. Negro puede marcar tráfico repetido como `possible background`, pero nunca lo borra ni lo excluye solo. En el editor decides `Include`, `Ignore`, `Set as Start` y `Set as End`.
+Desde la web, **Start Flow** abre una Capture Window y **Stop Flow** pausa la captura conservando todo lo observado como candidatos. Un Flow ya creado puede volver a **Activar captura** tantas veces como sea necesario; cada nueva sesión acumula Requests sin reiniciar la secuencia existente. Negro puede marcar tráfico repetido como `possible background`, pero nunca lo borra ni lo excluye solo. En el editor decides `Include`, `Ignore`, `Set as Start` y `Set as End`.
 
 ### Identity Contexts directamente en Burp
 

@@ -26,8 +26,8 @@
       <label><span>Nombre</span><input name="name" required placeholder="Checkout · Cuenta principal"></label>
       <label><span>Descripción</span><textarea name="description" placeholder="Qué acción vas a recorrer"></textarea></label>
       <label><span>Identidad opcional</span><select name="identity_id"><option value="">— Sin fijar —</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label>
-      <p class="muted small">Iniciar abre una ventana. Detener guarda todo lo observado como candidato, incluyendo ruido y OPTIONS. Nada se elimina automáticamente.</p>
-      <button class="button" type="submit">● Iniciar Flujo</button>
+      <p class="muted small"><b>1.</b> Inicia la captura. <b>2.</b> Recorre el proceso del target con el navegador pasando por Burp. <b>3.</b> Vuelve a Negro y detén. Se guardan como candidatos las Requests que el Burp Bridge haya enviado durante esa ventana, incluyendo ruido y OPTIONS. Después puedes detener, ordenar y volver a activar la captura sobre el mismo Flow tantas veces como necesites.</p>
+      <button class="button" type="submit">● Crear Flow y capturar</button>
     </form>
     <details class="advanced-inline-form">
       <summary>Ya conozco las Requests exactas</summary>

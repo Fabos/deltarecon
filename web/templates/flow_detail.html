@@ -8,7 +8,7 @@
     <p class="muted">{{ flow_data.flow.description or 'Proceso observado del aplicativo.' }}</p>
     <div class="hero-meta">
       <span class="badge">{{ flow_data.included_steps|length }} Steps</span>
-      {% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● capturando</span>{% endif %}
+      {% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● capturando · {{ flow_data.steps|length }} Request(s)</span>{% endif %}
       {% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}
       {% if flow_runtime.variables %}<span class="badge">{{ flow_runtime.variables|length }} valores dinámicos</span>{% endif %}
       {% if flow_runtime.prerequisites %}<span class="badge">{{ flow_runtime.prerequisites|length }} requisito(s)</span>{% endif %}
@@ -16,12 +16,46 @@
     </div>
   </div>
   <div class="page-actions flow-primary-actions">
-    {% if flow_data.flow.capture_status == 'capturing' %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener captura</button></form>{% endif %}
+    {% if flow_data.flow.capture_status == 'capturing' %}
+      <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener captura</button></form>
+    {% else %}
+      <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/start" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">● Activar captura</button></form>
+    {% endif %}
     <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">▶ Reproducir flujo</button></form>
     <a class="button" href="#create-scenario">+ Crear prueba</a>
     <a class="button ghost" href="{{ target_base }}/flows">← Flujos</a>
   </div>
 </section>
+
+{% if flow_data.flow.capture_status == 'capturing' %}
+<section class="panel flow-capture-status capture-active-panel">
+  <div>
+    <p class="eyebrow">CAPTURA ACTIVA</p>
+    <h2>Ahora recorre el proceso real</h2>
+    <p class="muted">Navega el <b>target a través de Burp</b>. Negro añadirá aquí las Requests que el Burp Bridge vaya enviando mientras esta ventana esté activa.</p>
+    <p class="muted small">Importante: Negro no observa tu navegador directamente. Si una Request no llega a Negro mediante el Bridge, no aparecerá en este Flow.</p>
+  </div>
+  {% set session_baseline = flow_data.flow.capture_session_start_step_count or 0 %}
+  {% set session_new = (flow_data.steps|length) - session_baseline %}
+  <div class="capture-live-count"><b>{{ session_new if session_new > 0 else 0 }}</b><span>nueva(s) esta sesión · {{ flow_data.steps|length }} total</span></div>
+</section>
+{% elif capture_stopped %}
+<section class="panel flow-capture-status {% if capture_added %}capture-finished-panel{% else %}capture-empty-panel{% endif %}">
+  {% if capture_added %}
+    <div><p class="eyebrow">CAPTURA DETENIDA</p><h2>{{ capture_added }} Request(s) nuevas · {{ captured_steps }} total</h2><p class="muted">Puedes editar el Flow ahora y volver a <b>Activar captura</b> en cualquier momento para seguir agregando tráfico al mismo proceso.</p></div>
+  {% else %}
+    <div><p class="eyebrow">CAPTURA DETENIDA</p><h2>No llegaron Requests nuevas en esta sesión</h2><p class="muted">El Flow conserva sus {{ captured_steps or flow_data.steps|length }} Request(s) actuales. Puedes corregirlo y volver a activar la captura cuando quieras.</p><p class="muted small">Si esperabas tráfico nuevo, comprueba navegador → Burp → Bridge → Negro y el target activo.</p></div>
+  {% endif %}
+</section>
+{% elif capture_started %}
+<section class="panel flow-capture-status capture-active-panel">
+  <div><p class="eyebrow">CAPTURA REACTIVADA</p><h2>Sigue recorriendo el proceso</h2><p class="muted">Lo que ya habías ordenado permanece intacto. Las nuevas Requests se agregarán al final como candidatos para que luego las ubiques o elimines.</p></div>
+</section>
+{% else %}
+<section class="panel flow-capture-status capture-paused-panel">
+  <div><p class="eyebrow">CAPTURA PAUSADA</p><h2>Puedes seguir capturando cuando quieras</h2><p class="muted">Activa la captura, recorre otra parte del proceso en el navegador y deténla de nuevo. El Flow no se reinicia: conserva lo anterior y acumula las nuevas Requests.</p></div>
+</section>
+{% endif %}
 
 <section class="scenario-model-strip flow-model-strip" aria-label="Modelo mental de Flow">
   <span class="active"><b>Flow</b><small>lo que ocurrió</small></span><i>→</i>

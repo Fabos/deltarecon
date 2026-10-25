@@ -45,6 +45,7 @@ def init_schema(conn) -> None:
             capture_source TEXT,
             capture_start_exchange_id INTEGER,
             capture_started_after_exchange_id INTEGER,
+            capture_session_start_step_count INTEGER NOT NULL DEFAULT 0,
             capture_end_exchange_id INTEGER,
             capture_started_at TEXT,
             capture_stopped_at TEXT,
@@ -120,6 +121,7 @@ def init_schema(conn) -> None:
         "capture_source": "TEXT",
         "capture_start_exchange_id": "INTEGER",
         "capture_started_after_exchange_id": "INTEGER",
+        "capture_session_start_step_count": "INTEGER NOT NULL DEFAULT 0",
         "capture_end_exchange_id": "INTEGER",
         "capture_started_at": "TEXT",
         "capture_stopped_at": "TEXT",
@@ -228,12 +230,38 @@ def start_capture(conn, name: str, *, description: str = "", identity_id: int | 
     now = now_iso()
     conn.execute(
         """UPDATE flows SET capture_status='capturing',capture_source=?,capture_start_exchange_id=?,
-               capture_started_after_exchange_id=?,capture_started_at=?,capture_stopped_at=NULL,updated_at=? WHERE id=?""",
+               capture_started_after_exchange_id=?,capture_session_start_step_count=0,capture_started_at=?,capture_stopped_at=NULL,updated_at=? WHERE id=?""",
         (str(source or "web")[:40], int(start_exchange_id) if start_exchange_id else None, started_after, now, now, flow_id),
     )
     if start_exchange_id:
         add_step(conn, flow_id, int(start_exchange_id), candidate=True, allow_duplicate=True)
     return flow_id
+
+
+def resume_capture(conn, flow_id: int, *, source: str = "web") -> dict[str, int]:
+    """Re-open capture on an existing Flow without touching its current Steps.
+
+    A Flow is editable research memory, so capture may be paused while the
+    researcher cleans/reorders it and resumed later to append more observed
+    Requests. The session baseline lets the UI distinguish new Requests from
+    the Flow's historical total.
+    """
+    init_schema(conn)
+    flow = conn.execute("SELECT * FROM flows WHERE id=?", (int(flow_id),)).fetchone()
+    if not flow:
+        raise ValueError("Flow no encontrado")
+    if str(flow["capture_status"] or "") == "capturing":
+        raise ValueError("El flow ya está capturando")
+    current_max = int(conn.execute("SELECT COALESCE(MAX(id),0) n FROM http_exchanges").fetchone()["n"] or 0)
+    baseline = int(conn.execute("SELECT COUNT(*) n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
+    now = now_iso()
+    conn.execute(
+        """UPDATE flows SET capture_status='capturing',capture_source=?,capture_start_exchange_id=NULL,
+               capture_started_after_exchange_id=?,capture_session_start_step_count=?,capture_end_exchange_id=NULL,
+               capture_started_at=?,capture_stopped_at=NULL,updated_at=? WHERE id=?""",
+        (str(source or "web")[:40], current_max, baseline, now, now, int(flow_id)),
+    )
+    return {"flow_id": int(flow_id), "baseline_steps": baseline}
 
 
 def active_captures(conn) -> list[dict[str, Any]]:
@@ -296,7 +324,9 @@ def stop_capture(conn, flow_id: int, *, end_exchange_id: int | None = None) -> d
     )
     refresh_noise_suggestions(conn, int(flow_id))
     step_count = int(conn.execute("SELECT COUNT(*) n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
-    return {"added": 0, "skipped": 0, "steps": step_count}
+    baseline = int(flow["capture_session_start_step_count"] or 0) if "capture_session_start_step_count" in flow.keys() else 0
+    session_added = max(0, step_count - baseline)
+    return {"added": session_added, "skipped": 0, "steps": step_count, "session_added": session_added}
 
 
 def list_flows(conn) -> list[dict[str, Any]]:

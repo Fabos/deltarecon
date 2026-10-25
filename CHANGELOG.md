@@ -1,3 +1,24 @@
+# Negro Recon v0.106 — Resumable Flow Capture
+
+- Flow Capture pasa a ser un estado reversible: **Activar captura ↔ Detener captura** sobre el mismo Flow tantas veces como sea necesario.
+- Reactivar captura conserva todos los Steps existentes, su orden, variables y configuración; las nuevas Requests se agregan al final como candidatos.
+- Cada sesión conserva un baseline de Steps para distinguir **nuevas en esta sesión** del **total histórico del Flow**.
+- Detener captura informa `N nuevas · M total`; una sesión sin tráfico ya no parece haber borrado ni reiniciado el Flow.
+- La UI explica explícitamente que una captura pausada puede retomarse después de limpiar, reordenar o corregir el proceso.
+
+---
+
+# Negro Recon v0.105 — Flow Capture Feedback
+
+- Flow Capture muestra un estado visible mientras está activa, incluyendo cuántas Requests ya llegaron al Flow.
+- La UI explica que la captura observa tráfico que entra a Negro mediante Burp Bridge; no observa el navegador directamente.
+- `Detener captura` redirige con un resultado explícito y enfoca la secuencia.
+- Una captura con Requests informa el total y guía a limpiar/reordenar la historia.
+- Una captura vacía deja de parecer un botón roto: informa 0 Requests y sugiere verificar proxy de Burp, Bridge y target.
+- No cambia el modelo de datos ni la semántica de Flow/Scenario/Run.
+
+---
+
 ## v0.104 · Flow → Escenario → Run UX
 
 - `Ejecutar Flow` pasa a **Reproducir flujo**.
