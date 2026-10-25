@@ -1192,3 +1192,22 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 /* v0.106 · resumable Flow Capture */
 .capture-paused-panel{display:flex;align-items:center;justify-content:space-between;gap:18px}
 .capture-paused-panel h2{margin:.15rem 0 .35rem}
+
+
+/* v0.107 · readable Flow request rows. Captured requests must use the available width. */
+.flow-sortable{display:flex!important;flex-direction:column;align-items:stretch;width:100%;min-width:0}
+.flow-sortable>.minimal-flow-step{justify-self:stretch;align-self:stretch}
+.minimal-flow-step{width:100%;max-width:none;box-sizing:border-box;grid-template-columns:32px 40px minmax(0,1fr)!important;align-items:start;gap:10px}
+.minimal-flow-step .flow-step-main{width:100%;max-width:none;box-sizing:border-box;min-width:0}
+.minimal-flow-step .human-step-head{width:100%;min-width:0}
+.minimal-flow-step .human-step-copy{flex:1 1 auto;width:100%;min-width:0;max-width:100%}
+.flow-step-title{margin:0 0 .4rem!important;font-size:1rem}
+.flow-request-summary{display:flex;align-items:center;gap:.55rem;width:100%;min-width:0;max-width:100%}
+.flow-method{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-width:46px;padding:.24rem .42rem;border:1px solid #42543a;border-radius:7px;background:#10180f;color:var(--accent);font-size:.74rem;font-weight:850;letter-spacing:.03em}
+.flow-path{display:block;flex:1 1 auto;min-width:0;max-width:none!important;padding:0!important;border:0!important;background:transparent!important;color:#d5dde1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;overflow-wrap:normal!important;word-break:normal!important;font-size:.82rem}
+.flow-status{flex:0 0 auto;min-width:38px;text-align:center;padding:.2rem .4rem;border:1px solid #334149;border-radius:999px;color:#a8b2b8;font-size:.72rem;font-weight:800}
+.flow-status.is-ok{border-color:#405b35;color:#b9d69b}.flow-status.is-error{border-color:#6b3d42;color:#e1a7ad}
+.flow-request-id{flex:0 0 auto;color:var(--muted);font-size:.72rem;white-space:nowrap}
+.flow-host{display:block;margin-top:.35rem;color:#718087;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.minimal-step-actions{margin-top:.65rem}
+@media(max-width:760px){.minimal-flow-step{grid-template-columns:28px 34px minmax(0,1fr)!important;gap:7px;padding:.65rem .4rem}.flow-step-index{width:32px;height:32px}.flow-request-summary{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.4rem}.flow-request-id{grid-column:2/-1}.flow-path{width:100%}}

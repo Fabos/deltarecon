@@ -107,9 +107,15 @@
         <div class="flow-step-head human-step-head">
           <div class="human-step-copy">
             <div class="human-step-kicker">STEP {{ s.position }}{% if s.role_label %} · {{ s.role_label|upper }}{% endif %}</div>
-            <h3>{{ s.label or (s.method ~ ' ' ~ s.path) }}</h3>
+            {% if s.label %}<h3 class="flow-step-title">{{ s.label }}</h3>{% endif %}
+            <div class="flow-request-summary" title="{{ s.method }} {{ s.path }}">
+              <span class="flow-method">{{ s.method }}</span>
+              <code class="flow-path" title="{{ s.path }}">{{ s.path }}</code>
+              <span class="flow-status {% if s.status_code and s.status_code >= 200 and s.status_code < 300 %}is-ok{% elif s.status_code and s.status_code >= 400 %}is-error{% endif %}">{{ s.status_code or '—' }}</span>
+              <span class="flow-request-id">Request #{{ s.exchange_id }}</span>
+            </div>
             {% if s.notes %}<p class="human-step-note" title="{{ s.notes }}">{{ s.notes }}</p>{% endif %}
-            <small><b>{{ s.method }}</b> <code>{{ s.path }}</code> · HTTP {{ s.status_code or '—' }}</small>
+            {% if s.hostname %}<small class="flow-host">{{ s.hostname }}</small>{% endif %}
           </div>
           <div class="badges">{% if s.checkpoint_label %}<span class="badge checkpoint-badge">◆ {{ s.checkpoint_label }}</span>{% endif %}{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if s.noise_suggested and s.included %}<span class="badge noise-badge" title="{{ s.noise_reason or 'Posible tráfico de fondo' }}">Ruido sugerido</span>{% endif %}{% if not s.included %}<span class="badge">Omitido</span>{% endif %}</div>
         </div>

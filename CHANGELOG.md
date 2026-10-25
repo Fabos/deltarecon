@@ -1,3 +1,11 @@
+## v0.107.0 — Flow request readability
+
+- Corrige Steps capturados que podían colapsar a ancho mínimo en Flow Detail.
+- Cada Step ocupa ahora todo el ancho disponible de la secuencia.
+- El resumen HTTP se vuelve compacto: método, path truncado visualmente, status y Request ID.
+- El path completo sigue disponible en tooltip y en `Ver HTTP`; ya no se repite como título cuando el Step no tiene nombre humano.
+- Si el hunter nombra el Step, ese nombre humano vuelve a ser el título principal.
+
 # Negro Recon v0.106 — Resumable Flow Capture
 
 - Flow Capture pasa a ser un estado reversible: **Activar captura ↔ Detener captura** sobre el mismo Flow tantas veces como sea necesario.
