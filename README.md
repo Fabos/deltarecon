@@ -1,3 +1,9 @@
+## v0.103 · Flow directo: agregar, arrastrar y limpiar
+
+Flow prioriza ahora la historia del proceso sobre la configuración. Para editar una secuencia: **agrega una Request → arrastra el Step → listo**. El movimiento conserva el `flow_step_id`, así que no recrea Steps ni rompe referencias existentes. `Mover por número` queda como fallback dentro de `⋯`.
+
+También se mantiene la diferencia entre **Omitir al ejecutar** y **Quitar del Flow**, y se añade **Administrar Flow → Eliminar Flow** con confirmación explícita. Eliminar un Flow no borra las Requests HTTP originales; sí elimina la configuración, escenarios y Runs que pertenezcan directamente a ese Flow según las relaciones existentes.
+
 ## v0.95 · Mapa enfocado + IP directa confirmada
 
 El mapa de Superficie ahora reduce ruido automáticamente cuando se abre un hostname hijo: conserva root/familia/host como contexto, oculta las capas técnicas del root y atenúa ramas no activas. El botón **Rama enfocada / Ver todo** alterna ambos modos sin perder expansiones. Una IP sólo recibe el badge visual **IP DIRECTA** cuando Infrastructure Classification tiene correlación fuerte (backend candidato HIGH + TLS/SNI match + contenido SHA256 idéntico); candidatos menos fuertes mantienen su estado anterior.

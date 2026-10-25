@@ -5235,16 +5235,25 @@ def create_app(default_domain: str, default_workspace: Path):
         return {"job_id": job_id, "job_url": f"/api/jobs/{job_id}", "estimate": estimate}
 
     @app.post("/t/{target_key}/flows/{flow_id}/add-exchange")
-    def flow_add_exchange(request: Request, target_key: str, flow_id: int, exchange_id: int = Form(...), csrf: str = Form(...)):
+    def flow_add_exchange(request: Request, target_key: str, flow_id: int, exchange_id: int = Form(...), after_step_id: str = Form(""), csrf: str = Form(...)):
         import negro_flows as flow_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
         try:
             with _db(paths) as conn:
-                flow_tools.add_step(conn, int(flow_id), int(exchange_id))
+                position = None
+                marker = str(after_step_id or "").strip()
+                if marker == "0":
+                    position = 1
+                elif marker.isdigit():
+                    anchor = conn.execute("SELECT position FROM flow_steps WHERE id=? AND flow_id=?", (int(marker), int(flow_id))).fetchone()
+                    if not anchor:
+                        raise ValueError("Step de inserción no encontrado")
+                    position = int(anchor["position"]) + 1
+                step_id = flow_tools.add_step(conn, int(flow_id), int(exchange_id), position=position)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#step-{exchange_id}", status_code=303)
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/add-range")
     def flow_add_range(request: Request, target_key: str, flow_id: int, start_exchange: int = Form(...), end_exchange: int = Form(...), exclude_options: str = Form("1"), csrf: str = Form(...)):
@@ -5271,9 +5280,47 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_flows as flow_tools
         verify_csrf(csrf)
         _, _, paths = _target_context(target_key)
-        with _db(paths) as conn:
-            flow_tools.remove_step(conn, int(flow_id), int(step_id))
+        try:
+            with _db(paths) as conn:
+                flow_tools.remove_step(conn, int(flow_id), int(step_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/move")
+    def flow_step_move(request: Request, target_key: str, flow_id: int, step_id: int, target_position: int = Form(...), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.move_step(conn, int(flow_id), int(step_id), int(target_position))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-step-{step_id}", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/delete")
+    def flow_delete(request: Request, target_key: str, flow_id: int, confirm_delete: str = Form(""), csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        if str(confirm_delete or "") != "delete":
+            raise HTTPException(status_code=400, detail="Confirmación de eliminación inválida")
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                flow_tools.delete_flow(conn, int(flow_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return RedirectResponse(url=f"/t/{target_key}/flows", status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/exclude-noise")
+    def flow_exclude_noise(request: Request, target_key: str, flow_id: int, csrf: str = Form(...)):
+        import negro_flows as flow_tools
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            flow_tools.exclude_suggested_noise(conn, int(flow_id))
+        return RedirectResponse(url=f"/t/{target_key}/flows/{flow_id}#flow-sequence", status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/step/{step_id}/include")
     def flow_step_include(request: Request, target_key: str, flow_id: int, step_id: int, included: str = Form("1"), csrf: str = Form(...)):

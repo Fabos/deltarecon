@@ -317,7 +317,8 @@ def list_flows(conn) -> list[dict[str, Any]]:
 
 
 def add_step(conn, flow_id: int, exchange_id: int, *, label: str = "", state_label: str = "", notes: str = "",
-             included: bool = True, candidate: bool = False, allow_duplicate: bool = False, _schema_ready: bool = False) -> int:
+             included: bool = True, candidate: bool = False, allow_duplicate: bool = False, position: int | None = None,
+             _schema_ready: bool = False) -> int:
     if not _schema_ready:
         init_schema(conn)
     if not conn.execute("SELECT id FROM flows WHERE id=?", (int(flow_id),)).fetchone():
@@ -333,7 +334,14 @@ def add_step(conn, flow_id: int, exchange_id: int, *, label: str = "", state_lab
             if included:
                 conn.execute("UPDATE flow_steps SET included=1,updated_at=? WHERE id=?", (now_iso(), int(existing["id"])))
             return int(existing["id"])
-    pos = int(conn.execute("SELECT COALESCE(MAX(position),0)+1 n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"])
+    if position is None:
+        pos = int(conn.execute("SELECT COALESCE(MAX(position),0)+1 n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"])
+    else:
+        count = int(conn.execute("SELECT COUNT(*) n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
+        pos = max(1, min(int(position), count + 1))
+        # Make room without relying on a UNIQUE(position) constraint. Stable step IDs
+        # keep runtime bindings intact while the narrative order changes.
+        conn.execute("UPDATE flow_steps SET position=position+1 WHERE flow_id=? AND position>=?", (int(flow_id), pos))
     now = now_iso()
     cur = conn.execute(
         """INSERT INTO flow_steps(flow_id,position,exchange_id,label,state_label,notes,included,candidate,created_at,updated_at)
@@ -367,13 +375,103 @@ def add_range(conn, flow_id: int, start_exchange: int, end_exchange: int, *, exc
     return {"added": added, "skipped": skipped}
 
 
+def move_step(conn, flow_id: int, step_id: int, target_position: int) -> None:
+    """Move one Step inside the Flow while keeping the Step id stable.
+
+    Runtime bindings and variables reference flow_steps.id, so reordering must not
+    recreate rows. Positions are normalized after every move.
+    """
+    init_schema(conn)
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id FROM flow_steps WHERE flow_id=? ORDER BY position,id", (int(flow_id),)
+    ).fetchall()]
+    ids = [int(r["id"]) for r in rows]
+    if int(step_id) not in ids:
+        raise ValueError("Paso no encontrado")
+    ids.remove(int(step_id))
+    target = max(1, min(int(target_position), len(ids) + 1))
+    ids.insert(target - 1, int(step_id))
+    now = now_iso()
+    for idx, sid in enumerate(ids, 1):
+        conn.execute("UPDATE flow_steps SET position=?,updated_at=? WHERE id=? AND flow_id=?", (idx, now, sid, int(flow_id)))
+    conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now, int(flow_id)))
+
+
+def exclude_suggested_noise(conn, flow_id: int) -> int:
+    """Human-triggered cleanup: omit only Steps already marked as likely noise.
+
+    Negro never calls this automatically. The researcher explicitly accepts the
+    suggestions from the Flow editor and can re-include any Step afterwards.
+    """
+    init_schema(conn)
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE flow_steps SET included=0,updated_at=? WHERE flow_id=? AND included=1 AND noise_suggested=1",
+        (now, int(flow_id)),
+    )
+    conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now, int(flow_id)))
+    return max(0, int(cur.rowcount or 0))
+
+
 def remove_step(conn, flow_id: int, step_id: int) -> None:
     init_schema(conn)
+    if not conn.execute("SELECT id FROM flow_steps WHERE id=? AND flow_id=?", (int(step_id), int(flow_id))).fetchone():
+        raise ValueError("Paso no encontrado")
+
+    # A Flow is also research history. Never let sequence editing silently erase
+    # evidence from past Runs or break a configured executable Flow. In those
+    # cases the researcher can use `included=0`, which preserves provenance.
+    tables = {str(r["name"]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "flow_run_steps" in tables:
+        used = conn.execute("SELECT 1 FROM flow_run_steps WHERE flow_step_id=? LIMIT 1", (int(step_id),)).fetchone()
+        if used:
+            raise ValueError("Este Step ya tiene evidencia de Runs. Omítelo en lugar de quitarlo para conservar el historial.")
+    if "flow_step_variable_bindings" in tables:
+        bound = conn.execute("SELECT 1 FROM flow_step_variable_bindings WHERE flow_step_id=? LIMIT 1", (int(step_id),)).fetchone()
+        if bound:
+            raise ValueError("Este Step tiene variables enlazadas. Quita primero esos bindings o usa Omitir al ejecutar.")
+    if "flow_variables" in tables:
+        producer = conn.execute("SELECT 1 FROM flow_variables WHERE producer_step_id=? LIMIT 1", (int(step_id),)).fetchone()
+        if producer:
+            raise ValueError("Este Step produce variables del Flow. Cambia primero el productor o usa Omitir al ejecutar.")
+
     conn.execute("DELETE FROM flow_steps WHERE id=? AND flow_id=?", (int(step_id), int(flow_id)))
     rows = conn.execute("SELECT id FROM flow_steps WHERE flow_id=? ORDER BY position,id", (int(flow_id),)).fetchall()
     for idx, row in enumerate(rows, 1):
         conn.execute("UPDATE flow_steps SET position=? WHERE id=?", (idx, int(row["id"])))
     conn.execute("UPDATE flows SET updated_at=? WHERE id=?", (now_iso(), int(flow_id)))
+
+
+def delete_flow(conn, flow_id: int) -> dict[str, int | str]:
+    """Delete one Flow without deleting captured HTTP evidence.
+
+    Flow-owned configuration uses foreign keys with ON DELETE CASCADE. The
+    underlying http_exchanges are parents of flow_steps, so deleting the Flow
+    never deletes the original Requests. Return a small summary so callers and
+    tests can make the destructive scope explicit.
+    """
+    init_schema(conn)
+    row = conn.execute("SELECT id,name FROM flows WHERE id=?", (int(flow_id),)).fetchone()
+    if not row:
+        raise ValueError("Flow no encontrado")
+
+    tables = {str(r["name"]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    step_count = int(conn.execute("SELECT COUNT(*) n FROM flow_steps WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
+    runner_count = 0
+    run_count = 0
+    if "runners" in tables:
+        runner_count = int(conn.execute("SELECT COUNT(*) n FROM runners WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
+    if "flow_runs" in tables:
+        run_count = int(conn.execute("SELECT COUNT(*) n FROM flow_runs WHERE flow_id=?", (int(flow_id),)).fetchone()["n"] or 0)
+
+    conn.execute("DELETE FROM flows WHERE id=?", (int(flow_id),))
+    return {
+        "flow_id": int(flow_id),
+        "name": str(row["name"] or ""),
+        "steps": step_count,
+        "runners": runner_count,
+        "runs": run_count,
+    }
 
 
 def update_step(conn, flow_id: int, step_id: int, *, label: str = "", state_label: str = "", notes: str = "",
@@ -759,7 +857,14 @@ def get_flow(conn, flow_id: int) -> dict[str, Any] | None:
         business_objects = []
     meaningful_objects = [x for x in business_objects if x.get("ui_quality") != "ambiguous"]
     ambiguous_objects = [x for x in business_objects if x.get("ui_quality") == "ambiguous"]
-    return {"flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions, "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn), "business_objects": business_objects, "meaningful_business_objects": meaningful_objects, "ambiguous_business_objects": ambiguous_objects}
+    return {
+        "flow": dict(row), "steps": steps, "included_steps": included_steps, "transitions": transitions,
+        "state_timelines": timelines, "state_anomalies": anomalies, "state_tracks": list_state_tracks(conn),
+        "business_objects": business_objects, "meaningful_business_objects": meaningful_objects,
+        "ambiguous_business_objects": ambiguous_objects,
+        "noise_suggested_count": sum(1 for s in steps if int(s.get("noise_suggested") or 0) == 1 and int(s.get("included", 1) or 0) == 1),
+        "ignored_count": sum(1 for s in steps if int(s.get("included", 1) or 0) == 0),
+    }
 
 
 def _align_steps(a_steps: list[dict[str, Any]], b_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,3 +1,14 @@
+## v0.102 · Flow Editor — captura primero, limpia la historia después
+
+- El Flow Detail expone la edición de secuencia como parte principal del trabajo, no escondida en herramientas secundarias.
+- Se puede agregar una Request al inicio, al final o inmediatamente después de cualquier Step existente.
+- Cada Step puede moverse a una posición concreta sin recrearlo, preservando sus IDs y bindings de runtime.
+- El backend de eliminación que ya existía ahora está accesible desde la UI como **Quitar del Flow**; la Request original permanece en Negro. Si el Step ya participa en Runs o variables/bindings, Negro bloquea el borrado y pide usar omisión para no destruir historial ni romper runtime.
+- `Ignorar Step` se renombra a **Omitir al ejecutar** para diferenciar exclusión reversible de eliminación del Flow.
+- Las sugerencias de ruido que Negro ya calculaba ahora son visibles y pueden aceptarse en bloque con una acción humana explícita.
+- Un Flow que sigue capturando puede detenerse directamente desde su detalle.
+- El editor muestra incluidos/total y conserva los omitidos visibles para poder recuperarlos.
+
 ## v0.101 · Project Baseline termina en Infrastructure Classification pasiva
 
 - `Ejecutar baseline del scope` ahora continúa después de DNS/IP histórico hasta **08 · Infrastructure Classification**.
@@ -2347,3 +2358,11 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Detalle de Discovery/Active/TLS ahora permite desplegar la lista exacta de hostnames aportados por cada fuente.
 - Los run cards muestran etiquetas normalizadas más precisas: candidatos generados, hosts que resolvieron y certificados parseados.
 - 60/60 tests.
+
+## v0.103.0 — Flow drag & drop + safe delete
+
+- Simplifica el editor de Flow: agregar Request ahora sólo pide el número; se añade al final y luego se ordena visualmente.
+- Añade drag & drop nativo en la secuencia manteniendo IDs estables de `flow_steps`, por lo que variables, bindings y Runner no se recrean al mover.
+- Conserva `Mover por número` como fallback accesible dentro del menú `⋯`.
+- Mantiene `Quitar del Flow` separado de `Omitir`: quitar elimina sólo la pertenencia al Flow; la Request HTTP original permanece en Negro.
+- Añade `Eliminar Flow` dentro de una sección administrativa colapsada y con confirmación explícita. El borrado no elimina `http_exchanges`; sí elimina configuración/escenarios/runs que pertenezcan directamente al Flow mediante las relaciones existentes.

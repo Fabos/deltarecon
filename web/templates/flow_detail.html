@@ -8,6 +8,7 @@
     <p class="muted">{{ flow_data.flow.description or 'Proceso observado del aplicativo.' }}</p>
     <div class="hero-meta">
       <span class="badge">{{ flow_data.included_steps|length }} Steps</span>
+      {% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● capturando</span>{% endif %}
       {% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}
       {% if flow_runtime.variables %}<span class="badge">{{ flow_runtime.variables|length }} valores dinámicos</span>{% endif %}
       {% if flow_runtime.prerequisites %}<span class="badge">{{ flow_runtime.prerequisites|length }} requisito(s)</span>{% endif %}
@@ -15,6 +16,7 @@
     </div>
   </div>
   <div class="page-actions flow-primary-actions">
+    {% if flow_data.flow.capture_status == 'capturing' %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener captura</button></form>{% endif %}
     <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">▶ Ejecutar Flow</button></form>
     <a class="button" href="#create-scenario">+ Crear escenario</a>
     <a class="button ghost" href="{{ target_base }}/flows">← Flujos</a>
@@ -40,12 +42,27 @@
 </section>
 {% endif %}
 
-<section class="panel flow-sequence-minimal">
-  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>Así funciona el proceso</h2><p class="muted small">Lee el Flow como una historia. Abre el HTTP sólo cuando necesites ver o enseñar un valor.</p></div><span>{{ flow_data.included_steps|length }} Steps</span></div>
-  <div class="flow-timeline minimal-timeline">
+<section class="panel flow-sequence-minimal" id="flow-sequence">
+  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>Así funciona el proceso</h2><p class="muted small">Deja sólo la historia útil. Agrega Requests y arrastra los Steps para ordenar el proceso como realmente ocurre.</p></div><span>{{ flow_data.included_steps|length }}/{{ flow_data.steps|length }} incluidos</span></div>
+
+  <div class="flow-editor-bar">
+    <form class="flow-inline-add flow-quick-add" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-exchange" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label><span>Agregar Request</span><input name="exchange_id" type="number" min="1" required placeholder="# Request, ej. 4812"></label>
+      <button class="button secondary" type="submit">+ Agregar</button>
+      <small class="flow-add-hint">Se agrega al final. Luego arrástrala al lugar correcto.</small>
+    </form>
+    <div class="flow-editor-actions">
+      {% if flow_data.noise_suggested_count %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/exclude-noise" method="post" onsubmit="return confirm('¿Omitir {{ flow_data.noise_suggested_count }} Step(s) marcados por Negro como posible ruido? Puedes volver a incluirlos individualmente.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Limpiar ruido sugerido · {{ flow_data.noise_suggested_count }}</button></form>{% endif %}
+      {% if flow_data.ignored_count %}<span class="muted small">{{ flow_data.ignored_count }} omitido(s); siguen visibles para que puedas recuperarlos.</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="flow-timeline minimal-timeline flow-sortable" data-flow-sortable data-flow-id="{{ flow_data.flow.id }}" data-csrf="{{ csrf_token }}">
   {% for s in flow_data.steps %}
-    <article class="flow-step minimal-flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}">
-      <div class="flow-step-index">{{ s.position }}</div>
+    <article class="flow-step minimal-flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}" data-flow-step-id="{{ s.id }}" data-position="{{ s.position }}">
+      <button class="flow-drag-handle" type="button" draggable="true" data-drag-handle aria-label="Arrastrar Step {{ s.position }}" title="Arrastra para mover">⋮⋮</button>
+      <div class="flow-step-index" data-step-index>{{ s.position }}</div>
       <div class="flow-step-main">
         <div class="flow-step-head human-step-head">
           <div class="human-step-copy">
@@ -54,7 +71,7 @@
             {% if s.notes %}<p class="human-step-note" title="{{ s.notes }}">{{ s.notes }}</p>{% endif %}
             <small><b>{{ s.method }}</b> <code>{{ s.path }}</code> · HTTP {{ s.status_code or '—' }}</small>
           </div>
-          <div class="badges">{% if s.checkpoint_label %}<span class="badge checkpoint-badge">◆ {{ s.checkpoint_label }}</span>{% endif %}{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if not s.included %}<span class="badge">Ignorado</span>{% endif %}</div>
+          <div class="badges">{% if s.checkpoint_label %}<span class="badge checkpoint-badge">◆ {{ s.checkpoint_label }}</span>{% endif %}{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if s.noise_suggested and s.included %}<span class="badge noise-badge" title="{{ s.noise_reason or 'Posible tráfico de fondo' }}">Ruido sugerido</span>{% endif %}{% if not s.included %}<span class="badge">Omitido</span>{% endif %}</div>
         </div>
 
         {% set needs = flow_runtime.step_inputs.get(s.id, []) %}{% set produces = flow_runtime.step_outputs.get(s.id, []) %}
@@ -74,8 +91,10 @@
               <a href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Ver en mapa</a>
               <a href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Buscar relacionados</a>
               {% if not loop.first %}<a href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparar con Step anterior</a>{% endif %}
-              <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="menu-link" type="submit">{{ 'Incluir Step' if not s.included else 'Ignorar Step' }}</button></form>
+              <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="menu-link" type="submit">{{ 'Volver a incluir' if not s.included else 'Omitir al ejecutar' }}</button></form>
+              <details class="step-position-fallback"><summary>Mover por número</summary><form class="step-move-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/move" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Posición</span><input name="target_position" type="number" min="1" max="{{ flow_data.steps|length }}" value="{{ s.position }}"></label><button class="menu-link" type="submit">Mover</button></form></details>
               <div class="step-boundary-row"><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="start"><button class="menu-link" type="submit">Marcar inicio</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="end"><button class="menu-link" type="submit">Marcar final</button></form></div>
+              <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post" onsubmit="return confirm('¿Quitar este Step del Flow? La Request seguirá guardada en Negro. Si el Step alimenta variables o bindings, esas referencias pueden cambiar.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="menu-link danger-link" type="submit">Quitar del Flow</button></form>
             </div>
           </details>
         </div>
@@ -114,7 +133,7 @@
 <details class="panel flow-collapsible-section">
   <summary><span><b>Editar captura y herramientas</b><small>Agregar Requests, comparar, mapa e Investigation.</small></span><span>＋</span></summary>
   <div class="flow-secondary-tools-grid">
-    <article><h3>Editar captura</h3><div class="flow-add-forms"><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-exchange" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="exchange_id" type="number" min="1" required placeholder="Request #"><button class="button ghost">Agregar</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-range" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="start_exchange" type="number" min="1" required placeholder="Desde #"><input name="end_exchange" type="number" min="1" required placeholder="Hasta #"><input type="hidden" name="exclude_options" value="1"><button class="button ghost">Agregar rango</button></form></div></article>
+    <article><h3>Agregar un rango</h3><p class="muted small">Útil si ya conoces un bloque consecutivo de Requests. Para insertar una Request concreta en mitad de la historia, usa el editor de secuencia de arriba.</p><div class="flow-add-forms"><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-range" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="start_exchange" type="number" min="1" required placeholder="Desde #"><input name="end_exchange" type="number" min="1" required placeholder="Hasta #"><input type="hidden" name="exclude_options" value="1"><button class="button ghost">Agregar rango</button></form></div></article>
     <article><h3>Herramientas</h3><div class="row-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=flow:{{ flow_data.flow.id }}">Mapa</a>{% if flow_investigations %}{% for i in flow_investigations[:2] %}<a class="button ghost" href="{{ target_base }}/investigations/{{ i.id }}">Investigation · {{ i.title }}</a>{% endfor %}{% endif %}</div></article>
   </div>
   <details class="advanced-context flow-ai-collapsed">
@@ -127,12 +146,113 @@
   </details>
 </details>
 
+<details class="panel flow-danger-zone">
+  <summary><span><b>Administrar Flow</b><small>Acciones poco frecuentes.</small></span><span>＋</span></summary>
+  <div class="flow-danger-row">
+    <div><b>Eliminar este Flow</b><p class="muted small">Borra la secuencia y su configuración asociada. Las Requests HTTP originales permanecen en Negro.</p></div>
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar este Flow? Las Requests HTTP originales NO se borrarán. Los escenarios y Runs ligados directamente a este Flow también pueden eliminarse.')">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="confirm_delete" value="delete">
+      <button class="button danger" type="submit">Eliminar Flow</button>
+    </form>
+  </div>
+</details>
+
 <script>
 (() => {
   const form=document.querySelector('[data-simple-source-form]'); if(!form) return;
   const source=form.querySelector('[data-flow-source]'); const fields=[...form.querySelectorAll('[data-source-field]')];
   const refresh=()=>{ const v=source.value; fields.forEach(el=>{ el.hidden=el.dataset.sourceField!==v; el.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=el.hidden); }); };
   source.addEventListener('change',refresh); refresh();
+})();
+</script>
+<script>
+(() => {
+  const list=document.querySelector('[data-flow-sortable]');
+  if(!list) return;
+
+  let dragged=null;
+  let originalPosition=null;
+  let snapshot=[];
+
+  const steps=()=>[...list.querySelectorAll('[data-flow-step-id]')];
+  const refreshNumbers=()=>steps().forEach((step,index)=>{
+    const badge=step.querySelector('[data-step-index]');
+    if(badge) badge.textContent=String(index+1);
+  });
+  const restore=()=>{
+    snapshot.forEach(node=>list.appendChild(node));
+    refreshNumbers();
+  };
+  const cleanup=()=>{
+    if(dragged) dragged.classList.remove('is-dragging','is-saving');
+    list.classList.remove('is-sorting');
+    dragged=null; originalPosition=null; snapshot=[];
+  };
+  const afterElement=(y)=>{
+    const candidates=steps().filter(el=>el!==dragged);
+    let closest={offset:Number.NEGATIVE_INFINITY,element:null};
+    for(const el of candidates){
+      const box=el.getBoundingClientRect();
+      const offset=y-box.top-box.height/2;
+      if(offset<0 && offset>closest.offset) closest={offset,element:el};
+    }
+    return closest.element;
+  };
+
+  list.addEventListener('dragstart',(event)=>{
+    const handle=event.target.closest('[data-drag-handle]');
+    if(!handle) return;
+    dragged=handle.closest('[data-flow-step-id]');
+    if(!dragged) return;
+    snapshot=steps();
+    originalPosition=snapshot.indexOf(dragged)+1;
+    dragged.classList.add('is-dragging');
+    list.classList.add('is-sorting');
+    event.dataTransfer.effectAllowed='move';
+    event.dataTransfer.setData('text/plain',dragged.dataset.flowStepId);
+  });
+
+  list.addEventListener('dragover',(event)=>{
+    if(!dragged) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect='move';
+    const after=afterElement(event.clientY);
+    if(after) list.insertBefore(dragged,after); else list.appendChild(dragged);
+    refreshNumbers();
+  });
+
+  list.addEventListener('drop',async(event)=>{
+    if(!dragged) return;
+    event.preventDefault();
+    const step=dragged;
+    const stepId=step.dataset.flowStepId;
+    const targetPosition=steps().indexOf(step)+1;
+    if(targetPosition===originalPosition){ cleanup(); return; }
+
+    step.classList.add('is-saving');
+    const body=new URLSearchParams({
+      csrf:list.dataset.csrf,
+      target_position:String(targetPosition)
+    });
+    try{
+      const response=await fetch(`${location.pathname.replace(/\/flows\/\d+.*$/,'')}/flows/${list.dataset.flowId}/step/${stepId}/move`,{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+        body:body.toString()
+      });
+      if(!response.ok) throw new Error(`HTTP ${response.status}`);
+      window.location.hash=`flow-step-${stepId}`;
+      window.location.reload();
+    }catch(error){
+      window.alert('No se pudo mover el Step. Se restaurará el orden anterior.');
+      window.location.reload();
+    }
+  });
+
+  list.addEventListener('dragend',()=>{
+    if(dragged && !dragged.classList.contains('is-saving')) restore();
+    cleanup();
+  });
 })();
 </script>
 {% endblock %}
