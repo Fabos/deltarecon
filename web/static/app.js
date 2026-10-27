@@ -845,11 +845,13 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   if(!['completed','failed','aborted','waiting_input'].includes(initialStatus)) poll();
 })();
 
-// v0.112 · HTTP Workbench: fast request-to-request navigation without leaving context.
+// v0.114 · HTTP Workbench Comfort: checkpoints, calm UI, marks, flow drafting and focus mode.
 (()=>{
   const root=document.querySelector('[data-workbench]');
   if(!root) return;
   const detailUrl=root.dataset.detailUrl;
+  const createFlowUrl=root.dataset.createFlowUrl;
+  const targetKey=root.dataset.targetKey||'';
   const list=root.querySelector('[data-traffic-list]');
   const rows=()=>[...root.querySelectorAll('[data-source-key][data-exchange-id]')];
   const esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -862,31 +864,39 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   let annotations=[];
   try{annotations=JSON.parse(root.querySelector('[data-workbench-annotations]')?.textContent||'[]')||[];}catch(_){annotations=[];}
 
+  // ---- Calm HTTP rendering -------------------------------------------------
   const prettyHttp=(text)=>{
     const src=String(text||'');
     const sep=src.includes('\r\n\r\n')?'\r\n\r\n':'\n\n';
     const idx=src.indexOf(sep);
     if(idx<0) return src;
-    const head=src.slice(0,idx);
-    const body=src.slice(idx+sep.length);
-    const trimmed=body.trim();
+    const head=src.slice(0,idx),body=src.slice(idx+sep.length),trimmed=body.trim();
     if(!trimmed) return src;
     try{return `${head}${sep}${JSON.stringify(JSON.parse(trimmed),null,2)}`;}catch(_){return src;}
   };
   const semanticCss=(cls)=>({auth:'http-ann-auth',resolver:'http-ann-resolver',context:'http-ann-context',entity:'http-ann-entity'}[String(cls||'').toLowerCase()]||'');
-  const semanticLabel=(a)=>{
-    const cls=String(a.classification||'').toUpperCase();
-    const owner=String(a.identity_name||a.object_type||'').trim();
-    return owner?`${cls} · ${owner}`:cls;
-  };
+  const semanticLabel=(a)=>{const cls=String(a.classification||'').toUpperCase(),owner=String(a.identity_name||a.object_type||'').trim();return owner?`${cls} · ${owner}`:cls;};
   const regexEscape=(v)=>String(v||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const looksJwt=(v)=>/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(v||'').trim());
+  const compactText=(v)=>{const x=String(v||'');return x.length>86?`${x.slice(0,34)}…${x.slice(-18)}`:x;};
+  const jwtSummary=(token)=>{
+    try{
+      const p=String(token).split('.')[1],pad=p.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-p.length%4)%4);
+      const obj=JSON.parse(decodeURIComponent(escape(atob(pad))));
+      return ['iss','sub','aud','exp'].filter(k=>obj[k]!=null).map(k=>`${k}: ${Array.isArray(obj[k])?obj[k].join(','):obj[k]}`).join(' · ');
+    }catch(_){return '';}
+  };
+  const smartValue=(value,label='value')=>{
+    const v=String(value||''),jwt=looksJwt(v),long=v.length>86;
+    if(!jwt&&!long) return esc(v);
+    const badge=jwt?'JWT':'long';
+    const summary=jwt?jwtSummary(v):'';
+    return `<span class="wb-compact-value ${jwt?'is-jwt':''}" data-copy-value="${esc(v)}" title="${esc((summary?summary+' · ':'')+'Clic para copiar el valor completo')}">${esc(compactText(v))}<em>${badge}</em></span>`;
+  };
   const semanticApplies=(a,line,idx,bodyStarted)=>{
     const loc=String(a.location||'').toLowerCase(),key=String(a.key_name||''),value=String(a.value_raw||a.value_preview||'');
     if(!value) return false;
-    if(loc.includes('_header:')){
-      const h=loc.split(':',2)[1]||'';
-      return new RegExp(`^${regexEscape(h)}\\s*:`, 'i').test(line) && line.includes(value);
-    }
+    if(loc.includes('_header:')){const h=loc.split(':',2)[1]||'';return new RegExp(`^${regexEscape(h)}\\s*:`, 'i').test(line) && line.includes(value);}
     if(loc.includes('_cookie:')) return /^(cookie|set-cookie)\s*:/i.test(line) && (!key||line.toLowerCase().includes(key.toLowerCase())) && line.includes(value);
     if(loc.includes('_query:')) return idx===0 && (!key||line.toLowerCase().includes(key.toLowerCase())) && (line.includes(value)||line.includes(encodeURIComponent(value)));
     if(loc.includes('_json:')) return bodyStarted && (!key||line.toLowerCase().includes(`"${key.toLowerCase()}"`)) && line.includes(value);
@@ -897,16 +907,26 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     let out=html;
     const candidates=(annotations||[]).filter(a=>String(a.side||'')===side&&semanticCss(a.classification)&&semanticApplies(a,line,idx,bodyStarted));
     for(const a of candidates){
-      const rawValue=String(a.value_raw||a.value_preview||'');
-      if(!rawValue) continue;
+      const rawValue=String(a.value_raw||a.value_preview||'');if(!rawValue)continue;
       const needle=esc(rawValue),css=semanticCss(a.classification),label=semanticLabel(a);
-      if(!needle||!out.includes(needle)) continue;
+      if(!needle||!out.includes(needle))continue;
       const reason=[a.match_reason,a.source_exchange_id?`aprendido en #${a.source_exchange_id}`:''].filter(Boolean).join(' · ');
-      out=out.replace(needle,`<span class="http-annotation ${css}" data-label="${esc(label)}" title="${esc(reason||label)}">${needle}</span>`);
+      out=out.replace(needle,`<span class="http-annotation ${css}" data-label="${esc(label)}" title="${esc(reason||label)}">${smartValue(rawValue,label)}</span>`);
     }
     return out;
   };
-  const lineHtml=(line,idx,bodyStarted,side)=>{
+  const headerTone=(name)=>{
+    const n=String(name||'').toLowerCase();
+    if(['authorization','cookie','set-cookie','x-api-key','proxy-authorization'].includes(n)) return 'header-critical';
+    if(n.includes('correlation')||n.includes('request-id')||n.includes('trace')||n.includes('session')||n.includes('tenant')||n.includes('user-id')) return 'header-context';
+    if(['user-agent','accept','accept-language','accept-encoding','cache-control','connection','sec-fetch-dest','sec-fetch-mode','sec-fetch-site','priority'].includes(n)||n.startsWith('sec-ch-')) return 'header-muted';
+    return '';
+  };
+  const compactKnownValue=(html,rawValue)=>{
+    const v=String(rawValue||'').trim();if(!(looksJwt(v)||v.length>110))return html;
+    const needle=esc(v);return html.includes(needle)?html.replace(needle,smartValue(v)):html;
+  };
+  const lineHtml=(line,idx,bodyStarted,side,smart)=>{
     if(!bodyStarted && idx===0){
       const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
       if(m){const h=`<span class="h-method">${esc(m[1])}</span> <span class="h-path">${esc(m[2])}</span>${m[3]?` <span class="h-proto">${esc(m[3])}</span>`:''}`;return `<span class="wb-http-line">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
@@ -915,7 +935,13 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     }
     if(!bodyStarted){
       const h=line.match(/^([^:]+):(.*)$/);
-      if(h){const x=`<span class="h-name">${esc(h[1])}</span>:<span class="h-value">${esc(h[2])}</span>`;return `<span class="wb-http-line">${decorateSemantic(x,line,side,idx,bodyStarted)}</span>`;}
+      if(h){
+        const name=h[1],value=h[2],tone=smart?headerTone(name):'';
+        let x=`<span class="h-name">${esc(name)}</span>:<span class="h-value">${esc(value)}</span>`;
+        x=decorateSemantic(x,line,side,idx,bodyStarted);
+        if(smart)x=compactKnownValue(x,value);
+        return `<span class="wb-http-line ${tone}">${x}</span>`;
+      }
     }
     let out=esc(line);
     if(bodyStarted){
@@ -923,91 +949,92 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
              .replace(/(:\s*)(&quot;.*?&quot;)/g,'$1<span class="h-json-string">$2</span>')
              .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="h-json-number">$2</span>')
              .replace(/(:\s*)(true|false|null)/g,'$1<span class="h-json-bool">$2</span>');
-    }
-    return `<span class="wb-http-line">${decorateSemantic(out||' ',line,side,idx,bodyStarted)}</span>`;
+      out=decorateSemantic(out,line,side,idx,bodyStarted);
+      if(smart){const jm=line.match(/^\s*"[^"]+"\s*:\s*"([^"]*)"\s*,?\s*$/);if(jm)out=compactKnownValue(out,jm[1]);}
+    }else out=decorateSemantic(out,line,side,idx,bodyStarted);
+    return `<span class="wb-http-line">${out||' '}</span>`;
   };
   const paint=(side)=>{
-    const pre=root.querySelector(`[data-http-view="${side}"]`),code=pre?.querySelector('code');
-    if(!pre||!code) return;
-    const text=mode[side]==='pretty'?prettyHttp(raw[side]):raw[side];
-    pre.classList.toggle('pretty',mode[side]==='pretty');
+    const pre=root.querySelector(`[data-http-view="${side}"]`),code=pre?.querySelector('code');if(!pre||!code)return;
+    const smart=mode[side]==='pretty',text=smart?prettyHttp(raw[side]):raw[side];pre.classList.toggle('pretty',smart);
     let body=false;
-    code.innerHTML=String(text||'').replace(/\r\n/g,'\n').split('\n').map((line,i)=>{
-      const rendered=lineHtml(line,i,body,side);
-      if(line==='') body=true;
-      return rendered;
-    }).join('\n');
+    code.innerHTML=String(text||'').replace(/\r\n/g,'\n').split('\n').map((line,i)=>{const rendered=lineHtml(line,i,body,side,smart);if(line==='')body=true;return rendered;}).join('\n');
     root.querySelectorAll(`[data-view-mode="${side}"]`).forEach(b=>b.classList.toggle('active',b.dataset.mode===mode[side]));
   };
-  paint('request'); paint('response');
+  paint('request');paint('response');
 
-  const renderIdentity=(d)=>{
-    const card=root.querySelector('[data-context-card="identity"]'); if(!card)return;
-    const i=d.identity,matches=d.identity_matches||[];
-    const inferred=!i&&matches.length?`<div class="wb-identity-matches">${matches.map(m=>`<div><strong>${esc(m.name)}</strong><span>Reconocida en HTTP · ${(m.classifications||[]).map(x=>esc(String(x).toUpperCase())).join(' + ')}</span></div>`).join('')}</div>`:'';
-    card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:(inferred||'<p class="wb-muted">Sin Identity resuelta.</p>')}`;
+  // ---- Context rendering ---------------------------------------------------
+  const renderIdentity=(d)=>{const card=root.querySelector('[data-context-card="identity"]');if(!card)return;const i=d.identity,matches=d.identity_matches||[];const inferred=!i&&matches.length?`<div class="wb-identity-matches">${matches.map(m=>`<div><strong>${esc(m.name)}</strong><span>Reconocida en HTTP · ${(m.classifications||[]).map(x=>esc(String(x).toUpperCase())).join(' + ')}</span></div>`).join('')}</div>`:'';card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:(inferred||'<p class="wb-muted">Sin Identity resuelta.</p>')}`;};
+  const renderObjects=(d)=>{const card=root.querySelector('[data-context-card="objects"]');if(!card)return;const os=d.objects||[];card.innerHTML=`<div class="wb-card-title"><span>◇</span><b>Objects</b><em>${os.length}</em></div>${os.length?`<div class="wb-object-list">${os.map(o=>`<div><b>${esc(o.type_name)}</b><code>${esc(o.identifier_raw||o.identifier_preview||'')}</code></div>`).join('')}</div>`:'<p class="wb-muted">Sin Objects correlacionados.</p>'}`;};
+  const renderSignals=(d)=>{const card=root.querySelector('[data-context-card="signals"]');if(!card)return;const ss=d.signals||[];card.innerHTML=`<div class="wb-card-title"><span>◉</span><b>Signals</b><em>${ss.length}</em></div>${ss.length?`<div class="wb-signal-list">${ss.map(s=>`<div><span class="signal-dot severity-${esc(s.severity)}"></span><span>${esc(s.title)}</span><em>${esc(s.severity)}</em></div>`).join('')}</div>`:'<p class="wb-muted">Sin Signals pendientes.</p>'}`;};
+  const renderFlow=(d)=>{const card=root.querySelector('[data-context-card="flow"]');if(!card)return;const fs=d.flows||[];card.innerHTML=`<div class="wb-card-title"><span>⌁</span><b>Flow</b></div>${fs.length?`<div class="wb-flow-list">${fs.map(f=>`<a href="/t/${encodeURIComponent(d.target_key)}/flows/${Number(f.id)}#flow-step-${Number(f.step_id)}"><span>${Number(f.position||0)}</span><b>${esc(f.name)}</b><small>${esc(f.label||f.state_label||'Step observado')}</small></a>`).join('')}</div>`:'<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>'}`;};
+  const renderRelated=(d)=>{const card=root.querySelector('[data-context-card="related"]');if(!card)return;const rs=d.related||[];card.innerHTML=`<summary class="wb-card-title"><span>↔</span><b>Related Requests</b><em>${rs.length}</em></summary>${rs.length?`<div class="wb-related-list">${rs.map(r=>`<button type="button" data-related-source="${esc(d.target_key)}" data-related-exchange="${Number(r.id)}"><b class="${methodClass(r.method)}">${esc(r.method)}</b><code>${esc(r.path)}</code><span>${esc(r.status_code??'—')}</span></button>`).join('')}</div>`:'<p class="wb-muted">Sin relaciones suficientes todavía.</p>'}`;};
+  const renderActions=(d)=>{const card=root.querySelector('.wb-quick-actions');if(!card)return;const e=d.exchange||{};if(d.is_inbox){card.innerHTML='<summary class="wb-card-title"><span>⚡</span><b>Quick Actions</b></summary><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Quick Actions</b></summary><div class="wb-action-grid"><a href="/t/${t}/exchange/${id}/inspect">Inspector avanzado</a><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/flows/add?exchange_id=${id}">Add to Flow</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay / Identity</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;};
+  const renderSemanticSummary=(d)=>{const el=root.querySelector('[data-semantic-summary]');if(!el)return;const c=d.semantic_counts||{},labels={auth:'AUTH',resolver:'RESOLVER',context:'CONTEXT',entity:'ENTITY'};el.innerHTML=Object.keys(labels).filter(k=>Number(c[k]||0)>0).map(k=>`<em class="wb-semantic-chip semantic-${k}">${labels[k]} ${Number(c[k])}</em>`).join('');};
+  const renderDetail=(d)=>{const e=d.exchange||{};raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];paint('request');paint('response');const sm=root.querySelector('[data-summary-method]');if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}const su=root.querySelector('[data-summary-url]');if(su)su.textContent=e.url||'';const ss=root.querySelector('[data-summary-status]');if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}const st=root.querySelector('[data-summary-target]');if(st)st.textContent=d.target_name||'';const si=root.querySelector('[data-summary-id]');if(si)si.textContent=e.id||'';const ct=root.querySelector('.wb-context-title>div>span');if(ct)ct.textContent=d.target_name||'';renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);};
+  const load=async(source,id,{scroll=true}={})=>{if(!detailUrl||!source||!id)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source,id:Number(id)};rows().forEach(r=>r.classList.toggle('active',r.dataset.sourceKey===source&&Number(r.dataset.exchangeId)===Number(id)));const activeRow=rows().find(r=>r.classList.contains('active'));if(scroll&&activeRow)activeRow.scrollIntoView({block:'nearest'});const current=new URL(window.location.href);current.searchParams.set('source_key',source);current.searchParams.set('exchange',String(id));history.replaceState(null,'',current);}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
+
+  // ---- Marking / mental flow drafting -------------------------------------
+  const markKey=`negro:wb:marks:${targetKey}`,splitKey=`negro:wb:split:${targetKey}`,contextKey='negro:wb:context-hidden';
+  let marks={};try{marks=JSON.parse(localStorage.getItem(markKey)||'{}')||{};}catch(_){marks={};}
+  let activeColor='blue';
+  const saveMarks=()=>localStorage.setItem(markKey,JSON.stringify(marks));
+  const markId=(r)=>r?.dataset.compoundId||`${r?.dataset.sourceKey||''}:${r?.dataset.exchangeId||''}`;
+  const applyMarks=()=>{rows().forEach(r=>{const m=marks[markId(r)];r.classList.remove('marked','mark-blue','mark-green','mark-purple','mark-orange');if(m?.color){r.classList.add('marked',`mark-${m.color}`);const pin=r.querySelector('[data-mark-toggle]');if(pin)pin.dataset.color=m.color;}});updateMarkToolbar();};
+  const updateMarkToolbar=()=>{const items=Object.values(marks).filter(Boolean),count=items.length;const el=root.querySelector('[data-mark-count]');if(el)el.textContent=`${count} marcada${count===1?'':'s'}`;root.querySelector('[data-create-flow-marked]')?.toggleAttribute('disabled',count===0);root.querySelector('[data-clear-marks]')?.toggleAttribute('disabled',count===0);};
+  const setMark=(r,color)=>{if(!r)return;const key=markId(r),current=marks[key];if(!color||(current&&current.color===color))delete marks[key];else marks[key]={source:r.dataset.sourceKey||'',id:Number(r.dataset.exchangeId||0),color};saveMarks();applyMarks();};
+  const clearMarks=()=>{marks={};saveMarks();applyMarks();};
+  applyMarks();
+
+  // ---- Flexible reading layout -------------------------------------------
+  const stack=root.querySelector('[data-message-stack]'),splitter=root.querySelector('[data-message-splitter]');
+  const setSplit=(pct)=>{const p=Math.max(20,Math.min(80,Number(pct)||50));root.style.setProperty('--wb-request-pct',`${p}%`);localStorage.setItem(splitKey,String(p));};
+  setSplit(localStorage.getItem(splitKey)||50);
+  const setPaneLayout=(layout)=>{root.dataset.paneLayout=layout;root.querySelectorAll('[data-pane-layout]').forEach(b=>b.classList.toggle('active',b.dataset.paneLayout===layout));};
+  setPaneLayout('split');
+  if(splitter&&stack){let dragging=false;splitter.addEventListener('pointerdown',ev=>{dragging=true;splitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-resizing');});splitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=stack.getBoundingClientRect();setSplit(((ev.clientY-rect.top)/rect.height)*100);});splitter.addEventListener('pointerup',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('dblclick',()=>setSplit(50));}
+  const setContextHidden=(hidden)=>{root.classList.toggle('context-hidden',hidden);localStorage.setItem(contextKey,hidden?'1':'0');};
+  setContextHidden(localStorage.getItem(contextKey)==='1');
+  const setFocus=(on)=>{document.body.classList.toggle('workbench-focus',on);root.classList.toggle('focus-mode',on);root.querySelectorAll('[data-focus-toggle]').forEach(b=>b.classList.toggle('active',on));};
+
+  // ---- Flow creation from marked requests --------------------------------
+  const dialog=root.querySelector('[data-flow-dialog]');
+  const markItemsForScope=(scope)=>Object.values(marks).filter(x=>x&&(scope==='all'||x.color===scope));
+  const refreshFlowDialogCount=()=>{const scope=dialog?.querySelector('[name="mark_scope"]')?.value||'all',count=root.querySelector('[data-flow-selection-count]');if(count)count.textContent=String(markItemsForScope(scope).length);};
+  const openFlowDialog=()=>{const sel=dialog?.querySelector('[name="mark_scope"]');if(sel)sel.value=activeColor;refreshFlowDialogCount();const err=root.querySelector('[data-flow-dialog-error]');if(err){err.hidden=true;err.textContent='';}dialog?.showModal();dialog?.querySelector('input[name="flow_name"]')?.focus();};
+  const closeFlowDialog=()=>dialog?.close();
+  const createFlow=async(name,scope='all')=>{
+    const items=markItemsForScope(scope),sources=[...new Set(items.map(x=>x.source))],err=root.querySelector('[data-flow-dialog-error]');
+    if(!items.length){if(err){err.hidden=false;err.textContent='No hay Requests marcadas con ese color.';}return;}
+    if(sources.length!==1||sources[0]!==targetKey){if(err){err.hidden=false;err.textContent='Para crear un Flow, las Requests marcadas deben pertenecer al proyecto actual y no al Traffic Inbox.';}return;}
+    const res=await fetch(createFlowUrl,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({csrf:root.dataset.csrf||'',source_key:sources[0],exchange_ids:items.map(x=>x.id),name})});
+    const body=await res.json().catch(()=>({}));if(!res.ok){if(err){err.hidden=false;err.textContent=body.detail||`No se pudo crear el Flow (${res.status})`;}return;}
+    clearMarks();window.location.href=body.href;
   };
-  const renderObjects=(d)=>{
-    const card=root.querySelector('[data-context-card="objects"]'); if(!card)return; const os=d.objects||[];
-    card.innerHTML=`<div class="wb-card-title"><span>◇</span><b>Objects</b><em>${os.length}</em></div>${os.length?`<div class="wb-object-list">${os.map(o=>`<div><b>${esc(o.type_name)}</b><code>${esc(o.identifier_raw||o.identifier_preview||'')}</code></div>`).join('')}</div>`:'<p class="wb-muted">Sin Objects correlacionados.</p>'}`;
-  };
-  const renderSignals=(d)=>{
-    const card=root.querySelector('[data-context-card="signals"]'); if(!card)return; const ss=d.signals||[];
-    card.innerHTML=`<div class="wb-card-title"><span>◉</span><b>Signals</b><em>${ss.length}</em></div>${ss.length?`<div class="wb-signal-list">${ss.map(s=>`<div><span class="signal-dot severity-${esc(s.severity)}"></span><span>${esc(s.title)}</span><em>${esc(s.severity)}</em></div>`).join('')}</div>`:'<p class="wb-muted">Sin Signals pendientes.</p>'}`;
-  };
-  const renderFlow=(d)=>{
-    const card=root.querySelector('[data-context-card="flow"]'); if(!card)return; const fs=d.flows||[];
-    card.innerHTML=`<div class="wb-card-title"><span>⌁</span><b>Flow</b></div>${fs.length?`<div class="wb-flow-list">${fs.map(f=>`<a href="/t/${encodeURIComponent(d.target_key)}/flows/${Number(f.id)}#flow-step-${Number(f.step_id)}"><span>${Number(f.position||0)}</span><b>${esc(f.name)}</b><small>${esc(f.label||f.state_label||'Step observado')}</small></a>`).join('')}</div>`:'<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>'}`;
-  };
-  const renderRelated=(d)=>{
-    const card=root.querySelector('[data-context-card="related"]'); if(!card)return; const rs=d.related||[];
-    card.innerHTML=`<div class="wb-card-title"><span>↔</span><b>Related Requests</b><em>${rs.length}</em></div>${rs.length?`<div class="wb-related-list">${rs.map(r=>`<button type="button" data-related-source="${esc(d.target_key)}" data-related-exchange="${Number(r.id)}"><b class="${methodClass(r.method)}">${esc(r.method)}</b><code>${esc(r.path)}</code><span>${esc(r.status_code??'—')}</span></button>`).join('')}</div>`:'<p class="wb-muted">Sin relaciones suficientes todavía.</p>'}`;
-  };
-  const renderActions=(d)=>{
-    const card=root.querySelector('.wb-quick-actions'); if(!card)return; const e=d.exchange||{};
-    if(d.is_inbox){card.innerHTML='<div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}
-    const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);
-    card.innerHTML=`<div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div><div class="wb-action-grid"><a href="/t/${t}/exchange/${id}/inspect">Inspector avanzado</a><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/flows/add?exchange_id=${id}">Add to Flow</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay / Identity</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;
-  };
-  const renderSemanticSummary=(d)=>{
-    const el=root.querySelector('[data-semantic-summary]');if(!el)return;const c=d.semantic_counts||{};
-    const labels={auth:'AUTH',resolver:'RESOLVER',context:'CONTEXT',entity:'ENTITY'};
-    el.innerHTML=Object.keys(labels).filter(k=>Number(c[k]||0)>0).map(k=>`<em class="wb-semantic-chip semantic-${k}">${labels[k]} ${Number(c[k])}</em>`).join('');
-  };
-  const renderDetail=(d)=>{
-    const e=d.exchange||{}; raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];paint('request');paint('response');
-    const sm=root.querySelector('[data-summary-method]'); if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}
-    const su=root.querySelector('[data-summary-url]'); if(su)su.textContent=e.url||'';
-    const ss=root.querySelector('[data-summary-status]'); if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}
-    const st=root.querySelector('[data-summary-target]'); if(st)st.textContent=d.target_name||'';
-    const si=root.querySelector('[data-summary-id]'); if(si)si.textContent=e.id||'';
-    const ct=root.querySelector('.wb-context-title span'); if(ct)ct.textContent=d.target_name||'';
-    renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);
-  };
-  const load=async(source,id,{scroll=true}={})=>{
-    if(!detailUrl||!source||!id)return;
-    root.classList.add('is-loading');
-    try{
-      const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));
-      const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);
-      const d=await res.json();renderDetail(d);selected={source,id:Number(id)};
-      rows().forEach(r=>r.classList.toggle('active',r.dataset.sourceKey===source&&Number(r.dataset.exchangeId)===Number(id)));
-      const activeRow=rows().find(r=>r.classList.contains('active'));if(scroll&&activeRow)activeRow.scrollIntoView({block:'nearest'});
-      const current=new URL(window.location.href);current.searchParams.set('source_key',source);current.searchParams.set('exchange',String(id));history.replaceState(null,'',current);
-    }catch(err){console.error('Negro Workbench',err);}
-    finally{root.classList.remove('is-loading');}
-  };
-  list?.addEventListener('click',ev=>{const a=ev.target.closest('[data-source-key][data-exchange-id]');if(!a)return;ev.preventDefault();load(a.dataset.sourceKey,Number(a.dataset.exchangeId));});
+
+  // ---- Events --------------------------------------------------------------
+  list?.addEventListener('click',ev=>{const pin=ev.target.closest('[data-mark-toggle]');if(pin){ev.preventDefault();ev.stopPropagation();setMark(pin.closest('[data-source-key][data-exchange-id]'),activeColor);return;}const a=ev.target.closest('[data-source-key][data-exchange-id]');if(!a)return;ev.preventDefault();load(a.dataset.sourceKey,Number(a.dataset.exchangeId));});
   root.addEventListener('click',ev=>{
+    const color=ev.target.closest('[data-mark-color]');if(color){activeColor=color.dataset.markColor;root.querySelectorAll('[data-mark-color]').forEach(b=>b.classList.toggle('active',b===color));return;}
+    if(ev.target.closest('[data-clear-marks]')){clearMarks();return;}
+    if(ev.target.closest('[data-create-flow-marked]')){openFlowDialog();return;}
+    if(ev.target.closest('[data-close-flow-dialog]')){closeFlowDialog();return;}
+    const layout=ev.target.closest('[data-pane-layout]');if(layout){setPaneLayout(layout.dataset.paneLayout);return;}
+    if(ev.target.closest('[data-context-toggle]')){setContextHidden(!root.classList.contains('context-hidden'));return;}
+    if(ev.target.closest('[data-focus-toggle]')){setFocus(!document.body.classList.contains('workbench-focus'));return;}
+    const cv=ev.target.closest('[data-copy-value]');if(cv){navigator.clipboard?.writeText(cv.dataset.copyValue||'');cv.classList.add('copied');setTimeout(()=>cv.classList.remove('copied'),700);return;}
     const rel=ev.target.closest('[data-related-source][data-related-exchange]');if(rel){ev.preventDefault();load(rel.dataset.relatedSource,Number(rel.dataset.relatedExchange));return;}
     const view=ev.target.closest('[data-view-mode]');if(view){mode[view.dataset.viewMode]=view.dataset.mode;paint(view.dataset.viewMode);return;}
     const copy=ev.target.closest('[data-copy-http]');if(copy){navigator.clipboard?.writeText(raw[copy.dataset.copyHttp]||'');copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',800);}
   });
+  dialog?.querySelector('[name="mark_scope"]')?.addEventListener('change',refreshFlowDialogCount);
+  dialog?.querySelector('[data-flow-dialog-form]')?.addEventListener('submit',ev=>{ev.preventDefault();const fd=new FormData(ev.currentTarget);createFlow(fd.get('flow_name')||'',fd.get('mark_scope')||'all');});
   document.addEventListener('keydown',ev=>{
     const tag=(document.activeElement?.tagName||'').toLowerCase();if(['input','textarea','select'].includes(tag))return;
     if(ev.key==='/'){const q=root.querySelector('.wb-search input[name="q"]');if(q){ev.preventDefault();q.focus();}return;}
+    if(ev.key.toLowerCase()==='f'){ev.preventDefault();setFocus(!document.body.classList.contains('workbench-focus'));return;}
+    if(['0','1','2','3','4'].includes(ev.key)){const r=rows().find(x=>x.dataset.sourceKey===selected.source&&Number(x.dataset.exchangeId)===selected.id);if(r){ev.preventDefault();const colors={1:'blue',2:'green',3:'purple',4:'orange'};if(ev.key==='0'){const k=markId(r);delete marks[k];saveMarks();applyMarks();}else setMark(r,colors[ev.key]);}return;}
     if(!['ArrowDown','ArrowUp','j','k'].includes(ev.key))return;
-    const rs=rows();if(!rs.length)return;let idx=rs.findIndex(r=>r.dataset.sourceKey===selected.source&&Number(r.dataset.exchangeId)===selected.id);if(idx<0)idx=0;
-    idx=(ev.key==='ArrowDown'||ev.key==='j')?Math.min(rs.length-1,idx+1):Math.max(0,idx-1);const r=rs[idx];ev.preventDefault();load(r.dataset.sourceKey,Number(r.dataset.exchangeId));
+    const rs=rows();if(!rs.length)return;let idx=rs.findIndex(r=>r.dataset.sourceKey===selected.source&&Number(r.dataset.exchangeId)===selected.id);if(idx<0)idx=0;idx=(ev.key==='ArrowDown'||ev.key==='j')?Math.min(rs.length-1,idx+1):Math.max(0,idx-1);const r=rs[idx];ev.preventDefault();load(r.dataset.sourceKey,Number(r.dataset.exchangeId));
   });
 })();

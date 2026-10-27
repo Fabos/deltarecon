@@ -2458,3 +2458,13 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Conserva `Mover por número` como fallback accesible dentro del menú `⋯`.
 - Mantiene `Quitar del Flow` separado de `Omitir`: quitar elimina sólo la pertenencia al Flow; la Request HTTP original permanece en Negro.
 - Añade `Eliminar Flow` dentro de una sección administrativa colapsada y con confirmación explícita. El borrado no elimina `http_exchanges`; sí elimina configuración/escenarios/runs que pertenezcan directamente al Flow mediante las relaciones existentes.
+
+## v0.114 — Workbench Comfort
+- Checkpoints persistentes y `Clear view` no destructivo.
+- Vista Todo / Desde checkpoint con búsqueda y filtros dentro del corte activo.
+- Marcado de Requests por cuatro colores con persistencia local.
+- Conversión de Requests marcadas a Flow real por color o selección completa.
+- Split Request/Response redimensionable y modos Request-only / Response-only.
+- Context colapsable y Focus Mode.
+- Pretty orientado a baja fatiga: headers rutinarios atenuados y JWT/valores largos compactados sin alterar Raw.
+- 122 tests en verde.

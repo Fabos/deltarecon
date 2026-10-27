@@ -28,7 +28,25 @@ def inbox_workspace() -> Path:
     return Path.home() / ".local" / "share" / "negro" / "traffic-inbox"
 
 
+def _init_workbench_schema(conn) -> None:
+    """Persistent, non-destructive UI memory for the global HTTP Workbench."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS workbench_checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL DEFAULT '',
+            cutoff_at TEXT NOT NULL,
+            target_hint TEXT NOT NULL DEFAULT 'all',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workbench_checkpoints_created
+            ON workbench_checkpoints(created_at DESC, id DESC);
+        """
+    )
+
+
 def _init_context_schema(conn) -> None:
+    _init_workbench_schema(conn)
     # The inbox is not a registered project, so initialize the contextual tables
     # that normal project startup would have created before the Workbench reads it.
     try:
@@ -67,6 +85,68 @@ def ensure_inbox_paths() -> dict[str, Path]:
     with core.db_connect(paths) as conn:
         _init_context_schema(conn)
     return paths
+
+
+def create_checkpoint(*, label: str = "", target_hint: str = "all") -> dict[str, Any]:
+    """Create a visual cut in history without deleting any HTTP exchange."""
+    paths = ensure_inbox_paths()
+    cutoff = core.now_iso()
+    clean_label = str(label or "").strip()[:120]
+    if not clean_label:
+        clean_label = f"Checkpoint {cutoff[11:16]}"
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        cur = conn.execute(
+            "INSERT INTO workbench_checkpoints(label,cutoff_at,target_hint,created_at) VALUES(?,?,?,?)",
+            (clean_label, cutoff, str(target_hint or "all")[:120], cutoff),
+        )
+        row = conn.execute("SELECT * FROM workbench_checkpoints WHERE id=?", (int(cur.lastrowid),)).fetchone()
+        conn.commit()
+        return dict(row)
+
+
+def list_checkpoints(*, limit: int = 30) -> list[dict[str, Any]]:
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM workbench_checkpoints ORDER BY id DESC LIMIT ?",
+            (max(1, min(int(limit), 100)),),
+        ).fetchall()]
+
+
+def get_checkpoint(checkpoint_id: int) -> dict[str, Any] | None:
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute("SELECT * FROM workbench_checkpoints WHERE id=?", (int(checkpoint_id),)).fetchone()
+        return dict(row) if row else None
+
+
+def latest_checkpoint() -> dict[str, Any] | None:
+    rows = list_checkpoints(limit=1)
+    return rows[0] if rows else None
+
+
+def rename_checkpoint(checkpoint_id: int, label: str) -> dict[str, Any] | None:
+    clean = str(label or "").strip()[:120]
+    if not clean:
+        return get_checkpoint(checkpoint_id)
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        conn.execute("UPDATE workbench_checkpoints SET label=? WHERE id=?", (clean, int(checkpoint_id)))
+        conn.commit()
+    return get_checkpoint(checkpoint_id)
+
+
+def delete_checkpoint(checkpoint_id: int) -> bool:
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        cur = conn.execute("DELETE FROM workbench_checkpoints WHERE id=?", (int(checkpoint_id),))
+        conn.commit()
+        return bool(cur.rowcount)
 
 
 def source_catalog(*, include_inbox: bool = True) -> list[dict[str, Any]]:
@@ -139,7 +219,7 @@ def _row_tags(row: dict[str, Any]) -> list[dict[str, str]]:
     return tags[:5]
 
 
-def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: bool = True, limit: int = 300) -> dict[str, Any]:
+def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: bool = True, since: str = "", limit: int = 300) -> dict[str, Any]:
     qn = str(q or "").strip().lower()
     hn = str(host or "").strip().lower()
     mn = str(method or "").strip().upper()
@@ -147,6 +227,7 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
     scn = str(scope or "").strip().upper()
     tn = str(tool or "").strip().upper()
     requested_target = str(target or "all")
+    cutoff = str(since or "").strip()
     rows: list[dict[str, Any]] = []
     hosts: set[str] = set()
     tools: set[str] = set()
@@ -189,6 +270,8 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
                     if row.get("tool"):
                         tools.add(str(row["tool"]).upper())
                     hay = " ".join(str(row.get(k) or "") for k in ("method", "hostname", "path", "url", "status_code", "identity_name", "object_type", "flow_name", "source", "tool")).lower()
+                    if cutoff and str(row.get("last_seen_at") or "") < cutoff:
+                        continue
                     if qn and qn not in hay:
                         continue
                     if hn and hn not in str(row.get("hostname") or "").lower():

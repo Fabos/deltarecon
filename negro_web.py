@@ -3822,6 +3822,17 @@ def create_app(default_domain: str, default_workspace: Path):
     def http_workbench_page(request: Request, target_key: str):
         domain, workspace, _paths = _target_context(target_key)
         qp = request.query_params
+        checkpoints = workbench.list_checkpoints(limit=40)
+        history_mode = str(qp.get("history") or ("checkpoint" if checkpoints else "all"))
+        if history_mode not in {"all", "checkpoint"}:
+            history_mode = "all"
+        try:
+            checkpoint_id = int(qp.get("checkpoint_id") or 0)
+        except Exception:
+            checkpoint_id = 0
+        active_checkpoint = workbench.get_checkpoint(checkpoint_id) if checkpoint_id > 0 else (checkpoints[0] if history_mode == "checkpoint" and checkpoints else None)
+        if history_mode == "checkpoint" and not active_checkpoint:
+            history_mode = "all"
         filters = {
             "q": str(qp.get("q") or ""),
             "target": str(qp.get("target") or "all"),
@@ -3831,8 +3842,11 @@ def create_app(default_domain: str, default_workspace: Path):
             "scope": str(qp.get("scope") or ""),
             "tool": str(qp.get("tool") or ""),
             "hide_static": str(qp.get("hide_static") or "1") != "0",
+            "since": str(active_checkpoint.get("cutoff_at") or "") if history_mode == "checkpoint" and active_checkpoint else "",
         }
-        traffic = workbench.list_traffic(**filters, limit=350)
+        traffic = workbench.list_traffic(**filters, limit=500)
+        filters["history"] = history_mode
+        filters["checkpoint_id"] = int(active_checkpoint.get("id") or 0) if active_checkpoint else 0
         selected_source = str(qp.get("source_key") or "")
         try:
             selected_exchange = int(qp.get("exchange") or 0)
@@ -3845,9 +3859,65 @@ def create_app(default_domain: str, default_workspace: Path):
         selected = workbench.detail(selected_source, selected_exchange) if selected_source and selected_exchange > 0 else None
         return render(
             request, "http_workbench.html", target_key, domain, workspace,
-            traffic=traffic, filters=filters, selected=selected,
+            traffic=traffic, filters=filters, selected=selected, checkpoints=checkpoints,
+            active_checkpoint=active_checkpoint,
             selected_source=selected_source, selected_exchange=selected_exchange,
         )
+
+    @app.post("/t/{target_key}/workbench/checkpoints")
+    def http_workbench_checkpoint_create(request: Request, target_key: str, label: str = Form(""), target_hint: str = Form("all"), csrf: str = Form(...)):
+        _target_context(target_key)
+        verify_csrf(csrf)
+        cp = workbench.create_checkpoint(label=label, target_hint=target_hint)
+        return RedirectResponse(
+            url=f"/t/{target_key}/workbench?history=checkpoint&checkpoint_id={int(cp['id'])}&target={urllib.parse.quote(str(target_hint or 'all'))}",
+            status_code=303,
+        )
+
+    @app.post("/t/{target_key}/workbench/checkpoints/{checkpoint_id}/rename")
+    def http_workbench_checkpoint_rename(request: Request, target_key: str, checkpoint_id: int, label: str = Form(...), csrf: str = Form(...)):
+        _target_context(target_key)
+        verify_csrf(csrf)
+        workbench.rename_checkpoint(int(checkpoint_id), label)
+        return RedirectResponse(url=f"/t/{target_key}/workbench?history=checkpoint&checkpoint_id={int(checkpoint_id)}", status_code=303)
+
+    @app.post("/api/t/{target_key}/workbench/create-flow", response_class=JSONResponse)
+    async def http_workbench_create_flow_from_marked(request: Request, target_key: str):
+        _target_context(target_key)
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        source_key = str(payload.get("source_key") or "")
+        if not source_key or source_key == workbench.INBOX_KEY:
+            raise HTTPException(status_code=400, detail="Las Requests sin proyecto no pueden convertirse en Flow.")
+        if source_key != target_key:
+            raise HTTPException(status_code=400, detail="Abre el proyecto dueño de las Requests antes de crear el Flow.")
+        raw_ids = payload.get("exchange_ids") or []
+        try:
+            exchange_ids = list(dict.fromkeys(int(x) for x in raw_ids if int(x) > 0))[:200]
+        except Exception:
+            raise HTTPException(status_code=400, detail="Selección inválida")
+        if not exchange_ids:
+            raise HTTPException(status_code=400, detail="Marca al menos una Request")
+        source = workbench.source_for_key(source_key)
+        if not source:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        import negro_flows as flow_tools
+        with core.db_connect(source["paths"]) as conn:
+            flow_tools.init_schema(conn)
+            marks = ",".join("?" for _ in exchange_ids)
+            rows = conn.execute(
+                f"SELECT id,last_seen_at FROM http_exchanges WHERE id IN ({marks}) ORDER BY last_seen_at,id",
+                tuple(exchange_ids),
+            ).fetchall()
+            ordered = [int(r["id"]) for r in rows]
+            if len(ordered) != len(exchange_ids):
+                raise HTTPException(status_code=400, detail="Una o más Requests ya no existen")
+            name = str(payload.get("name") or "").strip()[:160] or f"Flow desde HTTP · {core.now_iso()[11:16]}"
+            flow_id = flow_tools.create_flow(conn, name, description="Creado desde Requests marcadas en HTTP Workbench.")
+            for exid in ordered:
+                flow_tools.add_step(conn, flow_id, exid, allow_duplicate=True, _schema_ready=True)
+            conn.commit()
+        return {"ok": True, "flow_id": flow_id, "step_count": len(ordered), "href": f"/t/{target_key}/flows/{flow_id}"}
 
     @app.get("/api/t/{target_key}/workbench/detail", response_class=JSONResponse)
     def http_workbench_detail_api(target_key: str, source_key: str, exchange_id: int):
