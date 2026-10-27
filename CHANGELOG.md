@@ -1,3 +1,12 @@
+# v0.115.7 — Live Checkpoint + Resizable Traffic + Context Return
+
+- Corrige una carrera en polling live: cada lectura fija primero un `latest_event_id` y consulta solo hasta ese límite, evitando saltar capturas que llegan entre la consulta de filas y el avance del cursor.
+- Checkpoints continúan mostrando tráfico nuevo sin recargar.
+- Traffic Inbox ahora tiene splitter horizontal para ajustar su altura; doble clic restaura el tamaño y la preferencia se guarda por proyecto.
+- Al ocultar Context queda una pestaña vertical visible `Context · C` dentro del visor HTTP para recuperarlo con mouse.
+- Request/Response side-by-side, controles v0.115.6, JWT, marcas, checkpoints y Flow wiring permanecen intactos.
+- Regresión completa: 144 tests.
+
 # v0.115.4 — HTTP Focus + Manual Input Reuse
 
 - HTTP Workbench prioriza Request/Response con panel central más ancho.

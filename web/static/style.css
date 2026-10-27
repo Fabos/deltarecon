@@ -1519,3 +1519,71 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
   .wb-message-splitter{flex:0 0 7px;width:auto;height:7px;min-width:0;cursor:row-resize;border-left:0;border-right:0;border-top:1px solid #15222c;border-bottom:1px solid #15222c}
   .wb-message-splitter span{width:34px;height:2px}
 }
+
+/* v0.115.7 · Stable live window + resizable Traffic deck + Context return tab */
+.wb-grid{
+  position:relative;
+  grid-template-columns:minmax(0,1fr) minmax(250px,18%);
+  grid-template-rows:minmax(120px,var(--wb-traffic-height,27%)) 7px minmax(0,1fr);
+}
+.wb-traffic-panel{grid-column:1/-1;grid-row:1}
+.wb-traffic-splitter{
+  grid-column:1/-1;grid-row:2;
+  display:grid;place-items:center;
+  min-height:7px;height:7px;
+  cursor:row-resize;touch-action:none;
+  background:#091017;
+  border-top:1px solid #15222c;border-bottom:1px solid #15222c;
+  z-index:8;
+}
+.wb-traffic-splitter span{width:38px;height:2px;border-radius:999px;background:#314252}
+.wb-traffic-splitter:hover span,.wb-traffic-resizing .wb-traffic-splitter span{background:#6687a4}
+.wb-http-panel{grid-column:1;grid-row:3;position:relative}
+.wb-context-panel{grid-column:2;grid-row:3}
+.wb-shell.context-hidden .wb-grid{
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:minmax(120px,var(--wb-traffic-height,27%)) 7px minmax(0,1fr);
+}
+.wb-shell.context-hidden .wb-http-panel{grid-column:1/-1;grid-row:3}
+.wb-shell.context-hidden .wb-context-panel{display:none}
+.wb-shell.traffic-collapsed .wb-grid,
+.workbench-focus .wb-shell.traffic-collapsed .wb-grid{
+  grid-template-rows:43px 0 minmax(0,1fr);
+}
+.wb-shell.traffic-collapsed .wb-traffic-splitter{display:none}
+.workbench-focus .wb-grid{
+  grid-template-columns:minmax(0,1fr) minmax(270px,20%);
+  grid-template-rows:minmax(120px,var(--wb-traffic-height,27%)) 7px minmax(0,1fr);
+}
+.workbench-focus .wb-shell.context-hidden .wb-grid{grid-template-columns:minmax(0,1fr)}
+
+/* When Context is closed, always leave a visible mouse affordance to bring it back. */
+.wb-context-reopen{
+  display:none;
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+  z-index:18;
+  width:28px;min-height:108px;
+  padding:8px 4px;
+  border:1px solid #2b3d4b;border-right:0;
+  border-radius:8px 0 0 8px;
+  background:#0e1922;color:#91a7b9;
+  box-shadow:-8px 0 24px rgba(0,0,0,.24);
+  cursor:pointer;
+  align-items:center;justify-content:center;gap:6px;
+  flex-direction:column;
+}
+.wb-context-reopen span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.wb-context-reopen kbd{font:7px ui-monospace,monospace;color:#6f8495;border:1px solid #314451;border-radius:4px;padding:2px 3px;background:#091117}
+.wb-context-reopen b{font-size:13px;line-height:1;color:#71889b}
+.wb-context-reopen:hover{border-color:#4b687e;background:#12212c;color:#d1dde6}
+.wb-shell.context-hidden .wb-context-reopen{display:flex}
+
+@media(max-width:1100px){
+  .wb-grid{grid-template-columns:minmax(0,1fr) 265px;grid-template-rows:minmax(110px,var(--wb-traffic-height,25%)) 7px minmax(0,1fr)}
+  .wb-shell.context-hidden .wb-grid{grid-template-rows:minmax(110px,var(--wb-traffic-height,25%)) 7px minmax(0,1fr)}
+}
+@media(max-width:900px){
+  .wb-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(110px,var(--wb-traffic-height,25%)) 7px minmax(0,1fr)}
+  .wb-http-panel{grid-column:1/-1;grid-row:3}
+  .wb-context-panel{grid-row:3}
+}

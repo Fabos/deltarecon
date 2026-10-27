@@ -591,13 +591,20 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
     if qn:
         clauses.append("(lower(url) LIKE ? OR lower(hostname) LIKE ? OR lower(path) LIKE ? OR lower(method) LIKE ?)")
         like=f"%{qn}%"; params.extend([like,like,like,like])
-    query = "SELECT * FROM workbench_capture_events WHERE " + " AND ".join(clauses) + " ORDER BY id DESC LIMIT ?"
-    params.append(max(1000, int(limit) * 8))
+    # Freeze one capture-window per read. Previously the rows query and MAX(id)
+    # query were separate snapshots; a Burp event committed between them could be
+    # absent from `raw` but still advance `latest_event_id`, causing the browser
+    # cursor to skip that event forever. Bound the query by a snapshot max taken
+    # first so anything arriving during this poll is picked up by the next one.
     with core.db_connect(paths) as conn:
         _init_workbench_schema(conn)
-        raw = [dict(r) for r in conn.execute(query, tuple(params)).fetchall()]
         max_row = conn.execute("SELECT COALESCE(MAX(id),0) id FROM workbench_capture_events").fetchone()
         latest_id = int(max_row["id"] or 0)
+        clauses.append("id<=?")
+        params.append(latest_id)
+        query = "SELECT * FROM workbench_capture_events WHERE " + " AND ".join(clauses) + " ORDER BY id DESC LIMIT ?"
+        params.append(max(1000, int(limit) * 8))
+        raw = [dict(r) for r in conn.execute(query, tuple(params)).fetchall()]
 
     filtered: list[dict[str, Any]] = []
     for row in raw:

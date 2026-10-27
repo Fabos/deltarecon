@@ -868,6 +868,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   // Workbench preference keys must exist before the first renderer/layout setup runs.
   // Declaring these here prevents a TDZ ReferenceError that previously stopped every control.
   const markKey=`negro:wb:marks:${targetKey}`,splitKey=`negro:wb:split:${targetKey}`,contextKey='negro:wb:context-hidden',trafficKey='negro:wb:traffic-collapsed',wrapKey='negro:wb:exact-lines';
+  const trafficHeightKey=`negro:wb:traffic-height:${targetKey}`;
 
   // ---- Calm HTTP rendering -------------------------------------------------
   const prettyHttp=(text)=>{
@@ -1014,8 +1015,16 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const setPaneLayout=(layout)=>{root.dataset.paneLayout=layout;root.querySelectorAll('[data-pane-layout]').forEach(b=>b.classList.toggle('active',b.dataset.paneLayout===layout));};
   setPaneLayout('split');
   if(splitter&&stack){let dragging=false;splitter.addEventListener('pointerdown',ev=>{dragging=true;splitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-resizing');});splitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=stack.getBoundingClientRect();setSplit(((ev.clientX-rect.left)/rect.width)*100);});splitter.addEventListener('pointerup',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('pointercancel',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('dblclick',()=>setSplit(50));}
-  const setContextHidden=(hidden)=>{root.classList.toggle('context-hidden',hidden);localStorage.setItem(contextKey,hidden?'1':'0');};
-  const setTrafficCollapsed=(collapsed)=>{root.classList.remove('traffic-hidden');root.classList.toggle('traffic-collapsed',collapsed);localStorage.setItem(trafficKey,collapsed?'1':'0');root.querySelectorAll('[data-traffic-toggle]').forEach(b=>{b.classList.toggle('active',!collapsed);b.setAttribute('aria-expanded',collapsed?'false':'true');});if(!collapsed){const r=rows().find(x=>Number(x.dataset.eventId)===selected.event);window.setTimeout(()=>r?.scrollIntoView({block:'nearest'}),0);}};
+
+  // Traffic height is independently resizable, just like the Request/Response width.
+  const trafficSplitter=root.querySelector('[data-traffic-splitter]'),grid=root.querySelector('.wb-grid');
+  const setTrafficHeight=(px,{persist=true}={})=>{if(!grid)return;const rect=grid.getBoundingClientRect(),max=Math.max(180,rect.height*0.68),h=Math.max(120,Math.min(max,Number(px)||rect.height*.27));root.style.setProperty('--wb-traffic-height',`${Math.round(h)}px`);if(persist)localStorage.setItem(trafficHeightKey,String(Math.round(h)));};
+  const restoreTrafficHeight=()=>{const saved=Number(localStorage.getItem(trafficHeightKey)||0);if(saved>0)setTrafficHeight(saved,{persist:false});else root.style.removeProperty('--wb-traffic-height');};
+  restoreTrafficHeight();
+  if(trafficSplitter&&grid){let dragging=false;trafficSplitter.addEventListener('pointerdown',ev=>{dragging=true;trafficSplitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-traffic-resizing');ev.preventDefault();});trafficSplitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=grid.getBoundingClientRect();setTrafficHeight(ev.clientY-rect.top);});const stop=()=>{dragging=false;document.body.classList.remove('wb-traffic-resizing');};trafficSplitter.addEventListener('pointerup',stop);trafficSplitter.addEventListener('pointercancel',stop);trafficSplitter.addEventListener('dblclick',()=>{localStorage.removeItem(trafficHeightKey);root.style.removeProperty('--wb-traffic-height');});}
+
+  const setContextHidden=(hidden)=>{root.classList.toggle('context-hidden',hidden);localStorage.setItem(contextKey,hidden?'1':'0');root.querySelectorAll('[data-context-toggle]').forEach(b=>{b.classList.toggle('active',!hidden);b.setAttribute('aria-expanded',hidden?'false':'true');});};
+  const setTrafficCollapsed=(collapsed)=>{root.classList.remove('traffic-hidden');root.classList.toggle('traffic-collapsed',collapsed);localStorage.setItem(trafficKey,collapsed?'1':'0');root.querySelectorAll('[data-traffic-toggle]').forEach(b=>{b.classList.toggle('active',!collapsed);b.setAttribute('aria-expanded',collapsed?'false':'true');});if(!collapsed){restoreTrafficHeight();const r=rows().find(x=>Number(x.dataset.eventId)===selected.event);window.setTimeout(()=>r?.scrollIntoView({block:'nearest'}),0);}};
   setContextHidden(localStorage.getItem(contextKey)==='1');
   setTrafficCollapsed(localStorage.getItem(trafficKey)==='1');
   const setFocus=(on)=>{document.body.classList.toggle('workbench-focus',on);root.classList.toggle('focus-mode',on);root.querySelectorAll('[data-focus-toggle]').forEach(b=>b.classList.toggle('active',on));};

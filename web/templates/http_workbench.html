@@ -104,7 +104,10 @@
       <button type="button" class="wb-new-events-jump" data-new-events-jump hidden title="Requests que llegaron en vivo y todavía no has abierto">↓ <b>0</b> por revisar</button>
     </aside>
 
+    <div class="wb-traffic-splitter" data-traffic-splitter title="Arrastra para cambiar la altura de Traffic Inbox · doble clic para restaurar"><span></span></div>
+
     <main class="wb-http-panel" data-http-panel>
+      <button type="button" class="wb-context-reopen" data-context-toggle title="Mostrar Context (C)"><span>Context</span><kbd>C</kbd><b>‹</b></button>
       {% if selected %}
       <div class="wb-request-summary" data-summary>
         <div class="wb-summary-primary"><b class="wb-method method-{{ selected.exchange.method|lower }}" data-summary-method>{{ selected.exchange.method }}</b><span data-summary-url>{{ selected.exchange.url }}</span></div>
