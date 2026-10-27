@@ -2520,3 +2520,12 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Traffic rows are now a dense table: event, method, host, endpoint/params, context tags, status, time.
 - HTTP Request/Response owns the primary width; Context remains collapsible (`C`).
 - Live polling, unread/review state, marks, checkpoints, JWT inspector and Flow wiring are preserved.
+
+## 2026-10-27 · v0.115.6 — Burp Split View + Reliable Workbench Controls
+- Corrige dos fallos JS que podían detener o desviar los controles del Workbench: `wrapKey` se usaba antes de declararse y el selector genérico `[data-pane-layout]` hacía que cualquier click dentro del Workbench se interpretara como un control de layout.
+- Request y Response pasan a mostrarse lado a lado por defecto: Request izquierda, Response derecha, con divisor vertical redimensionable y doble click 50/50.
+- `Split`, `Request` y `Response` siguen disponibles; Split ahora representa explícitamente la vista lado a lado.
+- Pretty/Raw, Líneas exactas/Ajustar líneas, Pantalla completa, Traffic, Context y shortcuts `T/C/F` quedan nuevamente operativos.
+- Traffic Inbox permanece como deck superior plegable; Context sigue como panel derecho plegable.
+- El bloque genérico “ESTA PANTALLA RESPONDE” se elimina del HTTP Workbench para recuperar espacio vertical.
+- Validación real en Chromium de los controles principales y 141/141 tests en verde.

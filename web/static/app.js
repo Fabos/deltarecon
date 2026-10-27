@@ -865,6 +865,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const mode={request:'pretty',response:'pretty'};
   let annotations=[];
   try{annotations=JSON.parse(root.querySelector('[data-workbench-annotations]')?.textContent||'[]')||[];}catch(_){annotations=[];}
+  // Workbench preference keys must exist before the first renderer/layout setup runs.
+  // Declaring these here prevents a TDZ ReferenceError that previously stopped every control.
+  const markKey=`negro:wb:marks:${targetKey}`,splitKey=`negro:wb:split:${targetKey}`,contextKey='negro:wb:context-hidden',trafficKey='negro:wb:traffic-collapsed',wrapKey='negro:wb:exact-lines';
 
   // ---- Calm HTTP rendering -------------------------------------------------
   const prettyHttp=(text)=>{
@@ -993,7 +996,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const loadExchange=async(source,id)=>{if(!detailUrl||!source||!id)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source,event:0,exchange:Number(id)};rows().forEach(r=>r.classList.remove('active'));}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
 
   // ---- Marking / mental flow drafting -------------------------------------
-  const markKey=`negro:wb:marks:${targetKey}`,splitKey=`negro:wb:split:${targetKey}`,contextKey='negro:wb:context-hidden',trafficKey='negro:wb:traffic-collapsed',wrapKey='negro:wb:exact-lines';
+  // Preference keys are declared near Workbench initialization so every control can use them safely.
   let marks={};try{marks=JSON.parse(localStorage.getItem(markKey)||'{}')||{};}catch(_){marks={};}
   let activeColor='blue';
   const saveMarks=()=>localStorage.setItem(markKey,JSON.stringify(marks));
@@ -1010,7 +1013,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   setSplit(localStorage.getItem(splitKey)||50);
   const setPaneLayout=(layout)=>{root.dataset.paneLayout=layout;root.querySelectorAll('[data-pane-layout]').forEach(b=>b.classList.toggle('active',b.dataset.paneLayout===layout));};
   setPaneLayout('split');
-  if(splitter&&stack){let dragging=false;splitter.addEventListener('pointerdown',ev=>{dragging=true;splitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-resizing');});splitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=stack.getBoundingClientRect();setSplit(((ev.clientY-rect.top)/rect.height)*100);});splitter.addEventListener('pointerup',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('dblclick',()=>setSplit(50));}
+  if(splitter&&stack){let dragging=false;splitter.addEventListener('pointerdown',ev=>{dragging=true;splitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-resizing');});splitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=stack.getBoundingClientRect();setSplit(((ev.clientX-rect.left)/rect.width)*100);});splitter.addEventListener('pointerup',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('pointercancel',()=>{dragging=false;document.body.classList.remove('wb-resizing');});splitter.addEventListener('dblclick',()=>setSplit(50));}
   const setContextHidden=(hidden)=>{root.classList.toggle('context-hidden',hidden);localStorage.setItem(contextKey,hidden?'1':'0');};
   const setTrafficCollapsed=(collapsed)=>{root.classList.remove('traffic-hidden');root.classList.toggle('traffic-collapsed',collapsed);localStorage.setItem(trafficKey,collapsed?'1':'0');root.querySelectorAll('[data-traffic-toggle]').forEach(b=>{b.classList.toggle('active',!collapsed);b.setAttribute('aria-expanded',collapsed?'false':'true');});if(!collapsed){const r=rows().find(x=>Number(x.dataset.eventId)===selected.event);window.setTimeout(()=>r?.scrollIntoView({block:'nearest'}),0);}};
   setContextHidden(localStorage.getItem(contextKey)==='1');
@@ -1080,7 +1083,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     if(ev.target.closest('[data-clear-marks]')){clearMarks();return;}
     if(ev.target.closest('[data-create-flow-marked]')){openFlowDialog();return;}
     if(ev.target.closest('[data-close-flow-dialog]')){closeFlowDialog();return;}
-    const layout=ev.target.closest('[data-pane-layout]');if(layout){setPaneLayout(layout.dataset.paneLayout);return;}
+    const layout=ev.target.closest('button[data-pane-layout]');if(layout){setPaneLayout(layout.dataset.paneLayout);return;}
     if(ev.target.closest('[data-context-toggle]')){setContextHidden(!root.classList.contains('context-hidden'));return;}
     if(ev.target.closest('[data-traffic-toggle]')){setTrafficCollapsed(!root.classList.contains('traffic-collapsed'));return;}
     if(ev.target.closest('[data-http-fullscreen]')){toggleFullscreen();return;}
