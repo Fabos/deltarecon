@@ -3848,6 +3848,7 @@ def create_app(default_domain: str, default_workspace: Path):
         traffic = workbench.list_traffic(**filters, limit=500)
         filters["history"] = history_mode
         filters["checkpoint_id"] = int(active_checkpoint.get("id") or 0) if active_checkpoint else 0
+        explicit_event = bool(str(qp.get("event") or "").strip())
         try:
             selected_event = int(qp.get("event") or 0)
         except Exception:
@@ -3855,7 +3856,12 @@ def create_app(default_domain: str, default_workspace: Path):
         if selected_event <= 0 and traffic.get("rows"):
             selected_event = int(traffic["rows"][-1].get("id") or 0)
         selected = workbench.detail_event(selected_event) if selected_event > 0 else None
-        traffic["unread_count"] = workbench.event_unread_count()
+        if selected_event > 0:
+            for row in traffic.get("rows") or []:
+                if int(row.get("id") or 0) == selected_event and row.get("is_unread"):
+                    row["is_unread"] = False
+                    traffic["unread_count"] = max(0, int(traffic.get("unread_count") or 0) - 1)
+                    break
         selected_source = str((selected or {}).get("target_key") or "")
         selected_exchange = int(((selected or {}).get("exchange") or {}).get("id") or 0)
         return render(
@@ -3863,6 +3869,7 @@ def create_app(default_domain: str, default_workspace: Path):
             traffic=traffic, filters=filters, selected=selected, checkpoints=checkpoints,
             active_checkpoint=active_checkpoint, selected_event=selected_event,
             selected_source=selected_source, selected_exchange=selected_exchange,
+            live_follow_default=not explicit_event,
         )
 
     @app.post("/t/{target_key}/workbench/checkpoints")

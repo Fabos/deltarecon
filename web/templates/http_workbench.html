@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}HTTP Workbench · Negro{% endblock %}
 {% block content %}
-<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}">
+<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
   <header class="wb-toolbar">
     <div class="wb-title-block">
       <span class="wb-title-icon">⌁</span>
@@ -56,7 +56,7 @@
   <div class="wb-grid">
     <aside class="wb-traffic-panel">
       <div class="wb-panel-heading wb-traffic-heading">
-        <div class="wb-traffic-title"><h2>Traffic Inbox</h2><span><b data-event-count>{{ traffic.count }}</b> eventos</span><button type="button" class="wb-unread-badge {% if not traffic.unread_count %}is-empty{% endif %}" data-unread-badge title="Marcar todas como vistas">● <b data-unread-count>{{ traffic.unread_count }}</b> nuevas</button></div>
+        <div class="wb-traffic-title"><h2>Traffic Inbox</h2><span><b data-event-count>{{ traffic.count }}</b> eventos</span><button type="button" class="wb-unread-badge {% if not traffic.unread_count %}is-empty{% endif %}" data-unread-badge title="Marcar todas como vistas">● <b data-unread-count>{{ traffic.unread_count }}</b> nuevas</button><button type="button" class="wb-live-follow-toggle" data-live-follow-toggle title="Solo desplaza la timeline cuando tú decidas seguir el presente"><i></i><b>Seguir LIVE</b></button></div>
         <div class="wb-mark-toolbar" data-mark-toolbar>
           <span class="wb-mark-count" data-mark-count>0 marcadas</span>
           <div class="wb-color-palette" title="Color de marca activa">
@@ -79,6 +79,7 @@
           <span class="wb-row-main">
             <span class="wb-row-line"><b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b><strong>{{ row.hostname }}</strong></span>
             <code>{{ row.path }}</code>
+            {% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}
             <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
           </span>
           <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
@@ -149,6 +150,7 @@
     <div class="wb-jwt-dialog-shell">
       <header class="wb-jwt-title"><div><small>JWT INSPECTOR</small><h3>Token decodificado</h3><p>Decodificar no verifica la firma.</p></div><button type="button" data-close-jwt-dialog>×</button></header>
       <div class="wb-jwt-token"><div><b>JWT completo</b><span data-jwt-length></span></div><textarea readonly data-jwt-full spellcheck="false"></textarea><div class="wb-jwt-token-actions"><button type="button" data-copy-jwt>Copiar JWT</button><button type="button" data-toggle-jwt-full>Expandir</button></div></div>
+      <div class="wb-jwt-error" data-jwt-error hidden></div>
       <div class="wb-jwt-grid">
         <section><h4>Header</h4><div class="wb-jwt-claims" data-jwt-header></div></section>
         <section><h4>Claims</h4><div class="wb-jwt-claims" data-jwt-claims></div></section>

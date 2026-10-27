@@ -501,6 +501,45 @@ def _enrich_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                       FROM http_exchanges e WHERE e.id IN ({marks})
                 """, tuple(ids))
                 meta = {int(x["id"]): x for x in data}
+
+                # Compact request parameters for the timeline. Use value_preview only:
+                # it is already the privacy/sensitivity-safe projection used elsewhere
+                # in Negro and lets the analyst distinguish repeated endpoint calls.
+                param_rows = _safe_query(conn, f"""
+                    SELECT exchange_id,name,normalized_name,location,value_preview,id
+                      FROM parameter_observations
+                     WHERE exchange_id IN ({marks})
+                       AND (location='query' OR location='form' OR location='multipart' OR location LIKE 'json:%')
+                     ORDER BY exchange_id,
+                              CASE WHEN location='query' THEN 0
+                                   WHEN location LIKE 'json:%' THEN 1
+                                   WHEN location='form' THEN 2
+                                   ELSE 3 END,
+                              id
+                """, tuple(ids))
+                previews: dict[int, list[dict[str, str]]] = {}
+                seen_params: dict[int, set[tuple[str, str]]] = {}
+                for pr in param_rows:
+                    exid = int(pr.get("exchange_id") or 0)
+                    name = str(pr.get("name") or pr.get("normalized_name") or "").strip()
+                    if not name:
+                        continue
+                    value = str(pr.get("value_preview") or "")
+                    key = (name.lower(), value)
+                    bucket_seen = seen_params.setdefault(exid, set())
+                    if key in bucket_seen:
+                        continue
+                    bucket_seen.add(key)
+                    bucket = previews.setdefault(exid, [])
+                    if len(bucket) >= 4:
+                        continue
+                    bucket.append({
+                        "name": name[:80],
+                        "value": value[:120],
+                        "location": str(pr.get("location") or "")[:80],
+                    })
+                for exid, items in previews.items():
+                    meta.setdefault(exid, {"id": exid})["request_params"] = items
         cat = catalog.get(source_key) or {}
         for row in source_rows:
             enriched = dict(meta.get(int(row.get("exchange_id") or 0), {}))
@@ -557,7 +596,6 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
     with core.db_connect(paths) as conn:
         _init_workbench_schema(conn)
         raw = [dict(r) for r in conn.execute(query, tuple(params)).fetchall()]
-        unread = int(conn.execute("SELECT COUNT(*) c FROM workbench_capture_events WHERE seen_at IS NULL").fetchone()["c"] or 0)
         max_row = conn.execute("SELECT COALESCE(MAX(id),0) id FROM workbench_capture_events").fetchone()
         latest_id = int(max_row["id"] or 0)
 
@@ -579,7 +617,7 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
         "tools": tools,
         "projects": source_catalog(include_inbox=True),
         "count": len(filtered),
-        "unread_count": unread,
+        "unread_count": sum(1 for r in filtered if r.get("is_unread")),
         "latest_event_id": latest_id,
     }
 

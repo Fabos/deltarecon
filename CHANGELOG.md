@@ -1,3 +1,10 @@
+## v0.115.1 — Live UX Hotfix
+
+- Parameter preview en Traffic Inbox.
+- JWT Inspector tolerante a payloads no decodificables.
+- Live-follow explícito y no invasivo.
+- Seleccionar una request congela el scroll.
+
 # v0.115 — Live Traffic Timeline
 
 - Capture Events globales y secuenciales por ocurrencia real de Burp.
