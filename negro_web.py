@@ -3843,24 +3843,25 @@ def create_app(default_domain: str, default_workspace: Path):
             "tool": str(qp.get("tool") or ""),
             "hide_static": str(qp.get("hide_static") or "1") != "0",
             "since": str(active_checkpoint.get("cutoff_at") or "") if history_mode == "checkpoint" and active_checkpoint else "",
+            "since_event_id": int(active_checkpoint.get("cutoff_event_id") or 0) if history_mode == "checkpoint" and active_checkpoint else 0,
         }
         traffic = workbench.list_traffic(**filters, limit=500)
         filters["history"] = history_mode
         filters["checkpoint_id"] = int(active_checkpoint.get("id") or 0) if active_checkpoint else 0
-        selected_source = str(qp.get("source_key") or "")
         try:
-            selected_exchange = int(qp.get("exchange") or 0)
+            selected_event = int(qp.get("event") or 0)
         except Exception:
-            selected_exchange = 0
-        if (not selected_source or selected_exchange <= 0) and traffic.get("rows"):
-            first = traffic["rows"][0]
-            selected_source = str(first.get("target_key") or "")
-            selected_exchange = int(first.get("id") or 0)
-        selected = workbench.detail(selected_source, selected_exchange) if selected_source and selected_exchange > 0 else None
+            selected_event = 0
+        if selected_event <= 0 and traffic.get("rows"):
+            selected_event = int(traffic["rows"][-1].get("id") or 0)
+        selected = workbench.detail_event(selected_event) if selected_event > 0 else None
+        traffic["unread_count"] = workbench.event_unread_count()
+        selected_source = str((selected or {}).get("target_key") or "")
+        selected_exchange = int(((selected or {}).get("exchange") or {}).get("id") or 0)
         return render(
             request, "http_workbench.html", target_key, domain, workspace,
             traffic=traffic, filters=filters, selected=selected, checkpoints=checkpoints,
-            active_checkpoint=active_checkpoint,
+            active_checkpoint=active_checkpoint, selected_event=selected_event,
             selected_source=selected_source, selected_exchange=selected_exchange,
         )
 
@@ -3891,11 +3892,23 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=400, detail="Las Requests sin proyecto no pueden convertirse en Flow.")
         if source_key != target_key:
             raise HTTPException(status_code=400, detail="Abre el proyecto dueño de las Requests antes de crear el Flow.")
-        raw_ids = payload.get("exchange_ids") or []
+        raw_event_ids = payload.get("event_ids") or []
+        raw_exchange_ids = payload.get("exchange_ids") or []  # v0.114 compatibility
         try:
-            exchange_ids = list(dict.fromkeys(int(x) for x in raw_ids if int(x) > 0))[:200]
+            event_ids = [int(x) for x in raw_event_ids if int(x) > 0][:200]
+            fallback_exchange_ids = [int(x) for x in raw_exchange_ids if int(x) > 0][:200]
         except Exception:
             raise HTTPException(status_code=400, detail="Selección inválida")
+        if event_ids:
+            resolved_events = [workbench.get_capture_event(eid) for eid in event_ids]
+            if any(not x for x in resolved_events):
+                raise HTTPException(status_code=400, detail="Una o más Requests ya no existen")
+            if any(str(x.get("target_key") or "") != source_key for x in resolved_events if x):
+                raise HTTPException(status_code=400, detail="Las Requests marcadas deben pertenecer al mismo proyecto")
+            ordered_events = sorted((x for x in resolved_events if x), key=lambda x: int(x.get("id") or 0))
+            exchange_ids = [int(x.get("exchange_id") or 0) for x in ordered_events]
+        else:
+            exchange_ids = list(dict.fromkeys(fallback_exchange_ids))
         if not exchange_ids:
             raise HTTPException(status_code=400, detail="Marca al menos una Request")
         source = workbench.source_for_key(source_key)
@@ -3904,30 +3917,44 @@ def create_app(default_domain: str, default_workspace: Path):
         import negro_flows as flow_tools
         with core.db_connect(source["paths"]) as conn:
             flow_tools.init_schema(conn)
-            marks = ",".join("?" for _ in exchange_ids)
-            rows = conn.execute(
-                f"SELECT id,last_seen_at FROM http_exchanges WHERE id IN ({marks}) ORDER BY last_seen_at,id",
-                tuple(exchange_ids),
-            ).fetchall()
-            ordered = [int(r["id"]) for r in rows]
-            if len(ordered) != len(exchange_ids):
+            existing = {int(r["id"]) for r in conn.execute(
+                f"SELECT id FROM http_exchanges WHERE id IN ({','.join('?' for _ in set(exchange_ids))})",
+                tuple(sorted(set(exchange_ids))),
+            ).fetchall()} if exchange_ids else set()
+            if any(exid not in existing for exid in exchange_ids):
                 raise HTTPException(status_code=400, detail="Una o más Requests ya no existen")
             name = str(payload.get("name") or "").strip()[:160] or f"Flow desde HTTP · {core.now_iso()[11:16]}"
-            flow_id = flow_tools.create_flow(conn, name, description="Creado desde Requests marcadas en HTTP Workbench.")
-            for exid in ordered:
+            flow_id = flow_tools.create_flow(conn, name, description="Creado desde Capture Events marcados en HTTP Workbench.")
+            for exid in exchange_ids:
                 flow_tools.add_step(conn, flow_id, exid, allow_duplicate=True, _schema_ready=True)
             conn.commit()
-        return {"ok": True, "flow_id": flow_id, "step_count": len(ordered), "href": f"/t/{target_key}/flows/{flow_id}"}
+        return {"ok": True, "flow_id": flow_id, "step_count": len(exchange_ids), "href": f"/t/{target_key}/flows/{flow_id}"}
 
     @app.get("/api/t/{target_key}/workbench/detail", response_class=JSONResponse)
-    def http_workbench_detail_api(target_key: str, source_key: str, exchange_id: int):
-        # target_key is the UI anchor only; source_key identifies the project DB or
-        # the global unassigned inbox that owns this exact exchange.
+    def http_workbench_detail_api(target_key: str, event_id: int = 0, source_key: str = "", exchange_id: int = 0):
         _target_context(target_key)
-        item = workbench.detail(source_key, int(exchange_id))
+        item = workbench.detail_event(int(event_id)) if int(event_id or 0) > 0 else workbench.detail(source_key, int(exchange_id))
         if not item:
             raise HTTPException(status_code=404, detail="Request no encontrada")
         return item
+
+    @app.get("/api/t/{target_key}/workbench/events", response_class=JSONResponse)
+    def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0):
+        _target_context(target_key)
+        data = workbench.list_traffic(
+            q=q,target=target,host=host,method=method,status=status,scope=scope,tool=tool,
+            hide_static=bool(hide_static),since_event_id=int(since_event_id or 0),after_event_id=int(after_event_id or 0),limit=500,sync_legacy=False,
+        )
+        return data
+
+    @app.post("/api/t/{target_key}/workbench/seen-all", response_class=JSONResponse)
+    async def http_workbench_seen_all_api(request: Request, target_key: str):
+        _target_context(target_key)
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        through = int(payload.get("through_event_id") or 0)
+        count = workbench.mark_all_events_seen(through_event_id=through if through > 0 else None)
+        return {"ok": True, "updated": count, "unread_count": workbench.event_unread_count()}
 
     @app.get("/t/{target_key}/notifications", response_class=HTMLResponse)
     def notifications_page(request: Request, target_key: str):
@@ -7517,6 +7544,12 @@ def create_app(default_domain: str, default_workspace: Path):
             project_name = str(target.get("name") or domain)
         tool = str(payload.get("tool") or "OTHER").upper()
         source = "burp_proxy" if tool == "PROXY" else ("burp_repeater" if tool == "REPEATER" else "burp_other")
+        # Migrate pre-v0.115 history before persisting this new occurrence so the
+        # first live event is not also mistaken for historical synthetic traffic.
+        try:
+            workbench.ensure_timeline_bootstrap()
+        except Exception as timeline_exc:
+            print(f"[workbench-bootstrap] error={type(timeline_exc).__name__}: {str(timeline_exc)[:160]}")
         try:
             result = core.upsert_http_observation(
                 paths, domain,
@@ -7539,6 +7572,12 @@ def create_app(default_domain: str, default_workspace: Path):
             )
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
+        capture_event = None
+        if not bool(payload.get("context_sync")):
+            try:
+                capture_event = workbench.record_capture_event(target_key, int(result["exchange_id"]))
+            except Exception as event_exc:
+                print(f"[workbench-event] exchange={result.get('exchange_id')} error={type(event_exc).__name__}: {str(event_exc)[:160]}")
         # Passive Burp intelligence: inspect only the traffic already captured. This
         # never sends a network request and stores only masked secret values.
         passive = {"signals": [], "new_notifications": []}
@@ -7618,6 +7657,7 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
         return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": project_name, "unassigned": bool(unassigned), **result,
+                "capture_event_id": int(capture_event.get("id") or 0) if capture_event else None,
                 "signal_count": signal_count, **context_summary,
                 "new_notification_count": len(passive.get("new_notifications") or [])}
 

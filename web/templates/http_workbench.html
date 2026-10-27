@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}HTTP Workbench · Negro{% endblock %}
 {% block content %}
-<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}">
+<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}">
   <header class="wb-toolbar">
     <div class="wb-title-block">
       <span class="wb-title-icon">⌁</span>
@@ -22,7 +22,7 @@
     <div class="wb-toolbar-actions">
       <button type="button" class="wb-icon-action" data-focus-toggle title="Focus Mode (F)">Focus</button>
       <button type="button" class="wb-icon-action" data-context-toggle title="Mostrar/ocultar Context">Context</button>
-      <div class="wb-capture-state" title="El Bridge conserva todo el tráfico HTTP observado"><span></span> Captura global</div>
+      <div class="wb-capture-state" title="El Bridge conserva todo el tráfico HTTP observado"><span></span> LIVE · Captura global</div>
     </div>
   </header>
 
@@ -42,7 +42,7 @@
 
   <div class="wb-session-strip">
     <div class="wb-history-state">
-      {% if active_checkpoint and filters.history=='checkpoint' %}<span class="wb-history-dot"></span><b>{{ active_checkpoint.label }}</b><small>mostrando tráfico desde {{ active_checkpoint.cutoff_at[11:19] }}</small>
+      {% if active_checkpoint and filters.history=='checkpoint' %}<span class="wb-history-dot"></span><b>{{ active_checkpoint.label }}</b><small>desde evento #{{ active_checkpoint.cutoff_event_id or '?' }} · {{ active_checkpoint.cutoff_at[11:19] }}</small>
       {% else %}<span class="wb-history-dot all"></span><b>Historial completo</b><small>nada ha sido eliminado</small>{% endif %}
     </div>
     <div class="wb-session-actions">
@@ -56,7 +56,7 @@
   <div class="wb-grid">
     <aside class="wb-traffic-panel">
       <div class="wb-panel-heading wb-traffic-heading">
-        <div><h2>Traffic Inbox</h2><span>{{ traffic.count }} requests</span></div>
+        <div class="wb-traffic-title"><h2>Traffic Inbox</h2><span><b data-event-count>{{ traffic.count }}</b> eventos</span><button type="button" class="wb-unread-badge {% if not traffic.unread_count %}is-empty{% endif %}" data-unread-badge title="Marcar todas como vistas">● <b data-unread-count>{{ traffic.unread_count }}</b> nuevas</button></div>
         <div class="wb-mark-toolbar" data-mark-toolbar>
           <span class="wb-mark-count" data-mark-count>0 marcadas</span>
           <div class="wb-color-palette" title="Color de marca activa">
@@ -72,22 +72,23 @@
       <div class="wb-table-head"><span>#</span><span>Request</span><span>Status</span><span>Hora</span></div>
       <div class="wb-traffic-list" data-traffic-list>
         {% for row in traffic.rows %}
-        <a class="wb-traffic-row {% if selected_source==row.target_key and selected_exchange==row.id %}active{% endif %}"
-           href="{{ target_base }}/workbench?source_key={{ row.target_key }}&exchange={{ row.id }}"
-           data-source-key="{{ row.target_key }}" data-exchange-id="{{ row.id }}" data-compound-id="{{ row.compound_id }}">
-          <span class="wb-row-id"><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>{{ row.id }}</span>
+        <a class="wb-traffic-row {% if selected_event==row.id %}active{% endif %} {% if row.is_unread and selected_event!=row.id %}is-unread{% endif %}"
+           href="{{ target_base }}/workbench?event={{ row.id }}"
+           data-source-key="{{ row.target_key }}" data-event-id="{{ row.id }}" data-exchange-id="{{ row.exchange_id }}" data-compound-id="{{ row.compound_id }}" data-unread="{{ '1' if row.is_unread and selected_event!=row.id else '0' }}">
+          <span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>{{ row.id }}</span>
           <span class="wb-row-main">
             <span class="wb-row-line"><b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b><strong>{{ row.hostname }}</strong></span>
             <code>{{ row.path }}</code>
             <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
           </span>
           <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
-          <time>{{ (row.last_seen_at or '')[11:19] }}</time>
+          <time>{{ (row.captured_at or '')[11:19] }}</time>
         </a>
         {% else %}
         <div class="wb-empty"><b>No hay tráfico en esta vista.</b><span>{% if filters.history=='checkpoint' %}El checkpoint está limpio. Navega con Burp y las nuevas Requests aparecerán aquí; cambia a “Todo el tráfico” cuando necesites memoria anterior.{% else %}Navega con Burp o quita filtros. Negro conserva el tráfico aunque no pertenezca a un proyecto.{% endif %}</span></div>
         {% endfor %}
       </div>
+      <button type="button" class="wb-new-events-jump" data-new-events-jump hidden>↓ <b>0</b> nuevas</button>
     </aside>
 
     <main class="wb-http-panel" data-http-panel>
@@ -95,7 +96,7 @@
       <div class="wb-request-summary" data-summary>
         <div class="wb-summary-primary"><b class="wb-method method-{{ selected.exchange.method|lower }}" data-summary-method>{{ selected.exchange.method }}</b><span data-summary-url>{{ selected.exchange.url }}</span></div>
         <div class="wb-summary-controls"><button type="button" class="active" data-pane-layout="split">Split</button><button type="button" data-pane-layout="request">Request</button><button type="button" data-pane-layout="response">Response</button></div>
-        <div class="wb-summary-meta"><span class="wb-semantic-summary" data-semantic-summary>{% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT'),('entity','ENTITY')] %}{% if selected.semantic_counts.get(cls) %}<em class="wb-semantic-chip semantic-{{ cls }}">{{ label }} {{ selected.semantic_counts.get(cls) }}</em>{% endif %}{% endfor %}</span><span class="wb-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-summary-status>{{ selected.exchange.status_code or '—' }}</span><span data-summary-target>{{ selected.target_name }}</span><span>#<b data-summary-id>{{ selected.exchange.id }}</b></span><span>{{ selected.exchange.response_size or 0 }} B</span></div>
+        <div class="wb-summary-meta"><span class="wb-semantic-summary" data-semantic-summary>{% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT'),('entity','ENTITY')] %}{% if selected.semantic_counts.get(cls) %}<em class="wb-semantic-chip semantic-{{ cls }}">{{ label }} {{ selected.semantic_counts.get(cls) }}</em>{% endif %}{% endfor %}</span><span class="wb-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-summary-status>{{ selected.exchange.status_code or '—' }}</span><span data-summary-target>{{ selected.target_name }}</span><span>evento #<b data-summary-id>{{ selected.event_id or selected.exchange.id }}</b></span><span class="wb-exchange-ref">exchange #{{ selected.exchange.id }}</span><span>{{ selected.exchange.response_size or 0 }} B</span></div>
       </div>
 
       <div class="wb-message-stack" data-message-stack>
@@ -143,6 +144,18 @@
       {% endif %}
     </aside>
   </div>
+
+  <dialog class="wb-jwt-dialog" data-jwt-dialog>
+    <div class="wb-jwt-dialog-shell">
+      <header class="wb-jwt-title"><div><small>JWT INSPECTOR</small><h3>Token decodificado</h3><p>Decodificar no verifica la firma.</p></div><button type="button" data-close-jwt-dialog>×</button></header>
+      <div class="wb-jwt-token"><div><b>JWT completo</b><span data-jwt-length></span></div><textarea readonly data-jwt-full spellcheck="false"></textarea><div class="wb-jwt-token-actions"><button type="button" data-copy-jwt>Copiar JWT</button><button type="button" data-toggle-jwt-full>Expandir</button></div></div>
+      <div class="wb-jwt-grid">
+        <section><h4>Header</h4><div class="wb-jwt-claims" data-jwt-header></div></section>
+        <section><h4>Claims</h4><div class="wb-jwt-claims" data-jwt-claims></div></section>
+      </div>
+      <footer class="wb-jwt-footer"><span data-jwt-signature></span><span>⚠ Firma no verificada por este visor</span></footer>
+    </div>
+  </dialog>
 
   <dialog class="wb-flow-dialog" data-flow-dialog>
     <form method="dialog" data-flow-dialog-form>

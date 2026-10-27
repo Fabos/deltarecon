@@ -41,8 +41,44 @@ def _init_workbench_schema(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_workbench_checkpoints_created
             ON workbench_checkpoints(created_at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS workbench_capture_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_key TEXT NOT NULL,
+            exchange_id INTEGER NOT NULL,
+            captured_at TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            tool TEXT NOT NULL DEFAULT '',
+            method TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            hostname TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '/',
+            status_code INTEGER,
+            request_size INTEGER NOT NULL DEFAULT 0,
+            response_size INTEGER NOT NULL DEFAULT 0,
+            request_content_type TEXT,
+            response_content_type TEXT,
+            authenticated_observed INTEGER NOT NULL DEFAULT 0,
+            burp_scope_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+            is_inbox INTEGER NOT NULL DEFAULT 0,
+            synthetic INTEGER NOT NULL DEFAULT 0,
+            seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_target_id
+            ON workbench_capture_events(target_key, id);
+        CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_exchange
+            ON workbench_capture_events(target_key, exchange_id, id);
+        CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_seen
+            ON workbench_capture_events(seen_at, id);
+        CREATE TABLE IF NOT EXISTS workbench_timeline_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         """
     )
+    # Additive migration for v0.115 checkpoints created by older Workbench versions.
+    cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(workbench_checkpoints)").fetchall()}
+    if "cutoff_event_id" not in cols:
+        conn.execute("ALTER TABLE workbench_checkpoints ADD COLUMN cutoff_event_id INTEGER")
 
 
 def _init_context_schema(conn) -> None:
@@ -87,6 +123,227 @@ def ensure_inbox_paths() -> dict[str, Path]:
     return paths
 
 
+
+def _event_source_snapshot(source_key: str, exchange_id: int) -> dict[str, Any] | None:
+    source = source_for_key(source_key)
+    if not source:
+        return None
+    with core.db_connect(source["paths"]) as conn:
+        _init_context_schema(conn)
+        row = conn.execute(
+            """
+            SELECT e.id,e.source,e.tool,e.status_code,e.request_size,e.response_size,
+                   e.burp_scope_status,e.first_seen_at,e.last_seen_at,
+                   o.method,o.authenticated_observed,o.request_content_type,o.response_content_type,
+                   r.url,r.path,h.hostname
+              FROM http_exchanges e
+              JOIN resource_operations o ON o.id=e.operation_id
+              JOIN resources r ON r.id=o.resource_id
+              JOIN hosts h ON h.id=r.host_id
+             WHERE e.id=?
+            """,
+            (int(exchange_id),),
+        ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["target_key"] = str(source["key"])
+        item["target_name"] = str(source["name"])
+        item["is_inbox"] = bool(source["inbox"])
+        return item
+
+
+def _timeline_bootstrapped(conn) -> bool:
+    row = conn.execute("SELECT value FROM workbench_timeline_state WHERE key='bootstrapped_v115'").fetchone()
+    return bool(row and str(row["value"] or ""))
+
+
+def ensure_timeline_bootstrap() -> None:
+    """One-time migration: preserve pre-v0.115 history as synthetic, already-seen events.
+
+    Exact occurrence order before v0.115 cannot be reconstructed after exchange
+    deduplication, so we intentionally create one synthetic event per historical
+    exchange ordered by first_seen_at. New Burp captures are exact events.
+    """
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        if _timeline_bootstrapped(conn):
+            return
+
+    historical: list[dict[str, Any]] = []
+    for source in source_catalog(include_inbox=True):
+        try:
+            if source["inbox"]:
+                spaths = ensure_inbox_paths()
+            else:
+                target_obj = core.get_target(str(source["key"]))
+                if not target_obj:
+                    continue
+                spaths = core.ensure_workspace(Path(str(target_obj.get("workspace") or "")).expanduser(), str(target_obj.get("domain") or source["key"]), scopes=target_obj.get("scopes"), project_name=target_obj.get("name"))
+            with core.db_connect(spaths) as sconn:
+                rows = _safe_query(sconn, """
+                    SELECT e.id exchange_id,e.source,e.tool,e.status_code,e.request_size,e.response_size,e.burp_scope_status,
+                           e.last_seen_at captured_at,o.method,o.authenticated_observed,o.request_content_type,o.response_content_type,
+                           r.url,r.path,h.hostname
+                      FROM http_exchanges e
+                      JOIN resource_operations o ON o.id=e.operation_id
+                      JOIN resources r ON r.id=o.resource_id
+                      JOIN hosts h ON h.id=r.host_id
+                     ORDER BY e.first_seen_at,e.id
+                """)
+                for row in rows:
+                    row["target_key"] = str(source["key"])
+                    row["is_inbox"] = 1 if source["inbox"] else 0
+                    historical.append(row)
+        except Exception:
+            continue
+
+    historical.sort(key=lambda r: (str(r.get("captured_at") or ""), str(r.get("target_key") or ""), int(r.get("exchange_id") or 0)))
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        if _timeline_bootstrapped(conn):
+            return
+        for row in historical:
+            ts = str(row.get("captured_at") or core.now_iso())
+            conn.execute(
+                """INSERT INTO workbench_capture_events(
+                       target_key,exchange_id,captured_at,source,tool,method,url,hostname,path,status_code,
+                       request_size,response_size,request_content_type,response_content_type,authenticated_observed,
+                       burp_scope_status,is_inbox,synthetic,seen_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                (
+                    str(row.get("target_key") or ""), int(row.get("exchange_id") or 0), ts,
+                    str(row.get("source") or ""), str(row.get("tool") or ""), str(row.get("method") or ""),
+                    str(row.get("url") or ""), str(row.get("hostname") or ""), str(row.get("path") or "/"),
+                    row.get("status_code"), int(row.get("request_size") or 0), int(row.get("response_size") or 0),
+                    row.get("request_content_type"), row.get("response_content_type"), int(row.get("authenticated_observed") or 0),
+                    str(row.get("burp_scope_status") or "UNKNOWN"), int(row.get("is_inbox") or 0), ts,
+                ),
+            )
+        conn.execute("INSERT OR REPLACE INTO workbench_timeline_state(key,value) VALUES('bootstrapped_v115',?)", (core.now_iso(),))
+        conn.commit()
+
+
+
+def sync_untracked_exchanges() -> int:
+    """Compatibility safety net for observations created outside the Burp ingest route.
+
+    v0.115 records exact Burp occurrences explicitly. Older code/tests and manual
+    imports may still create an http_exchange directly; ensure such exchanges are
+    visible at least once in the timeline without fabricating repeated occurrences.
+    """
+    ensure_timeline_bootstrap()
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        tracked = {(str(r["target_key"]), int(r["exchange_id"])) for r in conn.execute("SELECT DISTINCT target_key,exchange_id FROM workbench_capture_events").fetchall()}
+    pending: list[tuple[str,int,str]] = []
+    for source in source_catalog(include_inbox=True):
+        try:
+            src = source_for_key(str(source["key"]))
+            if not src:
+                continue
+            with core.db_connect(src["paths"]) as conn:
+                rows = conn.execute("SELECT id,last_seen_at FROM http_exchanges ORDER BY last_seen_at,id").fetchall()
+                for row in rows:
+                    key=(str(source["key"]),int(row["id"]))
+                    if key not in tracked:
+                        pending.append((key[0],key[1],str(row["last_seen_at"] or core.now_iso())))
+        except Exception:
+            continue
+    created=0
+    for source_key, exchange_id, ts in sorted(pending,key=lambda x:(x[2],x[0],x[1])):
+        snap=_event_source_snapshot(source_key,exchange_id)
+        if not snap:
+            continue
+        with core.db_connect(paths) as conn:
+            _init_workbench_schema(conn)
+            cur=conn.execute(
+                """INSERT INTO workbench_capture_events(target_key,exchange_id,captured_at,source,tool,method,url,hostname,path,status_code,request_size,response_size,request_content_type,response_content_type,authenticated_observed,burp_scope_status,is_inbox,synthetic,seen_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                (source_key,exchange_id,ts,str(snap.get('source') or ''),str(snap.get('tool') or ''),str(snap.get('method') or ''),str(snap.get('url') or ''),str(snap.get('hostname') or ''),str(snap.get('path') or '/'),snap.get('status_code'),int(snap.get('request_size') or 0),int(snap.get('response_size') or 0),snap.get('request_content_type'),snap.get('response_content_type'),int(snap.get('authenticated_observed') or 0),str(snap.get('burp_scope_status') or 'UNKNOWN'),1 if snap.get('is_inbox') else 0,ts),
+            )
+            conn.commit()
+            created += int(cur.rowcount or 0)
+    return created
+
+def latest_event_id() -> int:
+    ensure_timeline_bootstrap()
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute("SELECT COALESCE(MAX(id),0) id FROM workbench_capture_events").fetchone()
+        return int(row["id"] or 0)
+
+
+def record_capture_event(source_key: str, exchange_id: int, *, captured_at: str | None = None) -> dict[str, Any] | None:
+    """Append one exact Burp occurrence to the global Workbench timeline."""
+    ensure_timeline_bootstrap()
+    snap = _event_source_snapshot(source_key, int(exchange_id))
+    if not snap:
+        return None
+    ts = str(captured_at or core.now_iso())
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        cur = conn.execute(
+            """INSERT INTO workbench_capture_events(
+                   target_key,exchange_id,captured_at,source,tool,method,url,hostname,path,status_code,
+                   request_size,response_size,request_content_type,response_content_type,authenticated_observed,
+                   burp_scope_status,is_inbox,synthetic,seen_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)""",
+            (
+                str(source_key), int(exchange_id), ts, str(snap.get("source") or ""), str(snap.get("tool") or ""),
+                str(snap.get("method") or ""), str(snap.get("url") or ""), str(snap.get("hostname") or ""), str(snap.get("path") or "/"),
+                snap.get("status_code"), int(snap.get("request_size") or 0), int(snap.get("response_size") or 0),
+                snap.get("request_content_type"), snap.get("response_content_type"), int(snap.get("authenticated_observed") or 0),
+                str(snap.get("burp_scope_status") or "UNKNOWN"), 1 if snap.get("is_inbox") else 0,
+            ),
+        )
+        event_id = int(cur.lastrowid)
+        conn.commit()
+        row = conn.execute("SELECT * FROM workbench_capture_events WHERE id=?", (event_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_capture_event(event_id: int) -> dict[str, Any] | None:
+    ensure_timeline_bootstrap()
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute("SELECT * FROM workbench_capture_events WHERE id=?", (int(event_id),)).fetchone()
+        return dict(row) if row else None
+
+
+def mark_event_seen(event_id: int) -> bool:
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        cur = conn.execute("UPDATE workbench_capture_events SET seen_at=COALESCE(seen_at,?) WHERE id=?", (core.now_iso(), int(event_id)))
+        conn.commit()
+        return bool(cur.rowcount)
+
+
+def mark_all_events_seen(*, through_event_id: int | None = None) -> int:
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        if through_event_id and int(through_event_id) > 0:
+            cur = conn.execute("UPDATE workbench_capture_events SET seen_at=COALESCE(seen_at,?) WHERE id<=? AND seen_at IS NULL", (core.now_iso(), int(through_event_id)))
+        else:
+            cur = conn.execute("UPDATE workbench_capture_events SET seen_at=COALESCE(seen_at,?) WHERE seen_at IS NULL", (core.now_iso(),))
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def event_unread_count() -> int:
+    ensure_timeline_bootstrap()
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute("SELECT COUNT(*) c FROM workbench_capture_events WHERE seen_at IS NULL").fetchone()
+        return int(row["c"] or 0)
+
 def create_checkpoint(*, label: str = "", target_hint: str = "all") -> dict[str, Any]:
     """Create a visual cut in history without deleting any HTTP exchange."""
     paths = ensure_inbox_paths()
@@ -94,11 +351,12 @@ def create_checkpoint(*, label: str = "", target_hint: str = "all") -> dict[str,
     clean_label = str(label or "").strip()[:120]
     if not clean_label:
         clean_label = f"Checkpoint {cutoff[11:16]}"
+    cutoff_event_id = latest_event_id()
     with core.db_connect(paths) as conn:
         _init_workbench_schema(conn)
         cur = conn.execute(
-            "INSERT INTO workbench_checkpoints(label,cutoff_at,target_hint,created_at) VALUES(?,?,?,?)",
-            (clean_label, cutoff, str(target_hint or "all")[:120], cutoff),
+            "INSERT INTO workbench_checkpoints(label,cutoff_at,target_hint,created_at,cutoff_event_id) VALUES(?,?,?,?,?)",
+            (clean_label, cutoff, str(target_hint or "all")[:120], cutoff, cutoff_event_id),
         )
         row = conn.execute("SELECT * FROM workbench_checkpoints WHERE id=?", (int(cur.lastrowid),)).fetchone()
         conn.commit()
@@ -219,7 +477,49 @@ def _row_tags(row: dict[str, Any]) -> list[dict[str, str]]:
     return tags[:5]
 
 
-def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: bool = True, since: str = "", limit: int = 300) -> dict[str, Any]:
+def _enrich_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_source.setdefault(str(row.get("target_key") or ""), []).append(row)
+    catalog = {str(x["key"]): x for x in source_catalog(include_inbox=True)}
+    for source_key, source_rows in by_source.items():
+        source = source_for_key(source_key)
+        if not source:
+            continue
+        ids = sorted({int(r.get("exchange_id") or 0) for r in source_rows if int(r.get("exchange_id") or 0) > 0})
+        meta: dict[int, dict[str, Any]] = {}
+        if ids:
+            with core.db_connect(source["paths"]) as conn:
+                _init_context_schema(conn)
+                marks = ",".join("?" for _ in ids)
+                data = _safe_query(conn, f"""
+                    SELECT e.id,
+                           (SELECT i.name FROM exchange_identities xi JOIN identities i ON i.id=xi.identity_id WHERE xi.exchange_id=e.id LIMIT 1) identity_name,
+                           (SELECT bot.name FROM business_object_observations boo JOIN business_objects bo ON bo.id=boo.business_object_id JOIN business_object_types bot ON bot.id=bo.object_type_id WHERE boo.exchange_id=e.id LIMIT 1) object_type,
+                           (SELECT f.name FROM flow_steps fs JOIN flows f ON f.id=fs.flow_id WHERE fs.exchange_id=e.id AND fs.included=1 ORDER BY fs.position LIMIT 1) flow_name,
+                           (SELECT COUNT(*) FROM signal_occurrences so WHERE so.exchange_id=e.id AND so.dismissed_at IS NULL) signal_count
+                      FROM http_exchanges e WHERE e.id IN ({marks})
+                """, tuple(ids))
+                meta = {int(x["id"]): x for x in data}
+        cat = catalog.get(source_key) or {}
+        for row in source_rows:
+            enriched = dict(meta.get(int(row.get("exchange_id") or 0), {}))
+            enriched.pop("id", None)
+            row.update(enriched)
+            row["target_name"] = str(cat.get("name") or source.get("name") or source_key)
+            row["is_inbox"] = bool(row.get("is_inbox"))
+            row["compound_id"] = f"event:{int(row.get('id') or 0)}"
+            row["last_seen_at"] = str(row.get("captured_at") or "")
+            row["first_seen_at"] = str(row.get("captured_at") or "")
+            row["tags"] = _row_tags(row)
+    return rows
+
+
+def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: bool = True, since: str = "", since_event_id: int = 0, after_event_id: int = 0, limit: int = 300, sync_legacy: bool = True) -> dict[str, Any]:
+    """Return the exact capture timeline, oldest -> newest inside the selected window."""
+    ensure_timeline_bootstrap()
+    if sync_legacy:
+        sync_untracked_exchanges()
     qn = str(q or "").strip().lower()
     hn = str(host or "").strip().lower()
     mn = str(method or "").strip().upper()
@@ -228,77 +528,59 @@ def list_traffic(*, q: str = "", target: str = "all", host: str = "", method: st
     tn = str(tool or "").strip().upper()
     requested_target = str(target or "all")
     cutoff = str(since or "").strip()
-    rows: list[dict[str, Any]] = []
-    hosts: set[str] = set()
-    tools: set[str] = set()
-
-    for source in source_catalog(include_inbox=True):
-        if requested_target not in {"", "all"} and source["key"] != requested_target:
-            continue
+    cutoff_event = max(0, int(since_event_id or 0), int(after_event_id or 0))
+    paths = ensure_inbox_paths()
+    clauses = ["id>?" ]
+    params: list[Any] = [cutoff_event]
+    if requested_target not in {"", "all"}:
+        clauses.append("target_key=?"); params.append(requested_target)
+    if hn:
+        clauses.append("lower(hostname) LIKE ?"); params.append(f"%{hn}%")
+    if mn:
+        clauses.append("upper(method)=?"); params.append(mn)
+    if sn:
         try:
-            if source["inbox"]:
-                paths = ensure_inbox_paths()
-            else:
-                target_obj = core.get_target(str(source["key"]))
-                if not target_obj:
-                    continue
-                paths = core.ensure_workspace(Path(str(target_obj.get("workspace") or "")).expanduser(), str(target_obj.get("domain") or source["key"]), scopes=target_obj.get("scopes"), project_name=target_obj.get("name"))
-            with core.db_connect(paths) as conn:
-                _init_context_schema(conn)
-                data = _safe_query(conn, """
-                    SELECT e.id,e.status_code,e.first_seen_at,e.last_seen_at,e.request_size,e.response_size,
-                           e.environment,e.burp_scope_status,e.source,e.tool,
-                           o.method,o.resource_id,o.authenticated_observed,o.request_content_type,o.response_content_type,
-                           r.url,r.path,r.query,h.hostname,
-                           (SELECT i.name FROM exchange_identities xi JOIN identities i ON i.id=xi.identity_id WHERE xi.exchange_id=e.id LIMIT 1) identity_name,
-                           (SELECT bot.name FROM business_object_observations boo JOIN business_objects bo ON bo.id=boo.business_object_id JOIN business_object_types bot ON bot.id=bo.object_type_id WHERE boo.exchange_id=e.id LIMIT 1) object_type,
-                           (SELECT f.name FROM flow_steps fs JOIN flows f ON f.id=fs.flow_id WHERE fs.exchange_id=e.id AND fs.included=1 ORDER BY fs.position LIMIT 1) flow_name,
-                           (SELECT COUNT(*) FROM signal_occurrences so WHERE so.exchange_id=e.id AND so.dismissed_at IS NULL) signal_count
-                      FROM http_exchanges e
-                      JOIN resource_operations o ON o.id=e.operation_id
-                      JOIN resources r ON r.id=o.resource_id
-                      JOIN hosts h ON h.id=r.host_id
-                     ORDER BY e.last_seen_at DESC
-                     LIMIT ?
-                """, (max(200, int(limit) * 2),))
-                for row in data:
-                    row["target_key"] = str(source["key"])
-                    row["target_name"] = str(source["name"])
-                    row["is_inbox"] = bool(source["inbox"])
-                    row["compound_id"] = f"{source['key']}:{row['id']}"
-                    hosts.add(str(row.get("hostname") or ""))
-                    if row.get("tool"):
-                        tools.add(str(row["tool"]).upper())
-                    hay = " ".join(str(row.get(k) or "") for k in ("method", "hostname", "path", "url", "status_code", "identity_name", "object_type", "flow_name", "source", "tool")).lower()
-                    if cutoff and str(row.get("last_seen_at") or "") < cutoff:
-                        continue
-                    if qn and qn not in hay:
-                        continue
-                    if hn and hn not in str(row.get("hostname") or "").lower():
-                        continue
-                    if mn and str(row.get("method") or "").upper() != mn:
-                        continue
-                    if sn and str(row.get("status_code") or "") != sn:
-                        continue
-                    if scn and str(row.get("burp_scope_status") or "UNKNOWN").upper() != scn:
-                        continue
-                    if tn and str(row.get("tool") or "").upper() != tn:
-                        continue
-                    if hide_static and _is_static(row):
-                        continue
-                    row["tags"] = _row_tags(row)
-                    rows.append(row)
+            clauses.append("status_code=?"); params.append(int(sn))
         except Exception:
-            continue
+            clauses.append("CAST(status_code AS TEXT)=?"); params.append(sn)
+    if scn:
+        clauses.append("upper(COALESCE(burp_scope_status,'UNKNOWN'))=?"); params.append(scn)
+    if tn:
+        clauses.append("upper(COALESCE(tool,''))=?"); params.append(tn)
+    if cutoff and not cutoff_event:
+        clauses.append("captured_at>=?"); params.append(cutoff)
+    if qn:
+        clauses.append("(lower(url) LIKE ? OR lower(hostname) LIKE ? OR lower(path) LIKE ? OR lower(method) LIKE ?)")
+        like=f"%{qn}%"; params.extend([like,like,like,like])
+    query = "SELECT * FROM workbench_capture_events WHERE " + " AND ".join(clauses) + " ORDER BY id DESC LIMIT ?"
+    params.append(max(1000, int(limit) * 8))
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        raw = [dict(r) for r in conn.execute(query, tuple(params)).fetchall()]
+        unread = int(conn.execute("SELECT COUNT(*) c FROM workbench_capture_events WHERE seen_at IS NULL").fetchone()["c"] or 0)
+        max_row = conn.execute("SELECT COALESCE(MAX(id),0) id FROM workbench_capture_events").fetchone()
+        latest_id = int(max_row["id"] or 0)
 
-    rows.sort(key=lambda r: str(r.get("last_seen_at") or r.get("first_seen_at") or ""), reverse=True)
-    rows = rows[: max(1, int(limit))]
+    filtered: list[dict[str, Any]] = []
+    for row in raw:
+        if hide_static and _is_static(row):
+            continue
+        row["is_unread"] = not bool(row.get("seen_at"))
+        filtered.append(row)
+        if len(filtered) >= max(1, int(limit)):
+            break
+    filtered.reverse()
+    _enrich_event_rows(filtered)
+    hosts = sorted({str(r.get("hostname") or "") for r in filtered if r.get("hostname")})
+    tools = sorted({str(r.get("tool") or "").upper() for r in filtered if r.get("tool")})
     return {
-        "rows": rows,
-        "hosts": sorted(x for x in hosts if x),
-        "tools": sorted(tools),
+        "rows": filtered,
+        "hosts": hosts,
+        "tools": tools,
         "projects": source_catalog(include_inbox=True),
-        "count": len(rows),
+        "count": len(filtered),
+        "unread_count": unread,
+        "latest_event_id": latest_id,
     }
 
 
@@ -456,3 +738,19 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             "flows": flows,
             "related": related,
         }
+
+
+
+def detail_event(event_id: int, *, mark_seen: bool = True) -> dict[str, Any] | None:
+    event = get_capture_event(int(event_id))
+    if not event:
+        return None
+    item = detail(str(event.get("target_key") or ""), int(event.get("exchange_id") or 0))
+    if not item:
+        return None
+    if mark_seen and not event.get("seen_at"):
+        mark_event_seen(int(event_id))
+        event["seen_at"] = core.now_iso()
+    item["event"] = event
+    item["event_id"] = int(event_id)
+    return item

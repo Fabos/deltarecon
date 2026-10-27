@@ -623,3 +623,7 @@ El mapa trata `ROOT` como contenedor, fusiona un mismo CDN detectado por varias 
 ### Graph architecture cleanup (v0.99)
 
 Surface map drill-down now collapses security controls and non-edge historical infrastructure into dedicated groups, suppresses duplicate CDN server fingerprints, and keeps direct/backend paths visually separate from shared edge/CDN infrastructure.
+
+## HTTP Workbench v0.115
+
+HTTP Workbench usa ahora una timeline de Capture Events: cada ocurrencia observada por Burp aparece en orden real aunque el exchange lógico sea idéntico a uno anterior. La vista se actualiza en vivo, distingue eventos no vistos, soporta checkpoints exactos y ofrece un JWT Inspector desde Pretty. Ver `V115_LIVE_TRAFFIC_TIMELINE.md`.

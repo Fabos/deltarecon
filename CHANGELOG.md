@@ -1,3 +1,15 @@
+# v0.115 — Live Traffic Timeline
+
+- Capture Events globales y secuenciales por ocurrencia real de Burp.
+- Timeline cronológica (antiguo arriba, nuevo abajo).
+- Actualización live sin F5 y sin robar scroll durante análisis histórico.
+- Estado nuevo/no visto y salto `N nuevas`.
+- Checkpoints exactos por `event_id`.
+- Flows desde marcas preservan orden y ocurrencias repetidas.
+- JWT Inspector con token completo, Header, Claims y fechas humanizadas.
+- `http_exchanges` continúa deduplicado como memoria lógica/correlacionable.
+- 125/125 pruebas de regresión verdes.
+
 # v0.113 · Semantic HTTP Workbench
 
 - Pretty is now the default HTTP view in Workbench.
