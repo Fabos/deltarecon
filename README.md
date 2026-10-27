@@ -1,3 +1,15 @@
+## v0.112 · HTTP Workbench
+
+Negro incorpora un **HTTP Workbench** pensado como lugar principal de análisis mientras Burp conserva el papel de proxy/intercept. Burp puede enviar todo el tráfico observado: los hosts que pertenecen a un proyecto se guardan allí y el resto queda en un **Traffic Inbox** local/passive-only para poder filtrarlo después sin perder evidencia.
+
+La vista combina historial HTTP, Request/Response y contexto de Identity, Objects, Signals, Flow y relaciones. El scope sigue gobernando las acciones activas: capturar una Request fuera de proyecto **no autoriza recon ni amplía scope**.
+
+## v0.111 · Roles claros de módulos + Objetos teach-once
+
+Negro separa explícitamente cuatro preguntas: **Superficie** = qué existe y qué falta cubrir; **Mapa** = cómo se relaciona lo investigado; **Buscar** = dónde apareció una pista; **Objetos** = qué entidad de negocio representa y cómo seguir sus instancias.
+
+Business Objects funciona por definición, no por instancia: enseñar `orderId → Order` registra el tipo/identifier una sola vez. Cada Request nueva que contenga `orderId=<nuevo valor>` crea/actualiza automáticamente la instancia `Order <valor>`. Sólo hace falta enseñar de nuevo cuando aparece un alias de campo adicional que deba pertenecer al mismo tipo.
+
 ## v0.104 · Flow → Escenario → Run, sin pensar en Runner
 
 La interfaz separa explícitamente responsabilidades: **Flow = lo que ocurrió**, **Escenario = lo que quieres probar**, **Run = el resultado de una ejecución**. `Runner` permanece como nombre técnico interno/DB para conservar compatibilidad, pero deja de ser una acción o concepto protagonista.

@@ -844,3 +844,129 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   };
   if(!['completed','failed','aborted','waiting_input'].includes(initialStatus)) poll();
 })();
+
+// v0.112 · HTTP Workbench: fast request-to-request navigation without leaving context.
+(()=>{
+  const root=document.querySelector('[data-workbench]');
+  if(!root) return;
+  const detailUrl=root.dataset.detailUrl;
+  const list=root.querySelector('[data-traffic-list]');
+  const rows=()=>[...root.querySelectorAll('[data-source-key][data-exchange-id]')];
+  const esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const methodClass=(m)=>`wb-method method-${String(m||'').toLowerCase()}`;
+  let selected={source:'',id:0};
+  const active=root.querySelector('.wb-traffic-row.active');
+  if(active) selected={source:active.dataset.sourceKey||'',id:Number(active.dataset.exchangeId||0)};
+  const raw={request:root.querySelector('[data-http-view="request"] code')?.textContent||'',response:root.querySelector('[data-http-view="response"] code')?.textContent||''};
+  const mode={request:'raw',response:'raw'};
+
+  const prettyHttp=(text)=>{
+    const src=String(text||'');
+    const sep=src.includes('\r\n\r\n')?'\r\n\r\n':'\n\n';
+    const idx=src.indexOf(sep);
+    if(idx<0) return src;
+    const head=src.slice(0,idx);
+    const body=src.slice(idx+sep.length);
+    const trimmed=body.trim();
+    if(!trimmed) return src;
+    try{return `${head}${sep}${JSON.stringify(JSON.parse(trimmed),null,2)}`;}catch(_){return src;}
+  };
+  const lineHtml=(line,idx,bodyStarted)=>{
+    if(!bodyStarted && idx===0){
+      const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
+      if(m) return `<span class="wb-http-line"><span class="h-method">${esc(m[1])}</span> <span class="h-path">${esc(m[2])}</span>${m[3]?` <span class="h-proto">${esc(m[3])}</span>`:''}</span>`;
+      const r=line.match(/^(HTTP\/\S+)\s+(\d+)(.*)$/);
+      if(r) return `<span class="wb-http-line"><span class="h-proto">${esc(r[1])}</span> <span class="h-method">${esc(r[2])}</span>${esc(r[3])}</span>`;
+    }
+    if(!bodyStarted){
+      const h=line.match(/^([^:]+):(.*)$/);
+      if(h) return `<span class="wb-http-line"><span class="h-name">${esc(h[1])}</span>:<span class="h-value">${esc(h[2])}</span></span>`;
+    }
+    let out=esc(line);
+    if(bodyStarted){
+      out=out.replace(/(&quot;[^&\n]+?&quot;)(\s*:)/g,'<span class="h-json-key">$1</span>$2')
+             .replace(/(:\s*)(&quot;.*?&quot;)/g,'$1<span class="h-json-string">$2</span>')
+             .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="h-json-number">$2</span>')
+             .replace(/(:\s*)(true|false|null)/g,'$1<span class="h-json-bool">$2</span>');
+    }
+    return `<span class="wb-http-line">${out||' '}</span>`;
+  };
+  const paint=(side)=>{
+    const pre=root.querySelector(`[data-http-view="${side}"]`),code=pre?.querySelector('code');
+    if(!pre||!code) return;
+    const text=mode[side]==='pretty'?prettyHttp(raw[side]):raw[side];
+    pre.classList.toggle('pretty',mode[side]==='pretty');
+    let body=false;
+    code.innerHTML=String(text||'').replace(/\r\n/g,'\n').split('\n').map((line,i)=>{
+      const rendered=lineHtml(line,i,body);
+      if(line==='') body=true;
+      return rendered;
+    }).join('\n');
+    root.querySelectorAll(`[data-view-mode="${side}"]`).forEach(b=>b.classList.toggle('active',b.dataset.mode===mode[side]));
+  };
+  paint('request'); paint('response');
+
+  const renderIdentity=(d)=>{
+    const card=root.querySelector('[data-context-card="identity"]'); if(!card)return;
+    const i=d.identity;
+    card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:'<p class="wb-muted">Sin Identity resuelta.</p>'}`;
+  };
+  const renderObjects=(d)=>{
+    const card=root.querySelector('[data-context-card="objects"]'); if(!card)return; const os=d.objects||[];
+    card.innerHTML=`<div class="wb-card-title"><span>◇</span><b>Objects</b><em>${os.length}</em></div>${os.length?`<div class="wb-object-list">${os.map(o=>`<div><b>${esc(o.type_name)}</b><code>${esc(o.identifier_raw||o.identifier_preview||'')}</code></div>`).join('')}</div>`:'<p class="wb-muted">Sin Objects correlacionados.</p>'}`;
+  };
+  const renderSignals=(d)=>{
+    const card=root.querySelector('[data-context-card="signals"]'); if(!card)return; const ss=d.signals||[];
+    card.innerHTML=`<div class="wb-card-title"><span>◉</span><b>Signals</b><em>${ss.length}</em></div>${ss.length?`<div class="wb-signal-list">${ss.map(s=>`<div><span class="signal-dot severity-${esc(s.severity)}"></span><span>${esc(s.title)}</span><em>${esc(s.severity)}</em></div>`).join('')}</div>`:'<p class="wb-muted">Sin Signals pendientes.</p>'}`;
+  };
+  const renderFlow=(d)=>{
+    const card=root.querySelector('[data-context-card="flow"]'); if(!card)return; const fs=d.flows||[];
+    card.innerHTML=`<div class="wb-card-title"><span>⌁</span><b>Flow</b></div>${fs.length?`<div class="wb-flow-list">${fs.map(f=>`<a href="/t/${encodeURIComponent(d.target_key)}/flows/${Number(f.id)}#flow-step-${Number(f.step_id)}"><span>${Number(f.position||0)}</span><b>${esc(f.name)}</b><small>${esc(f.label||f.state_label||'Step observado')}</small></a>`).join('')}</div>`:'<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>'}`;
+  };
+  const renderRelated=(d)=>{
+    const card=root.querySelector('[data-context-card="related"]'); if(!card)return; const rs=d.related||[];
+    card.innerHTML=`<div class="wb-card-title"><span>↔</span><b>Related Requests</b><em>${rs.length}</em></div>${rs.length?`<div class="wb-related-list">${rs.map(r=>`<button type="button" data-related-source="${esc(d.target_key)}" data-related-exchange="${Number(r.id)}"><b class="${methodClass(r.method)}">${esc(r.method)}</b><code>${esc(r.path)}</code><span>${esc(r.status_code??'—')}</span></button>`).join('')}</div>`:'<p class="wb-muted">Sin relaciones suficientes todavía.</p>'}`;
+  };
+  const renderActions=(d)=>{
+    const card=root.querySelector('.wb-quick-actions'); if(!card)return; const e=d.exchange||{};
+    if(d.is_inbox){card.innerHTML='<div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}
+    const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);
+    card.innerHTML=`<div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div><div class="wb-action-grid"><a href="/t/${t}/exchange/${id}/inspect">Inspector avanzado</a><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/flows/add?exchange_id=${id}">Add to Flow</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay / Identity</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;
+  };
+  const renderDetail=(d)=>{
+    const e=d.exchange||{}; raw.request=d.request_text||'';raw.response=d.response_text||'';paint('request');paint('response');
+    const sm=root.querySelector('[data-summary-method]'); if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}
+    const su=root.querySelector('[data-summary-url]'); if(su)su.textContent=e.url||'';
+    const ss=root.querySelector('[data-summary-status]'); if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}
+    const st=root.querySelector('[data-summary-target]'); if(st)st.textContent=d.target_name||'';
+    const si=root.querySelector('[data-summary-id]'); if(si)si.textContent=e.id||'';
+    const ct=root.querySelector('.wb-context-title span'); if(ct)ct.textContent=d.target_name||'';
+    renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);
+  };
+  const load=async(source,id,{scroll=true}={})=>{
+    if(!detailUrl||!source||!id)return;
+    root.classList.add('is-loading');
+    try{
+      const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));
+      const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const d=await res.json();renderDetail(d);selected={source,id:Number(id)};
+      rows().forEach(r=>r.classList.toggle('active',r.dataset.sourceKey===source&&Number(r.dataset.exchangeId)===Number(id)));
+      const activeRow=rows().find(r=>r.classList.contains('active'));if(scroll&&activeRow)activeRow.scrollIntoView({block:'nearest'});
+      const current=new URL(window.location.href);current.searchParams.set('source_key',source);current.searchParams.set('exchange',String(id));history.replaceState(null,'',current);
+    }catch(err){console.error('Negro Workbench',err);}
+    finally{root.classList.remove('is-loading');}
+  };
+  list?.addEventListener('click',ev=>{const a=ev.target.closest('[data-source-key][data-exchange-id]');if(!a)return;ev.preventDefault();load(a.dataset.sourceKey,Number(a.dataset.exchangeId));});
+  root.addEventListener('click',ev=>{
+    const rel=ev.target.closest('[data-related-source][data-related-exchange]');if(rel){ev.preventDefault();load(rel.dataset.relatedSource,Number(rel.dataset.relatedExchange));return;}
+    const view=ev.target.closest('[data-view-mode]');if(view){mode[view.dataset.viewMode]=view.dataset.mode;paint(view.dataset.viewMode);return;}
+    const copy=ev.target.closest('[data-copy-http]');if(copy){navigator.clipboard?.writeText(raw[copy.dataset.copyHttp]||'');copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',800);}
+  });
+  document.addEventListener('keydown',ev=>{
+    const tag=(document.activeElement?.tagName||'').toLowerCase();if(['input','textarea','select'].includes(tag))return;
+    if(ev.key==='/'){const q=root.querySelector('.wb-search input[name="q"]');if(q){ev.preventDefault();q.focus();}return;}
+    if(!['ArrowDown','ArrowUp','j','k'].includes(ev.key))return;
+    const rs=rows();if(!rs.length)return;let idx=rs.findIndex(r=>r.dataset.sourceKey===selected.source&&Number(r.dataset.exchangeId)===selected.id);if(idx<0)idx=0;
+    idx=(ev.key==='ArrowDown'||ev.key==='j')?Math.min(rs.length-1,idx+1):Math.max(0,idx-1);const r=rs[idx];ev.preventDefault();load(r.dataset.sourceKey,Number(r.dataset.exchangeId));
+  });
+})();

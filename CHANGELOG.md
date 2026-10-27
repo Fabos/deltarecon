@@ -1,3 +1,22 @@
+## v0.112.0 — HTTP Workbench + Global Traffic Inbox
+
+- Nuevo **HTTP Workbench** de tres columnas: Traffic Inbox, Request/Response y Contexto Negro en una sola pantalla optimizada para análisis prolongado.
+- Burp Bridge deja de perder tráfico de hosts sin proyecto: Negro captura todo el HTTP observado y enruta hosts conocidos a su proyecto; lo desconocido se conserva en un **Traffic Inbox** local y pasivo.
+- El scope pasa a ser un **filtro de análisis**, no una barrera de captura. Guardar tráfico desconocido no amplía scopes ni autoriza recon activo.
+- Filtros por proyecto/inbox, host, método, status, Burp scope y herramienta, con reducción de ruido estático.
+- Navegación rápida request-a-request con `↑/↓` o `j/k`, búsqueda con `/`, Pretty/Raw, copy y actualización de contexto sin recargar la página.
+- El panel de contexto reutiliza Identity, Business Objects, Signals, Flow y Related Requests existentes; no crea motores paralelos.
+- Quick Actions reutilizan HTTP Inspector, Follow Value, Add to Flow, Replay/Identity y Send to Repeater para tráfico ya asociado a un proyecto.
+- El Inbox bloquea acciones activas hasta que el host se asigne explícitamente a un proyecto autorizado.
+
+## v0.111.0 — Module roles + teach-once Business Objects
+
+- Define responsabilidades visibles: **Superficie = qué existe/cobertura**, **Mapa = cómo se relaciona una investigación**, **Buscar = dónde apareció una pista**, **Objetos = significado persistente de entidades de negocio**.
+- Mapa deja de presentar Superficie como lente principal y abre por Identidad/relaciones; la página Superficie mantiene el inventario/recon.
+- Objetos explica explícitamente `Tipo aprendido → instancias automáticas`: enseñar `orderId → Order` una vez hace que futuras `Order 123/456/...` se creen automáticamente al entrar nuevo tráfico.
+- Enseñar otro alias (`order_id`, `orderRef`) es una ampliación del tipo, no volver a marcar cada instancia.
+- Buscar y Superficie muestran su pregunta central para reducir solapamiento mental entre módulos.
+
 ## v0.110.0 — Live Runs + Scenario runtime inheritance
 
 - Flow y Scenario muestran una timeline de ejecución en vivo mientras cada Step se procesa.

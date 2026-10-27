@@ -1000,7 +1000,7 @@ def upsert_host(conn: sqlite3.Connection, hostname: str, source: str) -> tuple[i
     return host_id, created
 
 
-def canonicalize_url(raw_url: str, domain: str, scopes: Iterable[str] | None = None) -> tuple[str, str, str, str, str] | None:
+def canonicalize_url(raw_url: str, domain: str, scopes: Iterable[str] | None = None, *, allow_out_of_scope: bool = False) -> tuple[str, str, str, str, str] | None:
     raw_url = raw_url.strip()
     if not raw_url:
         return None
@@ -1010,7 +1010,7 @@ def canonicalize_url(raw_url: str, domain: str, scopes: Iterable[str] | None = N
         return None
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         return None
-    host = normalize_host(parsed.hostname, domain, scopes)
+    host = normalize_scope(parsed.hostname) if allow_out_of_scope else normalize_host(parsed.hostname, domain, scopes)
     if not host:
         return None
     scheme = parsed.scheme.lower()
@@ -1023,8 +1023,8 @@ def canonicalize_url(raw_url: str, domain: str, scopes: Iterable[str] | None = N
     return canonical, host, scheme, path, query
 
 
-def upsert_resource(conn: sqlite3.Connection, raw_url: str, source: str, domain: str, scopes: Iterable[str] | None = None) -> tuple[bool, bool]:
-    normalized = canonicalize_url(raw_url, domain, scopes)
+def upsert_resource(conn: sqlite3.Connection, raw_url: str, source: str, domain: str, scopes: Iterable[str] | None = None, *, allow_out_of_scope: bool = False) -> tuple[bool, bool]:
+    normalized = canonicalize_url(raw_url, domain, scopes, allow_out_of_scope=allow_out_of_scope)
     if not normalized:
         return False, False
     url, host, scheme, path, query = normalized
@@ -1066,6 +1066,7 @@ def upsert_http_observation(
     query: dict | list | str | None = None,
     response_body_b64: str | None = None,
     burp_in_scope: bool | None = None,
+    allow_out_of_scope: bool = False,
 ) -> dict:
     """Ingesta HTTP sin duplicar el recurso por método.
 
@@ -1082,7 +1083,7 @@ def upsert_http_observation(
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError("URL HTTP inválida")
     scopes = workspace_scopes(paths, domain)
-    host = normalize_host(parsed.hostname, domain, scopes)
+    host = normalize_scope(parsed.hostname) if allow_out_of_scope else normalize_host(parsed.hostname, domain, scopes)
     if not host:
         raise ValueError(f"Host fuera de scope para el proyecto ({', '.join(scopes)})")
     netloc = host + (f":{parsed.port}" if parsed.port else "")
@@ -1105,7 +1106,7 @@ def upsert_http_observation(
     fingerprint = hashlib.sha256((req_hash + ":" + resp_hash + ":" + str(status_code or "")).encode()).hexdigest()
 
     with db_connect(paths) as conn:
-        _, created_resource = upsert_resource(conn, resource_url, source, domain, scopes)
+        _, created_resource = upsert_resource(conn, resource_url, source, domain, scopes, allow_out_of_scope=allow_out_of_scope)
         r = conn.execute("SELECT id, host_id FROM resources WHERE url=?", (resource_url,)).fetchone()
         resource_id = int(r["id"])
         host_id = int(r["host_id"])

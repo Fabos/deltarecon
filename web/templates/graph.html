@@ -1,24 +1,24 @@
 {% extends "base.html" %}
-{% block title %}Mapa · {{ project.name if project else domain }} · Negro{% endblock %}
+{% block title %}Mapa de investigación · {{ project.name if project else domain }} · Negro{% endblock %}
 {% block content %}
 <section class="graph-page investigation-views" data-graph-root data-api="/api/t/{{ target_key }}/graph" data-base="{{ target_base }}" data-target="{{ target_key }}" data-csrf="{{ csrf_token }}" data-ai-estimate="/api/t/{{ target_key }}/graph/ideas-estimate" data-ai-run="{{ target_base }}/graph/ideas-run">
   <span class="sr-only">INVESTIGATION MAP · Identidades · Flows · Objetos · Inteligencia · Negro no asume buyer, seller, admin ni ningún rol.</span>
 <span class="sr-only"><span>Flows</span></span>
   <header class="graph-toolbar simplified-toolbar">
     <div>
-      <div class="eyebrow">VISTAS DE INVESTIGACIÓN · v{{ version }}</div>
-      <h1>Entiende una pregunta a la vez</h1>
-      <p>Negro ya tiene mucha evidencia. Aquí no intentamos mostrarla toda: eliges <b>qué quieres entender</b> y la vista cambia para responderlo.</p>
+      <div class="eyebrow">MAPA DE INVESTIGACIÓN · v{{ version }}</div>
+      <h1>¿Cómo se relaciona lo que estoy investigando?</h1>
+      <p>Este mapa no reemplaza Superficie. Aquí conectas <b>Identidades, Flows, Objetos e inteligencia</b> para entender una investigación. Para saber qué hosts/endpoints existen y qué falta cubrir, usa Superficie.</p>
     </div>
     <div class="graph-toolbar-actions">
-      <a class="btn-secondary" href="{{ target_base }}/guide#map">Cómo usar estas vistas</a>
+      <a class="btn-secondary" href="{{ target_base }}/surface">Ir a Superficie</a>
+      <a class="btn-secondary" href="{{ target_base }}/guide#map">Cómo usar el Mapa</a>
       <button type="button" class="button graph-ai-trigger" data-graph-ai-open>🧠 Pedir hipótesis</button>
     </div>
   </header>
 
   <div class="investigation-lenses" data-graph-presets>
-    <button class="investigation-lens active" data-graph-preset="surface"><b>Superficie</b><span>¿Qué existe?</span></button>
-    <button class="investigation-lens" data-graph-preset="identity"><b>Identidad</b><span>¿Quién hizo qué?</span></button>
+    <button class="investigation-lens active" data-graph-preset="identity"><b>Identidad</b><span>¿Quién hizo qué?</span></button>
     <button class="investigation-lens" data-graph-preset="flow"><b>Flujo</b><span>¿Qué ocurrió?</span></button>
     <button class="investigation-lens" data-graph-preset="objects"><b>Objeto</b><span>¿Qué sabemos de esta cosa?</span></button>
     <button class="investigation-lens" data-graph-preset="discovery"><b>Descubrir</b><span>¿Dónde más aparece esta pieza?</span></button>
@@ -26,8 +26,8 @@
   </div>
 
   <div class="graph-scope-banner investigation-question">
-    <div><small>ESTA VISTA RESPONDE</small><strong data-graph-scope-status>Superficie · ¿qué existe?</strong></div>
-    <span data-graph-scope-copy>Hosts, rutas y métodos. Abre detalle sólo cuando haga falta.</span>
+    <div><small>ESTA VISTA RESPONDE</small><strong data-graph-scope-status>Identidades · ¿qué endpoints tocó cada cuenta/sesión?</strong></div>
+    <span data-graph-scope-copy>Empieza por una relación concreta. Cambia a Flow, Objeto o Descubrir según la pregunta.</span>
   </div>
 
   <section class="graph-ai-panel" data-graph-ai-panel hidden>
@@ -69,8 +69,8 @@
       <label class="graph-search"><span>Buscar dentro de esta vista</span><input type="search" placeholder="endpoint, cuenta, Order 123…" data-graph-search></label>
 
       <div class="view-explainer" data-view-explainer>
-        <b>Superficie</b>
-        <p>Empieza por hosts y recursos. Expande sólo lo que estés investigando.</p>
+        <b>Identidad</b>
+        <p>Relaciona cuentas/sesiones con los endpoints que tocaron. Cambia de lente según la pregunta.</p>
       </div>
 
       <div class="graph-quick-layers" data-graph-layer-controls>

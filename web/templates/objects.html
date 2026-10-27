@@ -27,6 +27,17 @@
   <a href="{{ target_base }}/guide#lab">Ver ejemplo completo →</a>
 </details>
 
+<section class="panel callout object-type-instance-model">
+  <div class="panel-head"><div><p class="eyebrow">ENSÉÑALO UNA VEZ</p><h2>Tipo aprendido → instancias automáticas</h2></div><span class="badge">sin remarcar cada Order</span></div>
+  <p>Cuando enseñas <code>orderId → Order</code>, no estás guardando sólo la Order actual: estás enseñando una <b>regla de reconocimiento</b>. Desde ese momento, cada valor nuevo observado en ese campo se registra automáticamente como otra instancia del mismo tipo.</p>
+  <div class="object-concept-demo">
+    <div><span>TIPO APRENDIDO</span><b>Order</b><small>orderId · order_id · orderRef</small></div>
+    <strong>reconoce</strong>
+    <div><span>INSTANCIAS</span><b>123 · 456 · 789</b><small>nacen del tráfico automáticamente</small></div>
+  </div>
+  <p class="muted small">Sólo vuelves a enseñar algo cuando aparece <b>otro nombre de campo/alias</b> que también identifica Order. No tienes que enseñar cada valor nuevo.</p>
+</section>
+
 <details class="panel compact-metrics-details">
   <summary>Ver métricas técnicas</summary>
   <section class="metric-grid parameter-metrics">
@@ -48,11 +59,11 @@
   <div class="page-actions"><a class="button secondary" href="{{ target_base }}/hosts">Ir al Inventario</a><a class="button ghost" href="{{ target_base }}/guide#objects">Ver ejemplo Identity vs Object</a></div>
 </section>
 {% endif %}
-{% if tracked %}<section class="panel callout success"><b>Objeto aprendido.</b> Negro reconstruyó el historial que usa ese identificador. Recuerda: la relación encontrada es evidencia observada, no una vulnerabilidad.</section>{% endif %}
+{% if tracked %}<section class="panel callout success"><b>Tipo/identifier aprendido.</b> Negro reconstruyó el historial y reconocerá automáticamente nuevas instancias que usen este identificador. No necesitas marcar cada valor nuevo. Recuerda: la relación encontrada es evidencia observada, no una vulnerabilidad.</section>{% endif %}
 
 {% if objects_data.types %}
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">TIPOS ENSEÑADOS</p><h2>{{ objects_data.types|length }} tipos</h2></div><small>Un tipo puede reconocer varios nombres de campo.</small></div>
+  <div class="panel-head"><div><p class="eyebrow">TIPOS APRENDIDOS · REGLAS</p><h2>{{ objects_data.types|length }} tipos</h2></div><small>Se enseñan una vez; después reconocen instancias nuevas automáticamente.</small></div>
   <div class="object-type-grid">
     {% for t in objects_data.types if t.ui_quality != 'ambiguous' %}
     <a class="object-type-card" href="{{ target_base }}/objects?type_id={{ t.id }}">
@@ -64,7 +75,7 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><p class="eyebrow">INSTANCIAS</p><h2>Objetos correlacionados</h2></div><small>Una instancia = tipo + valor exacto.</small></div>
+  <div class="panel-head"><div><p class="eyebrow">INSTANCIAS OBSERVADAS · AUTOMÁTICAS</p><h2>Objetos correlacionados</h2></div><small>Una instancia = tipo + valor exacto.</small></div>
   <form class="parameter-filters object-filter-form" method="get" action="{{ target_base }}/objects">
     <label><span>Buscar instancia</span><input name="q" value="{{ q }}" placeholder="Ej. 123, PAY-551, Order"></label>
     <label><span>Filtrar por tipo</span><select name="type_id"><option value="">Todos los tipos</option>{% for t in objects_data.types %}<option value="{{ t.id }}" {% if type_id|string == t.id|string %}selected{% endif %}>{{ t.name }}</option>{% endfor %}</select></label>

@@ -12,6 +12,7 @@
     <a class="brand" href="{{ target_base }}/" aria-label="Ir al inicio de Negro"><span class="dog">🐕</span><span>Negro</span><small>v{{ version }}</small></a>
     <nav class="main-nav direct-nav" aria-label="Navegación principal">
       <a class="{% if request.url.path == target_base+'/' %}active{% endif %}" href="{{ target_base }}/">Inicio</a>
+      <a class="{% if '/workbench' in request.url.path %}active{% endif %}" href="{{ target_base }}/workbench">HTTP</a>
       <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
       <a class="{% if '/search' in request.url.path %}active{% endif %}" href="{{ target_base }}/search">Buscar</a>
       <span class="nav-divider" aria-hidden="true"></span>
@@ -20,7 +21,7 @@
       <a class="{% if '/runners' in request.url.path %}active{% endif %}" href="{{ target_base }}/runners">Escenarios</a>
       <a class="{% if '/objects' in request.url.path %}active{% endif %}" href="{{ target_base }}/objects">Objetos</a>
       <a class="{% if '/surface' in request.url.path %}active{% endif %}" href="{{ target_base }}/surface">Superficie</a>
-      <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
+      <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph" title="Mapa de investigación · relaciones entre Identidades, Flows, Objetos e inteligencia">Mapa</a>
       <span class="nav-divider" aria-hidden="true"></span>
       <a class="{% if '/hypotheses' in request.url.path or '/signals/custom' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
       <a class="{% if '/investigations' in request.url.path %}active{% endif %}" href="{{ target_base }}/investigations">Investigaciones</a>

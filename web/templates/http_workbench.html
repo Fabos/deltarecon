@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}HTTP Workbench · Negro{% endblock %}
+{% block content %}
+<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-csrf="{{ csrf_token }}">
+  <header class="wb-toolbar">
+    <div class="wb-title-block">
+      <span class="wb-title-icon">⌁</span>
+      <div><p class="eyebrow">NEGRO</p><h1>HTTP Workbench</h1></div>
+    </div>
+    <form class="wb-search" method="get" action="{{ target_base }}/workbench">
+      <input type="hidden" name="target" value="{{ filters.target }}">
+      <input type="hidden" name="host" value="{{ filters.host }}">
+      <input type="hidden" name="method" value="{{ filters.method }}">
+      <input type="hidden" name="status" value="{{ filters.status }}">
+      <input type="hidden" name="scope" value="{{ filters.scope }}">
+      <input type="hidden" name="tool" value="{{ filters.tool }}">
+      <input type="hidden" name="hide_static" value="{{ '1' if filters.hide_static else '0' }}">
+      <span>⌕</span><input type="search" name="q" value="{{ filters.q }}" placeholder="Buscar requests, hosts, paths, objetos, identidades…" autocomplete="off"><kbd>/</kbd>
+    </form>
+    <div class="wb-capture-state" title="El Bridge conserva todo el tráfico HTTP observado"><span></span> Captura global</div>
+  </header>
+
+  <form class="wb-filters" method="get" action="{{ target_base }}/workbench" data-workbench-filters>
+    <input type="hidden" name="q" value="{{ filters.q }}">
+    <label>Vista<select name="target" onchange="this.form.submit()"><option value="all" {% if filters.target=='all' %}selected{% endif %}>All Traffic</option>{% for p in traffic.projects %}<option value="{{ p.key }}" {% if filters.target==p.key %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+    <label>Host<select name="host" onchange="this.form.submit()"><option value="">Todos</option>{% for h in traffic.hosts %}<option value="{{ h }}" {% if filters.host==h %}selected{% endif %}>{{ h }}</option>{% endfor %}</select></label>
+    <label>Método<select name="method" onchange="this.form.submit()"><option value="">Todos</option>{% for m in ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'] %}<option value="{{ m }}" {% if filters.method==m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select></label>
+    <label>Status<input name="status" value="{{ filters.status }}" inputmode="numeric" placeholder="200" data-filter-enter></label>
+    <label>Scope<select name="scope" onchange="this.form.submit()"><option value="">Todos</option><option value="IN_SCOPE" {% if filters.scope=='IN_SCOPE' %}selected{% endif %}>In Scope</option><option value="EXCLUDED" {% if filters.scope=='EXCLUDED' %}selected{% endif %}>Fuera de scope</option><option value="UNKNOWN" {% if filters.scope=='UNKNOWN' %}selected{% endif %}>Unknown</option></select></label>
+    <label>Burp<select name="tool" onchange="this.form.submit()"><option value="">Todos</option>{% for t in traffic.tools %}<option value="{{ t }}" {% if filters.tool==t %}selected{% endif %}>{{ t|title }}</option>{% endfor %}</select></label>
+    <label class="wb-noise-toggle"><input type="hidden" name="hide_static" value="0"><input type="checkbox" name="hide_static" value="1" {% if filters.hide_static %}checked{% endif %} onchange="this.form.submit()"> Ocultar ruido</label>
+    <button class="wb-filter-apply" type="submit">Aplicar</button>
+  </form>
+
+  <div class="wb-grid">
+    <aside class="wb-traffic-panel">
+      <div class="wb-panel-heading"><div><h2>Traffic Inbox</h2><span>{{ traffic.count }} requests</span></div><span class="wb-muted">Burp → Negro</span></div>
+      <div class="wb-table-head"><span>#</span><span>Request</span><span>Status</span><span>Hora</span></div>
+      <div class="wb-traffic-list" data-traffic-list>
+        {% for row in traffic.rows %}
+        <a class="wb-traffic-row {% if selected_source==row.target_key and selected_exchange==row.id %}active{% endif %}"
+           href="{{ target_base }}/workbench?source_key={{ row.target_key }}&exchange={{ row.id }}"
+           data-source-key="{{ row.target_key }}" data-exchange-id="{{ row.id }}">
+          <span class="wb-row-id">{{ row.id }}</span>
+          <span class="wb-row-main">
+            <span class="wb-row-line"><b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b><strong>{{ row.hostname }}</strong></span>
+            <code>{{ row.path }}</code>
+            <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
+          </span>
+          <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
+          <time>{{ (row.last_seen_at or '')[11:19] }}</time>
+        </a>
+        {% else %}
+        <div class="wb-empty"><b>No hay tráfico con estos filtros.</b><span>Navega con Burp o quita filtros. Negro conservará el tráfico aunque no pertenezca a un proyecto.</span></div>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <main class="wb-http-panel">
+      {% if selected %}
+      <div class="wb-request-summary" data-summary>
+        <div class="wb-summary-primary"><b class="wb-method method-{{ selected.exchange.method|lower }}" data-summary-method>{{ selected.exchange.method }}</b><span data-summary-url>{{ selected.exchange.url }}</span></div>
+        <div class="wb-summary-meta"><span class="wb-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-summary-status>{{ selected.exchange.status_code or '—' }}</span><span data-summary-target>{{ selected.target_name }}</span><span>#<b data-summary-id>{{ selected.exchange.id }}</b></span><span>{{ selected.exchange.response_size or 0 }} B</span></div>
+      </div>
+
+      <section class="wb-message-card request-card">
+        <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="request">Request</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" data-view-mode="request" data-mode="pretty">Pretty</button><button type="button" class="active" data-view-mode="request" data-mode="raw">Raw</button><button type="button" data-copy-http="request">Copiar</button></div></div>
+        <pre class="wb-code" data-http-view="request"><code>{{ selected.request_text|e }}</code></pre>
+      </section>
+
+      <section class="wb-message-card response-card">
+        <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="response">Response</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" data-view-mode="response" data-mode="pretty">Pretty</button><button type="button" class="active" data-view-mode="response" data-mode="raw">Raw</button><button type="button" data-copy-http="response">Copiar</button></div></div>
+        <pre class="wb-code" data-http-view="response"><code>{{ selected.response_text|e }}</code></pre>
+      </section>
+      {% else %}
+      <div class="wb-empty wb-empty-center"><b>HTTP Workbench está listo.</b><span>Cuando Burp observe tráfico, selecciona una Request a la izquierda.</span></div>
+      {% endif %}
+    </main>
+
+    <aside class="wb-context-panel" data-context-panel>
+      {% if selected %}
+      <div class="wb-context-title"><h2>Context</h2><span>{{ selected.target_name }}</span></div>
+      <section class="wb-context-card" data-context-card="identity"><div class="wb-card-title"><span>◎</span><b>Identity</b></div>{% if selected.identity %}<strong>{{ selected.identity.name }}</strong><div class="wb-kv"><span>role</span><code>{{ selected.identity.role or selected.identity.kind or '—' }}</code><span>context</span><code>{{ selected.identity.context_label or '—' }}</code><span>confidence</span><code>{{ selected.identity.confidence or '—' }}</code></div>{% else %}<p class="wb-muted">Sin Identity resuelta.</p>{% endif %}</section>
+      <section class="wb-context-card" data-context-card="objects"><div class="wb-card-title"><span>◇</span><b>Objects</b><em>{{ selected.objects|length }}</em></div>{% if selected.objects %}<div class="wb-object-list">{% for o in selected.objects %}<div><b>{{ o.type_name }}</b><code>{{ o.identifier_raw or o.identifier_preview }}</code></div>{% endfor %}</div>{% else %}<p class="wb-muted">Sin Objects correlacionados.</p>{% endif %}</section>
+      <section class="wb-context-card" data-context-card="signals"><div class="wb-card-title"><span>◉</span><b>Signals</b><em>{{ selected.signals|length }}</em></div>{% if selected.signals %}<div class="wb-signal-list">{% for s in selected.signals %}<div><span class="signal-dot severity-{{ s.severity }}"></span><span>{{ s.title }}</span><em>{{ s.severity }}</em></div>{% endfor %}</div>{% else %}<p class="wb-muted">Sin Signals pendientes.</p>{% endif %}</section>
+      <section class="wb-context-card" data-context-card="flow"><div class="wb-card-title"><span>⌁</span><b>Flow</b></div>{% if selected.flows %}<div class="wb-flow-list">{% for f in selected.flows %}<a href="/t/{{ selected.target_key }}/flows/{{ f.id }}#flow-step-{{ f.step_id }}"><span>{{ f.position }}</span><b>{{ f.name }}</b><small>{{ f.label or f.state_label or 'Step observado' }}</small></a>{% endfor %}</div>{% else %}<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>{% endif %}</section>
+      <section class="wb-context-card" data-context-card="related"><div class="wb-card-title"><span>↔</span><b>Related Requests</b><em>{{ selected.related|length }}</em></div>{% if selected.related %}<div class="wb-related-list">{% for r in selected.related %}<button type="button" data-related-source="{{ selected.target_key }}" data-related-exchange="{{ r.id }}"><b class="wb-method method-{{ r.method|lower }}">{{ r.method }}</b><code>{{ r.path }}</code><span>{{ r.status_code or '—' }}</span></button>{% endfor %}</div>{% else %}<p class="wb-muted">Sin relaciones suficientes todavía.</p>{% endif %}</section>
+
+      <section class="wb-context-card wb-quick-actions"><div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div>
+        {% if not selected.is_inbox %}
+        <div class="wb-action-grid">
+          <a href="/t/{{ selected.target_key }}/exchange/{{ selected.exchange.id }}/inspect">Inspector avanzado</a>
+          <a href="/t/{{ selected.target_key }}/parameters/related/{{ selected.exchange.id }}">Follow Value</a>
+          <a href="/t/{{ selected.target_key }}/flows/add?exchange_id={{ selected.exchange.id }}">Add to Flow</a>
+          <a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay / Identity</a>
+        </div>
+        <form class="wb-repeater-form" method="post" action="/t/{{ selected.target_key }}/resource/{{ selected.exchange.resource_id }}/send-repeater"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ selected.exchange.method }}"><input type="hidden" name="exchange_id" value="{{ selected.exchange.id }}"><button type="submit">Enviar a Burp Repeater</button></form>
+        {% else %}
+        <p class="wb-inbox-note"><b>Traffic Inbox.</b> Esta Request se conservó aunque el host no pertenece a un proyecto. Así no se pierde evidencia, pero Negro no habilita acciones activas hasta que lo asignes a un scope autorizado.</p>
+        <a class="wb-assign-project" href="/projects">Administrar proyectos</a>
+        {% endif %}
+      </section>
+      {% else %}
+      <div class="wb-context-title"><h2>Context</h2></div><div class="wb-empty"><span>Selecciona una Request para ver Identity, Objects, Signals, Flow y relaciones.</span></div>
+      {% endif %}
+    </aside>
+  </div>
+</section>
+{% endblock %}

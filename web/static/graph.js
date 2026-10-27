@@ -83,7 +83,7 @@
   let pathStart = null;
   let activePathIds = [];
   let activePathEdgeIds = new Set();
-  let preset = 'surface';
+  let preset = 'identity';
   let activeTypes = new Set();
   let activeLeadStatuses = new Set(['candidate','testing','interesting','confirmed']);
   let activeLeadKinds = new Set();
@@ -1892,7 +1892,7 @@
   const initialDiscover=initialParams.get('discover');
   const initialObservation=Number(initialParams.get('observation')||0);
   const initialAi=initialParams.get('ai')==='1';
-  let inferred='surface';
+  let inferred='identity';
   if(routePanel) routePanel.hidden=true;
   if(initialDiscover||initialObservation){
     inferred='discovery';preset='discovery';
@@ -1900,11 +1900,11 @@
     if(discoveryQuery&&initialDiscover)discoveryQuery.value=initialDiscover;
   } else if(initialFocus){
     const typ=String(initialFocus).split(':',1)[0];
-    inferred=typ==='identity'?'identity':typ==='flow'?'flow':['object','business_object'].includes(typ)?'objects':typ==='investigation'?'context':['lead','finding','anomaly'].includes(typ)?'intelligence':['request','exchange'].includes(typ)?'context':'surface';
+    inferred=typ==='identity'?'identity':typ==='flow'?'flow':['object','business_object'].includes(typ)?'objects':typ==='investigation'?'context':['lead','finding','anomaly'].includes(typ)?'intelligence':['request','exchange','host','resource','operation'].includes(typ)?'context':'identity';
     preset=inferred;
     root.querySelectorAll('[data-graph-preset]').forEach(x=>x.classList.toggle('active',x.dataset.graphPreset===inferred));
   }
-  const initialUrl=initialObservation?`${api}?scope=discovery&observation_id=${initialObservation}&exchanges=180`:initialDiscover?`${api}?scope=discovery&q=${encodeURIComponent(initialDiscover)}&exchanges=180`:initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:null;
+  const initialUrl=initialObservation?`${api}?scope=discovery&observation_id=${initialObservation}&exchanges=180`:initialDiscover?`${api}?scope=discovery&q=${encodeURIComponent(initialDiscover)}&exchanges=180`:initialFocus?`${api}?focus=${encodeURIComponent(initialFocus)}`:`${api}?scope=identities`;
   load(initialUrl).then(()=>{
     populateContextControls();
     if(initialFocus&&!initialDiscover&&!initialObservation){

@@ -154,7 +154,7 @@ public class NegroBurpBridge implements BurpExtension {
         panel.add(lastErrorLabel);
         final int[] healthTicks = {0};
         uiTimer = new Timer(1000, e -> {
-            counters.setText("Aceptados: " + accepted.get() + "   Fuera de scope: " + ignored.get() + "   Errores: " + errors.get());
+            counters.setText("Capturados: " + accepted.get() + "   Ignorados: " + ignored.get() + "   Errores: " + errors.get());
             if (lastErrorLabel != null) {
                 String detail = lastErrorDetail == null ? "" : lastErrorDetail;
                 lastErrorLabel.setText(detail.isBlank() ? " " : "Último error: " + detail);
@@ -1886,6 +1886,9 @@ public class NegroBurpBridge implements BurpExtension {
                 throw new IllegalStateException(reason == null ? "La request está fuera del scope de los targets de Negro" : reason);
             }
             String targetKey = jsonString(body, "target_key");
+            if ("__inbox__".equals(targetKey)) {
+                throw new IllegalStateException("La request quedó guardada en Traffic Inbox. Asigna ese host a un proyecto autorizado de Negro antes de usar acciones activas de contexto.");
+            }
             long resourceId = jsonLong(body, "resource_id");
             long operationId = jsonLong(body, "operation_id");
             long exchangeId = jsonLong(body, "exchange_id");

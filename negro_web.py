@@ -30,6 +30,7 @@ import negro_rules as rulebook
 import negro_environment as environment_tools
 import negro_scope as scope_tools
 import negro_http_inspector as http_inspector
+import negro_workbench as workbench
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -3367,6 +3368,7 @@ def create_app(default_domain: str, default_workspace: Path):
             (r"^/parameters/", {"anchor":"parameters","title":"Detalle de parámetro","question":"¿Cómo se comporta este campo en el target?","when":"Revisa valores, ubicaciones, hosts y Requests de un nombre concreto antes de decidir si representa identidad, objeto o ruido.","example":"ownerId puede describir propiedad de un Order; id en /me puede identificar al actor. El mismo sufijo 'id' no significa lo mismo.","caution":"No conviertas IDs genéricos en identidades u objetos sin contexto."}),
             (r"^/parameters$", {"anchor":"parameters","title":"Explorador de parámetros","question":"¿Qué nombres y valores estructurados estoy observando?","when":"Úsalo para descubrir campos repetidos que merecen Follow Value, resolver identidad o convertirse en Business Objects.","example":"En Access Control puedes separar /me.id=101 (resolver de Ana) de orderId=123 y ownerId=101 (datos del objeto).","caution":"Frecuencia alta no significa importancia; mira ubicación y contexto."}),
             (r"^/identities/matrix", {"anchor":"authorization-matrix","title":"Matriz de autorización","question":"¿Cómo se comporta la misma superficie con distintas identidades?","when":"Cuando tienes al menos dos cuentas/sesiones y quieres comparar evidencia observada por endpoint/método.","example":"Ana → GET /api/orders/123 = 200; Diego → 403; si /invoice rompe ese patrón con 200, merece revisión.","caution":"'No observado' no significa permitido ni denegado."}),
+            (r"^/workbench", {"anchor":"workbench","title":"HTTP Workbench","question":"¿Qué está ocurriendo realmente en este tráfico HTTP?","when":"Úsalo como tu mesa principal de análisis: Burp captura e intercepta; Negro agrupa, filtra, relaciona y conserva el contexto.","example":"Filtra por host o deja All Traffic, navega request por request y mira Identity, Objects, Signals, Flow y Requests relacionadas sin salir del contexto.","caution":"Scope aquí es un filtro de análisis, no una barrera de captura. El tráfico fuera de proyectos queda en Traffic Inbox y no autoriza recon activo."}),
             (r"^/identities", {"anchor":"identities","title":"Contextos de identidad","question":"¿Quién hizo esta request?","when":"Define cuentas estables y deja que cookies/Bearer roten sin perder la identidad del actor.","example":"Ana puede tener id=101 y varias cookies de sesión. /me.id y email pueden resolver a Ana; ownerId/orderId no deben hacerlo.","caution":"Identity = actor. Business Object = cosa sobre la que actúa. No mezcles ambos modelos."}),
             (r"^/runners", {"anchor":"runners","title":"Escenarios","question":"¿Qué quiero probar sobre un Flow que ya observé?","when":"Crea un Escenario cuando quieras probar una variante: omitir un Step, cambiar Identity, editar HTTP o repetir una acción sin modificar el Flow original.","example":"Flow: compra normal. Escenario: “Vendedor B acepta Order A”. Run: resultado concreto de ejecutar esa prueba.","caution":"Flow = lo que ocurrió. Escenario = la prueba. Run = el resultado. Runner es sólo el motor interno y no necesitas gestionarlo."}),
             (r"^/flows/compare", {"anchor":"flow-compare","title":"Comparación de Flujos","question":"¿Qué pasos o estados cambiaron entre dos recorridos?","when":"Captura un baseline y una variante cambiando una sola condición: identidad, método, paso, objeto o secuencia.","example":"Baseline: abrir admin → acción. Variante: mismo objetivo con un paso omitido o método distinto; Negro alinea pasos y te muestra qué faltó/cambió.","caution":"Un paso ausente o transición distinta puede ser válido; debes comprobar el impacto."}),
@@ -3815,6 +3817,47 @@ def create_app(default_domain: str, default_workspace: Path):
         with JOBS_LOCK:
             jobs = [j for j in JOBS.values() if j.get("target_key") == target_key][-8:][::-1]
         return render(request, "dashboard.html", target_key, domain, workspace, **data, jobs=jobs)
+
+    @app.get("/t/{target_key}/workbench", response_class=HTMLResponse)
+    def http_workbench_page(request: Request, target_key: str):
+        domain, workspace, _paths = _target_context(target_key)
+        qp = request.query_params
+        filters = {
+            "q": str(qp.get("q") or ""),
+            "target": str(qp.get("target") or "all"),
+            "host": str(qp.get("host") or ""),
+            "method": str(qp.get("method") or ""),
+            "status": str(qp.get("status") or ""),
+            "scope": str(qp.get("scope") or ""),
+            "tool": str(qp.get("tool") or ""),
+            "hide_static": str(qp.get("hide_static") or "1") != "0",
+        }
+        traffic = workbench.list_traffic(**filters, limit=350)
+        selected_source = str(qp.get("source_key") or "")
+        try:
+            selected_exchange = int(qp.get("exchange") or 0)
+        except Exception:
+            selected_exchange = 0
+        if (not selected_source or selected_exchange <= 0) and traffic.get("rows"):
+            first = traffic["rows"][0]
+            selected_source = str(first.get("target_key") or "")
+            selected_exchange = int(first.get("id") or 0)
+        selected = workbench.detail(selected_source, selected_exchange) if selected_source and selected_exchange > 0 else None
+        return render(
+            request, "http_workbench.html", target_key, domain, workspace,
+            traffic=traffic, filters=filters, selected=selected,
+            selected_source=selected_source, selected_exchange=selected_exchange,
+        )
+
+    @app.get("/api/t/{target_key}/workbench/detail", response_class=JSONResponse)
+    def http_workbench_detail_api(target_key: str, source_key: str, exchange_id: int):
+        # target_key is the UI anchor only; source_key identifies the project DB or
+        # the global unassigned inbox that owns this exact exchange.
+        _target_context(target_key)
+        item = workbench.detail(source_key, int(exchange_id))
+        if not item:
+            raise HTTPException(status_code=404, detail="Request no encontrada")
+        return item
 
     @app.get("/t/{target_key}/notifications", response_class=HTMLResponse)
     def notifications_page(request: Request, target_key: str):
@@ -7388,11 +7431,20 @@ def create_app(default_domain: str, default_workspace: Path):
         if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise HTTPException(status_code=400, detail="url HTTP(S) requerida")
         target = _matching_target_for_host(parsed.hostname)
-        if not target:
-            return JSONResponse({"accepted": False, "reason": "host_out_of_scope", "host": parsed.hostname}, status_code=202)
-        domain = str(target["domain"])
-        target_key = str(target["key"])
-        paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
+        unassigned = target is None
+        if unassigned:
+            # Capture is global. Unknown hosts are preserved in a passive-only inbox
+            # and can later be filtered/assigned; this does NOT widen any project's
+            # authorized scope and does not authorize active recon.
+            domain = workbench.INBOX_DOMAIN
+            target_key = workbench.INBOX_KEY
+            paths = workbench.ensure_inbox_paths()
+            project_name = workbench.INBOX_NAME
+        else:
+            domain = str(target["domain"])
+            target_key = str(target["key"])
+            paths = core.ensure_workspace(Path(str(target["workspace"])).expanduser(), domain, scopes=target.get("scopes"), project_name=target.get("name"))
+            project_name = str(target.get("name") or domain)
         tool = str(payload.get("tool") or "OTHER").upper()
         source = "burp_proxy" if tool == "PROXY" else ("burp_repeater" if tool == "REPEATER" else "burp_other")
         try:
@@ -7413,6 +7465,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 query=payload.get("query"),
                 response_body_b64=payload.get("response_body_b64"),
                 burp_in_scope=payload.get("burp_in_scope") if isinstance(payload.get("burp_in_scope"), bool) else None,
+                allow_out_of_scope=bool(unassigned),
             )
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
@@ -7424,7 +7477,7 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             import negro_hunter as hunter
             with _db(paths) as conn:
-                passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), domain, emit_notifications=True)
+                passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), str(parsed.hostname or domain) if unassigned else domain, emit_notifications=True)
                 # Resolve identity only from locally observed evidence. Unknown is
                 # preserved when no single human-taught resolver/material matches.
                 try:
@@ -7494,7 +7547,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     print(f"[burp-context] exchange={result.get('exchange_id')} error={type(ctx_exc).__name__}: {str(ctx_exc)[:160]}")
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
-        return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": target.get("name") or domain, **result,
+        return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": project_name, "unassigned": bool(unassigned), **result,
                 "signal_count": signal_count, **context_summary,
                 "new_notification_count": len(passive.get("new_notifications") or [])}
 
