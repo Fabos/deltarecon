@@ -89,7 +89,7 @@
         <div class="wb-empty"><b>No hay tráfico en esta vista.</b><span>{% if filters.history=='checkpoint' %}El checkpoint está limpio. Navega con Burp y las nuevas Requests aparecerán aquí; cambia a “Todo el tráfico” cuando necesites memoria anterior.{% else %}Navega con Burp o quita filtros. Negro conserva el tráfico aunque no pertenezca a un proyecto.{% endif %}</span></div>
         {% endfor %}
       </div>
-      <button type="button" class="wb-new-events-jump" data-new-events-jump hidden>↓ <b>0</b> nuevas</button>
+      <button type="button" class="wb-new-events-jump" data-new-events-jump hidden title="Requests que llegaron en vivo y todavía no has abierto">↓ <b>0</b> por revisar</button>
     </aside>
 
     <main class="wb-http-panel" data-http-panel>

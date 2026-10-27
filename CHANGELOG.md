@@ -1,3 +1,9 @@
+
+## v0.115.2 — JWT + Review Queue Hotfix
+- JWT click uses a real button plus capture-phase fallback; no dependency on syntax-highlight event bubbling.
+- Bottom `N por revisar` counter decrements immediately as live-arrived requests are opened.
+- Bottom action opens the next pending request instead of clearing the whole queue.
+- `Seguir LIVE` no longer implies that requests were reviewed.
 ## v0.115.1 — Live UX Hotfix
 
 - Parameter preview en Traffic Inbox.
