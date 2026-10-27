@@ -1,3 +1,14 @@
+# v0.115.4 — HTTP Focus + Manual Input Reuse
+
+- HTTP Workbench prioriza Request/Response con panel central más ancho.
+- Traffic Inbox y Context pueden ocultarse de forma independiente.
+- Pantalla completa para el panel HTTP.
+- Toggle `Líneas exactas` / `Ajustar líneas` en Request y Response.
+- Un `MANUAL_INPUT` puede pedirse una sola vez y reutilizarse en Step actual + siguiente Step.
+- Nuevo flujo `Inyectar un valor al ejecutar` para alimentar directamente la siguiente Request sin depender de una Response previa.
+- Escenario hereda el mismo wiring del Flow.
+- Regresión completa: 136 tests.
+
 ## v0.115.3 — HTTP Reading + Flow Data Wiring
 - HTTP Workbench Pretty reutiliza la gramática visual de Inventario: líneas numeradas, method/status/path/headers/JSON con jerarquía consistente.
 - Pretty formatea JSON e introduce wrap real para evitar scroll horizontal; Raw conserva el wire-format exacto.
@@ -2502,3 +2513,10 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Context colapsable y Focus Mode.
 - Pretty orientado a baja fatiga: headers rutinarios atenuados y JWT/valores largos compactados sin alterar Raw.
 - 122 tests en verde.
+
+## 2026-10-27 · v0.115.5 — Burp-style Traffic Deck
+- Traffic Inbox moved to a full-width top deck, inspired by Burp HTTP history.
+- `T` collapses/expands Traffic; collapsed mode keeps a compact selected-request bar.
+- Traffic rows are now a dense table: event, method, host, endpoint/params, context tags, status, time.
+- HTTP Request/Response owns the primary width; Context remains collapsible (`C`).
+- Live polling, unread/review state, marks, checkpoints, JWT inspector and Flow wiring are preserved.

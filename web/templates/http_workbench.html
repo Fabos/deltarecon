@@ -21,6 +21,7 @@
     </form>
     <div class="wb-toolbar-actions">
       <button type="button" class="wb-icon-action" data-focus-toggle title="Focus Mode (F)">Focus</button>
+      <button type="button" class="wb-icon-action" data-traffic-toggle title="Plegar/desplegar Traffic Inbox (T)">Traffic <kbd>T</kbd></button>
       <button type="button" class="wb-icon-action" data-context-toggle title="Mostrar/ocultar Context">Context</button>
       <div class="wb-capture-state" title="El Bridge conserva todo el tráfico HTTP observado"><span></span> LIVE · Captura global</div>
     </div>
@@ -56,7 +57,7 @@
   <div class="wb-grid">
     <aside class="wb-traffic-panel">
       <div class="wb-panel-heading wb-traffic-heading">
-        <div class="wb-traffic-title"><h2>Traffic Inbox</h2><span><b data-event-count>{{ traffic.count }}</b> eventos</span><button type="button" class="wb-unread-badge {% if not traffic.unread_count %}is-empty{% endif %}" data-unread-badge title="Marcar todas como vistas">● <b data-unread-count>{{ traffic.unread_count }}</b> nuevas</button><button type="button" class="wb-live-follow-toggle" data-live-follow-toggle title="Solo desplaza la timeline cuando tú decidas seguir el presente"><i></i><b>Seguir LIVE</b></button></div>
+        <div class="wb-traffic-title"><h2>Traffic Inbox</h2><span><b data-event-count>{{ traffic.count }}</b> eventos</span><button type="button" class="wb-unread-badge {% if not traffic.unread_count %}is-empty{% endif %}" data-unread-badge title="Marcar todas como vistas">● <b data-unread-count>{{ traffic.unread_count }}</b> nuevas</button><button type="button" class="wb-live-follow-toggle" data-live-follow-toggle title="Solo desplaza la timeline cuando tú decidas seguir el presente"><i></i><b>Seguir LIVE</b></button><button type="button" class="wb-traffic-collapse" data-traffic-toggle title="Recoger Traffic Inbox (T)">⌃ <kbd>T</kbd></button></div>
         <div class="wb-mark-toolbar" data-mark-toolbar>
           <span class="wb-mark-count" data-mark-count>0 marcadas</span>
           <div class="wb-color-palette" title="Color de marca activa">
@@ -69,19 +70,30 @@
           <button type="button" class="wb-mark-action quiet" data-clear-marks disabled>Limpiar</button>
         </div>
       </div>
-      <div class="wb-table-head"><span>#</span><span>Request</span><span>Status</span><span>Hora</span></div>
+      <div class="wb-traffic-compact" data-traffic-compact>
+        <button type="button" class="wb-traffic-expand" data-traffic-toggle title="Desplegar Traffic Inbox (T)">⌄</button>
+        {% if selected %}
+        <b class="wb-method method-{{ selected.exchange.method|lower }}" data-compact-method>{{ selected.exchange.method }}</b>
+        <strong data-compact-host>{{ selected.exchange.hostname or '' }}</strong>
+        <code data-compact-path>{{ selected.exchange.path or selected.exchange.url }}</code>
+        <span class="wb-compact-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-compact-status>{{ selected.exchange.status_code or '—' }}</span>
+        <span class="wb-compact-event">Event #<b data-compact-event>{{ selected.event_id or selected.exchange.id }}</b></span>
+        {% else %}
+        <span class="wb-compact-empty">Traffic Inbox · selecciona una Request</span>
+        {% endif %}
+        <span class="wb-compact-new {% if not traffic.unread_count %}is-empty{% endif %}" data-compact-new>● <b data-compact-unread>{{ traffic.unread_count }}</b> nuevas</span>
+      </div>
+      <div class="wb-table-head"><span>#</span><span>Método</span><span>Host</span><span>Endpoint / parámetros</span><span>Contexto</span><span>Status</span><span>Hora</span></div>
       <div class="wb-traffic-list" data-traffic-list>
         {% for row in traffic.rows %}
         <a class="wb-traffic-row {% if selected_event==row.id %}active{% endif %} {% if row.is_unread and selected_event!=row.id %}is-unread{% endif %}"
            href="{{ target_base }}/workbench?event={{ row.id }}"
            data-source-key="{{ row.target_key }}" data-event-id="{{ row.id }}" data-exchange-id="{{ row.exchange_id }}" data-compound-id="{{ row.compound_id }}" data-unread="{{ '1' if row.is_unread and selected_event!=row.id else '0' }}">
           <span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>{{ row.id }}</span>
-          <span class="wb-row-main">
-            <span class="wb-row-line"><b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b><strong>{{ row.hostname }}</strong></span>
-            <code>{{ row.path }}</code>
-            {% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}
-            <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
-          </span>
+          <b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b>
+          <strong class="wb-row-host" title="{{ row.hostname }}">{{ row.hostname }}</strong>
+          <span class="wb-row-endpoint"><code>{{ row.path }}</code>{% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}</span>
+          <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
           <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
           <time>{{ (row.captured_at or '')[11:19] }}</time>
         </a>
@@ -96,18 +108,18 @@
       {% if selected %}
       <div class="wb-request-summary" data-summary>
         <div class="wb-summary-primary"><b class="wb-method method-{{ selected.exchange.method|lower }}" data-summary-method>{{ selected.exchange.method }}</b><span data-summary-url>{{ selected.exchange.url }}</span></div>
-        <div class="wb-summary-controls"><button type="button" class="active" data-pane-layout="split">Split</button><button type="button" data-pane-layout="request">Request</button><button type="button" data-pane-layout="response">Response</button></div>
+        <div class="wb-summary-controls"><button type="button" class="active" data-pane-layout="split">Split</button><button type="button" data-pane-layout="request">Request</button><button type="button" data-pane-layout="response">Response</button><button type="button" data-http-fullscreen title="Usar todo el ancho para Request/Response">Pantalla completa</button></div>
         <div class="wb-summary-meta"><span class="wb-semantic-summary" data-semantic-summary>{% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT'),('entity','ENTITY')] %}{% if selected.semantic_counts.get(cls) %}<em class="wb-semantic-chip semantic-{{ cls }}">{{ label }} {{ selected.semantic_counts.get(cls) }}</em>{% endif %}{% endfor %}</span><span class="wb-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-summary-status>{{ selected.exchange.status_code or '—' }}</span><span data-summary-target>{{ selected.target_name }}</span><span>evento #<b data-summary-id>{{ selected.event_id or selected.exchange.id }}</b></span><span class="wb-exchange-ref">exchange #{{ selected.exchange.id }}</span><span>{{ selected.exchange.response_size or 0 }} B</span></div>
       </div>
 
       <div class="wb-message-stack" data-message-stack>
         <section class="wb-message-card request-card" data-message-card="request">
-          <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="request">Request</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" class="active" data-view-mode="request" data-mode="pretty">Pretty</button><button type="button" data-view-mode="request" data-mode="raw">Raw</button><button type="button" data-copy-http="request">Copiar</button></div></div>
+          <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="request">Request</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" class="active" data-view-mode="request" data-mode="pretty">Pretty</button><button type="button" data-view-mode="request" data-mode="raw">Raw</button><button type="button" data-wb-wrap="request">Líneas exactas</button><button type="button" data-copy-http="request">Copiar</button></div></div>
           <pre class="wb-code pretty" data-http-view="request"><code>{{ selected.request_text|e }}</code></pre>
         </section>
         <div class="wb-message-splitter" data-message-splitter title="Arrastra para cambiar el tamaño · doble clic para 50/50"><span></span></div>
         <section class="wb-message-card response-card" data-message-card="response">
-          <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="response">Response</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" class="active" data-view-mode="response" data-mode="pretty">Pretty</button><button type="button" data-view-mode="response" data-mode="raw">Raw</button><button type="button" data-copy-http="response">Copiar</button></div></div>
+          <div class="wb-message-head"><div class="wb-message-tabs"><button class="active" type="button" data-message-tab="response">Response</button><span>HTTP</span></div><div class="wb-message-actions"><button type="button" class="active" data-view-mode="response" data-mode="pretty">Pretty</button><button type="button" data-view-mode="response" data-mode="raw">Raw</button><button type="button" data-wb-wrap="response">Líneas exactas</button><button type="button" data-copy-http="response">Copiar</button></div></div>
           <pre class="wb-code pretty" data-http-view="response"><code>{{ selected.response_text|e }}</code></pre>
         </section>
       </div>

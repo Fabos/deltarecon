@@ -6526,8 +6526,10 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.post("/t/{target_key}/flows/{flow_id}/runtime/quick-bind")
     def flow_runtime_quick_bind(target_key: str, flow_id: int, exchange_id: int = Form(...), step_id: int = Form(...),
                                 variable_id: str = Form(""), name: str = Form(""), prompt: str = Form(""),
-                                target_value: str = Form(...), target_name: str = Form(""), target_location: str = Form(""),
-                                sensitive: str = Form("0"), csrf: str = Form(...)):
+                                target_value: str = Form(""), target_name: str = Form(""), target_location: str = Form(""),
+                                bind_current: str = Form("1"), forward_step_id: str = Form(""),
+                                forward_target_value: str = Form(""), forward_target_name: str = Form(""),
+                                forward_target_location: str = Form(""), sensitive: str = Form("0"), csrf: str = Form(...)):
         import negro_flow_runtime as rt
         verify_csrf(csrf); _,_,paths=_target_context(target_key)
         try:
@@ -6537,20 +6539,37 @@ def create_app(default_domain: str, default_workspace: Path):
                     raise ValueError("El Step no coincide con esta Request")
                 vid=int(variable_id) if str(variable_id or "").isdigit() else 0
                 if not vid:
-                    clean_name=str(name or target_name or "value").strip()
-                    existing=conn.execute("SELECT id FROM flow_variables WHERE flow_id=? AND lower(name)=lower(?)",(int(flow_id),clean_name)).fetchone()
+                    clean_name=str(name or target_name or forward_target_name or "value").strip()
+                    existing=conn.execute("SELECT id,source_type FROM flow_variables WHERE flow_id=? AND lower(name)=lower(?)",(int(flow_id),clean_name)).fetchone()
+                    if existing and str(existing["source_type"] or "").upper() != "MANUAL_INPUT":
+                        raise ValueError(f"Ya existe {clean_name} con otra fuente; usa otro nombre")
                     if existing:
                         vid=int(existing["id"])
                     else:
                         vid=rt.create_variable(conn,int(flow_id),name=clean_name,source_type="MANUAL_INPUT",
-                                               description=f"Valor dinámico para {target_name or clean_name}",
-                                               prompt=str(prompt or f"Introduce {target_name or clean_name}"),required=True,
+                                               description=f"Valor pedido al ejecutar: {clean_name}",
+                                               prompt=str(prompt or f"Introduce {clean_name}"),required=True,
                                                sensitive=str(sensitive)=="1")
-                rt.add_binding(conn,int(flow_id),int(step_id),vid,target_value=target_value,target_name=target_name,target_location=target_location)
+                used=False
+                if str(bind_current)!="0":
+                    if not str(target_value or ""):
+                        raise ValueError("El parámetro actual necesita un valor observado para poder reemplazarlo")
+                    rt.add_binding(conn,int(flow_id),int(step_id),vid,target_value=target_value,target_name=target_name,target_location=target_location)
+                    used=True
+                if str(forward_step_id or "").isdigit():
+                    nxt=conn.execute("""SELECT id,position FROM flow_steps WHERE flow_id=? AND included=1 AND position>(SELECT position FROM flow_steps WHERE id=?) ORDER BY position,id LIMIT 1""",(int(flow_id),int(step_id))).fetchone()
+                    if not nxt or int(nxt["id"])!=int(forward_step_id):
+                        raise ValueError("El destino debe ser la siguiente Request activa del Flow")
+                    if not str(forward_target_value or ""):
+                        raise ValueError("Selecciona el parámetro de la siguiente Request que quieres reemplazar")
+                    rt.add_binding(conn,int(flow_id),int(forward_step_id),vid,target_value=forward_target_value,target_name=forward_target_name,target_location=forward_target_location)
+                    used=True
+                if not used:
+                    raise ValueError("Selecciona al menos un lugar donde usar este valor")
         except ValueError as exc:
             msg=urllib.parse.quote(str(exc),safe="")
             return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&error={msg}",status_code=303)
-        msg=urllib.parse.quote("Listo: Negro ya sabe qué valor debe sustituir en este Step",safe="")
+        msg=urllib.parse.quote("Listo: el valor se pedirá una sola vez y Negro lo reutilizará en todos los destinos configurados",safe="")
         return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&message={msg}",status_code=303)
 
     @app.post("/t/{target_key}/flows/{flow_id}/runtime/quick-extract")
