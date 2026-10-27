@@ -1,3 +1,11 @@
+# v0.113 · Semantic HTTP Workbench
+
+- Pretty is now the default HTTP view in Workbench.
+- Reduced HTTP line spacing for denser long-session analysis.
+- Reuses learned Inspector annotations (AUTH / RESOLVER / CONTEXT / ENTITY) in Workbench.
+- Surfaces stored Identity names directly beside recognized HTTP values.
+- Adds semantic evidence counters without changing existing Flow/Runner behavior.
+
 ## v0.112.0 — HTTP Workbench + Global Traffic Inbox
 
 - Nuevo **HTTP Workbench** de tres columnas: Traffic Inbox, Request/Response y Contexto Negro en una sola pantalla optimizada para análisis prolongado.

@@ -245,6 +245,15 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
         # Avoid duplicating multi-megabyte base64 blobs in the Workbench JSON API.
         for noisy_key in ("request_b64", "response_b64", "request_headers_json", "response_headers_json", "query_json", "request_hash", "response_hash", "fingerprint"):
             ex.pop(noisy_key, None)
+
+        # Reuse the exact semantic memory already used by HTTP Inspector and the
+        # Burp context integration instead of inventing a second interpretation
+        # layer for the Workbench.
+        try:
+            annotations = http_inspector.learned_annotations(conn, int(exchange_id))
+        except Exception:
+            annotations = [dict(a) for a in (inspector.get("annotations") or [])]
+
         identity = None
         identity_rows = _safe_query(conn, """
             SELECT i.id,i.name,i.kind,ic.id context_id,ic.label context_label,ic.role,ic.tenant,xi.confidence,xi.source
@@ -317,6 +326,37 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
         for row in related:
             row["target_key"] = source["key"]
 
+        identity_match_map: dict[int, dict[str, Any]] = {}
+        semantic_counts = {"auth": 0, "resolver": 0, "context": 0, "entity": 0}
+        safe_annotations: list[dict[str, Any]] = []
+        for raw_ann in annotations or []:
+            ann = dict(raw_ann)
+            cls = str(ann.get("classification") or "").lower()
+            if cls in semantic_counts:
+                semantic_counts[cls] += 1
+            iid = int(ann.get("identity_id") or 0)
+            if iid:
+                item = identity_match_map.setdefault(iid, {
+                    "id": iid,
+                    "name": str(ann.get("identity_name") or f"Identity #{iid}"),
+                    "classifications": [],
+                })
+                if cls and cls not in item["classifications"]:
+                    item["classifications"].append(cls)
+            safe_annotations.append({
+                "side": str(ann.get("side") or ""),
+                "location": str(ann.get("location") or ""),
+                "key_name": str(ann.get("key_name") or ""),
+                "value_raw": str(ann.get("value_raw") or ann.get("value_preview") or ""),
+                "value_preview": str(ann.get("value_preview") or ""),
+                "classification": cls,
+                "identity_id": iid or None,
+                "identity_name": str(ann.get("identity_name") or ""),
+                "object_type": str(ann.get("object_type") or ""),
+                "match_reason": str(ann.get("match_reason") or ""),
+                "source_exchange_id": ann.get("source_exchange_id"),
+            })
+
         return {
             "target_key": source["key"],
             "target_name": source["name"],
@@ -325,6 +365,9 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             "request_text": inspector.get("request_text") or "",
             "response_text": inspector.get("response_text") or "",
             "identity": identity,
+            "identity_matches": list(identity_match_map.values()),
+            "annotations": safe_annotations,
+            "semantic_counts": semantic_counts,
             "objects": objects,
             "signals": signals,
             "flows": flows,

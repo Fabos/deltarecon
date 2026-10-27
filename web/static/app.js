@@ -858,7 +858,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const active=root.querySelector('.wb-traffic-row.active');
   if(active) selected={source:active.dataset.sourceKey||'',id:Number(active.dataset.exchangeId||0)};
   const raw={request:root.querySelector('[data-http-view="request"] code')?.textContent||'',response:root.querySelector('[data-http-view="response"] code')?.textContent||''};
-  const mode={request:'raw',response:'raw'};
+  const mode={request:'pretty',response:'pretty'};
+  let annotations=[];
+  try{annotations=JSON.parse(root.querySelector('[data-workbench-annotations]')?.textContent||'[]')||[];}catch(_){annotations=[];}
 
   const prettyHttp=(text)=>{
     const src=String(text||'');
@@ -871,16 +873,49 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     if(!trimmed) return src;
     try{return `${head}${sep}${JSON.stringify(JSON.parse(trimmed),null,2)}`;}catch(_){return src;}
   };
-  const lineHtml=(line,idx,bodyStarted)=>{
+  const semanticCss=(cls)=>({auth:'http-ann-auth',resolver:'http-ann-resolver',context:'http-ann-context',entity:'http-ann-entity'}[String(cls||'').toLowerCase()]||'');
+  const semanticLabel=(a)=>{
+    const cls=String(a.classification||'').toUpperCase();
+    const owner=String(a.identity_name||a.object_type||'').trim();
+    return owner?`${cls} · ${owner}`:cls;
+  };
+  const regexEscape=(v)=>String(v||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const semanticApplies=(a,line,idx,bodyStarted)=>{
+    const loc=String(a.location||'').toLowerCase(),key=String(a.key_name||''),value=String(a.value_raw||a.value_preview||'');
+    if(!value) return false;
+    if(loc.includes('_header:')){
+      const h=loc.split(':',2)[1]||'';
+      return new RegExp(`^${regexEscape(h)}\\s*:`, 'i').test(line) && line.includes(value);
+    }
+    if(loc.includes('_cookie:')) return /^(cookie|set-cookie)\s*:/i.test(line) && (!key||line.toLowerCase().includes(key.toLowerCase())) && line.includes(value);
+    if(loc.includes('_query:')) return idx===0 && (!key||line.toLowerCase().includes(key.toLowerCase())) && (line.includes(value)||line.includes(encodeURIComponent(value)));
+    if(loc.includes('_json:')) return bodyStarted && (!key||line.toLowerCase().includes(`"${key.toLowerCase()}"`)) && line.includes(value);
+    if(loc.includes('_form:')) return bodyStarted && (!key||line.toLowerCase().includes(key.toLowerCase())) && line.includes(value);
+    return line.includes(value) && (value.length>=8 || (!!key && line.toLowerCase().includes(key.toLowerCase())));
+  };
+  const decorateSemantic=(html,line,side,idx,bodyStarted)=>{
+    let out=html;
+    const candidates=(annotations||[]).filter(a=>String(a.side||'')===side&&semanticCss(a.classification)&&semanticApplies(a,line,idx,bodyStarted));
+    for(const a of candidates){
+      const rawValue=String(a.value_raw||a.value_preview||'');
+      if(!rawValue) continue;
+      const needle=esc(rawValue),css=semanticCss(a.classification),label=semanticLabel(a);
+      if(!needle||!out.includes(needle)) continue;
+      const reason=[a.match_reason,a.source_exchange_id?`aprendido en #${a.source_exchange_id}`:''].filter(Boolean).join(' · ');
+      out=out.replace(needle,`<span class="http-annotation ${css}" data-label="${esc(label)}" title="${esc(reason||label)}">${needle}</span>`);
+    }
+    return out;
+  };
+  const lineHtml=(line,idx,bodyStarted,side)=>{
     if(!bodyStarted && idx===0){
       const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
-      if(m) return `<span class="wb-http-line"><span class="h-method">${esc(m[1])}</span> <span class="h-path">${esc(m[2])}</span>${m[3]?` <span class="h-proto">${esc(m[3])}</span>`:''}</span>`;
+      if(m){const h=`<span class="h-method">${esc(m[1])}</span> <span class="h-path">${esc(m[2])}</span>${m[3]?` <span class="h-proto">${esc(m[3])}</span>`:''}`;return `<span class="wb-http-line">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
       const r=line.match(/^(HTTP\/\S+)\s+(\d+)(.*)$/);
-      if(r) return `<span class="wb-http-line"><span class="h-proto">${esc(r[1])}</span> <span class="h-method">${esc(r[2])}</span>${esc(r[3])}</span>`;
+      if(r){const h=`<span class="h-proto">${esc(r[1])}</span> <span class="h-method">${esc(r[2])}</span>${esc(r[3])}`;return `<span class="wb-http-line">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
     }
     if(!bodyStarted){
       const h=line.match(/^([^:]+):(.*)$/);
-      if(h) return `<span class="wb-http-line"><span class="h-name">${esc(h[1])}</span>:<span class="h-value">${esc(h[2])}</span></span>`;
+      if(h){const x=`<span class="h-name">${esc(h[1])}</span>:<span class="h-value">${esc(h[2])}</span>`;return `<span class="wb-http-line">${decorateSemantic(x,line,side,idx,bodyStarted)}</span>`;}
     }
     let out=esc(line);
     if(bodyStarted){
@@ -889,7 +924,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
              .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="h-json-number">$2</span>')
              .replace(/(:\s*)(true|false|null)/g,'$1<span class="h-json-bool">$2</span>');
     }
-    return `<span class="wb-http-line">${out||' '}</span>`;
+    return `<span class="wb-http-line">${decorateSemantic(out||' ',line,side,idx,bodyStarted)}</span>`;
   };
   const paint=(side)=>{
     const pre=root.querySelector(`[data-http-view="${side}"]`),code=pre?.querySelector('code');
@@ -898,7 +933,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     pre.classList.toggle('pretty',mode[side]==='pretty');
     let body=false;
     code.innerHTML=String(text||'').replace(/\r\n/g,'\n').split('\n').map((line,i)=>{
-      const rendered=lineHtml(line,i,body);
+      const rendered=lineHtml(line,i,body,side);
       if(line==='') body=true;
       return rendered;
     }).join('\n');
@@ -908,8 +943,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
 
   const renderIdentity=(d)=>{
     const card=root.querySelector('[data-context-card="identity"]'); if(!card)return;
-    const i=d.identity;
-    card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:'<p class="wb-muted">Sin Identity resuelta.</p>'}`;
+    const i=d.identity,matches=d.identity_matches||[];
+    const inferred=!i&&matches.length?`<div class="wb-identity-matches">${matches.map(m=>`<div><strong>${esc(m.name)}</strong><span>Reconocida en HTTP · ${(m.classifications||[]).map(x=>esc(String(x).toUpperCase())).join(' + ')}</span></div>`).join('')}</div>`:'';
+    card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:(inferred||'<p class="wb-muted">Sin Identity resuelta.</p>')}`;
   };
   const renderObjects=(d)=>{
     const card=root.querySelector('[data-context-card="objects"]'); if(!card)return; const os=d.objects||[];
@@ -933,15 +969,20 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);
     card.innerHTML=`<div class="wb-card-title"><span>⚡</span><b>Quick Actions</b></div><div class="wb-action-grid"><a href="/t/${t}/exchange/${id}/inspect">Inspector avanzado</a><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/flows/add?exchange_id=${id}">Add to Flow</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay / Identity</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;
   };
+  const renderSemanticSummary=(d)=>{
+    const el=root.querySelector('[data-semantic-summary]');if(!el)return;const c=d.semantic_counts||{};
+    const labels={auth:'AUTH',resolver:'RESOLVER',context:'CONTEXT',entity:'ENTITY'};
+    el.innerHTML=Object.keys(labels).filter(k=>Number(c[k]||0)>0).map(k=>`<em class="wb-semantic-chip semantic-${k}">${labels[k]} ${Number(c[k])}</em>`).join('');
+  };
   const renderDetail=(d)=>{
-    const e=d.exchange||{}; raw.request=d.request_text||'';raw.response=d.response_text||'';paint('request');paint('response');
+    const e=d.exchange||{}; raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];paint('request');paint('response');
     const sm=root.querySelector('[data-summary-method]'); if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}
     const su=root.querySelector('[data-summary-url]'); if(su)su.textContent=e.url||'';
     const ss=root.querySelector('[data-summary-status]'); if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}
     const st=root.querySelector('[data-summary-target]'); if(st)st.textContent=d.target_name||'';
     const si=root.querySelector('[data-summary-id]'); if(si)si.textContent=e.id||'';
     const ct=root.querySelector('.wb-context-title span'); if(ct)ct.textContent=d.target_name||'';
-    renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);
+    renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);
   };
   const load=async(source,id,{scroll=true}={})=>{
     if(!detailUrl||!source||!id)return;
