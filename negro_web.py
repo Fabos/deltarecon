@@ -6477,12 +6477,24 @@ def create_app(default_domain: str, default_workspace: Path):
             inspector = http_inspector.extract_exchange(conn, int(exchange_id))
             if not inspector:
                 raise HTTPException(status_code=404, detail="Request no encontrada")
+            runtime_noise_headers={"host","user-agent","accept","accept-language","accept-encoding","content-type","content-length","connection","priority","cache-control","pragma","via","server","date","strict-transport-security","cf-ray","cf-cache-status"}
+            def runtime_value_candidate(v):
+                loc=str(v.get("location") or ""); key=str(v.get("key") or "").lower()
+                supported=any(loc.startswith(x) for x in ("request_json:","request_form:","request_query:","request_cookie:","request_header:","response_json:","response_cookie:","response_header:"))
+                if not supported or not str(v.get("value") or ""):
+                    return False
+                if "_header:" in loc and (key in runtime_noise_headers or key.startswith("sec-") or key.startswith("cf-")):
+                    return False
+                return True
+            flow_source_values=[v for v in (inspector.get("values") or []) if runtime_value_candidate(v)]
             identities = identity_tools.list_identities(conn)
             auto_jwt = http_inspector.auto_learn_jwt_auth(conn, int(exchange_id))
             anns = http_inspector.learned_annotations(conn, int(exchange_id))
             identity_learning_summary = http_inspector.decorate_inspector_identity_state(conn, inspector, anns, auto_jwt)
             request_highlighted = http_inspector.highlighted_html(inspector.get("request_text") or "", anns, "request")
             response_highlighted = http_inspector.highlighted_html(inspector.get("response_text") or "", anns, "response")
+            next_flow_step = None
+            flow_runtime = None
             if int(flow_id or 0) and int(flow_step_id or 0):
                 flow_runtime_tools.init_schema(conn)
                 row = conn.execute("""SELECT fs.id,fs.flow_id,fs.position,fs.exchange_id,f.name flow_name
@@ -6490,9 +6502,23 @@ def create_app(default_domain: str, default_workspace: Path):
                                     WHERE fs.id=? AND fs.flow_id=?""", (int(flow_step_id), int(flow_id))).fetchone()
                 if row and int(row["exchange_id"] or 0) == int(exchange_id):
                     flow_context = dict(row)
-                    flow_variables = flow_runtime_tools.flow_runtime_data(conn, int(flow_id)).get("variables", [])
+                    flow_runtime = flow_runtime_tools.flow_runtime_data(conn, int(flow_id))
+                    flow_variables = flow_runtime.get("variables", [])
+                    nxt = conn.execute("""SELECT fs.id,fs.position,fs.exchange_id,o.method,r.path
+                                          FROM flow_steps fs
+                                          JOIN http_exchanges e ON e.id=fs.exchange_id
+                                          JOIN resource_operations o ON o.id=e.operation_id
+                                          JOIN resources r ON r.id=o.resource_id
+                                          WHERE fs.flow_id=? AND fs.included=1 AND fs.position>?
+                                          ORDER BY fs.position,fs.id LIMIT 1""", (int(flow_id), int(row["position"]))).fetchone()
+                    if nxt:
+                        next_flow_step = dict(nxt)
+                        next_inspector = http_inspector.extract_exchange(conn, int(nxt["exchange_id"]))
+                        next_flow_step["values"] = [v for v in ((next_inspector or {}).get("values") or [])
+                                                   if v.get("side") == "request" and runtime_value_candidate(v)]
         return render(request, "http_inspector.html", target_key, domain, workspace,
                       inspector=inspector, identities=identities, flow_context=flow_context, flow_variables=flow_variables,
+                      flow_runtime=flow_runtime, next_flow_step=next_flow_step, flow_source_values=flow_source_values,
                       identity_learning_summary=identity_learning_summary,
                       request_highlighted=request_highlighted, response_highlighted=response_highlighted,
                       message=request.query_params.get("message", ""), error=request.query_params.get("error", ""), selected_identity_id=int(identity_id or 0), identity_setup=bool(identity_setup))
@@ -6559,6 +6585,93 @@ def create_app(default_domain: str, default_workspace: Path):
             msg=urllib.parse.quote(str(exc),safe="")
             return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&error={msg}",status_code=303)
         msg=urllib.parse.quote(f"Listo: {name} se extraerá automáticamente de esta Response",safe="")
+        return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&message={msg}",status_code=303)
+
+    @app.post("/t/{target_key}/flows/{flow_id}/runtime/quick-forward")
+    def flow_runtime_quick_forward(target_key: str, flow_id: int, exchange_id: int = Form(...), step_id: int = Form(...),
+                                   source_side: str = Form(...), source_location: str = Form(...), source_key: str = Form(""),
+                                   source_value: str = Form(...), target_step_id: int = Form(...), target_value: str = Form(...),
+                                   target_name: str = Form(""), target_location: str = Form(""), sensitive: str = Form("0"),
+                                   csrf: str = Form(...)):
+        """Connect one observed value to the immediate next Flow request.
+
+        Request values become REQUEST_VALUE variables (the captured value is the
+        initial value). Response values become PREVIOUS_RESPONSE variables. Both
+        end in a normal Flow binding on the next Step, so Scenarios inherit the
+        exact same wiring instead of having a second parameter system.
+        """
+        import negro_flow_runtime as rt
+        verify_csrf(csrf); _,_,paths=_target_context(target_key)
+
+        def unique_name(conn, base: str) -> str:
+            clean=re.sub(r"[^A-Za-z0-9_]+","_",str(base or "value").strip()).strip("_") or "value"
+            clean=clean[:64]
+            candidate=clean; idx=2
+            while conn.execute("SELECT 1 FROM flow_variables WHERE flow_id=? AND lower(name)=lower(?)",(int(flow_id),candidate)).fetchone():
+                candidate=f"{clean[:58]}_{idx}"; idx+=1
+            return candidate
+
+        def response_extractor(location: str, key: str) -> tuple[str,str]:
+            loc=str(location or "")
+            if loc.startswith("response_json:"):
+                return "json",loc.split(":",1)[1]
+            if loc.startswith("response_cookie:"):
+                return "cookie",loc.split(":",1)[1]
+            if loc.startswith("response_header:"):
+                expr=loc.split(":",1)[1]
+                return ("location" if expr.lower()=="location" else "header"),expr
+            return "regex",re.escape(str(key or "value"))+r"[^\r\n]{0,80}?([^\s,;]+)"
+
+        try:
+            with _db(paths) as conn:
+                rt.init_schema(conn)
+                step=conn.execute("SELECT id,flow_id,exchange_id,position FROM flow_steps WHERE id=?",(int(step_id),)).fetchone()
+                if not step or int(step["flow_id"])!=int(flow_id) or int(step["exchange_id"] or 0)!=int(exchange_id):
+                    raise ValueError("El Step origen no coincide con esta Request")
+                nxt=conn.execute("""SELECT id,exchange_id,position FROM flow_steps
+                                  WHERE flow_id=? AND included=1 AND position>?
+                                  ORDER BY position,id LIMIT 1""",(int(flow_id),int(step["position"]))).fetchone()
+                if not nxt or int(nxt["id"])!=int(target_step_id):
+                    raise ValueError("El destino debe ser la siguiente Request activa del Flow")
+                if not str(target_value or ""):
+                    raise ValueError("El parámetro destino necesita un valor observado para poder reemplazarlo")
+                source_side=str(source_side or "").lower()
+                if source_side not in {"request","response"}:
+                    raise ValueError("Origen inválido")
+                vid=0
+                if source_side=="request":
+                    existing=conn.execute("""SELECT id FROM flow_variables
+                                             WHERE flow_id=? AND source_type='REQUEST_VALUE' AND producer_step_id=?
+                                               AND extraction_expr=? AND default_value=? ORDER BY id LIMIT 1""",
+                                          (int(flow_id),int(step_id),str(source_location),str(source_value))).fetchone()
+                    if existing:
+                        vid=int(existing["id"])
+                    else:
+                        name=unique_name(conn,str(source_key or target_name or "request_value"))
+                        vid=rt.create_variable(conn,int(flow_id),name=name,source_type="REQUEST_VALUE",
+                                               description=f"Request {source_location} → Step {int(nxt['position'])} {target_name or 'value'}",
+                                               default_value=str(source_value),required=True,sensitive=str(sensitive)=="1",
+                                               producer_step_id=int(step_id),extraction_type="request",extraction_expr=str(source_location))
+                else:
+                    et,expr=response_extractor(source_location,source_key)
+                    existing=conn.execute("""SELECT id FROM flow_variables
+                                             WHERE flow_id=? AND source_type='PREVIOUS_RESPONSE' AND producer_step_id=?
+                                               AND extraction_type=? AND extraction_expr=? ORDER BY id LIMIT 1""",
+                                          (int(flow_id),int(step_id),et,expr)).fetchone()
+                    if existing:
+                        vid=int(existing["id"])
+                    else:
+                        name=unique_name(conn,str(source_key or target_name or "response_value"))
+                        vid=rt.create_variable(conn,int(flow_id),name=name,source_type="PREVIOUS_RESPONSE",
+                                               description=f"Response {source_location} → Step {int(nxt['position'])} {target_name or 'value'}",
+                                               required=True,sensitive=str(sensitive)=="1",producer_step_id=int(step_id),
+                                               extraction_type=et,extraction_expr=expr)
+                rt.add_binding(conn,int(flow_id),int(target_step_id),int(vid),target_value=target_value,
+                               target_name=target_name,target_location=target_location)
+        except ValueError as exc:
+            msg=urllib.parse.quote(str(exc),safe="")
+            return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&error={msg}",status_code=303)
+        msg=urllib.parse.quote(f"Conectado: {source_key or 'valor'} → Step {int(nxt['position'])} · {target_name or 'parámetro'}",safe="")
         return RedirectResponse(url=f"/t/{target_key}/exchange/{int(exchange_id)}/inspect?flow_id={int(flow_id)}&flow_step_id={int(step_id)}&message={msg}",status_code=303)
 
     @app.post("/t/{target_key}/exchange/{exchange_id}/annotate")

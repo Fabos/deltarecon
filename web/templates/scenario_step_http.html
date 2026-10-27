@@ -12,6 +12,13 @@
   <div class="page-actions"><a class="button ghost" href="{{ target_base }}/runners/{{ r.id }}#scenario-step-{{ s.id }}">← Escenario</a></div>
 </section>
 
+{% if s.flow_inputs or s.flow_outputs %}
+<section class="panel scenario-inherited-wiring">
+  <div class="panel-head"><div><p class="eyebrow">HEREDADO DEL FLOW</p><h2>Conexiones de datos</h2><p class="muted small">El Escenario conserva el cableado del Flow. Aquí puedes modificar HTTP para esta prueba, pero no necesitas volver a conectar los parámetros.</p></div></div>
+  <div class="scenario-wiring-story">{% if s.flow_inputs %}<div><b>ENTRA</b>{% for x in s.flow_inputs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}✋{% else %}←{% endif %} {{ x.name }}{% if x.target_name and x.target_name != x.name %} → <strong>{{ x.target_name }}</strong>{% endif %}{% if x.producer_position %} · Step {{ x.producer_position }}{% endif %}</span>{% endfor %}</div>{% endif %}{% if s.flow_outputs %}<div><b>SALE</b>{% for x in s.flow_outputs %}<span class="story-chip source-{{ x.source_type|lower }}">{{ 'Request' if x.source_type=='REQUEST_VALUE' else 'Response' }} · {{ x.name }}{% if x.consumers %} → Step {{ x.consumers|join(', ') }}{% endif %}</span>{% endfor %}</div>{% endif %}</div>
+</section>
+{% endif %}
+
 <section class="scenario-http-layout">
   <article class="panel scenario-http-main">
     <div class="panel-head"><div><p class="eyebrow">PREVIEW</p><h2>HTTP del Escenario</h2><p class="muted small">Esto es lo que saldrá después de aplicar tus modificaciones guardadas.</p></div><span>{{ scenario_http.patches|length }} cambio(s)</span></div>

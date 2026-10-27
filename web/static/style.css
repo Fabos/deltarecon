@@ -1304,3 +1304,48 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 
 /* v0.115.2 · JWT action + review queue hotfix */
 .wb-jwt-trigger{appearance:none;-webkit-appearance:none;border:0;border-bottom:1px dotted #6b593a;background:transparent;padding:0;margin:0;font:inherit;line-height:inherit;text-align:left;color:inherit;vertical-align:baseline;cursor:pointer}.wb-jwt-trigger:hover{color:#e7d5b9;background:rgba(169,127,64,.07)}.wb-jwt-trigger:focus-visible{outline:1px solid #826d45;outline-offset:2px;border-radius:3px}
+
+/* v0.115.3 · HTTP reader unification + calm Flow wiring */
+.wb-code.pretty{overflow-x:hidden;white-space:normal;background:#05090b;color:#cbd5da;font-family:"JetBrains Mono","Cascadia Code","SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:12px;line-height:1.52;padding:9px 0}
+.wb-code.pretty code{display:block;white-space:normal;font:inherit;color:inherit}
+.wb-code.pretty .wb-http-line{display:block;position:relative;min-width:0;min-height:1.52em;padding:0 16px 0 52px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.wb-code.pretty .wb-http-line:hover{background:rgba(255,255,255,.024)}
+.wb-code.pretty .wb-http-line::before{content:attr(data-line);position:absolute;left:0;top:0;width:39px;padding-right:8px;text-align:right;color:#46545c;border-right:1px solid #182126;user-select:none;font-weight:400}
+.wb-code.pretty .wb-http-separator{min-height:.95em;background:rgba(255,255,255,.012)}
+.wb-code.pretty .http-token-method{color:#9ee493;font-weight:800}
+.wb-code.pretty .http-token-target{color:#89c9ff;font-weight:650}
+.wb-code.pretty .http-token-protocol{color:#657985}
+.wb-code.pretty .http-token-status-ok{color:#9ee493;font-weight:800}
+.wb-code.pretty .http-token-status-redirect{color:#e9c46a;font-weight:800}
+.wb-code.pretty .http-token-status-error{color:#ff8a8a;font-weight:800}
+.wb-code.pretty .http-token-status-text{color:#aebbc1}
+.wb-code.pretty .http-token-header-name{color:#c7a8ff}
+.wb-code.pretty .http-token-header-value{color:#aeb9be}
+.wb-code.pretty .http-token-sensitive{color:#efa9c0;font-weight:650}
+.wb-code.pretty .http-token-sensitive-value{color:#d4b5c0}
+.wb-code.pretty .http-token-key{color:#9ee493;font-weight:700}
+.wb-code.pretty .http-token-string{color:#e7c98c}
+.wb-code.pretty .http-token-number{color:#8ed9ec}
+.wb-code.pretty .http-token-literal{color:#d2a8ff}
+.wb-code.pretty .http-token-punctuation{color:#657985}
+.wb-code.pretty .header-muted{opacity:.64}
+.wb-code.pretty .header-muted:hover{opacity:.92}
+.wb-code.pretty .header-critical,.wb-code.pretty .header-context{background:transparent}
+.wb-code.raw{white-space:pre;overflow:auto}
+
+.flow-wire-panel{overflow:visible}
+.flow-wire-head{align-items:flex-start}
+.flow-next-step-badge{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #355546;border-radius:999px;background:#0d1914;color:#8ed5ad;font-size:10px;white-space:nowrap}
+.flow-next-step-badge.is-last{border-color:#37414a;background:#0d1216;color:#7f8b94}
+.flow-wire-existing{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:9px 12px;border-top:1px solid #202b31;border-bottom:1px solid #202b31;background:#090e11;font-size:10px}
+.flow-wire-existing>b{color:#8d9aa1;margin-right:2px}.flow-wire-chip{display:inline-flex;align-items:center;padding:4px 7px;border:1px solid #2a3942;border-radius:999px;background:#0d1519;color:#aebbc1}.flow-wire-chip.input{border-color:#493d63;color:#cbb4ef}.flow-wire-chip.output{border-color:#315064;color:#9dc9e8}
+.flow-wire-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}
+.flow-wire-side{min-width:0;border:1px solid #263139;border-radius:11px;background:#080d10;overflow:hidden}
+.flow-wire-side-head{display:flex;gap:9px;align-items:flex-start;padding:11px 12px;border-bottom:1px solid #202a30;background:#0b1114}.flow-wire-side-head>div{display:grid;gap:2px}.flow-wire-side-head b{font-size:11px}.flow-wire-side-head small{font-size:9px;color:#75838b;line-height:1.45}
+.flow-wire-values{max-height:520px;overflow:auto;padding:7px}
+.flow-wire-value{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;align-items:start;padding:9px;border:1px solid transparent;border-radius:9px}.flow-wire-value+.flow-wire-value{border-top-color:#1c252a;border-radius:0}.flow-wire-value:hover{background:#0b1216}
+.flow-wire-value-main{display:grid;gap:3px;min-width:0}.flow-wire-value-main>code{font-size:11px;color:#d7e1e5;font-weight:700}.flow-wire-value-main>span{font:10px "JetBrains Mono",ui-monospace,monospace;color:#9ba8ae;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.flow-wire-value-main>small{font-size:8px;color:#627078}
+.flow-wire-actions{display:flex;gap:5px;align-items:flex-start}.flow-wire-action{position:relative}.flow-wire-action>summary{list-style:none;cursor:pointer;border:1px solid #2b383f;border-radius:7px;padding:5px 7px;color:#aeb9be;background:#0b1114;font-size:9px;white-space:nowrap}.flow-wire-action>summary::-webkit-details-marker{display:none}.flow-wire-action.manual>summary{border-color:#514068;color:#c7b1e5}.flow-wire-action.forward>summary{border-color:#355469;color:#9dc9e8}
+.flow-wire-action[open]>form{position:absolute;z-index:60;right:0;top:31px;width:310px;display:grid;gap:8px;padding:10px;border:1px solid #35444c;border-radius:9px;background:#0d1418;box-shadow:0 18px 45px rgba(0,0,0,.5)}.flow-wire-action form label{display:grid;gap:4px;color:#8b989f;font-size:9px}.flow-wire-action form input,.flow-wire-action form select{width:100%;box-sizing:border-box}.flow-wire-action form .inline-check{display:flex!important;grid-template-columns:none!important;flex-direction:row!important;align-items:center!important;gap:6px!important}.flow-wire-action form .inline-check input{width:auto}.flow-wire-action form button{justify-self:start}
+@media(max-width:1100px){.flow-wire-columns{grid-template-columns:1fr}.flow-wire-value{grid-template-columns:1fr}.flow-wire-actions{flex-wrap:wrap}.flow-wire-action[open]>form{left:0;right:auto;max-width:min(82vw,330px)}}
+.scenario-inherited-wiring{border-color:#2c3e49}.scenario-wiring-story{display:grid;gap:9px;padding:12px}.scenario-wiring-story>div{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.scenario-wiring-story>div>b{font-size:9px;color:#71818b;letter-spacing:.08em}.story-chip.source-request_value{border-color:#355469;color:#9dc9e8}.story-chip.source-previous_response{border-color:#315064;color:#9dc9e8}.story-chip.source-manual_input{border-color:#514068;color:#c7b1e5}

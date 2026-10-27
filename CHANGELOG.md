@@ -1,3 +1,12 @@
+## v0.115.3 — HTTP Reading + Flow Data Wiring
+- HTTP Workbench Pretty reutiliza la gramática visual de Inventario: líneas numeradas, method/status/path/headers/JSON con jerarquía consistente.
+- Pretty formatea JSON e introduce wrap real para evitar scroll horizontal; Raw conserva el wire-format exacto.
+- Flow → Ver HTTP incorpora **Conexiones de datos** orientadas a intención.
+- Request: **Pedir al ejecutar** o **Pasar al siguiente Step** seleccionando el parámetro destino.
+- Response: **Pasar al siguiente Step** seleccionando el parámetro destino.
+- Nuevo source interno `REQUEST_VALUE` para propagar valores observados desde una Request sin exponer variables/bindings como concepto principal.
+- Flow muestra **ENTRA / SALE** y el Escenario hereda las mismas conexiones.
+- 133/133 pruebas de regresión verdes.
 
 ## v0.115.2 — JWT + Review Queue Hotfix
 - JWT click uses a real button plus capture-phase fallback; no dependency on syntax-highlight event bubbling.

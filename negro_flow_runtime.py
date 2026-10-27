@@ -8,7 +8,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
-SOURCE_TYPES = {"CONSTANT", "MANUAL_INPUT", "PREVIOUS_RESPONSE", "IDENTITY", "OBJECT", "GENERATED"}
+SOURCE_TYPES = {"CONSTANT", "MANUAL_INPUT", "PREVIOUS_RESPONSE", "REQUEST_VALUE", "IDENTITY", "OBJECT", "GENERATED"}
 EXTRACT_TYPES = {"json", "header", "cookie", "regex", "location"}
 RUN_STATES = {"queued", "running", "waiting_input", "waiting_prerequisite", "completed", "failed", "aborted"}
 
@@ -192,6 +192,11 @@ def create_variable(conn, flow_id: int, *, name: str, source_type: str, descript
             raise ValueError("PREVIOUS_RESPONSE necesita Producer Step")
         if not str(extraction_expr or "").strip():
             raise ValueError("PREVIOUS_RESPONSE necesita expresión de extracción")
+    if source_type == "REQUEST_VALUE":
+        if not producer_step_id:
+            raise ValueError("REQUEST_VALUE necesita Producer Step")
+        if not str(extraction_expr or "").strip():
+            extraction_expr = name
     if source_type == "MANUAL_INPUT" and not prompt:
         prompt = name
     now = now_iso()
@@ -299,6 +304,7 @@ def flow_runtime_data(conn, flow_id: int) -> dict[str, Any]:
     source_labels = {
         "MANUAL_INPUT": "Te lo pide Negro al ejecutar",
         "PREVIOUS_RESPONSE": "Sale automáticamente de una respuesta anterior",
+        "REQUEST_VALUE": "Valor observado en una Request anterior",
         "IDENTITY": "Lo toma de una Identity",
         "OBJECT": "Lo toma de un Object",
         "CONSTANT": "Valor fijo",
@@ -463,7 +469,7 @@ def _resolve_variable(conn, variable: dict[str, Any], context: dict[str, str], *
     if name in context:
         return str(context[name])
     st = str(variable.get("source_type") or "CONSTANT").upper()
-    if st == "CONSTANT":
+    if st in {"CONSTANT", "REQUEST_VALUE"}:
         return str(variable.get("default_value") or "")
     if st == "IDENTITY":
         return _resolve_identity_value(conn, variable.get("identity_id") or default_identity_id, str(variable.get("identity_field") or ""))
@@ -495,7 +501,7 @@ def create_run(conn, flow_id: int, *, parent_run_id: int | None = None, prerequi
     context = dict(inherited_context or {})
     for v in _variables_for_flow(conn, int(flow_id)):
         st = str(v["source_type"] or "CONSTANT").upper()
-        if st == "CONSTANT" and v["name"] not in context:
+        if st in {"CONSTANT", "REQUEST_VALUE"} and v["name"] not in context:
             context[str(v["name"])] = str(v["default_value"] or "")
         elif st == "GENERATED" and v["name"] not in context:
             context[str(v["name"])] = _generated_value(str(v["generated_type"] or "token"))

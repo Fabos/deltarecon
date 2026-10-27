@@ -1,3 +1,9 @@
+## v0.115.3 · HTTP legible + conexiones de datos en Flow
+
+El **HTTP Workbench** usa ahora el mismo lenguaje visual del visor de Inventario: líneas numeradas, colores semánticos consistentes, JSON indentado y wrap en Pretty para analizar Requests/Responses sin scroll horizontal innecesario. Raw conserva el HTTP exacto.
+
+En **Flow → Ver HTTP**, el cableado se configura por intención: un valor de Request puede **Pedirse al ejecutar** o **Pasarse al siguiente Step**; un valor de Response puede **Pasarse al siguiente Step**. Al conectar, Negro muestra los parámetros de la siguiente Request y deja escoger cuál será reemplazado. El Escenario hereda esas conexiones del Flow.
+
 ## v0.112 · HTTP Workbench
 
 Negro incorpora un **HTTP Workbench** pensado como lugar principal de análisis mientras Burp conserva el papel de proxy/intercept. Burp puede enviar todo el tráfico observado: los hosts que pertenecen a un proyecto se guardan allí y el resto queda en un **Traffic Inbox** local/passive-only para poder filtrarlo después sin perder evidencia.

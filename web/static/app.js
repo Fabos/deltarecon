@@ -935,32 +935,33 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const needle=esc(v);return html.includes(needle)?html.replace(needle,smartValue(v)):html;
   };
   const lineHtml=(line,idx,bodyStarted,side,smart)=>{
+    const lineNo=idx+1;
     if(!bodyStarted && idx===0){
       const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
-      if(m){const h=`<span class="h-method">${esc(m[1])}</span> <span class="h-path">${esc(m[2])}</span>${m[3]?` <span class="h-proto">${esc(m[3])}</span>`:''}`;return `<span class="wb-http-line">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
+      if(m){const h=`<span class="http-token-method">${esc(m[1])}</span> <span class="http-token-target">${esc(m[2])}</span>${m[3]?` <span class="http-token-protocol">${esc(m[3])}</span>`:''}`;return `<span class="wb-http-line" data-line="${lineNo}">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
       const r=line.match(/^(HTTP\/\S+)\s+(\d+)(.*)$/);
-      if(r){const h=`<span class="h-proto">${esc(r[1])}</span> <span class="h-method">${esc(r[2])}</span>${esc(r[3])}`;return `<span class="wb-http-line">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
+      if(r){const status=Number(r[2]),statusClass=status<300?'http-token-status-ok':status<400?'http-token-status-redirect':'http-token-status-error';const h=`<span class="http-token-protocol">${esc(r[1])}</span> <span class="${statusClass}">${esc(r[2])}</span><span class="http-token-status-text">${esc(r[3])}</span>`;return `<span class="wb-http-line" data-line="${lineNo}">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
     }
     if(!bodyStarted){
       const h=line.match(/^([^:]+):(.*)$/);
       if(h){
-        const name=h[1],value=h[2],tone=smart?headerTone(name):'';
-        let x=`<span class="h-name">${esc(name)}</span>:<span class="h-value">${esc(value)}</span>`;
+        const name=h[1],value=h[2],tone=smart?headerTone(name):'',sensitive=/^(authorization|cookie|set-cookie|x-api-key|api-key|proxy-authorization)$/i.test(name.trim());
+        let x=`<span class="http-token-header-name${sensitive?' http-token-sensitive':''}">${esc(name)}</span><span class="http-token-punctuation">:</span><span class="http-token-header-value${sensitive?' http-token-sensitive-value':''}">${esc(value)}</span>`;
         x=decorateSemantic(x,line,side,idx,bodyStarted);
         if(smart)x=compactKnownValue(x,value);
-        return `<span class="wb-http-line ${tone}">${x}</span>`;
+        return `<span class="wb-http-line ${tone}" data-line="${lineNo}">${x}</span>`;
       }
     }
     let out=esc(line);
     if(bodyStarted){
-      out=out.replace(/(&quot;[^&\n]+?&quot;)(\s*:)/g,'<span class="h-json-key">$1</span>$2')
-             .replace(/(:\s*)(&quot;.*?&quot;)/g,'$1<span class="h-json-string">$2</span>')
-             .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="h-json-number">$2</span>')
-             .replace(/(:\s*)(true|false|null)/g,'$1<span class="h-json-bool">$2</span>');
+      out=out.replace(/(&quot;[^&\n]+?&quot;)(\s*:)/g,'<span class="http-token-key">$1</span><span class="http-token-punctuation">$2</span>')
+             .replace(/(:\s*)(&quot;.*?&quot;)/g,'$1<span class="http-token-string">$2</span>')
+             .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="http-token-number">$2</span>')
+             .replace(/(:\s*)(true|false|null)/g,'$1<span class="http-token-literal">$2</span>');
       out=decorateSemantic(out,line,side,idx,bodyStarted);
       if(smart){const jm=line.match(/^\s*"[^"]+"\s*:\s*"([^"]*)"\s*,?\s*$/);if(jm)out=compactKnownValue(out,jm[1]);}
     }else out=decorateSemantic(out,line,side,idx,bodyStarted);
-    return `<span class="wb-http-line">${out||' '}</span>`;
+    return `<span class="wb-http-line${line===''?' wb-http-separator':''}" data-line="${lineNo}">${out||' '}</span>`;
   };
   const paint=(side)=>{
     const pre=root.querySelector(`[data-http-view="${side}"]`),code=pre?.querySelector('code');if(!pre||!code)return;

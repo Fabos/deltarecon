@@ -939,7 +939,7 @@ def _scenario_initial_context(conn, steps: list[dict[str,Any]]) -> dict[str,Any]
             if not name or name in context:
                 continue
             st=str(variable.get("source_type") or "CONSTANT").upper()
-            if st == "CONSTANT":
+            if st in {"CONSTANT", "REQUEST_VALUE"}:
                 context[name]=str(variable.get("default_value") or "")
             elif st == "GENERATED":
                 context[name]=flow_runtime._generated_value(str(variable.get("generated_type") or "token"))
