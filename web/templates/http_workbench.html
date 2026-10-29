@@ -93,7 +93,7 @@
           <b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b>
           <strong class="wb-row-host" title="{{ row.hostname }}">{{ row.hostname }}</strong>
           <span class="wb-row-endpoint"><code>{{ row.path }}</code>{% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}</span>
-          <span class="wb-tags">{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
+          <span class="wb-tags">{% if row.interaction_kind=='EXPERIMENT' %}<em class="wb-tag tag-experiment" title="{{ row.provenance_source or 'EXPERIMENT' }}">EXPERIMENT</em>{% endif %}{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
           <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
           <time>{{ (row.captured_at or '')[11:19] }}</time>
         </a>
@@ -111,7 +111,7 @@
       {% if selected %}
       <div class="wb-request-summary" data-summary>
         <div class="wb-summary-primary"><b class="wb-method method-{{ selected.exchange.method|lower }}" data-summary-method>{{ selected.exchange.method }}</b><span data-summary-url>{{ selected.exchange.url }}</span></div>
-        <div class="wb-summary-controls"><button type="button" class="active" data-pane-layout="split" title="Request izquierda · Response derecha">Split</button><button type="button" data-pane-layout="request">Request</button><button type="button" data-pane-layout="response">Response</button><button type="button" data-http-fullscreen title="Usar todo el ancho para Request/Response">Pantalla completa</button></div>
+        <div class="wb-summary-controls"><button type="button" class="active" data-pane-layout="split" title="Request izquierda · Response derecha">Split</button><button type="button" data-pane-layout="request">Request</button><button type="button" data-pane-layout="response">Response</button><button type="button" data-http-fullscreen title="Abrir Traffic + Request + Response como workspace inmersivo">Pantalla completa</button></div>
         <div class="wb-summary-meta"><span class="wb-semantic-summary" data-semantic-summary>{% for cls,label in [('auth','AUTH'),('resolver','RESOLVER'),('context','CONTEXT'),('entity','ENTITY')] %}{% if selected.semantic_counts.get(cls) %}<em class="wb-semantic-chip semantic-{{ cls }}">{{ label }} {{ selected.semantic_counts.get(cls) }}</em>{% endif %}{% endfor %}</span><span class="wb-status status-{{ (selected.exchange.status_code or 0)//100 }}xx" data-summary-status>{{ selected.exchange.status_code or '—' }}</span><span data-summary-target>{{ selected.target_name }}</span><span>evento #<b data-summary-id>{{ selected.event_id or selected.exchange.id }}</b></span><span class="wb-exchange-ref">exchange #{{ selected.exchange.id }}</span><span>{{ selected.exchange.response_size or 0 }} B</span></div>
       </div>
 
@@ -127,6 +127,7 @@
         </section>
       </div>
       <script type="application/json" data-workbench-annotations>{{ selected.annotations|tojson }}</script>
+      <script type="application/json" data-workbench-inline-context>{{ {'values': selected['values'], 'identities': selected['identity_options'], 'object_types': selected['object_type_options']}|tojson }}</script>
       {% else %}
       <div class="wb-empty wb-empty-center"><b>HTTP Workbench está listo.</b><span>Cuando Burp observe tráfico, selecciona una Request a la izquierda.</span></div>
       {% endif %}
@@ -141,13 +142,11 @@
       <section class="wb-context-card" data-context-card="flow"><div class="wb-card-title"><span>⌁</span><b>Flow</b></div>{% if selected.flows %}<div class="wb-flow-list">{% for f in selected.flows %}<a href="/t/{{ selected.target_key }}/flows/{{ f.id }}#flow-step-{{ f.step_id }}"><span>{{ f.position }}</span><b>{{ f.name }}</b><small>{{ f.label or f.state_label or 'Step observado' }}</small></a>{% endfor %}</div>{% else %}<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>{% endif %}</section>
       <details class="wb-context-card wb-collapsible" data-context-card="related"><summary class="wb-card-title"><span>↔</span><b>Related Requests</b><em>{{ selected.related|length }}</em></summary>{% if selected.related %}<div class="wb-related-list">{% for r in selected.related %}<button type="button" data-related-source="{{ selected.target_key }}" data-related-exchange="{{ r.id }}"><b class="wb-method method-{{ r.method|lower }}">{{ r.method }}</b><code>{{ r.path }}</code><span>{{ r.status_code or '—' }}</span></button>{% endfor %}</div>{% else %}<p class="wb-muted">Sin relaciones suficientes todavía.</p>{% endif %}</details>
 
-      <details class="wb-context-card wb-quick-actions wb-collapsible" open><summary class="wb-card-title"><span>⚡</span><b>Quick Actions</b></summary>
+      <details class="wb-context-card wb-quick-actions wb-collapsible" open><summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary>
         {% if not selected.is_inbox %}
-        <div class="wb-action-grid">
-          <a href="/t/{{ selected.target_key }}/exchange/{{ selected.exchange.id }}/inspect">Inspector avanzado</a>
+        <div class="wb-action-grid wb-action-grid-compact">
           <a href="/t/{{ selected.target_key }}/parameters/related/{{ selected.exchange.id }}">Follow Value</a>
-          <a href="/t/{{ selected.target_key }}/flows/add?exchange_id={{ selected.exchange.id }}">Add to Flow</a>
-          <a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay / Identity</a>
+          <a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay</a>
         </div>
         <form class="wb-repeater-form" method="post" action="/t/{{ selected.target_key }}/resource/{{ selected.exchange.resource_id }}/send-repeater"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ selected.exchange.method }}"><input type="hidden" name="exchange_id" value="{{ selected.exchange.id }}"><button type="submit">Enviar a Burp Repeater</button></form>
         {% else %}
@@ -159,6 +158,22 @@
       <div class="wb-context-title"><h2>Context</h2></div><div class="wb-empty"><span>Selecciona una Request para ver Identity, Objects, Signals, Flow y relaciones.</span></div>
       {% endif %}
     </aside>
+  </div>
+
+  <div class="wb-inline-popover" data-inline-popover hidden role="dialog" aria-label="Enseñar valor a Negro">
+    <div class="wb-inline-popover-head"><div><small>ENSEÑAR A NEGRO</small><b data-inline-key>valor</b><code data-inline-preview></code></div><button type="button" data-inline-close aria-label="Cerrar">×</button></div>
+    <div class="wb-inline-meta"><span data-inline-side></span><span data-inline-location></span></div>
+    <div class="wb-inline-classes" role="group" aria-label="Significado del valor">
+      <button type="button" data-inline-class="auth">AUTH</button>
+      <button type="button" data-inline-class="resolver">RESOLVER</button>
+      <button type="button" data-inline-class="context">CONTEXT</button>
+      <button type="button" data-inline-class="entity">OBJECT</button>
+    </div>
+    <label class="wb-inline-identity" data-inline-identity-wrap>Identity<select data-inline-identity><option value="">Selecciona…</option></select></label>
+    <label class="wb-inline-object" data-inline-object-wrap hidden>Object type<input data-inline-object-type list="wb-object-types" placeholder="Order / Payment / Return…"></label>
+    <datalist id="wb-object-types" data-inline-object-types></datalist>
+    <div class="wb-inline-actions"><a href="#" data-inline-follow>Follow Value</a><button type="button" class="quiet" data-inline-ignore>Quitar significado</button><button type="button" class="primary" data-inline-save>Guardar</button></div>
+    <p class="wb-inline-feedback" data-inline-feedback hidden></p>
   </div>
 
   <dialog class="wb-jwt-dialog" data-jwt-dialog>

@@ -1,22 +1,23 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="0.39.0"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VERSION="0.40.0"
 MONTOYA_VERSION="2026.7"
 DEPS="$HERE/.deps"
 CLASSES="$HERE/build/classes/java/main"
 LIBS="$HERE/build/libs"
 MONTOYA_JAR="$DEPS/montoya-api-$MONTOYA_VERSION.jar"
+SOURCES_FILE="$HERE/build/java-sources.txt"
 
-mkdir -p "$DEPS" "$CLASSES" "$LIBS"
+mkdir -p "$DEPS" "$CLASSES" "$LIBS" "$HERE/build"
 
 if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
   echo "[ERROR] Java/JDK no está instalado. Se requiere JDK 21 o superior." >&2
   exit 1
 fi
 
-JAVA_MAJOR="$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)"
+JAVA_MAJOR=$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)
 if [ "$JAVA_MAJOR" -lt 21 ]; then
   echo "[ERROR] javac $JAVA_MAJOR detectado. Se requiere JDK 21 o superior." >&2
   exit 1
@@ -37,14 +38,14 @@ fi
 
 rm -rf "$CLASSES"
 mkdir -p "$CLASSES" "$LIBS"
-mapfile -t SOURCES < <(find "$HERE/src/main/java" -type f -name '*.java' -print)
-if [ "${#SOURCES[@]}" -eq 0 ]; then
+find "$HERE/src/main/java" -type f -name '*.java' -print > "$SOURCES_FILE"
+if [ ! -s "$SOURCES_FILE" ]; then
   echo "[ERROR] No se encontraron fuentes Java." >&2
   exit 1
 fi
 
-echo "[INFO] Compilando Negro Burp Bridge para Java 21..."
-javac --release 21 -encoding UTF-8 -cp "$MONTOYA_JAR" -d "$CLASSES" "${SOURCES[@]}"
+echo "[INFO] Compilando Negro Burp Bridge v$VERSION para Java 21..."
+javac --release 21 -encoding UTF-8 -cp "$MONTOYA_JAR" -d "$CLASSES" @"$SOURCES_FILE"
 
 MANIFEST="$HERE/build/manifest.mf"
 cat > "$MANIFEST" <<EOF

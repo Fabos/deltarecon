@@ -61,7 +61,14 @@ def _init_workbench_schema(conn) -> None:
             burp_scope_status TEXT NOT NULL DEFAULT 'UNKNOWN',
             is_inbox INTEGER NOT NULL DEFAULT 0,
             synthetic INTEGER NOT NULL DEFAULT 0,
-            seen_at TEXT
+            seen_at TEXT,
+            provenance_source TEXT NOT NULL DEFAULT '',
+            interaction_kind TEXT NOT NULL DEFAULT 'OBSERVED',
+            parent_event_id INTEGER,
+            parent_confidence REAL,
+            mutation_diff_json TEXT,
+            bridge_message_id TEXT,
+            request_hash TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_target_id
             ON workbench_capture_events(target_key, id);
@@ -79,6 +86,22 @@ def _init_workbench_schema(conn) -> None:
     cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(workbench_checkpoints)").fetchall()}
     if "cutoff_event_id" not in cols:
         conn.execute("ALTER TABLE workbench_checkpoints ADD COLUMN cutoff_event_id INTEGER")
+
+    event_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(workbench_capture_events)").fetchall()}
+    additive = {
+        "provenance_source": "TEXT NOT NULL DEFAULT ''",
+        "interaction_kind": "TEXT NOT NULL DEFAULT 'OBSERVED'",
+        "parent_event_id": "INTEGER",
+        "parent_confidence": "REAL",
+        "mutation_diff_json": "TEXT",
+        "bridge_message_id": "TEXT",
+        "request_hash": "TEXT",
+    }
+    for name, ddl in additive.items():
+        if name not in event_cols:
+            conn.execute(f"ALTER TABLE workbench_capture_events ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_parent ON workbench_capture_events(parent_event_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_request_hash ON workbench_capture_events(request_hash,id)")
 
 
 def _init_context_schema(conn) -> None:
@@ -133,7 +156,7 @@ def _event_source_snapshot(source_key: str, exchange_id: int) -> dict[str, Any] 
         row = conn.execute(
             """
             SELECT e.id,e.source,e.tool,e.status_code,e.request_size,e.response_size,
-                   e.burp_scope_status,e.first_seen_at,e.last_seen_at,
+                   e.burp_scope_status,e.first_seen_at,e.last_seen_at,e.request_hash,
                    o.method,o.authenticated_observed,o.request_content_type,o.response_content_type,
                    r.url,r.path,h.hostname
               FROM http_exchanges e
@@ -276,28 +299,77 @@ def latest_event_id() -> int:
         return int(row["id"] or 0)
 
 
-def record_capture_event(source_key: str, exchange_id: int, *, captured_at: str | None = None) -> dict[str, Any] | None:
-    """Append one exact Burp occurrence to the global Workbench timeline."""
+def _find_parent_event(conn, *, target_key: str, request_hash: str, before_id: int | None = None) -> tuple[int | None, float | None]:
+    """Best-effort parent lookup for experiments without an explicit parent.
+
+    Exact request-hash matches are high confidence. We intentionally do not
+    fabricate fuzzy parents here; a later correlation layer can add probable
+    parents with richer similarity evidence.
+    """
+    rh = str(request_hash or "").strip()
+    if not rh:
+        return None, None
+    clauses = ["target_key=?", "request_hash=?", "upper(COALESCE(interaction_kind,'OBSERVED'))='OBSERVED'"]
+    params: list[Any] = [str(target_key), rh]
+    if before_id and int(before_id) > 0:
+        clauses.append("id<?")
+        params.append(int(before_id))
+    row = conn.execute(
+        "SELECT id FROM workbench_capture_events WHERE " + " AND ".join(clauses) + " ORDER BY id DESC LIMIT 1",
+        tuple(params),
+    ).fetchone()
+    return (int(row["id"]), 1.0) if row else (None, None)
+
+
+def record_capture_event(
+    source_key: str, exchange_id: int, *, captured_at: str | None = None,
+    provenance_source: str = "", interaction_kind: str = "",
+    parent_event_id: int | None = None, parent_confidence: float | None = None,
+    mutation_diff: Any = None, bridge_message_id: str = "",
+) -> dict[str, Any] | None:
+    """Append one exact occurrence to the global Workbench timeline.
+
+    Provenance belongs to the occurrence (Capture Event), not the deduplicated
+    HTTP Exchange. This prevents a normal browser request and a later Repeater
+    experiment from being conflated simply because their bytes match.
+    """
     ensure_timeline_bootstrap()
     snap = _event_source_snapshot(source_key, int(exchange_id))
     if not snap:
         return None
     ts = str(captured_at or core.now_iso())
+    prov = str(provenance_source or "").strip().upper()
+    tool = str(snap.get("tool") or "").strip().upper()
+    if not prov:
+        prov = "REPEATER" if tool == "REPEATER" else ("PROXY" if tool == "PROXY" else (tool or "OTHER"))
+    kind = str(interaction_kind or "").strip().upper()
+    if not kind:
+        kind = "EXPERIMENT" if prov in {"REPEATER","PROXY_MANUAL_MUTATION","NEGRO_REPLAY","RUNNER"} else "OBSERVED"
+    if kind not in {"OBSERVED", "EXPERIMENT"}:
+        kind = "EXPERIMENT" if prov in {"REPEATER","PROXY_MANUAL_MUTATION","NEGRO_REPLAY","RUNNER"} else "OBSERVED"
+    request_hash = str(snap.get("request_hash") or "")
     paths = ensure_inbox_paths()
     with core.db_connect(paths) as conn:
         _init_workbench_schema(conn)
+        if kind == "EXPERIMENT" and parent_event_id is None and prov == "REPEATER":
+            parent_event_id, parent_confidence = _find_parent_event(conn, target_key=str(source_key), request_hash=request_hash)
         cur = conn.execute(
             """INSERT INTO workbench_capture_events(
                    target_key,exchange_id,captured_at,source,tool,method,url,hostname,path,status_code,
                    request_size,response_size,request_content_type,response_content_type,authenticated_observed,
-                   burp_scope_status,is_inbox,synthetic,seen_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)""",
+                   burp_scope_status,is_inbox,synthetic,seen_at,provenance_source,interaction_kind,parent_event_id,
+                   parent_confidence,mutation_diff_json,bridge_message_id,request_hash)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)""",
             (
                 str(source_key), int(exchange_id), ts, str(snap.get("source") or ""), str(snap.get("tool") or ""),
                 str(snap.get("method") or ""), str(snap.get("url") or ""), str(snap.get("hostname") or ""), str(snap.get("path") or "/"),
                 snap.get("status_code"), int(snap.get("request_size") or 0), int(snap.get("response_size") or 0),
                 snap.get("request_content_type"), snap.get("response_content_type"), int(snap.get("authenticated_observed") or 0),
                 str(snap.get("burp_scope_status") or "UNKNOWN"), 1 if snap.get("is_inbox") else 0,
+                prov, kind, int(parent_event_id) if parent_event_id else None,
+                float(parent_confidence) if parent_confidence is not None else None,
+                json.dumps(mutation_diff, ensure_ascii=False, separators=(",",":")) if mutation_diff not in (None, "", [], {}) else None,
+                str(bridge_message_id or "") or None, request_hash or None,
             ),
         )
         event_id = int(cur.lastrowid)
@@ -736,6 +808,30 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
         for row in related:
             row["target_key"] = source["key"]
 
+        # Catalogs and scalar observations used by the Workbench inline semantics
+        # popover. This reuses HTTP Inspector's parser/source-of-truth; the browser
+        # never invents a second model of what a value is.
+        identity_options = _safe_query(conn, "SELECT id,name,kind FROM identities ORDER BY lower(name),id LIMIT 300")
+        object_type_options = _safe_query(conn, "SELECT id,name FROM business_object_types ORDER BY lower(name),id LIMIT 300")
+        safe_values: list[dict[str, Any]] = []
+        for raw_value in inspector.get("values") or []:
+            item = dict(raw_value)
+            ann = dict(item.get("annotation") or {})
+            safe_values.append({
+                "side": str(item.get("side") or ""),
+                "location": str(item.get("location") or ""),
+                "key": str(item.get("key") or ""),
+                "value": str(item.get("value") or "")[:12000],
+                "preview": str(item.get("preview") or "")[:500],
+                "detected_type": str(item.get("detected_type") or "scalar"),
+                "default_classification": str(item.get("default_classification") or "ignore"),
+                "annotation": {
+                    "classification": str(ann.get("classification") or ""),
+                    "identity_id": int(ann.get("identity_id") or 0) or None,
+                    "object_type": str(ann.get("object_type") or ""),
+                } if ann else None,
+            })
+
         identity_match_map: dict[int, dict[str, Any]] = {}
         semantic_counts = {"auth": 0, "resolver": 0, "context": 0, "entity": 0}
         safe_annotations: list[dict[str, Any]] = []
@@ -777,6 +873,9 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             "identity": identity,
             "identity_matches": list(identity_match_map.values()),
             "annotations": safe_annotations,
+            "values": safe_values,
+            "identity_options": identity_options,
+            "object_type_options": object_type_options,
             "semantic_counts": semantic_counts,
             "objects": objects,
             "signals": signals,
@@ -796,6 +895,24 @@ def detail_event(event_id: int, *, mark_seen: bool = True) -> dict[str, Any] | N
     if mark_seen and not event.get("seen_at"):
         mark_event_seen(int(event_id))
         event["seen_at"] = core.now_iso()
+    if event.get("mutation_diff_json"):
+        try:
+            event["mutation_diff"] = json.loads(str(event.get("mutation_diff_json") or "[]"))
+        except Exception:
+            event["mutation_diff"] = []
+    else:
+        event["mutation_diff"] = []
+    try:
+        import negro_evidence as evidence_tools
+        gpaths = ensure_inbox_paths()
+        with core.db_connect(gpaths) as gconn:
+            evidence_tools.init_schema(gconn)
+            evidence_rows = [dict(r) for r in gconn.execute(
+                "SELECT * FROM experiment_evidence WHERE event_id=? ORDER BY id DESC", (int(event_id),)
+            ).fetchall()]
+        item["event_evidence"] = evidence_rows
+    except Exception:
+        item["event_evidence"] = []
     item["event"] = event
     item["event_id"] = int(event_id)
     return item

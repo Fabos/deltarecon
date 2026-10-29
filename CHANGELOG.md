@@ -1,3 +1,13 @@
+# v0.115.8 · Immersive HTTP + Inline Semantics
+
+- Pantalla completa ahora usa Traffic + Request + Response como workspace inmersivo.
+- Context funciona como drawer opcional dentro del fullscreen.
+- Click/keyboard sobre valores HTTP permite enseñar AUTH, RESOLVER, CONTEXT y OBJECT directamente desde Pretty.
+- La enseñanza inline reutiliza HTTP Inspector/Identity/Business Objects; no crea una memoria paralela.
+- Navegación principal reducida; vistas globales pasan a “Más” sin eliminar capacidades.
+- Quick Actions de HTTP elimina Inspector avanzado y Add to Flow por redundancia.
+- 146 tests verdes.
+
 # v0.115.7 — Live Checkpoint + Resizable Traffic + Context Return
 
 - Corrige una carrera en polling live: cada lectura fija primero un `latest_event_id` y consulta solo hasta ese límite, evitando saltar capturas que llegan entre la consulta de filas y el avance del cursor.
@@ -2538,3 +2548,14 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Traffic Inbox permanece como deck superior plegable; Context sigue como panel derecho plegable.
 - El bloque genérico “ESTA PANTALLA RESPONDE” se elimina del HTTP Workbench para recuperar espacio vertical.
 - Validación real en Chromium de los controles principales y 141/141 tests en verde.
+
+## 2026-10-29 · v0.116 — Evidence & Provenance
+- Añade provenance por Capture Event: source, interaction kind, parent, confidence, mutation diff, bridge message id y request hash.
+- Proxy manual mutation se clasifica como `EXPERIMENT` sin contaminar el comportamiento observado.
+- Repeater se clasifica como `EXPERIMENT` y enlaza parent exacto sólo cuando existe evidencia suficiente.
+- Añade `experiment_evidence` separando transport status, semantic result, object evidence y experiment outcome.
+- Añade `knowledge_relations` para conocimiento `OBSERVED`/`CONFIRMED` respaldado por evidencia y expectedness.
+- Evidence se asocia a un Object concreto para evitar promociones ambiguas.
+- Traffic Inbox muestra badge `EXPERIMENT` para eventos experimentales.
+- Burp Bridge v0.40.0 captura Request pre/post Intercept mediante Montoya Proxy handlers.
+- `burp-extension/build-extension.sh` reescrito para ser compatible con `sh`/dash en Kali.

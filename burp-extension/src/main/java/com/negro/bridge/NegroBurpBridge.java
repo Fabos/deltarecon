@@ -16,6 +16,14 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.proxy.ProxyHttpRequestResponse;
+import burp.api.montoya.proxy.http.InterceptedRequest;
+import burp.api.montoya.proxy.http.InterceptedResponse;
+import burp.api.montoya.proxy.http.ProxyRequestHandler;
+import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
+import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
+import burp.api.montoya.proxy.http.ProxyResponseHandler;
+import burp.api.montoya.proxy.http.ProxyResponseReceivedAction;
+import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.Selection;
@@ -60,7 +68,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Negro Burp Bridge v0.39.0
+ * Negro Burp Bridge v0.40.0
  *
  * Observa respuestas generadas por cualquier herramienta de Burp y envía el par
  * request/response al API local de Negro. No modifica tráfico y no filtra assets.
@@ -90,13 +98,15 @@ public class NegroBurpBridge implements BurpExtension {
     private final AtomicBoolean unloading = new AtomicBoolean(false);
     private final Set<String> runnerBridgeInFlight = ConcurrentHashMap.newKeySet();
     private final Set<String> scopeHostsAlreadyPrompted = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<Integer, String> proxyOriginalRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, ProxyTrace> proxyFinalTraces = new ConcurrentHashMap<>();
     private final ScheduledExecutorService bridgePoller = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "negro-repeater-bridge"); t.setDaemon(true); return t; });
 
     @Override
     public void initialize(MontoyaApi api) {
         this.api = api;
         api.extension().setName("Negro Burp Bridge");
-        api.logging().logToOutput("Negro Burp Bridge v0.39.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
+        api.logging().logToOutput("Negro Burp Bridge v0.40.0 iniciado → " + negroBaseUrl + " · instance=" + bridgeInstanceId.substring(0, 8));
         api.extension().registerUnloadingHandler(() -> {
             if (unloading.compareAndSet(false, true)) {
                 bridgePoller.shutdownNow();
@@ -105,6 +115,8 @@ public class NegroBurpBridge implements BurpExtension {
             }
         });
         api.http().registerHttpHandler(new BridgeHttpHandler());
+        api.proxy().registerRequestHandler(new BridgeProxyRequestHandler());
+        api.proxy().registerResponseHandler(new BridgeProxyResponseHandler());
         api.scope().registerScopeChangeHandler(change -> {
             // Scope events do not carry the changed URL. Reconcile only the small set
             // of configured project roots and inspect Site map for a new unassigned host.
@@ -904,6 +916,65 @@ public class NegroBurpBridge implements BurpExtension {
         }
     }
 
+    private record ProxyTrace(String provenanceSource, String originalRequestB64, String bridgeMessageId) {}
+
+    private final class BridgeProxyRequestHandler implements ProxyRequestHandler {
+        @Override
+        public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest request) {
+            try {
+                if (!isNegroBridgeTraffic(request.url())) {
+                    String original = Base64.getEncoder().encodeToString(request.toByteArray().getBytes());
+                    proxyOriginalRequests.put(request.messageId(), original);
+                }
+            } catch (Exception ex) {
+                api.logging().logToError("Negro provenance pre-intercept: " + ex.getMessage());
+            }
+            return ProxyRequestReceivedAction.continueWith(request, request.annotations());
+        }
+
+        @Override
+        public ProxyRequestToBeSentAction handleRequestToBeSent(InterceptedRequest request) {
+            try {
+                if (!isNegroBridgeTraffic(request.url())) {
+                    String original = proxyOriginalRequests.remove(request.messageId());
+                    String sent = Base64.getEncoder().encodeToString(request.toByteArray().getBytes());
+                    boolean mutated = original != null && !original.equals(sent);
+                    proxyFinalTraces.put(request.messageId(), new ProxyTrace(
+                            mutated ? "PROXY_MANUAL_MUTATION" : "PROXY",
+                            original == null ? "" : original,
+                            Integer.toString(request.messageId())));
+                }
+            } catch (Exception ex) {
+                api.logging().logToError("Negro provenance post-intercept: " + ex.getMessage());
+            }
+            return ProxyRequestToBeSentAction.continueWith(request, request.annotations());
+        }
+    }
+
+    private final class BridgeProxyResponseHandler implements ProxyResponseHandler {
+        @Override
+        public ProxyResponseReceivedAction handleResponseReceived(InterceptedResponse response) {
+            try {
+                HttpRequest request = response.request();
+                if (!isNegroBridgeTraffic(request.url())) {
+                    ProxyTrace trace = proxyFinalTraces.remove(response.messageId());
+                    if (trace == null) trace = new ProxyTrace("PROXY", "", Integer.toString(response.messageId()));
+                    String json = toJson(request, response, "PROXY", trace);
+                    sendAsync(json, request.method(), request.url(), "PROXY", response.annotations());
+                }
+            } catch (Exception ex) {
+                recordError("Proxy provenance: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+                api.logging().logToError("Negro Proxy provenance: " + ex.getMessage());
+            }
+            return ProxyResponseReceivedAction.continueWith(response, response.annotations());
+        }
+
+        @Override
+        public ProxyResponseToBeSentAction handleResponseToBeSent(InterceptedResponse response) {
+            return ProxyResponseToBeSentAction.continueWith(response, response.annotations());
+        }
+    }
+
     private final class BridgeHttpHandler implements HttpHandler {
         @Override
         public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent request) {
@@ -918,6 +989,11 @@ public class NegroBurpBridge implements BurpExtension {
                     return ResponseReceivedAction.continueWith(response, response.annotations());
                 }
                 String tool = response.toolSource().toolType().name();
+                // Proxy traffic is emitted by BridgeProxyResponseHandler so it can
+                // carry the exact pre/post-intercept messageId provenance.
+                if ("PROXY".equalsIgnoreCase(tool)) {
+                    return ResponseReceivedAction.continueWith(response, response.annotations());
+                }
                 String runnerKey = request.method().toUpperCase() + " " + request.url();
                 if ("EXTENSIONS".equalsIgnoreCase(tool) && runnerBridgeInFlight.contains(runnerKey)) {
                     return ResponseReceivedAction.continueWith(response, response.annotations());
@@ -940,7 +1016,7 @@ public class NegroBurpBridge implements BurpExtension {
                     .timeout(Duration.ofSeconds(10))
                     .header("Accept", "application/json")
                     .header("X-Negro-Bridge-Id", bridgeInstanceId)
-                    .header("X-Negro-Bridge-Version", "0.39.0")
+                    .header("X-Negro-Bridge-Version", "0.40.0")
                     .GET().build();
 
             // Use a synchronous call on the dedicated poller thread. In v0.16.2 an
@@ -1446,6 +1522,20 @@ public class NegroBurpBridge implements BurpExtension {
                 kv("response_body_b64", responseBodyB64) + "," +
                 "\"burp_in_scope\":" + api.scope().isInScope(request.url()) +
                 "}";
+    }
+
+    private String toJson(HttpRequest request, HttpResponse response, String tool, ProxyTrace trace) {
+        String base = toJson(request, response, tool);
+        if (base == null || base.length() < 2 || trace == null) return base;
+        String provenance = trace.provenanceSource() == null ? "PROXY" : trace.provenanceSource();
+        String interaction = "PROXY_MANUAL_MUTATION".equals(provenance) ? "EXPERIMENT" : "OBSERVED";
+        String extra = "," + kv("provenance_source", provenance)
+                + "," + kv("interaction_kind", interaction)
+                + "," + kv("bridge_message_id", trace.bridgeMessageId() == null ? "" : trace.bridgeMessageId());
+        if (trace.originalRequestB64() != null && !trace.originalRequestB64().isBlank()) {
+            extra += "," + kv("original_request_b64", trace.originalRequestB64());
+        }
+        return base.substring(0, base.length() - 1) + extra + "}";
     }
 
     private record BridgeContext(String targetKey, long resourceId, long operationId, long exchangeId, String webPath) {}

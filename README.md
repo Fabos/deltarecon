@@ -633,3 +633,7 @@ Surface map drill-down now collapses security controls and non-edge historical i
 ## HTTP Workbench v0.115
 
 HTTP Workbench usa ahora una timeline de Capture Events: cada ocurrencia observada por Burp aparece en orden real aunque el exchange lógico sea idéntico a uno anterior. La vista se actualiza en vivo, distingue eventos no vistos, soporta checkpoints exactos y ofrece un JWT Inspector desde Pretty. Ver `V115_LIVE_TRAFFIC_TIMELINE.md`.
+
+## v0.116 — Evidence & Provenance
+
+Negro separa ahora **Capture Events**, **Evidence** y **Knowledge Relations** para que las pruebas manuales no contaminen el conocimiento del aplicativo. Proxy Intercept modificado y Repeater se registran como experimentos, con parent/diff cuando existe evidencia suficiente. Consulta `V116_EVIDENCE_PROVENANCE.md` para el modelo y la compilación de Burp Bridge v0.40.0 en Kali.

@@ -1,4 +1,4 @@
-# Negro Burp Bridge v0.39.0
+# Negro Burp Bridge v0.40.0
 
 Extensión Burp (Montoya API) para alimentar Negro en tiempo real y recibir solicitudes para Repeater.
 
@@ -8,7 +8,7 @@ No necesitas Gradle instalado.
 
 ```bash
 cd burp-extension
-./build-extension.sh
+sh build-extension.sh
 ```
 
 La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y lo deja en `.deps/`. Las siguientes compilaciones reutilizan esa copia.
@@ -16,7 +16,7 @@ La primera compilación descarga `montoya-api-2026.7.jar` desde Maven Central y 
 Resultado:
 
 ```text
-build/libs/negro-burp-bridge-0.39.0.jar
+build/libs/negro-burp-bridge-0.40.0.jar
 ```
 
 Requisitos: JDK 21 o superior y `curl` o `wget`. Con JDK 25 funciona: se compila bytecode compatible con Java 21 mediante `javac --release 21`.
@@ -42,7 +42,7 @@ Gradle ya no es requisito para instalar la extensión.
 
 1. `Extensions` → `Installed` → `Add`.
 2. Tipo: `Java`.
-3. Selecciona `build/libs/negro-burp-bridge-0.39.0.jar`.
+3. Selecciona `build/libs/negro-burp-bridge-0.40.0.jar`.
 4. Abre la pestaña `Negro` y verifica la conexión con la API local.
 
 Mantén Negro escuchando solo en localhost durante estas pruebas, ya que la integración puede almacenar request/response completos.
@@ -93,9 +93,13 @@ Las acciones contextuales añaden notas `INV`, `HYP`, `ENTITY`, `WATCH`, `FIND` 
 
 > Las acciones contextuales v0.28 requieren Bridge v0.28+. El transporte del Runner mantiene compatibilidad con v0.27+.
 
-## v0.39.0 · Negro Context en editores HTTP
+## v0.40.0 · Provenance de Proxy / Intercept
 
-Burp añade una pestaña de solo lectura `Negro Context` tanto en Request como Response. Consulta de forma asíncrona el contexto exacto ya aprendido en Negro (Identity, AUTH/RESOLVER/CONTEXT, Objects, Environment y Scope). Si no hay evidencia exacta, la pestaña lo indica sin bloquear el editor. La clasificación se sigue editando únicamente en HTTP Inspector.
+El Bridge registra dos momentos del Proxy: la Request recibida antes de la revisión manual y la Request que finalmente se envía. Si cambian, Negro envía `PROXY_MANUAL_MUTATION`, conserva la Request original y marca el Capture Event como `EXPERIMENT`; el backend calcula el `mutation diff`.
+
+Las Requests de Repeater también se clasifican como `EXPERIMENT`. Cuando existe una captura normal previa idéntica, Negro puede enlazarla como parent exacto; si no hay certeza suficiente, no inventa el parent.
+
+La pestaña/contexto HTTP existente se conserva; v0.40.0 añade provenance sin cambiar el flujo normal de captura.
 
 ## v0.33.0 · Replay as Identity
 

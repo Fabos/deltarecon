@@ -865,6 +865,13 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const mode={request:'pretty',response:'pretty'};
   let annotations=[];
   try{annotations=JSON.parse(root.querySelector('[data-workbench-annotations]')?.textContent||'[]')||[];}catch(_){annotations=[];}
+  let inlineValues=[],identityOptions=[],objectTypeOptions=[];
+  const applyInlineContext=(ctx={})=>{
+    inlineValues=Array.isArray(ctx.values)?ctx.values:[];
+    identityOptions=Array.isArray(ctx.identities)?ctx.identities:[];
+    objectTypeOptions=Array.isArray(ctx.object_types)?ctx.object_types:[];
+  };
+  try{applyInlineContext(JSON.parse(root.querySelector('[data-workbench-inline-context]')?.textContent||'{}')||{});}catch(_){applyInlineContext({});}
   // Workbench preference keys must exist before the first renderer/layout setup runs.
   // Declaring these here prevents a TDZ ReferenceError that previously stopped every control.
   const markKey=`negro:wb:marks:${targetKey}`,splitKey=`negro:wb:split:${targetKey}`,contextKey='negro:wb:context-hidden',trafficKey='negro:wb:traffic-collapsed',wrapKey='negro:wb:exact-lines';
@@ -905,6 +912,24 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     }
     return `<span class="wb-compact-value" data-copy-value="${esc(v)}" title="${esc(title)}">${esc(compactText(v))}<em>${badge}</em></span>`;
   };
+  const smartInlineValue=(value)=>{
+    const v=String(value||''),jwt=looksJwt(v),long=v.length>86;
+    if(!jwt&&!long)return esc(v);
+    const compact=esc(compactText(v));
+    if(jwt)return `<span class="wb-inline-compact">${compact}</span><button type="button" class="wb-inline-jwt" data-jwt-open="1" data-jwt-token="${esc(v)}" title="Abrir JWT Inspector">JWT</button>`;
+    return `<span class="wb-inline-compact">${compact}</span><em class="wb-inline-long">long</em>`;
+  };
+  const candidateApplies=(a,line,idx,bodyStarted)=>{
+    const loc=String(a.location||'').toLowerCase(),key=String(a.key||''),value=String(a.value||'');
+    if(!value)return false;
+    if(loc.includes('_header:')){const h=loc.split(':',2)[1]||'';return new RegExp(`^${regexEscape(h)}\\s*:`, 'i').test(line)&&line.includes(value);}
+    if(loc.includes('_cookie:'))return /^(cookie|set-cookie)\s*:/i.test(line)&&(!key||line.toLowerCase().includes(key.toLowerCase()))&&line.includes(value);
+    if(loc.includes('_query:'))return idx===0&&(!key||line.toLowerCase().includes(key.toLowerCase()))&&(line.includes(value)||line.includes(encodeURIComponent(value)));
+    if(loc.includes('_json:'))return bodyStarted&&(!key||line.toLowerCase().includes(`"${key.toLowerCase()}"`))&&line.includes(value);
+    if(loc.includes('_form:'))return bodyStarted&&(!key||line.toLowerCase().includes(key.toLowerCase()))&&line.includes(value);
+    return line.includes(value)&&(value.length>=4||!!key);
+  };
+  const candidateIndexFor=(ann)=>inlineValues.findIndex(v=>String(v.side||'')===String(ann.side||'')&&String(v.location||'')===String(ann.location||'')&&String(v.key||'')===String(ann.key_name||'')&&String(v.value||'')===String(ann.value_raw||ann.value_preview||''));
   const semanticApplies=(a,line,idx,bodyStarted)=>{
     const loc=String(a.location||'').toLowerCase(),key=String(a.key_name||''),value=String(a.value_raw||a.value_preview||'');
     if(!value) return false;
@@ -920,10 +945,21 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const candidates=(annotations||[]).filter(a=>String(a.side||'')===side&&semanticCss(a.classification)&&semanticApplies(a,line,idx,bodyStarted));
     for(const a of candidates){
       const rawValue=String(a.value_raw||a.value_preview||'');if(!rawValue)continue;
-      const needle=esc(rawValue),css=semanticCss(a.classification),label=semanticLabel(a);
+      const needle=esc(rawValue),css=semanticCss(a.classification),label=semanticLabel(a),ci=candidateIndexFor(a);
       if(!needle||!out.includes(needle))continue;
       const reason=[a.match_reason,a.source_exchange_id?`aprendido en #${a.source_exchange_id}`:''].filter(Boolean).join(' · ');
-      out=out.replace(needle,`<span class="http-annotation ${css}" data-label="${esc(label)}" title="${esc(reason||label)}">${smartValue(rawValue,label)}</span>`);
+      const inlineAttrs=ci>=0?` role="button" tabindex="0" data-inline-index="${ci}"`:'';
+      out=out.replace(needle,`<span class="http-annotation ${css}${ci>=0?' wb-inline-value':''}" data-label="${esc(label)}" title="${esc(reason||label)}"${inlineAttrs}>${ci>=0?smartInlineValue(rawValue):smartValue(rawValue,label)}</span>`);
+    }
+    return out;
+  };
+  const decorateInteractive=(html,line,side,idx,bodyStarted)=>{
+    let out=html;
+    const found=inlineValues.map((v,i)=>({v,i})).filter(x=>String(x.v.side||'')===side&&candidateApplies(x.v,line,idx,bodyStarted)).sort((a,b)=>String(b.v.value||'').length-String(a.v.value||'').length);
+    for(const {v,i} of found){
+      if(out.includes(`data-inline-index="${i}"`))continue;
+      const rawValue=String(v.value||'');if(!rawValue)continue;const needle=esc(rawValue);if(!needle||!out.includes(needle))continue;
+      out=out.replace(needle,`<span class="wb-inline-value" role="button" tabindex="0" data-inline-index="${i}" title="Clic para enseñar este valor a Negro">${smartInlineValue(rawValue)}</span>`);
     }
     return out;
   };
@@ -942,9 +978,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const lineNo=idx+1;
     if(!bodyStarted && idx===0){
       const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
-      if(m){const h=`<span class="http-token-method">${esc(m[1])}</span> <span class="http-token-target">${esc(m[2])}</span>${m[3]?` <span class="http-token-protocol">${esc(m[3])}</span>`:''}`;return `<span class="wb-http-line" data-line="${lineNo}">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
+      if(m){const h=`<span class="http-token-method">${esc(m[1])}</span> <span class="http-token-target">${esc(m[2])}</span>${m[3]?` <span class="http-token-protocol">${esc(m[3])}</span>`:''}`;{let z=decorateSemantic(h,line,side,idx,bodyStarted);z=decorateInteractive(z,line,side,idx,bodyStarted);return `<span class="wb-http-line" data-line="${lineNo}">${z}</span>`;}}
       const r=line.match(/^(HTTP\/\S+)\s+(\d+)(.*)$/);
-      if(r){const status=Number(r[2]),statusClass=status<300?'http-token-status-ok':status<400?'http-token-status-redirect':'http-token-status-error';const h=`<span class="http-token-protocol">${esc(r[1])}</span> <span class="${statusClass}">${esc(r[2])}</span><span class="http-token-status-text">${esc(r[3])}</span>`;return `<span class="wb-http-line" data-line="${lineNo}">${decorateSemantic(h,line,side,idx,bodyStarted)}</span>`;}
+      if(r){const status=Number(r[2]),statusClass=status<300?'http-token-status-ok':status<400?'http-token-status-redirect':'http-token-status-error';const h=`<span class="http-token-protocol">${esc(r[1])}</span> <span class="${statusClass}">${esc(r[2])}</span><span class="http-token-status-text">${esc(r[3])}</span>`;{let z=decorateSemantic(h,line,side,idx,bodyStarted);z=decorateInteractive(z,line,side,idx,bodyStarted);return `<span class="wb-http-line" data-line="${lineNo}">${z}</span>`;}}
     }
     if(!bodyStarted){
       const h=line.match(/^([^:]+):(.*)$/);
@@ -952,7 +988,8 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
         const name=h[1],value=h[2],tone=smart?headerTone(name):'',sensitive=/^(authorization|cookie|set-cookie|x-api-key|api-key|proxy-authorization)$/i.test(name.trim());
         let x=`<span class="http-token-header-name${sensitive?' http-token-sensitive':''}">${esc(name)}</span><span class="http-token-punctuation">:</span><span class="http-token-header-value${sensitive?' http-token-sensitive-value':''}">${esc(value)}</span>`;
         x=decorateSemantic(x,line,side,idx,bodyStarted);
-        if(smart)x=compactKnownValue(x,value);
+        x=decorateInteractive(x,line,side,idx,bodyStarted);
+        if(smart&&!x.includes('data-inline-index='))x=compactKnownValue(x,value);
         return `<span class="wb-http-line ${tone}" data-line="${lineNo}">${x}</span>`;
       }
     }
@@ -963,8 +1000,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
              .replace(/(:\s*)(-?\d+(?:\.\d+)?)/g,'$1<span class="http-token-number">$2</span>')
              .replace(/(:\s*)(true|false|null)/g,'$1<span class="http-token-literal">$2</span>');
       out=decorateSemantic(out,line,side,idx,bodyStarted);
-      if(smart){const jm=line.match(/^\s*"[^"]+"\s*:\s*"([^"]*)"\s*,?\s*$/);if(jm)out=compactKnownValue(out,jm[1]);}
-    }else out=decorateSemantic(out,line,side,idx,bodyStarted);
+      out=decorateInteractive(out,line,side,idx,bodyStarted);
+      if(smart&&!out.includes('data-inline-index=')){const jm=line.match(/^\s*"[^"]+"\s*:\s*"([^"]*)"\s*,?\s*$/);if(jm)out=compactKnownValue(out,jm[1]);}
+    }else{out=decorateSemantic(out,line,side,idx,bodyStarted);out=decorateInteractive(out,line,side,idx,bodyStarted);}
     return `<span class="wb-http-line${line===''?' wb-http-separator':''}" data-line="${lineNo}">${out||' '}</span>`;
   };
   const paint=(side)=>{
@@ -979,8 +1017,9 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const exactLinesDefault=localStorage.getItem(wrapKey)==='1';
   const setExactLines=(side,on)=>{const pre=root.querySelector(`[data-http-view="${side}"]`);if(!pre)return;pre.classList.toggle('exact-lines',!!on);root.querySelectorAll(`[data-wb-wrap="${side}"]`).forEach(b=>b.textContent=on?'Ajustar líneas':'Líneas exactas');};
   setExactLines('request',exactLinesDefault);setExactLines('response',exactLinesDefault);
-  const toggleFullscreen=async()=>{const panel=root.querySelector('[data-http-panel]');if(!panel)return;try{if(document.fullscreenElement===panel){await document.exitFullscreen();}else if(panel.requestFullscreen){await panel.requestFullscreen();}else{panel.classList.toggle('fullscreen-pane');}}catch(_){panel.classList.toggle('fullscreen-pane');}};
-  document.addEventListener('fullscreenchange',()=>{const panel=root.querySelector('[data-http-panel]'),on=document.fullscreenElement===panel;root.querySelectorAll('[data-http-fullscreen]').forEach(b=>b.textContent=on?'Salir de pantalla completa':'Pantalla completa');});
+  let fullscreenContextBefore=null;
+  const toggleFullscreen=async()=>{const workspace=root.querySelector('.wb-grid');if(!workspace)return;try{if(document.fullscreenElement===workspace){await document.exitFullscreen();}else if(workspace.requestFullscreen){fullscreenContextBefore=root.classList.contains('context-hidden');setContextHidden(true,{persist:false});await workspace.requestFullscreen();}else{workspace.classList.toggle('fullscreen-pane');root.classList.toggle('immersive-fullscreen',workspace.classList.contains('fullscreen-pane'));}}catch(_){workspace.classList.toggle('fullscreen-pane');root.classList.toggle('immersive-fullscreen',workspace.classList.contains('fullscreen-pane'));}};
+  document.addEventListener('fullscreenchange',()=>{const workspace=root.querySelector('.wb-grid'),on=document.fullscreenElement===workspace;root.classList.toggle('immersive-fullscreen',on);root.querySelectorAll('[data-http-fullscreen]').forEach(b=>b.textContent=on?'Salir de pantalla completa':'Pantalla completa');if(!on&&fullscreenContextBefore!==null){setContextHidden(fullscreenContextBefore,{persist:false});fullscreenContextBefore=null;}});
 
   // ---- Context rendering ---------------------------------------------------
   const renderIdentity=(d)=>{const card=root.querySelector('[data-context-card="identity"]');if(!card)return;const i=d.identity,matches=d.identity_matches||[];const inferred=!i&&matches.length?`<div class="wb-identity-matches">${matches.map(m=>`<div><strong>${esc(m.name)}</strong><span>Reconocida en HTTP · ${(m.classifications||[]).map(x=>esc(String(x).toUpperCase())).join(' + ')}</span></div>`).join('')}</div>`:'';card.innerHTML=`<div class="wb-card-title"><span>◎</span><b>Identity</b></div>${i?`<strong>${esc(i.name)}</strong><div class="wb-kv"><span>role</span><code>${esc(i.role||i.kind||'—')}</code><span>context</span><code>${esc(i.context_label||'—')}</code><span>confidence</span><code>${esc(i.confidence||'—')}</code></div>`:(inferred||'<p class="wb-muted">Sin Identity resuelta.</p>')}`;};
@@ -988,13 +1027,57 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const renderSignals=(d)=>{const card=root.querySelector('[data-context-card="signals"]');if(!card)return;const ss=d.signals||[];card.innerHTML=`<div class="wb-card-title"><span>◉</span><b>Signals</b><em>${ss.length}</em></div>${ss.length?`<div class="wb-signal-list">${ss.map(s=>`<div><span class="signal-dot severity-${esc(s.severity)}"></span><span>${esc(s.title)}</span><em>${esc(s.severity)}</em></div>`).join('')}</div>`:'<p class="wb-muted">Sin Signals pendientes.</p>'}`;};
   const renderFlow=(d)=>{const card=root.querySelector('[data-context-card="flow"]');if(!card)return;const fs=d.flows||[];card.innerHTML=`<div class="wb-card-title"><span>⌁</span><b>Flow</b></div>${fs.length?`<div class="wb-flow-list">${fs.map(f=>`<a href="/t/${encodeURIComponent(d.target_key)}/flows/${Number(f.id)}#flow-step-${Number(f.step_id)}"><span>${Number(f.position||0)}</span><b>${esc(f.name)}</b><small>${esc(f.label||f.state_label||'Step observado')}</small></a>`).join('')}</div>`:'<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>'}`;};
   const renderRelated=(d)=>{const card=root.querySelector('[data-context-card="related"]');if(!card)return;const rs=d.related||[];card.innerHTML=`<summary class="wb-card-title"><span>↔</span><b>Related Requests</b><em>${rs.length}</em></summary>${rs.length?`<div class="wb-related-list">${rs.map(r=>`<button type="button" data-related-source="${esc(d.target_key)}" data-related-exchange="${Number(r.id)}"><b class="${methodClass(r.method)}">${esc(r.method)}</b><code>${esc(r.path)}</code><span>${esc(r.status_code??'—')}</span></button>`).join('')}</div>`:'<p class="wb-muted">Sin relaciones suficientes todavía.</p>'}`;};
-  const renderActions=(d)=>{const card=root.querySelector('.wb-quick-actions');if(!card)return;const e=d.exchange||{};if(d.is_inbox){card.innerHTML='<summary class="wb-card-title"><span>⚡</span><b>Quick Actions</b></summary><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Quick Actions</b></summary><div class="wb-action-grid"><a href="/t/${t}/exchange/${id}/inspect">Inspector avanzado</a><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/flows/add?exchange_id=${id}">Add to Flow</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay / Identity</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;};
+  const renderActions=(d)=>{const card=root.querySelector('.wb-quick-actions');if(!card)return;const e=d.exchange||{};if(d.is_inbox){card.innerHTML='<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><div class="wb-action-grid wb-action-grid-compact"><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;};
   const renderSemanticSummary=(d)=>{const el=root.querySelector('[data-semantic-summary]');if(!el)return;const c=d.semantic_counts||{},labels={auth:'AUTH',resolver:'RESOLVER',context:'CONTEXT',entity:'ENTITY'};el.innerHTML=Object.keys(labels).filter(k=>Number(c[k]||0)>0).map(k=>`<em class="wb-semantic-chip semantic-${k}">${labels[k]} ${Number(c[k])}</em>`).join('');};
   const setUnreadCount=(n)=>{const count=Math.max(0,Number(n)||0),badge=root.querySelector('[data-unread-badge]'),el=root.querySelector('[data-unread-count]'),compact=root.querySelector('[data-compact-new]'),compactCount=root.querySelector('[data-compact-unread]');if(el)el.textContent=String(count);if(badge)badge.classList.toggle('is-empty',count===0);if(compactCount)compactCount.textContent=String(count);if(compact)compact.classList.toggle('is-empty',count===0);};
   const updateTrafficCompact=(d)=>{const c=root.querySelector('[data-traffic-compact]');if(!c)return;const e=d.exchange||{};let host=e.hostname||'',path=e.path||'';if((!host||!path)&&e.url){try{const u=new URL(e.url);host=host||u.host;path=path||(u.pathname+u.search);}catch(_){path=path||e.url;}}const unread=Math.max(0,Number(root.querySelector('[data-unread-count]')?.textContent||0));c.innerHTML=`<button type="button" class="wb-traffic-expand" data-traffic-toggle title="Desplegar Traffic Inbox (T)">⌄</button><b class="${methodClass(e.method)}">${esc(e.method||'—')}</b><strong title="${esc(host)}">${esc(host||d.target_name||'')}</strong><code title="${esc(path||e.url||'')}">${esc(path||e.url||'—')}</code><span class="wb-compact-status status-${Math.floor(Number(e.status_code||0)/100)}xx">${esc(e.status_code??'—')}</span><span class="wb-compact-event">Event #<b>${Number(d.event_id||e.id||0)}</b></span><span class="wb-compact-new ${unread?'':'is-empty'}" data-compact-new>● <b data-compact-unread>${unread}</b> nuevas</span>`;};
-  const renderDetail=(d)=>{const e=d.exchange||{};raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];paint('request');paint('response');const sm=root.querySelector('[data-summary-method]');if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}const su=root.querySelector('[data-summary-url]');if(su)su.textContent=e.url||'';const ss=root.querySelector('[data-summary-status]');if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}const st=root.querySelector('[data-summary-target]');if(st)st.textContent=d.target_name||'';const si=root.querySelector('[data-summary-id]');if(si)si.textContent=d.event_id||e.id||'';const ct=root.querySelector('.wb-context-title>div>span');if(ct)ct.textContent=d.target_name||'';updateTrafficCompact(d);renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);};
+  const renderDetail=(d)=>{const e=d.exchange||{};raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];applyInlineContext({values:d.values||[],identities:d.identity_options||[],object_types:d.object_type_options||[]});paint('request');paint('response');const sm=root.querySelector('[data-summary-method]');if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}const su=root.querySelector('[data-summary-url]');if(su)su.textContent=e.url||'';const ss=root.querySelector('[data-summary-status]');if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}const st=root.querySelector('[data-summary-target]');if(st)st.textContent=d.target_name||'';const si=root.querySelector('[data-summary-id]');if(si)si.textContent=d.event_id||e.id||'';const ct=root.querySelector('.wb-context-title>div>span');if(ct)ct.textContent=d.target_name||'';updateTrafficCompact(d);renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);};
   const loadEvent=async(eventId,{scroll=true}={})=>{if(!detailUrl||!eventId)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('event_id',String(eventId));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source:d.target_key||'',event:Number(eventId),exchange:Number((d.exchange||{}).id||0)};rows().forEach(r=>r.classList.toggle('active',Number(r.dataset.eventId)===Number(eventId)));const activeRow=rows().find(r=>r.classList.contains('active'));const wasUnread=activeRow?.dataset.unread==='1'||activeRow?.classList.contains('is-unread');if(activeRow){activeRow.classList.remove('is-unread');activeRow.dataset.unread='0';const dot=activeRow.querySelector('.wb-unread-dot');if(dot)dot.setAttribute('aria-hidden','true');}markPendingReviewed(eventId);if(scroll&&activeRow&&!root.classList.contains('traffic-collapsed'))activeRow.scrollIntoView({block:'nearest'});const current=new URL(window.location.href);current.searchParams.set('event',String(eventId));current.searchParams.delete('source_key');current.searchParams.delete('exchange');history.replaceState(null,'',current);const shown=Number(root.querySelector('[data-unread-count]')?.textContent||0);if(wasUnread)setUnreadCount(Math.max(0,shown-1));}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
   const loadExchange=async(source,id)=>{if(!detailUrl||!source||!id)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source,event:0,exchange:Number(id)};rows().forEach(r=>r.classList.remove('active'));}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
+
+  // ---- Inline semantics: teach Negro where you are reading -----------------
+  const inlinePopover=root.querySelector('[data-inline-popover]');
+  let currentInlineIndex=-1,currentInlineClass='';
+  const closeInline=()=>{if(inlinePopover){inlinePopover.hidden=true;inlinePopover.classList.remove('open');}currentInlineIndex=-1;};
+  const fillInlineCatalogs=()=>{
+    const identitySelect=inlinePopover?.querySelector('[data-inline-identity]');
+    if(identitySelect){const current=identitySelect.value;identitySelect.innerHTML='<option value="">Selecciona…</option>'+identityOptions.map(i=>`<option value="${Number(i.id)}">${esc(i.name||('Identity #'+i.id))}</option>`).join('');if(current)identitySelect.value=current;}
+    const dl=inlinePopover?.querySelector('[data-inline-object-types]');if(dl)dl.innerHTML=objectTypeOptions.map(o=>`<option value="${esc(o.name||'')}"></option>`).join('');
+  };
+  const setInlineClass=(cls)=>{
+    currentInlineClass=String(cls||'').toLowerCase();
+    inlinePopover?.querySelectorAll('[data-inline-class]').forEach(b=>b.classList.toggle('active',b.dataset.inlineClass===currentInlineClass));
+    const identityWrap=inlinePopover?.querySelector('[data-inline-identity-wrap]'),objectWrap=inlinePopover?.querySelector('[data-inline-object-wrap]');
+    if(identityWrap)identityWrap.hidden=!['auth','resolver','context'].includes(currentInlineClass);
+    if(objectWrap)objectWrap.hidden=currentInlineClass!=='entity';
+  };
+  const placeInline=(anchor)=>{if(!inlinePopover||!anchor)return;const r=anchor.getBoundingClientRect(),w=Math.min(360,window.innerWidth-24);inlinePopover.style.width=`${w}px`;inlinePopover.hidden=false;inlinePopover.classList.add('open');const h=inlinePopover.offsetHeight||310;let left=Math.max(12,Math.min(window.innerWidth-w-12,r.left));let top=r.bottom+8;if(top+h>window.innerHeight-12)top=Math.max(12,r.top-h-8);inlinePopover.style.left=`${left}px`;inlinePopover.style.top=`${top}px`;};
+  const openInline=(idx,anchor)=>{
+    const v=inlineValues[Number(idx)];if(!v||!inlinePopover)return;currentInlineIndex=Number(idx);fillInlineCatalogs();
+    const learned=(annotations||[]).find(a=>String(a.side||'')===String(v.side||'')&&String(a.location||'')===String(v.location||'')&&String(a.key_name||'')===String(v.key||'')&&String(a.value_raw||a.value_preview||'')===String(v.value||''));
+    const ann=learned||v.annotation||{},suggested=String(ann.classification||v.default_classification||'').toLowerCase();
+    inlinePopover.querySelector('[data-inline-key]').textContent=v.key||'valor';inlinePopover.querySelector('[data-inline-preview]').textContent=v.preview||compactText(v.value||'');
+    inlinePopover.querySelector('[data-inline-side]').textContent=String(v.side||'').toUpperCase();inlinePopover.querySelector('[data-inline-location]').textContent=v.location||'';
+    const identitySelect=inlinePopover.querySelector('[data-inline-identity]');if(identitySelect)identitySelect.value=String(ann.identity_id||'');
+    const objectInput=inlinePopover.querySelector('[data-inline-object-type]');if(objectInput)objectInput.value=String(ann.object_type||'');
+    const feedback=inlinePopover.querySelector('[data-inline-feedback]');if(feedback){feedback.hidden=true;feedback.textContent='';}
+    const follow=inlinePopover.querySelector('[data-inline-follow]');if(follow)follow.href=`/t/${encodeURIComponent(selected.source||targetKey)}/search?q=${encodeURIComponent(v.value||'')}`;
+    setInlineClass(['auth','resolver','context','entity'].includes(suggested)?suggested:'');placeInline(anchor);
+  };
+  const reloadSelected=()=>selected.event?loadEvent(selected.event,{scroll:false}):loadExchange(selected.source,selected.exchange);
+  const saveInline=async(classification)=>{
+    const v=inlineValues[currentInlineIndex],feedback=inlinePopover?.querySelector('[data-inline-feedback]');if(!v||!selected.source||!selected.exchange)return;
+    if(selected.source==='__inbox__'){if(feedback){feedback.hidden=false;feedback.textContent='Asigna este host a un proyecto antes de enseñar semántica.';}return;}
+    const cls=String(classification||currentInlineClass||'').toLowerCase();
+    const identityId=Number(inlinePopover?.querySelector('[data-inline-identity]')?.value||0),objectType=String(inlinePopover?.querySelector('[data-inline-object-type]')?.value||'').trim();
+    if(['auth','resolver','context'].includes(cls)&&!identityId){if(feedback){feedback.hidden=false;feedback.textContent='Selecciona una Identity.';}return;}
+    if(cls==='entity'&&!objectType){if(feedback){feedback.hidden=false;feedback.textContent='Indica el tipo de Object.';}return;}
+    const fd=new FormData();fd.set('csrf',root.dataset.csrf||'');fd.set('annotations_json',JSON.stringify([{side:v.side,location:v.location,key:v.key,value:v.value,classification:cls||'ignore',identity_id:identityId||null,object_type:objectType,note:''}]));
+    try{
+      const url=`/t/${encodeURIComponent(selected.source)}/exchange/${Number(selected.exchange)}/annotations/batch`,res=await fetch(url,{method:'POST',body:fd,headers:{Accept:'application/json'}}),body=await res.json().catch(()=>({}));
+      if(!res.ok||body.ok===false)throw new Error(body.error||`HTTP ${res.status}`);closeInline();await reloadSelected();
+    }catch(err){if(feedback){feedback.hidden=false;feedback.textContent=`No pude guardar: ${err.message}`;}}
+  };
 
   // ---- Marking / mental flow drafting -------------------------------------
   // Preference keys are declared near Workbench initialization so every control can use them safely.
@@ -1023,7 +1106,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   restoreTrafficHeight();
   if(trafficSplitter&&grid){let dragging=false;trafficSplitter.addEventListener('pointerdown',ev=>{dragging=true;trafficSplitter.setPointerCapture(ev.pointerId);document.body.classList.add('wb-traffic-resizing');ev.preventDefault();});trafficSplitter.addEventListener('pointermove',ev=>{if(!dragging)return;const rect=grid.getBoundingClientRect();setTrafficHeight(ev.clientY-rect.top);});const stop=()=>{dragging=false;document.body.classList.remove('wb-traffic-resizing');};trafficSplitter.addEventListener('pointerup',stop);trafficSplitter.addEventListener('pointercancel',stop);trafficSplitter.addEventListener('dblclick',()=>{localStorage.removeItem(trafficHeightKey);root.style.removeProperty('--wb-traffic-height');});}
 
-  const setContextHidden=(hidden)=>{root.classList.toggle('context-hidden',hidden);localStorage.setItem(contextKey,hidden?'1':'0');root.querySelectorAll('[data-context-toggle]').forEach(b=>{b.classList.toggle('active',!hidden);b.setAttribute('aria-expanded',hidden?'false':'true');});};
+  const setContextHidden=(hidden,{persist=true}={})=>{root.classList.toggle('context-hidden',hidden);if(persist)localStorage.setItem(contextKey,hidden?'1':'0');root.querySelectorAll('[data-context-toggle]').forEach(b=>{b.classList.toggle('active',!hidden);b.setAttribute('aria-expanded',hidden?'false':'true');});};
   const setTrafficCollapsed=(collapsed)=>{root.classList.remove('traffic-hidden');root.classList.toggle('traffic-collapsed',collapsed);localStorage.setItem(trafficKey,collapsed?'1':'0');root.querySelectorAll('[data-traffic-toggle]').forEach(b=>{b.classList.toggle('active',!collapsed);b.setAttribute('aria-expanded',collapsed?'false':'true');});if(!collapsed){restoreTrafficHeight();const r=rows().find(x=>Number(x.dataset.eventId)===selected.event);window.setTimeout(()=>r?.scrollIntoView({block:'nearest'}),0);}};
   setContextHidden(localStorage.getItem(contextKey)==='1');
   setTrafficCollapsed(localStorage.getItem(trafficKey)==='1');
@@ -1076,7 +1159,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   setLiveFollow(liveFollow);
   const tagHtml=(t)=>`<em class="wb-tag tag-${esc(t.kind||'neutral')}">${esc(t.label||'')}</em>`;
   const paramHtml=(items)=>{const ps=(items||[]).slice(0,4);if(!ps.length)return '';return `<span class="wb-param-preview">${ps.map(p=>`<em title="${esc((p.location||'')+' · '+(p.name||'')+'='+(p.value||''))}"><b>${esc(p.name||'')}</b>${String(p.value??'')!==''?`=<span>${esc(p.value)}</span>`:''}</em>`).join('')}</span>`;};
-  const rowHtml=(r)=>{const unread=!!r.is_unread;return `<a class="wb-traffic-row ${unread?'is-unread':''}" href="?event=${Number(r.id)}" data-source-key="${esc(r.target_key||'')}" data-event-id="${Number(r.id)}" data-exchange-id="${Number(r.exchange_id||0)}" data-compound-id="${esc(r.compound_id||('event:'+r.id))}" data-unread="${unread?'1':'0'}"><span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>${Number(r.id)}</span><b class="${methodClass(r.method)}">${esc(r.method||'')}</b><strong class="wb-row-host" title="${esc(r.hostname||'')}">${esc(r.hostname||'')}</strong><span class="wb-row-endpoint"><code>${esc(r.path||'/')}</code>${paramHtml(r.request_params)}</span><span class="wb-tags">${(r.tags||[]).map(tagHtml).join('')}${r.is_inbox?'<em class="wb-tag tag-inbox">Sin proyecto</em>':''}</span><span class="wb-status status-${Math.floor(Number(r.status_code||0)/100)}xx">${esc(r.status_code??'—')}</span><time>${esc(String(r.captured_at||'').slice(11,19))}</time></a>`;};
+  const rowHtml=(r)=>{const unread=!!r.is_unread;return `<a class="wb-traffic-row ${unread?'is-unread':''}" href="?event=${Number(r.id)}" data-source-key="${esc(r.target_key||'')}" data-event-id="${Number(r.id)}" data-exchange-id="${Number(r.exchange_id||0)}" data-compound-id="${esc(r.compound_id||('event:'+r.id))}" data-unread="${unread?'1':'0'}"><span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>${Number(r.id)}</span><b class="${methodClass(r.method)}">${esc(r.method||'')}</b><strong class="wb-row-host" title="${esc(r.hostname||'')}">${esc(r.hostname||'')}</strong><span class="wb-row-endpoint"><code>${esc(r.path||'/')}</code>${paramHtml(r.request_params)}</span><span class="wb-tags">${r.interaction_kind==='EXPERIMENT'?`<em class="wb-tag tag-experiment" title="${esc(r.provenance_source||'EXPERIMENT')}">EXPERIMENT</em>`:''}${(r.tags||[]).map(tagHtml).join('')}${r.is_inbox?'<em class="wb-tag tag-inbox">Sin proyecto</em>':''}</span><span class="wb-status status-${Math.floor(Number(r.status_code||0)/100)}xx">${esc(r.status_code??'—')}</span><time>${esc(String(r.captured_at||'').slice(11,19))}</time></a>`;};
   const updateJump=()=>{if(!jump)return;const count=pendingReviewIds.size;jump.hidden=count<=0;const b=jump.querySelector('b');if(b)b.textContent=String(count);};
   const markPendingReviewed=(eventId)=>{const id=Number(eventId||0);if(id>0&&pendingReviewIds.delete(id))updateJump();};
   const appendEvents=(items)=>{if(!list||!items?.length)return;list.querySelector('.wb-empty')?.remove();const fresh=items.filter(r=>!root.querySelector(`[data-event-id="${Number(r.id)}"]`));const html=fresh.map(rowHtml).join('');if(!html)return;const temp=document.createElement('div');temp.innerHTML=html;const added=[...temp.children];added.forEach(el=>list.appendChild(el));applyMarks();const countEl=root.querySelector('[data-event-count]');if(countEl)countEl.textContent=String(rows().length);const shownUnread=Number(root.querySelector('[data-unread-count]')?.textContent||0),addedUnread=fresh.filter(r=>r.is_unread).length;setUnreadCount(shownUnread+addedUnread);fresh.forEach(r=>{if(r.is_unread)pendingReviewIds.add(Number(r.id));});if(liveFollow)list.scrollTop=list.scrollHeight;updateJump();};
@@ -1093,12 +1176,17 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     if(ev.target.closest('[data-create-flow-marked]')){openFlowDialog();return;}
     if(ev.target.closest('[data-close-flow-dialog]')){closeFlowDialog();return;}
     const layout=ev.target.closest('button[data-pane-layout]');if(layout){setPaneLayout(layout.dataset.paneLayout);return;}
-    if(ev.target.closest('[data-context-toggle]')){setContextHidden(!root.classList.contains('context-hidden'));return;}
+    if(ev.target.closest('[data-context-toggle]')){setContextHidden(!root.classList.contains('context-hidden'),{persist:!document.fullscreenElement});return;}
     if(ev.target.closest('[data-traffic-toggle]')){setTrafficCollapsed(!root.classList.contains('traffic-collapsed'));return;}
     if(ev.target.closest('[data-http-fullscreen]')){toggleFullscreen();return;}
     const wrapBtn=ev.target.closest('[data-wb-wrap]');if(wrapBtn){const side=wrapBtn.dataset.wbWrap,pre=root.querySelector(`[data-http-view="${side}"]`),next=!pre?.classList.contains('exact-lines');setExactLines(side,next);localStorage.setItem(wrapKey,next?'1':'0');return;}
     if(ev.target.closest('[data-focus-toggle]')){setFocus(!document.body.classList.contains('workbench-focus'));return;}
-    const jwt=ev.target.closest('[data-jwt-open],[data-jwt-token]');if(jwt){ev.preventDefault();openJwt(jwt.dataset.jwtToken||jwt.dataset.copyValue||'');return;}
+    const jwt=ev.target.closest('[data-jwt-open],[data-jwt-token]');if(jwt){ev.preventDefault();ev.stopPropagation();openJwt(jwt.dataset.jwtToken||jwt.dataset.copyValue||'');return;}
+    const inline=ev.target.closest('[data-inline-index]');if(inline){ev.preventDefault();openInline(Number(inline.dataset.inlineIndex),inline);return;}
+    if(ev.target.closest('[data-inline-close]')){closeInline();return;}
+    const inlineClass=ev.target.closest('[data-inline-class]');if(inlineClass){setInlineClass(inlineClass.dataset.inlineClass);return;}
+    if(ev.target.closest('[data-inline-save]')){saveInline(currentInlineClass);return;}
+    if(ev.target.closest('[data-inline-ignore]')){saveInline('ignore');return;}
     if(ev.target.closest('[data-close-jwt-dialog]')){jwtDialog?.close();return;}
     if(ev.target.closest('[data-copy-jwt]')){navigator.clipboard?.writeText(currentJwt);const b=ev.target.closest('[data-copy-jwt]');if(b){const old=b.textContent;b.textContent='Copiado';setTimeout(()=>b.textContent=old,800);}return;}
     if(ev.target.closest('[data-toggle-jwt-full]')){const area=jwtDialog?.querySelector('[data-jwt-full]');if(area){area.classList.toggle('expanded');ev.target.closest('[data-toggle-jwt-full]').textContent=area.classList.contains('expanded')?'Contraer':'Expandir';}return;}
@@ -1112,13 +1200,16 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   });
   dialog?.querySelector('[name="mark_scope"]')?.addEventListener('change',refreshFlowDialogCount);
   dialog?.querySelector('[data-flow-dialog-form]')?.addEventListener('submit',ev=>{ev.preventDefault();const fd=new FormData(ev.currentTarget);createFlow(fd.get('flow_name')||'',fd.get('mark_scope')||'all');});
+  document.addEventListener('pointerdown',ev=>{if(inlinePopover&&!inlinePopover.hidden&&!ev.target.closest('[data-inline-popover]')&&!ev.target.closest('[data-inline-index]')&&!ev.target.closest('[data-jwt-open]'))closeInline();});
   document.addEventListener('keydown',ev=>{
     const jwtFocus=ev.target?.closest?.('[data-jwt-open],[data-jwt-token]');if(jwtFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openJwt(jwtFocus.dataset.jwtToken||jwtFocus.dataset.copyValue||'');return;}
+    const inlineFocus=ev.target?.closest?.('[data-inline-index]');if(inlineFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openInline(Number(inlineFocus.dataset.inlineIndex),inlineFocus);return;}
+    if(ev.key==='Escape'&&!inlinePopover?.hidden){closeInline();return;}
     const tag=(document.activeElement?.tagName||'').toLowerCase();if(['input','textarea','select'].includes(tag))return;
     if(ev.key==='/'){const q=root.querySelector('.wb-search input[name="q"]');if(q){ev.preventDefault();q.focus();}return;}
     if(ev.key.toLowerCase()==='f'){ev.preventDefault();setFocus(!document.body.classList.contains('workbench-focus'));return;}
     if(ev.key.toLowerCase()==='t'){ev.preventDefault();setTrafficCollapsed(!root.classList.contains('traffic-collapsed'));return;}
-    if(ev.key.toLowerCase()==='c'){ev.preventDefault();setContextHidden(!root.classList.contains('context-hidden'));return;}
+    if(ev.key.toLowerCase()==='c'){ev.preventDefault();setContextHidden(!root.classList.contains('context-hidden'),{persist:!document.fullscreenElement});return;}
     if(['0','1','2','3','4'].includes(ev.key)){const r=rows().find(x=>Number(x.dataset.eventId)===selected.event);if(r){ev.preventDefault();const colors={1:'blue',2:'green',3:'purple',4:'orange'};if(ev.key==='0'){const k=markId(r);delete marks[k];saveMarks();applyMarks();}else setMark(r,colors[ev.key]);}return;}
     if(!['ArrowDown','ArrowUp','j','k'].includes(ev.key))return;
     const rs=rows();if(!rs.length)return;let idx=rs.findIndex(r=>Number(r.dataset.eventId)===selected.event);if(idx<0)idx=rs.length-1;idx=(ev.key==='ArrowDown'||ev.key==='j')?Math.min(rs.length-1,idx+1):Math.max(0,idx-1);const r=rs[idx];ev.preventDefault();loadEvent(Number(r.dataset.eventId));

@@ -13,22 +13,25 @@
     <nav class="main-nav direct-nav" aria-label="Navegación principal">
       <a class="{% if request.url.path == target_base+'/' %}active{% endif %}" href="{{ target_base }}/">Inicio</a>
       <a class="{% if '/workbench' in request.url.path %}active{% endif %}" href="{{ target_base }}/workbench">HTTP</a>
-      <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
-      <a class="{% if '/search' in request.url.path %}active{% endif %}" href="{{ target_base }}/search">Buscar</a>
-      <span class="nav-divider" aria-hidden="true"></span>
-      <a class="{% if '/identities' in request.url.path %}active{% endif %}" href="{{ target_base }}/identities">Identidades</a>
       <a class="{% if '/flows' in request.url.path %}active{% endif %}" href="{{ target_base }}/flows">Flujos</a>
       <a class="{% if '/runners' in request.url.path %}active{% endif %}" href="{{ target_base }}/runners">Escenarios</a>
-      <a class="{% if '/objects' in request.url.path %}active{% endif %}" href="{{ target_base }}/objects">Objetos</a>
       <a class="{% if '/surface' in request.url.path %}active{% endif %}" href="{{ target_base }}/surface">Superficie</a>
-      <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph" title="Mapa de investigación · relaciones entre Identidades, Flows, Objetos e inteligencia">Mapa</a>
-      <span class="nav-divider" aria-hidden="true"></span>
-      <a class="{% if '/hypotheses' in request.url.path or '/signals/custom' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
       <a class="{% if '/investigations' in request.url.path %}active{% endif %}" href="{{ target_base }}/investigations">Investigaciones</a>
       <a class="{% if '/finding' in request.url.path %}active{% endif %}" href="{{ target_base }}/findings">Hallazgos</a>
-      <a class="nav-utility {% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence" title="Recon e inteligencia">Recon</a>
-      <a class="nav-utility {% if '/guide' in request.url.path %}active{% endif %}" href="{{ target_base }}/guide" title="Guía de Negro">Guía</a>
-      <a class="nav-utility {% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings" title="Ajustes">Ajustes</a>
+      <details class="nav-more {% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path or '/search' in request.url.path or '/identities' in request.url.path or '/objects' in request.url.path or '/graph' in request.url.path or '/hypotheses' in request.url.path or '/signals/custom' in request.url.path or '/intelligence' in request.url.path or '/guide' in request.url.path or '/settings' in request.url.path %}has-active{% endif %}">
+        <summary>Más <span>⌄</span></summary>
+        <div class="nav-more-menu">
+          <a class="{% if '/hosts' in request.url.path or '/host/' in request.url.path or '/resource/' in request.url.path or '/tree' in request.url.path %}active{% endif %}" href="{{ target_base }}/hosts">Inventario</a>
+          <a class="{% if '/search' in request.url.path %}active{% endif %}" href="{{ target_base }}/search">Buscar</a>
+          <a class="{% if '/identities' in request.url.path %}active{% endif %}" href="{{ target_base }}/identities">Identidades</a>
+          <a class="{% if '/objects' in request.url.path %}active{% endif %}" href="{{ target_base }}/objects">Objetos</a>
+          <a class="{% if '/graph' in request.url.path %}active{% endif %}" href="{{ target_base }}/graph">Mapa</a>
+          <a class="{% if '/hypotheses' in request.url.path or '/signals/custom' in request.url.path %}active{% endif %}" href="{{ target_base }}/hypotheses">Hipótesis</a>
+          <a class="{% if '/intelligence' in request.url.path %}active{% endif %}" href="{{ target_base }}/intelligence">Recon</a>
+          <a class="{% if '/guide' in request.url.path %}active{% endif %}" href="{{ target_base }}/guide">Guía</a>
+          <a class="{% if '/settings' in request.url.path %}active{% endif %}" href="{{ target_base }}/settings">Ajustes</a>
+        </div>
+      </details>
     </nav>
     <div class="target-switch-wrap">
       <a class="project-manager-link" href="/projects" title="Administrar proyectos">Proyectos</a>

@@ -3945,6 +3945,58 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Request no encontrada")
         return item
 
+    @app.post("/api/t/{target_key}/workbench/events/{event_id}/evidence", response_class=JSONResponse)
+    async def http_workbench_event_evidence_api(request: Request, target_key: str, event_id: int):
+        _target_context(target_key)
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        event = workbench.get_capture_event(int(event_id))
+        if not event:
+            raise HTTPException(status_code=404, detail="Capture Event no encontrado")
+        if str(event.get("target_key") or "") not in {str(target_key), workbench.INBOX_KEY}:
+            raise HTTPException(status_code=400, detail="El evento pertenece a otro proyecto")
+        if str(event.get("interaction_kind") or "OBSERVED").upper() != "EXPERIMENT":
+            raise HTTPException(status_code=400, detail="La evidencia experimental solo se confirma sobre eventos EXPERIMENT")
+        import negro_evidence as evidence_tools
+        gpaths = workbench.ensure_inbox_paths()
+        with core.db_connect(gpaths) as gconn:
+            evidence = evidence_tools.save_experiment_evidence(
+                gconn, event=event,
+                object_type=str(payload.get("object_type") or ""), object_value=str(payload.get("object_value") or ""),
+                semantic_result=str(payload.get("semantic_result") or "UNKNOWN"),
+                object_evidence=str(payload.get("object_evidence") or "UNKNOWN"),
+                outcome=str(payload.get("outcome") or "INCONCLUSIVE"),
+                notes=str(payload.get("notes") or ""),
+            )
+            relation = None
+            if str(evidence.get("outcome") or "").upper() == "CONFIRMED" and payload.get("predicate") and payload.get("subject_ref") and evidence.get("object_value"):
+                relation = evidence_tools.promote_relation(
+                    gconn, target_key=str(event.get("target_key") or target_key),
+                    subject_type=str(payload.get("subject_type") or "Identity"), subject_ref=str(payload.get("subject_ref") or ""),
+                    predicate=str(payload.get("predicate") or "accessed"),
+                    object_type=str(evidence.get("object_type") or "Object"), object_ref=str(evidence.get("object_value") or ""),
+                    evidence_id=int(evidence["id"]), expectedness=str(payload.get("expectedness") or "UNKNOWN"),
+                )
+        return {"ok": True, "evidence": evidence, "knowledge_relation": relation}
+
+    @app.get("/api/t/{target_key}/workbench/knowledge", response_class=JSONResponse)
+    def http_workbench_knowledge_api(target_key: str, object_type: str = "", object_ref: str = ""):
+        _target_context(target_key)
+        import negro_evidence as evidence_tools
+        gpaths = workbench.ensure_inbox_paths()
+        with core.db_connect(gpaths) as gconn:
+            evidence_tools.init_schema(gconn)
+            clauses=["target_key=?"]; params=[str(target_key)]
+            if object_type:
+                clauses.append("object_type=?"); params.append(str(object_type))
+            if object_ref:
+                clauses.append("object_ref=?"); params.append(str(object_ref))
+            rows=[dict(r) for r in gconn.execute(
+                "SELECT * FROM knowledge_relations WHERE " + " AND ".join(clauses) + " ORDER BY updated_at DESC,id DESC LIMIT 500",
+                tuple(params),
+            ).fetchall()]
+        return {"target_key": target_key, "relations": rows}
+
     @app.get("/api/t/{target_key}/workbench/events", response_class=JSONResponse)
     def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0):
         _target_context(target_key)
@@ -7714,7 +7766,27 @@ def create_app(default_domain: str, default_workspace: Path):
         capture_event = None
         if not bool(payload.get("context_sync")):
             try:
-                capture_event = workbench.record_capture_event(target_key, int(result["exchange_id"]))
+                import negro_evidence as evidence_tools
+                provenance_source = str(payload.get("provenance_source") or "").strip().upper()
+                interaction_kind = str(payload.get("interaction_kind") or "").strip().upper()
+                mutation_diff = payload.get("mutation_diff") if isinstance(payload.get("mutation_diff"), list) else None
+                if mutation_diff is None and payload.get("original_request_b64"):
+                    mutation_diff = evidence_tools.request_mutation_diff(payload.get("original_request_b64"), payload.get("request_b64"))
+                if mutation_diff and not provenance_source:
+                    provenance_source = "PROXY_MANUAL_MUTATION"
+                if mutation_diff and not interaction_kind:
+                    interaction_kind = "EXPERIMENT"
+                if not provenance_source:
+                    provenance_source = "REPEATER" if tool == "REPEATER" else ("PROXY" if tool == "PROXY" else tool)
+                if not interaction_kind:
+                    interaction_kind = "EXPERIMENT" if provenance_source in {"REPEATER","PROXY_MANUAL_MUTATION","NEGRO_REPLAY","RUNNER"} else "OBSERVED"
+                capture_event = workbench.record_capture_event(
+                    target_key, int(result["exchange_id"]),
+                    provenance_source=provenance_source, interaction_kind=interaction_kind,
+                    parent_event_id=int(payload.get("parent_event_id") or 0) or None,
+                    parent_confidence=float(payload.get("parent_confidence")) if payload.get("parent_confidence") not in (None, "") else None,
+                    mutation_diff=mutation_diff, bridge_message_id=str(payload.get("bridge_message_id") or ""),
+                )
             except Exception as event_exc:
                 print(f"[workbench-event] exchange={result.get('exchange_id')} error={type(event_exc).__name__}: {str(event_exc)[:160]}")
         # Passive Burp intelligence: inspect only the traffic already captured. This
@@ -7797,6 +7869,9 @@ def create_app(default_domain: str, default_workspace: Path):
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
         return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": project_name, "unassigned": bool(unassigned), **result,
                 "capture_event_id": int(capture_event.get("id") or 0) if capture_event else None,
+                "interaction_kind": str(capture_event.get("interaction_kind") or "") if capture_event else "",
+                "provenance_source": str(capture_event.get("provenance_source") or "") if capture_event else "",
+                "parent_event_id": int(capture_event.get("parent_event_id") or 0) if capture_event and capture_event.get("parent_event_id") else None,
                 "signal_count": signal_count, **context_summary,
                 "new_notification_count": len(passive.get("new_notifications") or [])}
 
