@@ -1,3 +1,14 @@
+# v0.116.4 — Exploration Focus + Reversible Analysis Target + Checkpoint Lifecycle
+
+- Traffic Inbox adopta una superficie clara/neutra para escaneo rápido, mientras Request/Response conservan el visor oscuro de análisis.
+- Nuevo filtro de visibilidad **Todo / Focus / Solo target**. Focus mantiene el target nítido y deja el tráfico externo visible pero atenuado; seleccionar una fila externa recupera contraste completo.
+- El antiguo botón visual `Focus` se renombra **Inmersivo** para no mezclar layout con el nuevo Focus de tráfico.
+- Las reglas pasivas de análisis son reversibles: un host/endpoint añadido desde Traffic Inbox puede retirarse del target de análisis sin tocar `target.scopes` ni autorización de Recon.
+- Al retirar una regla, el histórico enrutado por ella puede volver a Traffic Inbox; evidencia/Flows existentes no se borran.
+- Capture Events nuevos guardan `analysis_rule_id` para provenance exacta de routing de análisis; existe compatibilidad con reglas creadas en v0.116.2/3.
+- Checkpoints pueden eliminarse individualmente o todos desde **Administrar checkpoints**. Eliminar checkpoints nunca elimina tráfico HTTP.
+- Regresión completa: **160/160 tests** pasando.
+
 # v0.116.3 — Bearer JWT Inspector UX
 
 - HTTP Workbench reconoce `Authorization: Bearer <JWT>` como JWT también en el renderer inline; deja de mostrarlo sólo como `LONG`.

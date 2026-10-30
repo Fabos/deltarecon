@@ -68,7 +68,8 @@ def _init_workbench_schema(conn) -> None:
             parent_confidence REAL,
             mutation_diff_json TEXT,
             bridge_message_id TEXT,
-            request_hash TEXT
+            request_hash TEXT,
+            analysis_rule_id INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_target_id
             ON workbench_capture_events(target_key, id);
@@ -111,12 +112,14 @@ def _init_workbench_schema(conn) -> None:
         "mutation_diff_json": "TEXT",
         "bridge_message_id": "TEXT",
         "request_hash": "TEXT",
+        "analysis_rule_id": "INTEGER",
     }
     for name, ddl in additive.items():
         if name not in event_cols:
             conn.execute(f"ALTER TABLE workbench_capture_events ADD COLUMN {name} {ddl}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_parent ON workbench_capture_events(parent_event_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_request_hash ON workbench_capture_events(request_hash,id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_workbench_capture_events_analysis_rule ON workbench_capture_events(analysis_rule_id,id)")
 
 
 def _init_context_schema(conn) -> None:
@@ -340,7 +343,7 @@ def record_capture_event(
     source_key: str, exchange_id: int, *, captured_at: str | None = None,
     provenance_source: str = "", interaction_kind: str = "",
     parent_event_id: int | None = None, parent_confidence: float | None = None,
-    mutation_diff: Any = None, bridge_message_id: str = "",
+    mutation_diff: Any = None, bridge_message_id: str = "", analysis_rule_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Append one exact occurrence to the global Workbench timeline.
 
@@ -373,8 +376,8 @@ def record_capture_event(
                    target_key,exchange_id,captured_at,source,tool,method,url,hostname,path,status_code,
                    request_size,response_size,request_content_type,response_content_type,authenticated_observed,
                    burp_scope_status,is_inbox,synthetic,seen_at,provenance_source,interaction_kind,parent_event_id,
-                   parent_confidence,mutation_diff_json,bridge_message_id,request_hash)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?)""",
+                   parent_confidence,mutation_diff_json,bridge_message_id,request_hash,analysis_rule_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?,?)""",
             (
                 str(source_key), int(exchange_id), ts, str(snap.get("source") or ""), str(snap.get("tool") or ""),
                 str(snap.get("method") or ""), str(snap.get("url") or ""), str(snap.get("hostname") or ""), str(snap.get("path") or "/"),
@@ -385,6 +388,7 @@ def record_capture_event(
                 float(parent_confidence) if parent_confidence is not None else None,
                 json.dumps(mutation_diff, ensure_ascii=False, separators=(",",":")) if mutation_diff not in (None, "", [], {}) else None,
                 str(bridge_message_id or "") or None, request_hash or None,
+                int(analysis_rule_id) if analysis_rule_id else None,
             ),
         )
         event_id = int(cur.lastrowid)
@@ -610,6 +614,105 @@ def match_project_rule(hostname: str, method: str = "", path: str = "") -> dict[
         return dict(row) if row else None
 
 
+def matching_project_rules(target_key: str, hostname: str, method: str = "", path: str = "") -> list[dict[str, Any]]:
+    """Rules from one project that explain why this request is in its analysis target."""
+    host = str(hostname or "").strip().lower().rstrip(".")
+    meth = str(method or "").strip().upper()
+    pth = str(path or "/").strip() or "/"
+    if not host:
+        return []
+    rows = list_project_rules(str(target_key or ""))
+    matched = []
+    for row in rows:
+        kind = str(row.get("rule_type") or "")
+        if str(row.get("hostname") or "").lower().rstrip(".") != host:
+            continue
+        if kind == "host" or (kind == "endpoint" and str(row.get("method") or "").upper() == meth and str(row.get("path") or "/") == pth):
+            matched.append(row)
+    return matched
+
+
+def remove_project_rule(target_key: str, rule_id: int, *, move_history: bool = True) -> dict[str, Any]:
+    """Remove one passive analysis rule without touching authorized Recon scope.
+
+    When move_history is true, capture occurrences that were routed by this rule are
+    returned to Traffic Inbox. The underlying project HTTP evidence is intentionally
+    not deleted, so existing Flows/findings remain stable.
+    """
+    target_key = str(target_key or "").strip()
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute("SELECT * FROM workbench_project_rules WHERE id=? AND target_key=?", (int(rule_id), target_key)).fetchone()
+        if not row:
+            raise ValueError("Regla de análisis no encontrada")
+        rule = dict(row)
+        conn.execute("DELETE FROM workbench_project_rules WHERE id=? AND target_key=?", (int(rule_id), target_key))
+        conn.commit()
+
+    moved = 0
+    if move_history:
+        host = str(rule.get("hostname") or "").lower().rstrip(".")
+        meth = str(rule.get("method") or "").upper()
+        pth = str(rule.get("path") or "/")
+        target = core.get_target(target_key) or {}
+        scopes = target.get("scopes") or [target.get("domain")]
+        host_authorized = any(core.host_matches_scope(host, str(x or "").strip().lower().rstrip(".")) for x in scopes if str(x or "").strip())
+        with core.db_connect(paths) as conn:
+            _init_workbench_schema(conn)
+            clauses = ["target_key=?", "lower(hostname)=?"]
+            params: list[Any] = [target_key, host]
+            if str(rule.get("rule_type") or "") == "endpoint":
+                clauses += ["upper(method)=?", "path=?"]
+                params += [meth, pth]
+            # New events carry exact provenance. For v0.116.2/3 compatibility,
+            # rules for hosts outside active scope can safely claim older matching rows.
+            if host_authorized:
+                clauses.append("analysis_rule_id=?")
+                params.append(int(rule_id))
+            else:
+                clauses.append("(analysis_rule_id=? OR analysis_rule_id IS NULL)")
+                params.append(int(rule_id))
+            events = [dict(r) for r in conn.execute("SELECT * FROM workbench_capture_events WHERE " + " AND ".join(clauses) + " ORDER BY id", tuple(params)).fetchall()]
+
+        source_to_inbox: dict[int, int] = {}
+        inbox_paths = ensure_inbox_paths()
+        for event in events:
+            # If another remaining rule still owns the exact request, keep it routed.
+            remaining = match_project_rule(str(event.get("hostname") or ""), str(event.get("method") or ""), str(event.get("path") or "/"))
+            if remaining and str(remaining.get("target_key") or "") == target_key:
+                with core.db_connect(paths) as conn:
+                    conn.execute("UPDATE workbench_capture_events SET analysis_rule_id=? WHERE id=?", (int(remaining["id"]), int(event["id"])))
+                    conn.commit()
+                continue
+            old_ex = int(event.get("exchange_id") or 0)
+            if old_ex not in source_to_inbox:
+                src = _transfer_exchange_payload(target_key, old_ex)
+                if not src:
+                    continue
+                scope_status = str(src.get("burp_scope_status") or "UNKNOWN").upper()
+                burp_in_scope = True if scope_status == "IN_SCOPE" else (False if scope_status == "EXCLUDED" else None)
+                result = core.upsert_http_observation(
+                    inbox_paths, INBOX_DOMAIN, url=str(src.get("url") or ""), method=str(src.get("method") or "GET"),
+                    source=str(src.get("source") or "burp_proxy"), status_code=src.get("status_code"),
+                    authenticated=bool(src.get("authenticated_observed")), request_content_type=src.get("request_content_type"),
+                    response_content_type=src.get("response_content_type"), tool=src.get("tool"), request_b64=src.get("request_b64"),
+                    response_b64=src.get("response_b64"), request_headers=src.get("request_headers_json") if isinstance(src.get("request_headers_json"), list) else None,
+                    response_headers=src.get("response_headers_json") if isinstance(src.get("response_headers_json"), list) else None,
+                    query=src.get("query_json"), burp_in_scope=burp_in_scope, allow_out_of_scope=True,
+                )
+                source_to_inbox[old_ex] = int(result["exchange_id"])
+                _refresh_promoted_exchange(inbox_paths, str(src.get("hostname") or INBOX_DOMAIN), int(result["exchange_id"]))
+            with core.db_connect(paths) as conn:
+                cur = conn.execute(
+                    "UPDATE workbench_capture_events SET target_key=?,exchange_id=?,is_inbox=1,analysis_rule_id=NULL WHERE id=?",
+                    (INBOX_KEY, source_to_inbox[old_ex], int(event["id"])),
+                )
+                conn.commit()
+                moved += int(cur.rowcount or 0)
+    return {"ok": True, "rule": rule, "moved_events": moved, "active_recon_scope_changed": False}
+
+
 def _transfer_exchange_payload(source_key: str, exchange_id: int) -> dict[str, Any] | None:
     source = source_for_key(source_key)
     if not source:
@@ -736,8 +839,8 @@ def assign_event_to_project(target_key: str, event_id: int, *, rule_type: str) -
             if not new_id:
                 continue
             cur = conn.execute(
-                "UPDATE workbench_capture_events SET target_key=?,exchange_id=?,is_inbox=0 WHERE id=? AND target_key=?",
-                (str(target_key), int(new_id), int(row["id"]), INBOX_KEY),
+                "UPDATE workbench_capture_events SET target_key=?,exchange_id=?,is_inbox=0,analysis_rule_id=? WHERE id=? AND target_key=?",
+                (str(target_key), int(new_id), int(rule.get("id") or 0) or None, int(row["id"]), INBOX_KEY),
             )
             moved += int(cur.rowcount or 0)
         conn.commit()
@@ -1131,11 +1234,19 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             except Exception:
                 active_scope_authorized = False
 
+        analysis_rules = []
+        if not bool(source["inbox"]):
+            try:
+                analysis_rules = matching_project_rules(str(source["key"]), str(ex.get("hostname") or ""), str(ex.get("method") or ""), str(ex.get("path") or "/"))
+            except Exception:
+                analysis_rules = []
+
         return {
             "target_key": source["key"],
             "target_name": source["name"],
             "is_inbox": bool(source["inbox"]),
             "active_scope_authorized": bool(active_scope_authorized),
+            "analysis_rules": analysis_rules,
             "exchange": ex,
             "request_text": inspector.get("request_text") or "",
             "response_text": inspector.get("response_text") or "",

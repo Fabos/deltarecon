@@ -3833,9 +3833,13 @@ def create_app(default_domain: str, default_workspace: Path):
         active_checkpoint = workbench.get_checkpoint(checkpoint_id) if checkpoint_id > 0 else (checkpoints[0] if history_mode == "checkpoint" and checkpoints else None)
         if history_mode == "checkpoint" and not active_checkpoint:
             history_mode = "all"
+        visibility = str(qp.get("visibility") or "focus").strip().lower()
+        if visibility not in {"all", "focus", "target"}:
+            visibility = "focus"
         filters = {
             "q": str(qp.get("q") or ""),
             "target": str(qp.get("target") or "all"),
+            "visibility": visibility,
             "host": str(qp.get("host") or ""),
             "method": str(qp.get("method") or ""),
             "status": str(qp.get("status") or ""),
@@ -3845,7 +3849,16 @@ def create_app(default_domain: str, default_workspace: Path):
             "since": str(active_checkpoint.get("cutoff_at") or "") if history_mode == "checkpoint" and active_checkpoint else "",
             "since_event_id": int(active_checkpoint.get("cutoff_event_id") or 0) if history_mode == "checkpoint" and active_checkpoint else 0,
         }
-        traffic = workbench.list_traffic(**filters, limit=500)
+        traffic_query = dict(filters)
+        traffic_query.pop("visibility", None)
+        # Visibility is about the current project: Focus keeps the surrounding
+        # traffic dimmed, Target only removes it. Source filters remain available
+        # for advanced/manual narrowing when the mode is All.
+        if visibility in {"focus", "all"}:
+            traffic_query["target"] = "all"
+        elif visibility == "target":
+            traffic_query["target"] = target_key
+        traffic = workbench.list_traffic(**traffic_query, limit=500)
         filters["history"] = history_mode
         filters["checkpoint_id"] = int(active_checkpoint.get("id") or 0) if active_checkpoint else 0
         explicit_event = bool(str(qp.get("event") or "").strip())
@@ -3854,7 +3867,11 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception:
             selected_event = 0
         if selected_event <= 0 and traffic.get("rows"):
-            selected_event = int(traffic["rows"][-1].get("id") or 0)
+            if visibility in {"focus", "target"}:
+                preferred = [r for r in (traffic.get("rows") or []) if str(r.get("target_key") or "") == str(target_key)]
+                selected_event = int((preferred[-1] if preferred else traffic["rows"][-1]).get("id") or 0)
+            else:
+                selected_event = int(traffic["rows"][-1].get("id") or 0)
         selected = workbench.detail_event(selected_event) if selected_event > 0 else None
         if selected_event > 0:
             for row in traffic.get("rows") or []:
@@ -3888,6 +3905,25 @@ def create_app(default_domain: str, default_workspace: Path):
         verify_csrf(csrf)
         workbench.rename_checkpoint(int(checkpoint_id), label)
         return RedirectResponse(url=f"/t/{target_key}/workbench?history=checkpoint&checkpoint_id={int(checkpoint_id)}", status_code=303)
+
+    @app.post("/t/{target_key}/workbench/checkpoints/{checkpoint_id}/delete")
+    def http_workbench_checkpoint_delete(request: Request, target_key: str, checkpoint_id: int, csrf: str = Form(...)):
+        _target_context(target_key)
+        verify_csrf(csrf)
+        workbench.delete_checkpoint(int(checkpoint_id))
+        return RedirectResponse(url=f"/t/{target_key}/workbench?history=all&visibility=focus", status_code=303)
+
+    @app.post("/t/{target_key}/workbench/checkpoints/delete-all")
+    def http_workbench_checkpoint_delete_all(request: Request, target_key: str, csrf: str = Form(...)):
+        _target_context(target_key)
+        verify_csrf(csrf)
+        while True:
+            batch = workbench.list_checkpoints(limit=100)
+            if not batch:
+                break
+            for cp in batch:
+                workbench.delete_checkpoint(int(cp.get("id") or 0))
+        return RedirectResponse(url=f"/t/{target_key}/workbench?history=all&visibility=focus", status_code=303)
 
     @app.post("/api/t/{target_key}/workbench/create-flow", response_class=JSONResponse)
     async def http_workbench_create_flow_from_marked(request: Request, target_key: str):
@@ -3963,6 +3999,23 @@ def create_app(default_domain: str, default_workspace: Path):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    @app.post("/api/t/{target_key}/workbench/analysis-scope/remove", response_class=JSONResponse)
+    async def http_workbench_analysis_scope_remove_api(request: Request, target_key: str):
+        """Remove one passive analysis rule; authorized Recon scope is untouched."""
+        _target_context(target_key)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        verify_csrf(str(payload.get("csrf") or ""))
+        rule_id = int(payload.get("rule_id") or 0)
+        if rule_id <= 0:
+            raise HTTPException(status_code=400, detail="rule_id requerido")
+        try:
+            return workbench.remove_project_rule(target_key, rule_id, move_history=bool(payload.get("move_history", True)))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.post("/api/t/{target_key}/workbench/events/{event_id}/evidence", response_class=JSONResponse)
     async def http_workbench_event_evidence_api(request: Request, target_key: str, event_id: int):
         _target_context(target_key)
@@ -4016,10 +4069,12 @@ def create_app(default_domain: str, default_workspace: Path):
         return {"target_key": target_key, "relations": rows}
 
     @app.get("/api/t/{target_key}/workbench/events", response_class=JSONResponse)
-    def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0):
+    def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", visibility: str = "focus", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0):
         _target_context(target_key)
+        visibility = str(visibility or "focus").lower()
+        effective_target = target_key if visibility == "target" else ("all" if visibility in {"focus", "all"} else target)
         data = workbench.list_traffic(
-            q=q,target=target,host=host,method=method,status=status,scope=scope,tool=tool,
+            q=q,target=effective_target,host=host,method=method,status=status,scope=scope,tool=tool,
             hide_static=bool(hide_static),since_event_id=int(since_event_id or 0),after_event_id=int(after_event_id or 0),limit=500,sync_legacy=False,
         )
         return data
@@ -7832,6 +7887,7 @@ def create_app(default_domain: str, default_workspace: Path):
                     parent_event_id=int(payload.get("parent_event_id") or 0) or None,
                     parent_confidence=float(payload.get("parent_confidence")) if payload.get("parent_confidence") not in (None, "") else None,
                     mutation_diff=mutation_diff, bridge_message_id=str(payload.get("bridge_message_id") or ""),
+                    analysis_rule_id=int(analysis_rule.get("id") or 0) if analysis_routed and analysis_rule else None,
                 )
             except Exception as event_exc:
                 print(f"[workbench-event] exchange={result.get('exchange_id')} error={type(event_exc).__name__}: {str(event_exc)[:160]}")

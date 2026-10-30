@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}HTTP Workbench · Negro{% endblock %}
 {% block content %}
-<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-analysis-scope-url="/api/t/{{ target_key }}/workbench/analysis-scope" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
+<section class="wb-shell visibility-{{ filters.visibility }}" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-analysis-scope-url="/api/t/{{ target_key }}/workbench/analysis-scope" data-analysis-scope-remove-url="/api/t/{{ target_key }}/workbench/analysis-scope/remove" data-visibility="{{ filters.visibility }}" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
   <header class="wb-toolbar">
     <div class="wb-title-block">
       <span class="wb-title-icon">⌁</span>
@@ -9,6 +9,7 @@
     </div>
     <form class="wb-search" method="get" action="{{ target_base }}/workbench">
       <input type="hidden" name="target" value="{{ filters.target }}">
+      <input type="hidden" name="visibility" value="{{ filters.visibility }}">
       <input type="hidden" name="host" value="{{ filters.host }}">
       <input type="hidden" name="method" value="{{ filters.method }}">
       <input type="hidden" name="status" value="{{ filters.status }}">
@@ -20,7 +21,7 @@
       <span>⌕</span><input type="search" name="q" value="{{ filters.q }}" placeholder="Buscar requests, hosts, paths, objetos, identidades…" autocomplete="off"><kbd>/</kbd>
     </form>
     <div class="wb-toolbar-actions">
-      <button type="button" class="wb-icon-action" data-focus-toggle title="Focus Mode (F)">Focus</button>
+      <button type="button" class="wb-icon-action" data-focus-toggle title="Modo inmersivo (F)">Inmersivo</button>
       <button type="button" class="wb-icon-action" data-traffic-toggle title="Plegar/desplegar Traffic Inbox (T)">Traffic <kbd>T</kbd></button>
       <button type="button" class="wb-icon-action" data-context-toggle title="Mostrar/ocultar Context">Context</button>
       <div class="wb-capture-state" title="El Bridge conserva todo el tráfico HTTP observado"><span></span> LIVE · Captura global</div>
@@ -29,7 +30,9 @@
 
   <form class="wb-filters" method="get" action="{{ target_base }}/workbench" data-workbench-filters>
     <input type="hidden" name="q" value="{{ filters.q }}">
-    <label>Vista<select name="target" onchange="this.form.submit()"><option value="all" {% if filters.target=='all' %}selected{% endif %}>All Traffic</option>{% for p in traffic.projects %}<option value="{{ p.key }}" {% if filters.target==p.key %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+    <input type="hidden" name="visibility" value="{{ filters.visibility }}" data-visibility-input>
+    <div class="wb-visibility-filter" role="group" aria-label="Visibilidad del tráfico"><span>Tráfico</span><div><button type="button" data-visibility-mode="all" class="{% if filters.visibility=='all' %}active{% endif %}" title="Muestra todo el tráfico con el mismo peso visual">Todo</button><button type="button" data-visibility-mode="focus" class="{% if filters.visibility=='focus' %}active{% endif %}" title="Target nítido; tráfico externo visible pero atenuado">Focus</button><button type="button" data-visibility-mode="target" class="{% if filters.visibility=='target' %}active{% endif %}" title="Muestra únicamente el proyecto actual">Solo target</button></div></div>
+    <label>Fuente<select name="target" onchange="this.form.submit()"><option value="all" {% if filters.target=='all' %}selected{% endif %}>All Traffic</option>{% for p in traffic.projects %}<option value="{{ p.key }}" {% if filters.target==p.key %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
     <label>Historia<select name="history" onchange="this.form.submit()"><option value="all" {% if filters.history=='all' %}selected{% endif %}>Todo el tráfico</option><option value="checkpoint" {% if filters.history=='checkpoint' %}selected{% endif %} {% if not checkpoints %}disabled{% endif %}>Desde checkpoint</option></select></label>
     {% if checkpoints %}<label>Checkpoint<select name="checkpoint_id" onchange="this.form.elements.history.value='checkpoint';this.form.submit()">{% for cp in checkpoints %}<option value="{{ cp.id }}" {% if filters.checkpoint_id==cp.id %}selected{% endif %}>{{ cp.label }}</option>{% endfor %}</select></label>{% else %}<input type="hidden" name="checkpoint_id" value="0">{% endif %}
     <label>Host<select name="host" onchange="this.form.submit()"><option value="">Todos</option>{% for h in traffic.hosts %}<option value="{{ h }}" {% if filters.host==h %}selected{% endif %}>{{ h }}</option>{% endfor %}</select></label>
@@ -49,7 +52,9 @@
     <div class="wb-session-actions">
       {% if active_checkpoint %}
       <details class="wb-rename-checkpoint"><summary>Renombrar checkpoint</summary><form method="post" action="{{ target_base }}/workbench/checkpoints/{{ active_checkpoint.id }}/rename"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="label" value="{{ active_checkpoint.label }}" maxlength="120"><button type="submit">Guardar</button></form></details>
+      <form method="post" action="{{ target_base }}/workbench/checkpoints/{{ active_checkpoint.id }}/delete" onsubmit="return confirm('¿Eliminar este checkpoint? El tráfico HTTP no se borra.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button type="submit" class="wb-checkpoint-delete">Eliminar checkpoint</button></form>
       {% endif %}
+      {% if checkpoints %}<details class="wb-checkpoint-manager"><summary>Administrar checkpoints</summary><div class="wb-checkpoint-manager-menu">{% for cp in checkpoints %}<form method="post" action="{{ target_base }}/workbench/checkpoints/{{ cp.id }}/delete" onsubmit="return confirm('¿Eliminar {{ cp.label|e }}?')"><span><b>{{ cp.label }}</b><small>#{{ cp.cutoff_event_id or '?' }} · {{ cp.cutoff_at[11:19] }}</small></span><input type="hidden" name="csrf" value="{{ csrf_token }}"><button type="submit">Eliminar</button></form>{% endfor %}<form method="post" action="{{ target_base }}/workbench/checkpoints/delete-all" onsubmit="return confirm('¿Eliminar TODOS los checkpoints? El tráfico HTTP se conserva.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button type="submit" class="danger">Eliminar todos</button></form></div></details>{% endif %}
       <form method="post" action="{{ target_base }}/workbench/checkpoints" class="wb-clear-view-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="target_hint" value="{{ filters.target }}"><input type="hidden" name="label" value=""><button type="submit" title="Crea un checkpoint. No elimina tráfico.">Clear view · nuevo checkpoint</button></form>
     </div>
   </div>
@@ -86,7 +91,7 @@
       <div class="wb-table-head"><span>#</span><span>Método</span><span>Host</span><span title="Endpoint / parámetros">URL / parámetros</span><span>Status</span><span>Contexto</span><span>Hora</span></div>
       <div class="wb-traffic-list" data-traffic-list>
         {% for row in traffic.rows %}
-        <a class="wb-traffic-row {% if selected_event==row.id %}active{% endif %} {% if row.is_unread and selected_event!=row.id %}is-unread{% endif %}"
+        <a class="wb-traffic-row {% if row.target_key==target_key %}is-target-row{% else %}is-outside-target{% endif %} {% if selected_event==row.id %}active{% endif %} {% if row.is_unread and selected_event!=row.id %}is-unread{% endif %}"
            href="{{ target_base }}/workbench?event={{ row.id }}"
            data-source-key="{{ row.target_key }}" data-event-id="{{ row.id }}" data-exchange-id="{{ row.exchange_id }}" data-compound-id="{{ row.compound_id }}" data-unread="{{ '1' if row.is_unread and selected_event!=row.id else '0' }}">
           <span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>{{ row.id }}</span>
@@ -144,6 +149,7 @@
 
       <details class="wb-context-card wb-quick-actions wb-collapsible" open><summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary>
         {% if not selected.is_inbox %}
+        {% if selected.analysis_rules %}<div class="wb-analysis-membership"><small>TARGET DE ANÁLISIS</small>{% for rule in selected.analysis_rules %}<div><span><b>{{ 'Host completo' if rule.rule_type=='host' else 'Endpoint' }}</b><code>{% if rule.rule_type=='host' %}{{ rule.hostname }}{% else %}{{ rule.method }} {{ rule.path }}{% endif %}</code></span><button type="button" data-analysis-scope-remove data-rule-id="{{ rule.id }}" data-rule-label="{{ rule.hostname if rule.rule_type=='host' else rule.method ~ ' ' ~ rule.path }}">Retirar</button></div>{% endfor %}</div>{% endif %}
         <div class="wb-action-grid wb-action-grid-compact">
           <a href="/t/{{ selected.target_key }}/parameters/related/{{ selected.exchange.id }}">Follow Value</a>
           {% if selected.active_scope_authorized %}<a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay</a>{% endif %}

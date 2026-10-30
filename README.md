@@ -1,3 +1,9 @@
+## v0.116.4 · Explorar sin quedarse ciego
+
+HTTP Workbench separa tres niveles de visibilidad: **Todo** muestra el timeline global, **Focus** resalta el proyecto actual y atenúa el resto sin ocultarlo, y **Solo target** filtra exclusivamente el tráfico del proyecto. La lista usa un deck claro/neutro inspirado en la escaneabilidad de Burp; Request/Response permanecen oscuros.
+
+El **target de análisis** sigue separado del scope autorizado. Hosts/endpoints añadidos desde Traffic Inbox pueden retirarse después; al hacerlo, el histórico capturado por esa regla vuelve al Inbox sin borrar evidencia ni ampliar/reducir `target.scopes`. Los checkpoints son cortes visuales diarios y ahora pueden eliminarse individualmente o en bloque sin tocar el tráfico HTTP.
+
 ## v0.115.3 · HTTP legible + conexiones de datos en Flow
 
 El **HTTP Workbench** usa ahora el mismo lenguaje visual del visor de Inventario: líneas numeradas, colores semánticos consistentes, JSON indentado y wrap en Pretty para analizar Requests/Responses sin scroll horizontal innecesario. Raw conserva el HTTP exacto.
