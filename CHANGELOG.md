@@ -1,3 +1,19 @@
+
+## v0.116.7 — LIVE performance
+
+- Removes long staged retries from LIVE detail clicks; only one short 85 ms retry remains for a real persistence race.
+- Cancels stale detail fetches when the analyst clicks another Request.
+- Highlights the selected row immediately and prevents stale responses from repainting the wrong detail.
+- Bounds the Traffic Inbox live DOM to 650 rows without deleting persisted history.
+- Prevents overlapping LIVE polls and reduces polling while the tab is hidden.
+## v0.116.6
+
+- Corrige LIVE detail hydration: una Request recién llegada puede abrir Request/Response inmediatamente sin recargar la página.
+- Mantiene montado el shell HTTP/Context aunque el Workbench abra sin selección inicial.
+- Añade retry corto ante `404` transitorios del detalle LIVE.
+- El resumen dinámico actualiza también exchange ID y tamaño de response.
+- Añade regresión `v1166_live_detail_hydration_test.py`.
+
 # v0.116.5 — Samsung Comfort Slate + Scan Hierarchy
 
 - Sustituye el deck blanco de Traffic Inbox por una superficie slate/graphite de baja luminancia.
