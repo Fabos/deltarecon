@@ -3881,12 +3881,19 @@ def create_app(default_domain: str, default_workspace: Path):
                     break
         selected_source = str((selected or {}).get("target_key") or "")
         selected_exchange = int(((selected or {}).get("exchange") or {}).get("id") or 0)
+        traffic_rows = traffic.get("rows") or []
+        preview_ids: list[int] = []
+        if traffic_rows:
+            center = next((i for i,r in enumerate(traffic_rows) if int(r.get("id") or 0)==int(selected_event or 0)), len(traffic_rows)-1)
+            lo=max(0,center-10); hi=min(len(traffic_rows),center+11)
+            preview_ids=[int(r.get("id") or 0) for r in traffic_rows[lo:hi] if int(r.get("id") or 0)>0]
+        initial_previews = workbench.preview_events(preview_ids)
         return render(
             request, "http_workbench.html", target_key, domain, workspace,
             traffic=traffic, filters=filters, selected=selected, checkpoints=checkpoints,
             active_checkpoint=active_checkpoint, selected_event=selected_event,
             selected_source=selected_source, selected_exchange=selected_exchange,
-            live_follow_default=not explicit_event,
+            live_follow_default=not explicit_event, initial_previews=initial_previews,
         )
 
     @app.post("/t/{target_key}/workbench/checkpoints")
@@ -3972,6 +3979,21 @@ def create_app(default_domain: str, default_workspace: Path):
                 flow_tools.add_step(conn, flow_id, exid, allow_duplicate=True, _schema_ready=True)
             conn.commit()
         return {"ok": True, "flow_id": flow_id, "step_count": len(exchange_ids), "href": f"/t/{target_key}/flows/{flow_id}"}
+
+    @app.get("/api/t/{target_key}/workbench/previews", response_class=JSONResponse)
+    def http_workbench_previews_api(target_key: str, event_ids: str = ""):
+        _target_context(target_key)
+        ids=[]
+        for token in str(event_ids or "").split(","):
+            try:
+                eid=int(token.strip())
+            except Exception:
+                continue
+            if eid>0:
+                ids.append(eid)
+            if len(ids)>=40:
+                break
+        return {"items": workbench.preview_events(ids)}
 
     @app.get("/api/t/{target_key}/workbench/detail", response_class=JSONResponse)
     def http_workbench_detail_api(target_key: str, event_id: int = 0, source_key: str = "", exchange_id: int = 0):
@@ -4069,7 +4091,7 @@ def create_app(default_domain: str, default_workspace: Path):
         return {"target_key": target_key, "relations": rows}
 
     @app.get("/api/t/{target_key}/workbench/events", response_class=JSONResponse)
-    def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", visibility: str = "focus", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0):
+    def http_workbench_events_api(target_key: str, after_event_id: int = 0, q: str = "", target: str = "all", visibility: str = "focus", host: str = "", method: str = "", status: str = "", scope: str = "", tool: str = "", hide_static: int = 1, since_event_id: int = 0, include_preview: int = 1):
         _target_context(target_key)
         visibility = str(visibility or "focus").lower()
         effective_target = target_key if visibility == "target" else ("all" if visibility in {"focus", "all"} else target)
@@ -4077,6 +4099,13 @@ def create_app(default_domain: str, default_workspace: Path):
             q=q,target=effective_target,host=host,method=method,status=status,scope=scope,tool=tool,
             hide_static=bool(hide_static),since_event_id=int(since_event_id or 0),after_event_id=int(after_event_id or 0),limit=500,sync_legacy=False,
         )
+        if int(include_preview or 0):
+            preview_rows=(data.get("rows") or [])[-24:]
+            preview_map={int(p.get("event_id") or 0):p for p in workbench.preview_events([int(r.get("id") or 0) for r in preview_rows])}
+            for row in data.get("rows") or []:
+                p=preview_map.get(int(row.get("id") or 0))
+                if p:
+                    row["preview"]=p
         return data
 
     @app.post("/api/t/{target_key}/workbench/seen-all", response_class=JSONResponse)

@@ -1266,6 +1266,79 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
 
 
 
+def preview_events(event_ids: list[int] | tuple[int, ...]) -> list[dict[str, Any]]:
+    """Return lightweight raw HTTP previews for fast Workbench navigation.
+
+    This deliberately skips semantic parsing, Identity/Object lookups and related
+    correlation.  It is the fast path used by the browser cache so Request/Response
+    can paint immediately while full Context hydrates asynchronously.
+    """
+    ids=[]
+    seen=set()
+    for raw_id in event_ids or []:
+        try:
+            eid=int(raw_id)
+        except Exception:
+            continue
+        if eid<=0 or eid in seen:
+            continue
+        seen.add(eid); ids.append(eid)
+        if len(ids)>=40:
+            break
+    if not ids:
+        return []
+    ensure_timeline_bootstrap()
+    gpaths=ensure_inbox_paths()
+    marks=','.join('?' for _ in ids)
+    with core.db_connect(gpaths) as conn:
+        _init_workbench_schema(conn)
+        events=[dict(r) for r in conn.execute(
+            f"SELECT id,target_key,exchange_id,method,url,hostname,path,status_code,response_size,is_inbox,captured_at FROM workbench_capture_events WHERE id IN ({marks})",
+            tuple(ids),
+        ).fetchall()]
+    by_source: dict[str,list[dict[str,Any]]]={}
+    for ev in events:
+        by_source.setdefault(str(ev.get('target_key') or ''),[]).append(ev)
+    out=[]
+    for source_key, source_events in by_source.items():
+        source=source_for_key(source_key)
+        if not source:
+            continue
+        exids=sorted({int(ev.get('exchange_id') or 0) for ev in source_events if int(ev.get('exchange_id') or 0)>0})
+        http_map={}
+        if exids:
+            emarks=','.join('?' for _ in exids)
+            with core.db_connect(source['paths']) as conn:
+                rows=conn.execute(
+                    f"SELECT id,request_b64,response_b64,response_size FROM http_exchanges WHERE id IN ({emarks})",
+                    tuple(exids),
+                ).fetchall()
+                http_map={int(r['id']):dict(r) for r in rows}
+        for ev in source_events:
+            exid=int(ev.get('exchange_id') or 0)
+            hr=http_map.get(exid) or {}
+            out.append({
+                'event_id': int(ev.get('id') or 0),
+                'target_key': source_key,
+                'target_name': str(source.get('name') or source_key),
+                'is_inbox': bool(ev.get('is_inbox')),
+                'exchange': {
+                    'id': exid,
+                    'method': str(ev.get('method') or ''),
+                    'url': str(ev.get('url') or ''),
+                    'hostname': str(ev.get('hostname') or ''),
+                    'path': str(ev.get('path') or '/'),
+                    'status_code': ev.get('status_code'),
+                    'response_size': int(hr.get('response_size') or ev.get('response_size') or 0),
+                },
+                'request_text': http_inspector.decode_b64(hr.get('request_b64')),
+                'response_text': http_inspector.decode_b64(hr.get('response_b64')),
+            })
+    order={eid:i for i,eid in enumerate(ids)}
+    out.sort(key=lambda x: order.get(int(x.get('event_id') or 0),9999))
+    return out
+
+
 def detail_event(event_id: int, *, mark_seen: bool = True) -> dict[str, Any] | None:
     event = get_capture_event(int(event_id))
     if not event:

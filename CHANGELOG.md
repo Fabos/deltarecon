@@ -1,3 +1,12 @@
+## v0.116.8 — Instant HTTP Navigation
+
+- Request/Response leave the full-detail fetch critical path: Workbench paints a lightweight raw HTTP preview immediately and hydrates Identity/Objects/Signals/JWT semantics afterward.
+- Initial page load preloads the selected event plus nearby rows so Arrow Up/Down and j/k navigation feel local instead of network-bound.
+- LIVE events carry lightweight previews in the poll response, so the first click on a newly arrived Request does not wait for `/detail`.
+- Hovering a row opportunistically prefetches its preview; arbitrary uncached clicks race the lightweight preview against full Context hydration.
+- Preview cache is bounded to 96 events; full persisted history remains unchanged.
+- Adds a batch `/workbench/previews` endpoint that decodes only raw HTTP bytes and skips semantic/correlation queries.
+
 
 ## v0.116.7 — LIVE performance
 

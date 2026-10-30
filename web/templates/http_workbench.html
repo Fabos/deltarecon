@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}HTTP Workbench · Negro{% endblock %}
 {% block content %}
-<section class="wb-shell visibility-{{ filters.visibility }}" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-analysis-scope-url="/api/t/{{ target_key }}/workbench/analysis-scope" data-analysis-scope-remove-url="/api/t/{{ target_key }}/workbench/analysis-scope/remove" data-visibility="{{ filters.visibility }}" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
+<section class="wb-shell visibility-{{ filters.visibility }}" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-preview-url="/api/t/{{ target_key }}/workbench/previews" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-analysis-scope-url="/api/t/{{ target_key }}/workbench/analysis-scope" data-analysis-scope-remove-url="/api/t/{{ target_key }}/workbench/analysis-scope/remove" data-visibility="{{ filters.visibility }}" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
+  <script type="application/json" data-workbench-previews>{{ (initial_previews or [])|tojson }}</script>
   <header class="wb-toolbar">
     <div class="wb-title-block">
       <span class="wb-title-icon">⌁</span>

@@ -1,3 +1,7 @@
+## v0.116.8 — navegación HTTP instantánea
+
+El Workbench ya no espera la hidratación completa de Context para mostrar una Request. Request/Response se pintan desde una caché/previsualización ligera y las correlaciones de Negro llegan después en segundo plano. Las filas vecinas se precargan para navegación con flechas y las Requests LIVE traen su preview en el mismo polling.
+
 ## v0.116.5 · Slate Comfort para sesiones largas
 
 Traffic Inbox abandona el deck blanco de v0.116.4 y usa un slate oscuro mate pensado para monitores de alto contraste. `Host → URL → Status` recibe más peso visual; Focus conserva target nítido y ruido atenuado sin crear una franja luminosa entre el toolbar y Request/Response.
