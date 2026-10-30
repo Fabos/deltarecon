@@ -1684,29 +1684,86 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 
 .wb-analysis-only{margin:8px 0 0;border-left:3px solid #58728a;background:#0d1821;padding:8px 9px;border-radius:5px;color:#8297a7;font-size:8.5px}.wb-analysis-only b{color:#a9c4d8}
 
-/* v0.116.4 · Exploration visibility + neutral scan deck + checkpoint lifecycle */
-.wb-shell{--wb-bg:#090a0c;--wb-panel:#101214;--wb-panel-2:#151719;--wb-line:#292c30;--wb-line-soft:#222529;--wb-text:#f0f2f4;--wb-muted:#858b92}
-.wb-toolbar{background:linear-gradient(180deg,#151719,#0f1113);border-color:#2c3034}
-.wb-filters,.wb-session-strip{background:#101214;border-color:#2a2d31}
-.wb-filters select,.wb-filters input,.wb-noise-toggle{background:#181a1d;border-color:#30343a;color:#e1e4e8}
-.wb-traffic-panel{background:#111315}
-.wb-table-head{background:#e7eaed!important;color:#444a50!important;border-bottom:1px solid #c9ced3!important;font-weight:800}
-.wb-traffic-list{background:#f4f5f6;scrollbar-color:#b5bbc1 #eceff1}
-.wb-traffic-row{background:#f8f9fa!important;border-bottom:1px solid #dde1e5!important;color:#202428;transition:opacity .14s ease,background .12s ease,border-left-color .12s ease!important}
-.wb-traffic-row:nth-child(even){background:#f2f4f5!important}
-.wb-traffic-row:hover{background:#e9f1f8!important;border-left-color:#5d8cae!important}
-.wb-traffic-row.active{background:#d9eafd!important;border-left-color:#2f77b4!important;box-shadow:inset 0 0 0 1px rgba(47,119,180,.16)!important}
-.wb-row-id{color:#697178!important}.wb-row-host{color:#171a1d!important;font-weight:800!important}.wb-row-endpoint>code{color:#252a2f!important;font-weight:620!important}.wb-traffic-row time{color:#6d747b!important}
-.wb-row-endpoint .wb-param-preview{opacity:.78!important}.wb-row-endpoint .wb-param-preview em{color:#626a72!important}.wb-row-endpoint .wb-param-preview em b{color:#3c617a!important}.wb-row-endpoint .wb-param-preview em span{color:#596169!important}
-.wb-tags .wb-tag{background:#e9ecef;border-color:#cbd1d6;color:#5e666e}.wb-tags .tag-auth{color:#285f91;border-color:#a9c4dc;background:#e3eff9}.wb-tags .tag-identity{color:#62428a;border-color:#c8b5df;background:#eee8f6}.wb-tags .tag-object{color:#315c88;border-color:#afc6dc;background:#e6eff7}.wb-tags .tag-flow{color:#28684e;border-color:#abd0c0;background:#e2f1eb}.wb-tags .tag-signal{color:#8b3940;border-color:#ddb4b8;background:#f7e6e8}.wb-tags .tag-inbox{color:#76551d;border-color:#d6c39d;background:#f5eddc}.wb-tags .tag-scope{color:#28684e;border-color:#abd0c0;background:#e2f1eb}
-.wb-traffic-row.is-unread{background:#eef6fd!important}.wb-traffic-row.is-unread .wb-unread-dot{background:#2e8bc7}
-.wb-traffic-row>.wb-status.status-2xx{color:#13814f}.wb-traffic-row>.wb-status.status-3xx{color:#176eaa}.wb-traffic-row>.wb-status.status-4xx{color:#a36005}.wb-traffic-row>.wb-status.status-5xx{color:#b22935}.wb-traffic-row>.wb-status.status-0xx{color:#737a81}
-/* Focus = current project stays crisp; surrounding traffic remains discoverable. */
-.wb-shell.visibility-focus .wb-traffic-row.is-outside-target{opacity:.30;filter:saturate(.18)}
-.wb-shell.visibility-focus .wb-traffic-row.is-outside-target:hover{opacity:.72;filter:saturate(.55)}
+/* v0.116.5 · Samsung-comfort slate scan deck + stronger scan hierarchy */
+.wb-shell{
+  --wb-bg:#090b0d;
+  --wb-panel:#101316;
+  --wb-panel-2:#15191d;
+  --wb-line:#2b3035;
+  --wb-line-soft:#22272b;
+  --wb-text:#e9edf0;
+  --wb-muted:#848d95;
+  --wb-scan-head:#20262c;
+  --wb-scan-deck:#171c21;
+  --wb-scan-row:#1b2025;
+  --wb-scan-row-alt:#181d21;
+  --wb-scan-target:#1d252c;
+  --wb-scan-hover:#222b33;
+  --wb-scan-active:#263a4b;
+}
+.wb-toolbar{background:linear-gradient(180deg,#15191d,#0f1215);border-color:#2c3238}
+.wb-filters,.wb-session-strip{background:#111417;border-color:#2a3035}
+.wb-filters select,.wb-filters input,.wb-noise-toggle{background:#181c20;border-color:#30373d;color:#dce2e7}
+.wb-traffic-panel{background:#111417}
+/* The scan deck is intentionally dark/matte: no bright white strip on high-contrast displays. */
+.wb-table-head{
+  background:var(--wb-scan-head)!important;
+  color:#8f9aa4!important;
+  border-bottom:1px solid #343c43!important;
+  font-weight:800;
+}
+.wb-traffic-list{
+  background:var(--wb-scan-deck);
+  scrollbar-color:#46515a #151a1e;
+}
+.wb-traffic-row{
+  background:var(--wb-scan-row)!important;
+  border-bottom:1px solid #2a3035!important;
+  color:#cbd2d8;
+  transition:opacity .14s ease,background .12s ease,border-left-color .12s ease,color .12s ease!important;
+}
+.wb-traffic-row:nth-child(even){background:var(--wb-scan-row-alt)!important}
+.wb-traffic-row.is-target-row{background:var(--wb-scan-target)!important}
+.wb-traffic-row:hover{background:var(--wb-scan-hover)!important;border-left-color:#526f86!important}
+.wb-traffic-row.active{
+  background:var(--wb-scan-active)!important;
+  border-left-color:#6ca3cc!important;
+  box-shadow:inset 0 0 0 1px rgba(108,163,204,.14)!important;
+}
+.wb-row-id{color:#77838c!important}
+.wb-row-host{
+  color:#eef2f4!important;
+  font-size:10.2px!important;
+  font-weight:820!important;
+  letter-spacing:.005em;
+}
+.wb-row-endpoint>code{
+  color:#d0d7dd!important;
+  font-size:10px!important;
+  font-weight:620!important;
+}
+.wb-traffic-row time{color:#8a949d!important}
+.wb-row-endpoint .wb-param-preview{opacity:.60!important}
+.wb-row-endpoint .wb-param-preview em{color:#84909a!important}
+.wb-row-endpoint .wb-param-preview em b{color:#95afc2!important}
+.wb-row-endpoint .wb-param-preview em span{color:#7f8992!important}
+.wb-traffic-row>.wb-status{font-size:10px!important;font-weight:850!important;letter-spacing:.03em!important}
+.wb-tags .wb-tag{background:#20262b;border-color:#374047;color:#87929a}
+.wb-tags .tag-auth{color:#8eb9da;border-color:#3f5d73;background:#18242d}
+.wb-tags .tag-identity{color:#b6a3cf;border-color:#594b69;background:#211d28}
+.wb-tags .tag-object{color:#93b2ce;border-color:#455d72;background:#1a242d}
+.wb-tags .tag-flow{color:#8ebca8;border-color:#405f51;background:#18261f}
+.wb-tags .tag-signal{color:#d3a0a5;border-color:#68464b;background:#291c1e}
+.wb-tags .tag-inbox{color:#b9a480;border-color:#62563f;background:#28231a}
+.wb-tags .tag-scope{color:#8ebca8;border-color:#405f51;background:#18261f}
+.wb-traffic-row.is-unread{background:#1c2831!important}.wb-traffic-row.is-unread .wb-unread-dot{background:#64a8d6}
+.wb-traffic-row>.wb-status.status-2xx{color:#75c79a}.wb-traffic-row>.wb-status.status-3xx{color:#7db4dc}.wb-traffic-row>.wb-status.status-4xx{color:#d2a660}.wb-traffic-row>.wb-status.status-5xx{color:#df7f88}.wb-traffic-row>.wb-status.status-0xx{color:#89939b}
+/* Focus = target stays crisp; surrounding traffic remains discoverable without glowing. */
+.wb-shell.visibility-focus .wb-traffic-row.is-outside-target{opacity:.34;filter:saturate(.25)}
+.wb-shell.visibility-focus .wb-traffic-row.is-outside-target:hover{opacity:.72;filter:saturate(.60)}
 .wb-shell.visibility-focus .wb-traffic-row.is-outside-target.active{opacity:1;filter:none}
 .wb-shell.visibility-focus .wb-traffic-row.is-target-row{opacity:1;filter:none}
-.wb-visibility-filter{display:grid;gap:4px;color:#718196;font-size:9px;text-transform:uppercase;letter-spacing:.08em}.wb-visibility-filter>div{height:31px;display:flex;border:1px solid #30343a;border-radius:7px;overflow:hidden;background:#181a1d}.wb-visibility-filter button{min-width:64px;border:0;border-right:1px solid #30343a;background:transparent;color:#8f969e;padding:0 9px;cursor:pointer;font-size:9px}.wb-visibility-filter button:last-child{border-right:0}.wb-visibility-filter button:hover{color:#e3e6e9;background:#202327}.wb-visibility-filter button.active{background:#e7eaed;color:#24282c;font-weight:800}
+.wb-visibility-filter{display:grid;gap:4px;color:#738292;font-size:9px;text-transform:uppercase;letter-spacing:.08em}.wb-visibility-filter>div{height:31px;display:flex;border:1px solid #303840;border-radius:7px;overflow:hidden;background:#181d21}.wb-visibility-filter button{min-width:64px;border:0;border-right:1px solid #303840;background:transparent;color:#8d98a1;padding:0 9px;cursor:pointer;font-size:9px}.wb-visibility-filter button:last-child{border-right:0}.wb-visibility-filter button:hover{color:#e0e6ea;background:#22282d}.wb-visibility-filter button.active{background:#2a3946;color:#e5edf3;font-weight:800;box-shadow:inset 0 -2px 0 #6ca3cc}
 /* Checkpoints are daily view cuts, not permanent records. */
 .wb-session-actions{position:relative}.wb-checkpoint-delete{border:1px solid #5f3438!important;color:#d68e94!important;background:#1d1113!important}.wb-checkpoint-manager{position:relative}.wb-checkpoint-manager>summary{cursor:pointer;color:#88919a;font-size:9px}.wb-checkpoint-manager-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:70;width:min(420px,70vw);max-height:360px;overflow:auto;padding:8px;border:1px solid #34383d;border-radius:9px;background:#111315;box-shadow:0 18px 50px rgba(0,0,0,.5)}.wb-checkpoint-manager-menu form{display:flex;align-items:center;gap:10px;padding:7px;border-bottom:1px solid #24272b}.wb-checkpoint-manager-menu form:last-child{border-bottom:0}.wb-checkpoint-manager-menu span{display:grid;gap:2px;min-width:0;flex:1}.wb-checkpoint-manager-menu b{font-size:9px;color:#d7dadd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-checkpoint-manager-menu small{font-size:8px;color:#717880}.wb-checkpoint-manager-menu button{border:1px solid #4b383b;border-radius:5px;background:#1b1214;color:#c8878d;padding:4px 7px;font-size:8px;cursor:pointer}.wb-checkpoint-manager-menu button.danger{margin-left:auto;border-color:#704046;color:#ef9ca3}
 /* Analysis target membership can be undone without changing Recon authorization. */

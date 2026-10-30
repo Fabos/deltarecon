@@ -1,3 +1,12 @@
+# v0.116.5 — Samsung Comfort Slate + Scan Hierarchy
+
+- Sustituye el deck blanco de Traffic Inbox por una superficie slate/graphite de baja luminancia.
+- Reduce el salto visual entre Traffic Inbox y Request/Response en pantallas de alto contraste.
+- Refuerza jerarquía `Método → Host → URL → Status`; Host gana peso tipográfico y Status mantiene color semántico.
+- Focus conserva tráfico fuera del target visible pero atenuado; hover/selección recuperan contraste sin brillo blanco.
+- El botón Focus ya no usa fondo blanco: selección slate con subrayado azul discreto.
+- No modifica routing, scope, checkpoints, JWT, Flow ni evidencia.
+
 # v0.116.4 — Exploration Focus + Reversible Analysis Target + Checkpoint Lifecycle
 
 - Traffic Inbox adopta una superficie clara/neutra para escaneo rápido, mientras Request/Response conservan el visor oscuro de análisis.

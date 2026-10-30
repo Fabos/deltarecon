@@ -1,4 +1,7 @@
-## v0.116.4 · Explorar sin quedarse ciego
+## v0.116.5 · Slate Comfort para sesiones largas
+
+Traffic Inbox abandona el deck blanco de v0.116.4 y usa un slate oscuro mate pensado para monitores de alto contraste. `Host → URL → Status` recibe más peso visual; Focus conserva target nítido y ruido atenuado sin crear una franja luminosa entre el toolbar y Request/Response.
+
 
 HTTP Workbench separa tres niveles de visibilidad: **Todo** muestra el timeline global, **Focus** resalta el proyecto actual y atenúa el resto sin ocultarlo, y **Solo target** filtra exclusivamente el tráfico del proyecto. La lista usa un deck claro/neutro inspirado en la escaneabilidad de Burp; Request/Response permanecen oscuros.
 

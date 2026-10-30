@@ -46,7 +46,7 @@ def test_ui_has_three_visibility_modes_and_neutral_scan_deck():
     js=(ROOT/'web/static/app.js').read_text(encoding='utf-8')
     for token in ('data-visibility-mode="all"','data-visibility-mode="focus"','data-visibility-mode="target"','Eliminar checkpoint','Administrar checkpoints','data-analysis-scope-remove'):
         assert token in tpl
-    for token in ('.wb-shell.visibility-focus .wb-traffic-row.is-outside-target','.wb-traffic-list{background:#f4f5f6','.wb-visibility-filter','.wb-checkpoint-manager-menu'):
+    for token in ('.wb-shell.visibility-focus .wb-traffic-row.is-outside-target','.wb-traffic-list{','.wb-visibility-filter','.wb-checkpoint-manager-menu'):
         assert token in css
     for token in ('setTrafficVisibility','analysisScopeRemoveUrl','removeAnalysisRule','is-outside-target'):
         assert token in js
