@@ -892,33 +892,35 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const semanticCss=(cls)=>({auth:'http-ann-auth',resolver:'http-ann-resolver',context:'http-ann-context',entity:'http-ann-entity'}[String(cls||'').toLowerCase()]||'');
   const semanticLabel=(a)=>{const cls=String(a.classification||'').toUpperCase(),owner=String(a.identity_name||a.object_type||'').trim();return owner?`${cls} · ${owner}`:cls;};
   const regexEscape=(v)=>String(v||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const looksJwt=(v)=>/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(v||'').trim());
+  const jwtTokenFromValue=(v)=>{const raw=String(v||'').trim(),m=raw.match(/^(?:Bearer\s+)?(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i);return m?m[1]:'';};
+  const looksJwt=(v)=>!!jwtTokenFromValue(v);
   const compactText=(v)=>{const x=String(v||'');return x.length>86?`${x.slice(0,34)}…${x.slice(-18)}`:x;};
   const jwtSummary=(token)=>{
     try{
-      const p=String(token).split('.')[1],pad=p.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-p.length%4)%4);
+      const normalized=jwtTokenFromValue(token)||String(token||'').trim();
+      const p=normalized.split('.')[1],pad=p.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-p.length%4)%4);
       const obj=JSON.parse(decodeURIComponent(escape(atob(pad))));
       return ['iss','sub','aud','exp'].filter(k=>obj[k]!=null).map(k=>`${k}: ${Array.isArray(obj[k])?obj[k].join(','):obj[k]}`).join(' · ');
     }catch(_){return '';}
   };
   const smartValue=(value,label='value')=>{
-    const v=String(value||''),jwt=looksJwt(v),long=v.length>86;
+    const v=String(value||''),jwtToken=jwtTokenFromValue(v),jwt=!!jwtToken,long=v.length>86;
     if(!jwt&&!long) return esc(v);
     const badge=jwt?'JWT':'long';
-    const summary=jwt?jwtSummary(v):'';
+    const summary=jwt?jwtSummary(jwtToken):'';
     const title=jwt?`Abrir JWT Inspector${summary?' · '+summary:''}`:'Clic para copiar el valor completo';
     if(jwt){
       // Use a real button instead of a passive span. This avoids browser/event-delegation
       // edge cases inside syntax-highlighted code and gives the JWT inspector an explicit action.
-      return `<button type="button" class="wb-compact-value is-jwt wb-jwt-trigger" data-jwt-open="1" data-jwt-token="${esc(v)}" title="${esc(title)}">${esc(compactText(v))}<em>JWT</em></button>`;
+      return `<button type="button" class="wb-compact-value is-jwt wb-jwt-trigger" data-jwt-open="1" data-jwt-token="${esc(jwtToken)}" title="${esc(title)}">${esc(compactText(v))}<em>JWT</em></button>`;
     }
     return `<span class="wb-compact-value" data-copy-value="${esc(v)}" title="${esc(title)}">${esc(compactText(v))}<em>${badge}</em></span>`;
   };
   const smartInlineValue=(value)=>{
-    const v=String(value||''),jwt=looksJwt(v),long=v.length>86;
+    const v=String(value||''),jwtToken=jwtTokenFromValue(v),jwt=!!jwtToken,long=v.length>86;
     if(!jwt&&!long)return esc(v);
     const compact=esc(compactText(v));
-    if(jwt)return `<span class="wb-inline-compact">${compact}</span><button type="button" class="wb-inline-jwt" data-jwt-open="1" data-jwt-token="${esc(v)}" title="Abrir JWT Inspector">JWT</button>`;
+    if(jwt)return `<span class="wb-inline-compact">${compact}</span><button type="button" class="wb-inline-jwt" data-jwt-open="1" data-jwt-token="${esc(jwtToken)}" title="Abrir JWT Inspector y ver claims">JWT</button>`;
     return `<span class="wb-inline-compact">${compact}</span><em class="wb-inline-long">long</em>`;
   };
   const normalizeFieldKey=(v)=>String(v||'').trim().toLowerCase().replace(/-/g,'_').replace(/[^a-z0-9_]/g,'');
@@ -1220,7 +1222,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const decodeJwt=(token)=>{const parts=String(token||'').split('.');if(parts.length!==3)return {header:{},claims:{},signature:'',errors:['El token no tiene las 3 partes esperadas de un JWT.']};const errors=[];let header={},claims={};try{header=JSON.parse(b64urlText(parts[0]));}catch(err){errors.push(`Header: ${err?.message||'no se pudo decodificar'}`);}try{claims=JSON.parse(b64urlText(parts[1]));}catch(err){errors.push(`Payload: ${err?.message||'no se pudo decodificar'}`);}return {header,claims,signature:parts[2],errors};};
   const claimTime=(key,value)=>{if(!['iat','exp','nbf'].includes(String(key))||!Number.isFinite(Number(value)))return '';const ms=Number(value)*1000,date=new Date(ms),delta=ms-Date.now();const mins=Math.round(Math.abs(delta)/60000);let relative='';if(key==='exp')relative=delta>=0?`vigente · vence en ${mins<60?mins+' min':Math.round(mins/60)+' h'}`:`expiró hace ${mins<60?mins+' min':Math.round(mins/60)+' h'}`;else if(key==='nbf')relative=delta>0?`válido en ${mins<60?mins+' min':Math.round(mins/60)+' h'}`:'ya válido';else relative=`emitido ${delta<=0?'hace ':''}${mins<60?mins+' min':Math.round(mins/60)+' h'}`;return `${date.toLocaleString()} · ${relative}`;};
   const claimValue=(v)=>{if(v===null)return 'null';if(Array.isArray(v))return v.join(', ');if(typeof v==='object')return JSON.stringify(v);return String(v);};
-  const jwtParentIndex=(token)=>inlineValues.findIndex(v=>String(v.value||'').trim()===String(token||'').trim()&&String(v.detected_type||'').toUpperCase()==='JWT');
+  const jwtParentIndex=(token)=>{const needle=jwtTokenFromValue(token)||String(token||'').trim();return inlineValues.findIndex(v=>(jwtTokenFromValue(v.value)||String(v.value||'').trim())===needle&&String(v.detected_type||'').toUpperCase()==='JWT');};
   const ensureJwtClaimCandidate=(parentIndex,key,value)=>{
     const parent=inlineValues[Number(parentIndex)];if(!parent)return -1;const meta=(parent.jwt_claims||[]).find(c=>String(c.key||'')===String(key||''))||{};
     const claimKey=`jwt.${String(key||'')}`,claimValue=String(value??''),location=String(meta.location||`${parent.location}#jwt:${key}`);
@@ -1229,7 +1231,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     return idx;
   };
   const claimRows=(obj,{interactive=false,parentIndex=-1}={})=>Object.entries(obj||{}).map(([k,v])=>{const raw=claimValue(v),idx=interactive?ensureJwtClaimCandidate(parentIndex,k,raw):-1,meta=idx>=0?(inlineValues[idx]||{}):{},ann=meta.annotation||{},cls=String(ann.classification||meta.default_classification||'ignore').toLowerCase(),badge=['auth','resolver','context','entity'].includes(cls)?`<em class="wb-jwt-semantic semantic-${esc(cls)}">${esc(cls.toUpperCase())}</em>`:'';return `<div class="wb-jwt-claim ${idx>=0?'is-interactive':''}"><code ${idx>=0?`role="button" tabindex="0" data-jwt-claim-field-index="${idx}" title="Enseñar el claim jwt.${esc(k)}"`:''}>${esc(k)}</code><div><strong ${idx>=0?`role="button" tabindex="0" data-jwt-claim-value-index="${idx}" title="Enseñar este valor a Negro"`:''}>${esc(raw)}</strong>${badge}${claimTime(k,v)?`<small>${esc(claimTime(k,v))}</small>`:''}</div></div>`;}).join('')||'<p class="wb-muted">Sin datos.</p>';
-  const openJwt=(token)=>{if(!jwtDialog)return;currentJwt=String(token||'');const full=jwtDialog.querySelector('[data-jwt-full]');if(full){full.value=currentJwt;full.classList.remove('expanded');}const len=jwtDialog.querySelector('[data-jwt-length]');if(len)len.textContent=`${currentJwt.length} caracteres`;const errBox=jwtDialog.querySelector('[data-jwt-error]');let d={header:{},claims:{},signature:'',errors:[]};try{d=decodeJwt(currentJwt);}catch(err){d.errors=[String(err?.message||err||'No se pudo decodificar el JWT')];}const parentIndex=jwtParentIndex(currentJwt);const h=jwtDialog.querySelector('[data-jwt-header]');if(h)h.innerHTML=claimRows(d.header);const c=jwtDialog.querySelector('[data-jwt-claims]');if(c)c.innerHTML=claimRows(d.claims,{interactive:parentIndex>=0,parentIndex});const sig=jwtDialog.querySelector('[data-jwt-signature]');if(sig)sig.textContent=d.signature?'✓ Signature presente':'⚠ Sin signature';if(errBox){const errors=d.errors||[];errBox.hidden=!errors.length;errBox.textContent=errors.length?`No se pudo decodificar completamente: ${errors.join(' · ')}`:'';}try{if(!jwtDialog.open)jwtDialog.showModal();}catch(err){jwtDialog.setAttribute('open','');console.warn('JWT Inspector modal fallback',err);}};
+  const openJwt=(token)=>{if(!jwtDialog)return;currentJwt=jwtTokenFromValue(token)||String(token||'').trim();const full=jwtDialog.querySelector('[data-jwt-full]');if(full){full.value=currentJwt;full.classList.remove('expanded');}const len=jwtDialog.querySelector('[data-jwt-length]');if(len)len.textContent=`${currentJwt.length} caracteres`;const errBox=jwtDialog.querySelector('[data-jwt-error]');let d={header:{},claims:{},signature:'',errors:[]};try{d=decodeJwt(currentJwt);}catch(err){d.errors=[String(err?.message||err||'No se pudo decodificar el JWT')];}const parentIndex=jwtParentIndex(currentJwt);const h=jwtDialog.querySelector('[data-jwt-header]');if(h)h.innerHTML=claimRows(d.header);const c=jwtDialog.querySelector('[data-jwt-claims]');if(c)c.innerHTML=claimRows(d.claims,{interactive:parentIndex>=0,parentIndex});const sig=jwtDialog.querySelector('[data-jwt-signature]');if(sig)sig.textContent=d.signature?'✓ Signature presente':'⚠ Sin signature';if(errBox){const errors=d.errors||[];errBox.hidden=!errors.length;errBox.textContent=errors.length?`No se pudo decodificar completamente: ${errors.join(' · ')}`:'';}try{if(!jwtDialog.open)jwtDialog.showModal();}catch(err){jwtDialog.setAttribute('open','');console.warn('JWT Inspector modal fallback',err);}};
   const openJwtClaimSemantic=(idx,anchor,kind='value')=>{const rect=anchor.getBoundingClientRect();try{jwtDialog?.close();}catch(_){}const virtualAnchor={getBoundingClientRect:()=>rect};window.setTimeout(()=>kind==='field'?openInlineField(Number(idx),virtualAnchor):openInline(Number(idx),virtualAnchor),0);};
   // Capture-phase fallback: JWT is a first-class action in the Workbench.
   // Keeping this independent from the generic code/copy delegation makes the

@@ -1,3 +1,10 @@
+# v0.116.3 — Bearer JWT Inspector UX
+
+- HTTP Workbench reconoce `Authorization: Bearer <JWT>` como JWT también en el renderer inline; deja de mostrarlo sólo como `LONG`.
+- El valor conserva su panel semántico AUTH/RESOLVER/CONTEXT/OBJECT, pero aparece además un botón `JWT` explícito para abrir Header + Claims.
+- Claims JWT siguen siendo interactivos: click en la llave enseña semántica de campo (`jwt.sub`), click en el valor enseña el valor concreto.
+- El Inspector normaliza el prefijo Bearer sin perder el vínculo con la observación Authorization original.
+
 # v0.116.2 · Burp-scan Traffic + JWT Claims + Analysis Scope
 
 - Traffic Inbox prioriza visualmente **Método → Host → URL → Status**; parámetros y Context siguen disponibles con menor peso para mejorar el escaneo visual.
