@@ -1,3 +1,10 @@
+## v0.116.9 — Styled First Frame
+
+- Fast HTTP preview now renders with the final syntax/layout immediately instead of flashing raw text first.
+- Pretty JSON, line numbers, method/status/header colors and locally detectable JWT presentation are available before semantic hydration.
+- Uncached rows show a subtle Request/Response skeleton while the preview arrives.
+- Late preview responses cannot downgrade a fully hydrated detail panel.
+
 ## v0.116.8 — Instant HTTP Navigation
 
 - Request/Response leave the full-detail fetch critical path: Workbench paints a lightweight raw HTTP preview immediately and hydrates Identity/Objects/Signals/JWT semantics afterward.

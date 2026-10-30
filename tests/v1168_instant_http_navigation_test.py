@@ -84,7 +84,7 @@ def test_browser_uses_preview_before_full_detail_and_prefetches_neighbors():
     js=(ROOT/'web/static/app.js').read_text(encoding='utf-8')
     tpl=(ROOT/'web/templates/http_workbench.html').read_text(encoding='utf-8')
     assert 'const previewCache=new Map()' in js
-    assert 'if(cached)renderPreview(cached);else{root.classList.add(\'is-loading\');fetchPreviewBatch([eventId]' in js
+    assert "if(cached)renderPreview(cached);else{root.classList.add('is-loading');showHttpLoading();fetchPreviewBatch([eventId]" in js
     assert 'fastPaint(\'request\',raw.request);fastPaint(\'response\',raw.response)' in js
     assert 'prefetchAround(eventId)' in js
     assert "list?.addEventListener('pointerover'" in js

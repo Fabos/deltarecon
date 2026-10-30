@@ -1769,3 +1769,14 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 /* Analysis target membership can be undone without changing Recon authorization. */
 .wb-analysis-membership{display:grid;gap:6px;margin:0 0 9px;padding:8px;border:1px solid #2e3a42;border-radius:8px;background:#11171b}.wb-analysis-membership>small{color:#6f9bb8;font:800 7px ui-monospace,monospace;letter-spacing:.1em}.wb-analysis-membership>div{display:flex;align-items:center;gap:8px}.wb-analysis-membership span{display:grid;gap:2px;min-width:0;flex:1}.wb-analysis-membership b{font-size:9px;color:#c8d1d7}.wb-analysis-membership code{font-size:8px;color:#7f8d97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-analysis-membership button{border:1px solid #5a3b3e;border-radius:5px;background:#1c1214;color:#d28d93;padding:5px 7px;font-size:8px;cursor:pointer}.wb-analysis-membership button:hover{border-color:#855157;color:#f3b0b6}
 @media(max-width:900px){.wb-visibility-filter button{min-width:52px;padding:0 6px}.wb-checkpoint-manager-menu{right:-40px;width:min(360px,88vw)}}
+
+/* v0.116.9 · Styled first-frame HTTP + calm loading state ----------------- */
+.wb-code.wb-http-loading{overflow:hidden}
+.wb-http-loading-state{display:grid!important;grid-template-columns:10px auto 1fr;grid-template-areas:"dot label label" ". s1 s1" ". s2 s2" ". s3 s3" ". s4 s4";align-items:center;gap:8px 10px;padding:10px 8px 8px 4px;color:#7f90a0;font:10px/1.4 ui-sans-serif,system-ui,sans-serif}
+.wb-http-loading-state b{grid-area:label;color:#91a1b0;font-size:9.5px;font-weight:650;letter-spacing:.01em}
+.wb-http-loader-dot{grid-area:dot;width:7px;height:7px;border-radius:50%;background:#5d7ea1;box-shadow:0 0 0 3px rgba(93,126,161,.10);animation:wbHttpPulse 1.1s ease-in-out infinite}
+.wb-http-skeleton{height:7px;border-radius:999px;background:linear-gradient(90deg,#15212b 0%,#1d2c38 45%,#15212b 100%);background-size:180% 100%;animation:wbHttpSkeleton 1.25s ease-in-out infinite}
+.wb-http-skeleton.w1{grid-area:s1;width:82%}.wb-http-skeleton.w2{grid-area:s2;width:63%}.wb-http-skeleton.w3{grid-area:s3;width:74%}.wb-http-skeleton.w4{grid-area:s4;width:48%}
+@keyframes wbHttpPulse{0%,100%{opacity:.45;transform:scale(.88)}50%{opacity:1;transform:scale(1)}}
+@keyframes wbHttpSkeleton{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media(prefers-reduced-motion:reduce){.wb-http-loader-dot,.wb-http-skeleton{animation:none}}
