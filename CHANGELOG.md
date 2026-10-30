@@ -1,3 +1,12 @@
+# v0.116.2 · Burp-scan Traffic + JWT Claims + Analysis Scope
+
+- Traffic Inbox prioriza visualmente **Método → Host → URL → Status**; parámetros y Context siguen disponibles con menor peso para mejorar el escaneo visual.
+- JWT Inspector vuelve a hacer interactivos los claims: llave (`jwt.sub`, `jwt.role`) y valor concreto reutilizan la semántica inline de Negro.
+- Enseñar una llave JWT crea una regla de campo reutilizable; marcar un valor concreto sigue vinculándolo explícitamente a Identity/Object cuando corresponda.
+- Desde Traffic Inbox se puede **Incluir host completo** o **solo endpoint (método + path)** en el proyecto. Se retroalimenta el histórico coincidente y el tráfico futuro se enruta al proyecto.
+- El nuevo scope de análisis es independiente de `target.scopes`: organiza/correlaciona evidencia pero **no amplía Recon activo**. Replay/Repeater permanecen bloqueados para hosts analysis-only.
+- Regresiones enfocadas de Workbench/JWT/Live/Evidence en verde.
+
 # v0.115.8 · Immersive HTTP + Inline Semantics
 
 - Pantalla completa ahora usa Traffic + Request + Response como workspace inmersivo.
@@ -2559,3 +2568,9 @@ Un `.map` descargado por v0.7.x puede reutilizarse localmente al estimar/ejecuta
 - Traffic Inbox muestra badge `EXPERIMENT` para eventos experimentales.
 - Burp Bridge v0.40.0 captura Request pre/post Intercept mediante Montoya Proxy handlers.
 - `burp-extension/build-extension.sh` reescrito para ser compatible con `sh`/dash en Kali.
+
+## v0.116.1 — URL Parameters + Field Semantics
+- Query keys/values and identifier-like path segments are selectable in HTTP Pretty.
+- Keys teach field semantics independently from concrete values.
+- OBJECT field rules reuse Business Object identifiers and auto-track future instances.
+- Identity-related field rules never bind future values to a concrete Identity.

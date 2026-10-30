@@ -99,3 +99,59 @@ def test_transport_semantic_object_evidence_are_independent(tmp_path, monkeypatc
     assert ev['semantic_result'] == 'DENIED'
     assert ev['object_evidence'] == 'RETURNED'
     assert rel['status'] == 'CONFIRMED' and rel['expectedness'] == 'UNEXPECTED'
+
+@pytest.mark.skipif(TestClient is None, reason='FastAPI TestClient unavailable')
+def test_url_query_and_path_values_are_inline_and_field_semantics_are_distinct(tmp_path, monkeypatch):
+    key, ws = setup_project(tmp_path, monkeypatch)
+    client = TestClient(negro_web.create_app('example.test', ws))
+    ing = client.post('/api/ingest/http', json=payload(req('ORD-1001'))).json()
+    event_id = int(ing['capture_event_id'])
+    page = client.get(f'/t/{key}/workbench', params={'event': event_id})
+    assert page.status_code == 200
+    detail = client.get(f'/api/t/{key}/workbench/detail', params={'event_id': event_id}).json()
+
+    query = next(v for v in detail['values'] if v['location'] == 'request_query:view')
+    path = next(v for v in detail['values'] if v['location'].startswith('request_path:') and v['value'] == 'ORD-1001')
+    assert query['key'] == 'view' and query['value'] == 'full'
+    assert path['key'] == 'order_id'
+
+    import re as _re
+    csrf = _re.search(r'data-csrf="([^"]+)"', page.text).group(1)
+    exid = int(detail['exchange']['id'])
+
+    # Teaching the key is a field rule, not a concrete Identity attribution.
+    r = client.post(f'/t/{key}/exchange/{exid}/field-semantics', data={
+        'csrf': csrf, 'key': 'view', 'classification': 'context', 'object_type': '', 'note': ''
+    })
+    assert r.status_code == 200 and r.json()['ok'] is True
+
+    # Teaching order_id as an Object field should reuse Business Object aliases
+    # and track both the current and later path instances.
+    r = client.post(f'/t/{key}/exchange/{exid}/field-semantics', data={
+        'csrf': csrf, 'key': 'order_id', 'classification': 'entity', 'object_type': 'Order', 'note': ''
+    })
+    assert r.status_code == 200 and r.json()['ok'] is True
+
+    refreshed = client.get(f'/api/t/{key}/workbench/detail', params={'event_id': event_id}).json()
+    assert any(x['normalized_key'] == 'view' and x['classification'] == 'context' for x in refreshed['field_semantics'])
+    assert any(x['normalized_key'] == 'order_id' and x['classification'] == 'entity' and x['object_type'] == 'Order' for x in refreshed['field_semantics'])
+    assert any(a['classification'] == 'context' and a['key_name'] == 'view' and not a.get('identity_id') for a in refreshed['annotations'])
+    assert any(o['type_name'] == 'Order' and (o.get('identifier_raw') or o.get('identifier_preview')) == 'ORD-1001' for o in refreshed['objects'])
+
+    second = client.post('/api/ingest/http', json=payload(req('ORD-2002'))).json()
+    d2 = client.get(f'/api/t/{key}/workbench/detail', params={'event_id': int(second['capture_event_id'])}).json()
+    assert any(o['type_name'] == 'Order' and (o.get('identifier_raw') or o.get('identifier_preview')) == 'ORD-2002' for o in d2['objects'])
+
+
+def test_workbench_has_clickable_field_and_url_contract():
+    js = (ROOT / 'web/static/app.js').read_text(encoding='utf-8')
+    css = (ROOT / 'web/static/style.css').read_text(encoding='utf-8')
+    tpl = (ROOT / 'web/templates/http_workbench.html').read_text(encoding='utf-8')
+    assert 'data-inline-field-index' in js
+    assert 'renderRequestTarget' in js
+    assert 'request_query:' in js
+    assert 'request_path:' in js
+    assert 'openInlineField' in js
+    assert '/field-semantics' in js
+    assert '.wb-inline-field-key' in css
+    assert 'data-inline-field-hint' in tpl

@@ -51,6 +51,18 @@ def init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_http_value_annotations_exchange ON http_value_annotations(exchange_id,side,classification);
         CREATE INDEX IF NOT EXISTS idx_http_value_annotations_identity ON http_value_annotations(identity_id,classification);
         CREATE INDEX IF NOT EXISTS idx_http_value_annotations_hash ON http_value_annotations(value_hash,classification);
+        CREATE TABLE IF NOT EXISTS http_field_semantics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            normalized_key TEXT NOT NULL UNIQUE,
+            display_key TEXT NOT NULL,
+            classification TEXT NOT NULL DEFAULT 'ignore',
+            object_type TEXT,
+            note TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_http_field_semantics_class ON http_field_semantics(classification,normalized_key);
         """
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(http_value_annotations)")}
@@ -173,6 +185,38 @@ def _json_values(obj: Any, prefix: str = "$"):
                 yield str(idx), path, value
 
 
+def _path_values(first_line: str) -> list[tuple[str, str, str]]:
+    """Return conservative identifier-like path segments as (key, location, value).
+
+    This mirrors the parameter-memory path model so Workbench can teach the same
+    object field directly from `/orders/ORD-123`, without inventing a second
+    representation.
+    """
+    parts = str(first_line or "").split()
+    if len(parts) < 2:
+        return []
+    try:
+        path = urllib.parse.urlsplit(parts[1]).path
+    except Exception:
+        return []
+    segments = [urllib.parse.unquote(x) for x in path.split("/") if x]
+    uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$")
+    mixed_re = re.compile(r"^[A-Za-z0-9_-]{6,120}$")
+    out: list[tuple[str, str, str]] = []
+    for idx, seg in enumerate(segments):
+        looks_id = bool(re.fullmatch(r"\d{2,}", seg) or uuid_re.fullmatch(seg) or re.fullmatch(r"[0-9a-fA-F]{8,64}", seg))
+        if not looks_id and mixed_re.fullmatch(seg) and any(c.isdigit() for c in seg) and any(c.isalpha() for c in seg):
+            looks_id = True
+        if not looks_id:
+            continue
+        previous = segments[idx - 1] if idx > 0 else "path"
+        base = re.sub(r"[^a-z0-9_]", "", previous.strip().lower().replace("-", "_")).rstrip("s") or "path"
+        key = f"{base}_id"
+        pattern = "/" + "/".join(segments[:idx] + ["{id}"])
+        out.append((key, f"request_path:path:{pattern}", seg))
+    return out
+
+
 def extract_message(text: str, side: str) -> list[dict[str, Any]]:
     head, body = split_http(text)
     out: list[dict[str, Any]] = []
@@ -203,6 +247,8 @@ def extract_message(text: str, side: str) -> list[dict[str, Any]]:
                 for key, values in urllib.parse.parse_qs(url.query, keep_blank_values=True).items():
                     for value in values:
                         _append(out, seen, side=side, location=f"request_query:{key}", key=key, value=value)
+                for key, location, value in _path_values(first_line):
+                    _append(out, seen, side=side, location=location, key=key, value=value)
             except Exception:
                 pass
     raw_body = str(body or "")
@@ -252,6 +298,18 @@ def extract_exchange(conn, exchange_id: int) -> dict[str, Any] | None:
             claim["location"] = claim_loc
             claim["value_hash"] = claim_hash
             claim["annotation"] = amap.get((item["side"], claim_loc, claim_key, claim_hash)) or amap.get((item["side"], claim_loc, str(claim["key"]), claim_hash))
+            # Claim keys can also be taught once (jwt.sub, jwt.role, ...) as
+            # field semantics. Concrete claim values remain independently
+            # bindable to a specific Identity.
+            try:
+                normalized_claim_key = _normalized_key(claim_key)
+                field = conn.execute("SELECT * FROM http_field_semantics WHERE normalized_key=?", (normalized_claim_key,)).fetchone()
+                if field:
+                    claim["field_semantic"] = dict(field)
+                    if not claim.get("annotation") and str(field["classification"] or "") in CLASSIFICATIONS:
+                        claim["default_classification"] = str(field["classification"] or claim.get("default_classification") or "ignore")
+            except Exception:
+                pass
     return {"exchange": ex, "request_text": request_text, "response_text": response_text, "values": values, "annotations": anns}
 
 
@@ -661,6 +719,52 @@ def decorate_inspector_identity_state(conn, inspector: dict[str, Any], learned: 
     return counts
 
 
+def field_semantics(conn) -> list[dict[str, Any]]:
+    init_schema(conn)
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM http_field_semantics WHERE classification!='ignore' ORDER BY normalized_key"
+    ).fetchall()]
+
+
+def save_field_semantic(conn, *, key: str, classification: str, object_type: str = "", note: str = "", source: str = "http_workbench") -> dict[str, Any] | None:
+    """Teach what a *field name* means, without binding future values to one Identity.
+
+    Value annotations answer "what does THIS value mean?". Field semantics answer
+    "what kind of field is customerId/orderId?". Resolver/auth/context field rules
+    deliberately carry no identity_id; concrete Identity attribution still requires
+    teaching a value. Entity field rules are backed by Business Object identifiers,
+    so future values can become new object instances automatically.
+    """
+    init_schema(conn)
+    cls = str(classification or "ignore").strip().lower()
+    if cls not in CLASSIFICATIONS:
+        raise ValueError("Clasificación inválida")
+    normalized = _normalized_key(key)
+    if not normalized:
+        raise ValueError("Campo requerido")
+    if cls == "entity" and not str(object_type or "").strip():
+        raise ValueError("Indica el tipo de Object")
+    if cls == "ignore":
+        conn.execute("DELETE FROM http_field_semantics WHERE normalized_key=?", (normalized,))
+        return None
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO http_field_semantics(normalized_key,display_key,classification,object_type,note,source,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(normalized_key) DO UPDATE SET display_key=excluded.display_key,classification=excluded.classification,
+             object_type=excluded.object_type,note=excluded.note,source=excluded.source,updated_at=excluded.updated_at""",
+        (normalized, str(key)[:200], cls, str(object_type or "")[:100] or None, str(note or "")[:1000], source, now, now),
+    )
+    if cls == "entity":
+        try:
+            import negro_objects as object_tools
+            object_tools.ensure_identifier(conn, str(object_type).strip(), normalized)
+        except Exception:
+            raise
+    row = conn.execute("SELECT * FROM http_field_semantics WHERE normalized_key=?", (normalized,)).fetchone()
+    return dict(row) if row else None
+
+
 def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
     """Return explicit + learned annotations applicable to one exchange.
 
@@ -733,6 +837,15 @@ def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
     except Exception:
         explicit_rules = []
 
+    # Field-level semantics describe the role of a *key* independent from any
+    # concrete value. They are intentionally owner-less: teaching customerId as
+    # RESOLVER must not make every future customerId belong to the same Identity.
+    field_rules: dict[str, dict[str, Any]] = {}
+    try:
+        field_rules = {str(r.get("normalized_key") or ""): r for r in field_semantics(conn)}
+    except Exception:
+        field_rules = {}
+
     # CONTEXT is annotation-led; project previously taught same path/key/value.
     context_rows = []
     try:
@@ -770,6 +883,13 @@ def learned_annotations(conn, exchange_id: int) -> list[dict[str, Any]]:
         })
 
     for item in values:
+        field_rule = field_rules.get(_normalized_key(str(item.get("key") or "")))
+        if field_rule:
+            cls = str(field_rule.get("classification") or "")
+            if cls in {"auth", "resolver", "context", "entity"}:
+                add(item, cls, object_type=str(field_rule.get("object_type") or ""),
+                    match_reason=f"field rule: {field_rule.get('display_key') or item.get('key')}")
+
         # Direct projection from explicit Inspector teaching. This intentionally
         # prefers same path+value, then same semantic key+value. AUTH may also match
         # the exact secret value across locations (e.g. response token -> Bearer).

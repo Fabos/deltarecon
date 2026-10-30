@@ -80,6 +80,21 @@ def _init_workbench_schema(conn) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS workbench_project_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_key TEXT NOT NULL,
+            rule_type TEXT NOT NULL CHECK(rule_type IN ('host','endpoint')),
+            hostname TEXT NOT NULL,
+            method TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '',
+            source_event_id INTEGER,
+            created_at TEXT NOT NULL,
+            UNIQUE(target_key, rule_type, hostname, method, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workbench_project_rules_match
+            ON workbench_project_rules(rule_type, hostname, method, path);
+        CREATE INDEX IF NOT EXISTS idx_workbench_project_rules_target
+            ON workbench_project_rules(target_key, id);
         """
     )
     # Additive migration for v0.115 checkpoints created by older Workbench versions.
@@ -516,6 +531,224 @@ def source_for_key(source_key: str) -> dict[str, Any] | None:
     return {"key": key, "name": str(target.get("name") or target.get("domain") or key), "domain": str(target.get("domain") or key), "workspace": workspace, "paths": paths, "inbox": False}
 
 
+def list_project_rules(target_key: str = "") -> list[dict[str, Any]]:
+    """Analysis-routing rules for Traffic Inbox. These never widen active Recon scope."""
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        if str(target_key or "").strip():
+            rows = conn.execute(
+                "SELECT * FROM workbench_project_rules WHERE target_key=? ORDER BY id DESC",
+                (str(target_key).strip(),),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM workbench_project_rules ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_project_rule(target_key: str, *, rule_type: str, hostname: str, method: str = "", path: str = "", source_event_id: int | None = None) -> dict[str, Any]:
+    """Teach the Workbench which passive traffic belongs to a project for analysis.
+
+    This is deliberately separate from target.scopes. It changes routing/filtering in
+    Negro only; it does not authorize active recon or modify Burp scope.
+    """
+    target_key = str(target_key or "").strip()
+    if target_key == INBOX_KEY or not core.get_target(target_key):
+        raise ValueError("Proyecto inválido")
+    kind = str(rule_type or "").strip().lower()
+    if kind not in {"host", "endpoint"}:
+        raise ValueError("rule_type debe ser host o endpoint")
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise ValueError("Host requerido")
+    meth = str(method or "").strip().upper() if kind == "endpoint" else ""
+    pth = str(path or "/").strip() or "/" if kind == "endpoint" else ""
+    if kind == "endpoint" and not meth:
+        raise ValueError("Método requerido para endpoint")
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        # One analysis owner per exact rule. Re-assigning a rule intentionally moves it.
+        if kind == "host":
+            conn.execute("DELETE FROM workbench_project_rules WHERE rule_type='host' AND hostname=? AND target_key<>?", (host, target_key))
+        else:
+            conn.execute("DELETE FROM workbench_project_rules WHERE rule_type='endpoint' AND hostname=? AND method=? AND path=? AND target_key<>?", (host, meth, pth, target_key))
+        conn.execute(
+            """INSERT INTO workbench_project_rules(target_key,rule_type,hostname,method,path,source_event_id,created_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(target_key,rule_type,hostname,method,path) DO UPDATE SET
+                 source_event_id=excluded.source_event_id,created_at=excluded.created_at""",
+            (target_key, kind, host, meth, pth, int(source_event_id) if source_event_id else None, core.now_iso()),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM workbench_project_rules WHERE target_key=? AND rule_type=? AND hostname=? AND method=? AND path=?",
+            (target_key, kind, host, meth, pth),
+        ).fetchone()
+        return dict(row)
+
+
+def match_project_rule(hostname: str, method: str = "", path: str = "") -> dict[str, Any] | None:
+    """Return the passive analysis project for an observed request, most-specific first."""
+    host = str(hostname or "").strip().lower().rstrip(".")
+    meth = str(method or "").strip().upper()
+    pth = str(path or "/").strip() or "/"
+    if not host:
+        return None
+    paths = ensure_inbox_paths()
+    with core.db_connect(paths) as conn:
+        _init_workbench_schema(conn)
+        row = conn.execute(
+            "SELECT * FROM workbench_project_rules WHERE rule_type='endpoint' AND hostname=? AND method=? AND path=? ORDER BY id DESC LIMIT 1",
+            (host, meth, pth),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM workbench_project_rules WHERE rule_type='host' AND hostname=? ORDER BY id DESC LIMIT 1",
+                (host,),
+            ).fetchone()
+        return dict(row) if row else None
+
+
+def _transfer_exchange_payload(source_key: str, exchange_id: int) -> dict[str, Any] | None:
+    source = source_for_key(source_key)
+    if not source:
+        return None
+    with core.db_connect(source["paths"]) as conn:
+        _init_context_schema(conn)
+        row = conn.execute(
+            """SELECT e.*,o.method,o.authenticated_observed,o.request_content_type,o.response_content_type,
+                      r.url,r.path,h.hostname
+                 FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id
+                 JOIN resources r ON r.id=o.resource_id JOIN hosts h ON h.id=r.host_id
+                WHERE e.id=?""",
+            (int(exchange_id),),
+        ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        for field in ("request_headers_json", "response_headers_json", "query_json"):
+            raw = item.get(field)
+            try:
+                item[field] = json.loads(str(raw)) if raw not in (None, "") else ([] if "headers" in field else None)
+            except Exception:
+                item[field] = [] if "headers" in field else raw
+        return item
+
+
+def _refresh_promoted_exchange(paths: dict[str, Path], domain: str, exchange_id: int) -> None:
+    """Rebuild local-only context after copying passive Inbox evidence into a project."""
+    try:
+        import negro_hunter as hunter
+        import negro_identity as identity_tools
+        import negro_objects as object_tools
+        import negro_search as search_index
+        with core.db_connect(paths) as conn:
+            try:
+                hunter.analyze_http_exchange(conn, int(exchange_id), domain, emit_notifications=False)
+            except Exception:
+                pass
+            try:
+                identity_tools.resolve_exchange(conn, int(exchange_id))
+                http_inspector.auto_learn_jwt_auth(conn, int(exchange_id))
+            except Exception:
+                pass
+            try:
+                object_tools.refresh_exchange(conn, int(exchange_id))
+            except Exception:
+                pass
+            try:
+                ex = conn.execute(
+                    "SELECT o.resource_id,r.host_id FROM http_exchanges e JOIN resource_operations o ON o.id=e.operation_id JOIN resources r ON r.id=o.resource_id WHERE e.id=?",
+                    (int(exchange_id),),
+                ).fetchone()
+                search_index.index_exchange(conn, int(exchange_id))
+                if ex:
+                    search_index.index_resource(conn, int(ex["resource_id"]))
+                    search_index.index_host(conn, int(ex["host_id"]))
+            except Exception:
+                pass
+            conn.commit()
+    except Exception:
+        pass
+
+
+def assign_event_to_project(target_key: str, event_id: int, *, rule_type: str) -> dict[str, Any]:
+    """Add a host/endpoint to project analysis scope and backfill matching Inbox events."""
+    event = get_capture_event(int(event_id))
+    if not event:
+        raise ValueError("Evento no encontrado")
+    target = core.get_target(str(target_key))
+    if not target:
+        raise ValueError("Proyecto no encontrado")
+    host = str(event.get("hostname") or "").strip().lower().rstrip(".")
+    method = str(event.get("method") or "").strip().upper()
+    path = str(event.get("path") or "/").strip() or "/"
+    rule = add_project_rule(str(target_key), rule_type=rule_type, hostname=host, method=method, path=path, source_event_id=int(event_id))
+
+    global_paths = ensure_inbox_paths()
+    with core.db_connect(global_paths) as conn:
+        _init_workbench_schema(conn)
+        if str(rule_type).lower() == "host":
+            matched = [dict(r) for r in conn.execute(
+                "SELECT * FROM workbench_capture_events WHERE target_key=? AND lower(hostname)=? ORDER BY id",
+                (INBOX_KEY, host),
+            ).fetchall()]
+        else:
+            matched = [dict(r) for r in conn.execute(
+                "SELECT * FROM workbench_capture_events WHERE target_key=? AND lower(hostname)=? AND upper(method)=? AND path=? ORDER BY id",
+                (INBOX_KEY, host, method, path),
+            ).fetchall()]
+
+    workspace = Path(str(target.get("workspace") or "")).expanduser()
+    domain = str(target.get("domain") or target_key)
+    target_paths = core.ensure_workspace(workspace, domain, scopes=target.get("scopes"), project_name=target.get("name"))
+    exchange_map: dict[int, int] = {}
+    for row in matched:
+        old_id = int(row.get("exchange_id") or 0)
+        if old_id in exchange_map:
+            continue
+        src = _transfer_exchange_payload(INBOX_KEY, old_id)
+        if not src:
+            continue
+        scope_status = str(src.get("burp_scope_status") or "UNKNOWN").upper()
+        burp_in_scope = True if scope_status == "IN_SCOPE" else (False if scope_status == "EXCLUDED" else None)
+        result = core.upsert_http_observation(
+            target_paths, domain,
+            url=str(src.get("url") or ""), method=str(src.get("method") or "GET"), source=str(src.get("source") or "burp_proxy"),
+            status_code=src.get("status_code"), authenticated=bool(src.get("authenticated_observed")),
+            request_content_type=src.get("request_content_type"), response_content_type=src.get("response_content_type"), tool=src.get("tool"),
+            request_b64=src.get("request_b64"), response_b64=src.get("response_b64"),
+            request_headers=src.get("request_headers_json") if isinstance(src.get("request_headers_json"), list) else None,
+            response_headers=src.get("response_headers_json") if isinstance(src.get("response_headers_json"), list) else None,
+            query=src.get("query_json"), burp_in_scope=burp_in_scope, allow_out_of_scope=True,
+        )
+        new_id = int(result["exchange_id"])
+        exchange_map[old_id] = new_id
+        _refresh_promoted_exchange(target_paths, str(src.get("hostname") or domain), new_id)
+
+    moved = 0
+    with core.db_connect(global_paths) as conn:
+        _init_workbench_schema(conn)
+        for row in matched:
+            old_id = int(row.get("exchange_id") or 0)
+            new_id = exchange_map.get(old_id)
+            if not new_id:
+                continue
+            cur = conn.execute(
+                "UPDATE workbench_capture_events SET target_key=?,exchange_id=?,is_inbox=0 WHERE id=? AND target_key=?",
+                (str(target_key), int(new_id), int(row["id"]), INBOX_KEY),
+            )
+            moved += int(cur.rowcount or 0)
+        conn.commit()
+    selected_new_exchange = exchange_map.get(int(event.get("exchange_id") or 0))
+    return {
+        "ok": True, "target_key": str(target_key), "rule": rule, "moved_events": moved,
+        "matched_exchanges": len(exchange_map), "event_id": int(event_id), "exchange_id": selected_new_exchange,
+        "active_recon_scope_changed": False,
+    }
+
+
 def _safe_query(conn, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     try:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -813,6 +1046,10 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
         # never invents a second model of what a value is.
         identity_options = _safe_query(conn, "SELECT id,name,kind FROM identities ORDER BY lower(name),id LIMIT 300")
         object_type_options = _safe_query(conn, "SELECT id,name FROM business_object_types ORDER BY lower(name),id LIMIT 300")
+        try:
+            field_semantics = http_inspector.field_semantics(conn)
+        except Exception:
+            field_semantics = []
         safe_values: list[dict[str, Any]] = []
         for raw_value in inspector.get("values") or []:
             item = dict(raw_value)
@@ -830,6 +1067,24 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
                     "identity_id": int(ann.get("identity_id") or 0) or None,
                     "object_type": str(ann.get("object_type") or ""),
                 } if ann else None,
+                "jwt_claims": [
+                    {
+                        "key": str(c.get("key") or ""),
+                        "value": str(c.get("value") or "")[:12000],
+                        "location": str(c.get("location") or ""),
+                        "default_classification": str(c.get("default_classification") or "ignore"),
+                        "field_semantic": ({
+                            "classification": str((c.get("field_semantic") or {}).get("classification") or ""),
+                            "object_type": str((c.get("field_semantic") or {}).get("object_type") or ""),
+                        } if c.get("field_semantic") else None),
+                        "annotation": ({
+                            "classification": str((c.get("annotation") or {}).get("classification") or ""),
+                            "identity_id": int((c.get("annotation") or {}).get("identity_id") or 0) or None,
+                            "object_type": str((c.get("annotation") or {}).get("object_type") or ""),
+                        } if c.get("annotation") else None),
+                    }
+                    for c in (item.get("jwt_claims") or [])
+                ],
             })
 
         identity_match_map: dict[int, dict[str, Any]] = {}
@@ -863,10 +1118,24 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
                 "source_exchange_id": ann.get("source_exchange_id"),
             })
 
+        active_scope_authorized = False
+        if not bool(source["inbox"]):
+            try:
+                target_meta = core.get_target(str(source["key"])) or {}
+                host_value = str(ex.get("hostname") or "").strip().lower().rstrip(".")
+                active_scope_authorized = any(
+                    core.host_matches_scope(host_value, str(scope or "").strip().lower().rstrip("."))
+                    for scope in (target_meta.get("scopes") or [target_meta.get("domain")])
+                    if str(scope or "").strip()
+                )
+            except Exception:
+                active_scope_authorized = False
+
         return {
             "target_key": source["key"],
             "target_name": source["name"],
             "is_inbox": bool(source["inbox"]),
+            "active_scope_authorized": bool(active_scope_authorized),
             "exchange": ex,
             "request_text": inspector.get("request_text") or "",
             "response_text": inspector.get("response_text") or "",
@@ -876,6 +1145,7 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             "values": safe_values,
             "identity_options": identity_options,
             "object_type_options": object_type_options,
+            "field_semantics": field_semantics,
             "semantic_counts": semantic_counts,
             "objects": objects,
             "signals": signals,

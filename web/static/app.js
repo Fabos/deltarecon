@@ -853,6 +853,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const liveUrl=root.dataset.liveUrl;
   const seenAllUrl=root.dataset.seenAllUrl;
   const createFlowUrl=root.dataset.createFlowUrl;
+  const analysisScopeUrl=root.dataset.analysisScopeUrl;
   const targetKey=root.dataset.targetKey||'';
   const list=root.querySelector('[data-traffic-list]');
   const rows=()=>[...root.querySelectorAll('[data-source-key][data-event-id]')];
@@ -865,11 +866,12 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const mode={request:'pretty',response:'pretty'};
   let annotations=[];
   try{annotations=JSON.parse(root.querySelector('[data-workbench-annotations]')?.textContent||'[]')||[];}catch(_){annotations=[];}
-  let inlineValues=[],identityOptions=[],objectTypeOptions=[];
+  let inlineValues=[],identityOptions=[],objectTypeOptions=[],fieldSemantics=[];
   const applyInlineContext=(ctx={})=>{
     inlineValues=Array.isArray(ctx.values)?ctx.values:[];
     identityOptions=Array.isArray(ctx.identities)?ctx.identities:[];
     objectTypeOptions=Array.isArray(ctx.object_types)?ctx.object_types:[];
+    fieldSemantics=Array.isArray(ctx.field_semantics)?ctx.field_semantics:[];
   };
   try{applyInlineContext(JSON.parse(root.querySelector('[data-workbench-inline-context]')?.textContent||'{}')||{});}catch(_){applyInlineContext({});}
   // Workbench preference keys must exist before the first renderer/layout setup runs.
@@ -919,6 +921,58 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     if(jwt)return `<span class="wb-inline-compact">${compact}</span><button type="button" class="wb-inline-jwt" data-jwt-open="1" data-jwt-token="${esc(v)}" title="Abrir JWT Inspector">JWT</button>`;
     return `<span class="wb-inline-compact">${compact}</span><em class="wb-inline-long">long</em>`;
   };
+  const normalizeFieldKey=(v)=>String(v||'').trim().toLowerCase().replace(/-/g,'_').replace(/[^a-z0-9_]/g,'');
+  const fieldRuleFor=(key)=>fieldSemantics.find(r=>String(r.normalized_key||'')===normalizeFieldKey(key))||null;
+  const inlineFieldMarkup=(idx,label)=>`<span class="wb-inline-field-key" role="button" tabindex="0" data-inline-field-index="${Number(idx)}" title="Clic para enseñar qué significa este campo">${esc(label)}</span>`;
+  const inlineValueMarkup=(idx,display,rawValue)=>`<span class="wb-inline-value" role="button" tabindex="0" data-inline-index="${Number(idx)}" title="Clic para enseñar este valor a Negro">${smartInlineValue(rawValue??display)}</span>`;
+  const findInlineCandidate=(side,key,value,locationPrefix='')=>inlineValues.findIndex(v=>
+    String(v.side||'')===side && String(v.key||'')===String(key||'') && String(v.value||'')===String(value??'') && (!locationPrefix||String(v.location||'').startsWith(locationPrefix))
+  );
+  const renderRequestTarget=(target)=>{
+    const rawTarget=String(target||'');
+    const qpos=rawTarget.indexOf('?');
+    const rawPath=qpos>=0?rawTarget.slice(0,qpos):rawTarget;
+    const rawQuery=qpos>=0?rawTarget.slice(qpos+1):'';
+    let pathHtml=esc(rawPath);
+    const pathCandidates=inlineValues.map((v,i)=>({v,i})).filter(({v})=>String(v.side||'')==='request'&&String(v.location||'').startsWith('request_path:'));
+    for(const {v,i} of pathCandidates){
+      const value=String(v.value||'');if(!value)continue;
+      const encoded=encodeURIComponent(value);
+      for(const needle of [esc(value),esc(encoded)]){
+        if(needle&&pathHtml.includes(needle)){pathHtml=pathHtml.replace(needle,inlineValueMarkup(i,needle,value));break;}
+      }
+    }
+    if(qpos<0)return pathHtml;
+    const pairs=rawQuery.split('&').map(part=>{
+      const eq=part.indexOf('='),rk=eq>=0?part.slice(0,eq):part,rv=eq>=0?part.slice(eq+1):'';
+      let key,value;try{key=decodeURIComponent(rk.replace(/\+/g,' '));}catch(_){key=rk;}try{value=decodeURIComponent(rv.replace(/\+/g,' '));}catch(_){value=rv;}
+      const idx=findInlineCandidate('request',key,value,`request_query:${key}`);
+      if(idx<0)return esc(part);
+      const keyHtml=inlineFieldMarkup(idx,rk);
+      const valueHtml=inlineValueMarkup(idx,rv,value);
+      return eq>=0?`${keyHtml}=<span class="wb-inline-url-value">${valueHtml}</span>`:keyHtml;
+    }).join('&amp;');
+    return `${pathHtml}<span class="http-token-punctuation">?</span>${pairs}`;
+  };
+  const decorateFieldInteractive=(html,line,side,idx,bodyStarted)=>{
+    let out=html;
+    const found=inlineValues.map((v,i)=>({v,i})).filter(x=>String(x.v.side||'')===side&&candidateApplies(x.v,line,idx,bodyStarted));
+    for(const {v,i} of found){
+      const key=String(v.key||'');if(!key)continue;
+      if(!bodyStarted&&String(v.location||'').includes('_header:')){
+        const needle=`>${esc(key)}</span>`;
+        if(out.includes(needle)&&!out.includes(`data-inline-field-index="${i}"`))out=out.replace(needle,`>${inlineFieldMarkup(i,key)}</span>`);
+      }else if(bodyStarted&&String(v.location||'').includes('_json:')){
+        const needle=`<span class="http-token-key">&quot;${esc(key)}&quot;</span>`;
+        if(out.includes(needle)&&!out.includes(`data-inline-field-index="${i}"`))out=out.replace(needle,`<span class="http-token-key">&quot;${inlineFieldMarkup(i,key)}&quot;</span>`);
+      }else if(bodyStarted&&String(v.location||'').includes('_form:')){
+        const needle=esc(key);
+        if(out.includes(needle)&&!out.includes(`data-inline-field-index="${i}"`))out=out.replace(needle,inlineFieldMarkup(i,key));
+      }
+    }
+    return out;
+  };
+
   const candidateApplies=(a,line,idx,bodyStarted)=>{
     const loc=String(a.location||'').toLowerCase(),key=String(a.key||''),value=String(a.value||'');
     if(!value)return false;
@@ -978,7 +1032,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const lineNo=idx+1;
     if(!bodyStarted && idx===0){
       const m=line.match(/^([A-Z]+)\s+(\S+)(?:\s+(HTTP\/\S+))?/);
-      if(m){const h=`<span class="http-token-method">${esc(m[1])}</span> <span class="http-token-target">${esc(m[2])}</span>${m[3]?` <span class="http-token-protocol">${esc(m[3])}</span>`:''}`;{let z=decorateSemantic(h,line,side,idx,bodyStarted);z=decorateInteractive(z,line,side,idx,bodyStarted);return `<span class="wb-http-line" data-line="${lineNo}">${z}</span>`;}}
+      if(m){const targetHtml=side==='request'?renderRequestTarget(m[2]):esc(m[2]);const h=`<span class="http-token-method">${esc(m[1])}</span> <span class="http-token-target">${targetHtml}</span>${m[3]?` <span class="http-token-protocol">${esc(m[3])}</span>`:''}`;{let z=decorateSemantic(h,line,side,idx,bodyStarted);z=decorateInteractive(z,line,side,idx,bodyStarted);z=decorateFieldInteractive(z,line,side,idx,bodyStarted);return `<span class="wb-http-line" data-line="${lineNo}">${z}</span>`;}}
       const r=line.match(/^(HTTP\/\S+)\s+(\d+)(.*)$/);
       if(r){const status=Number(r[2]),statusClass=status<300?'http-token-status-ok':status<400?'http-token-status-redirect':'http-token-status-error';const h=`<span class="http-token-protocol">${esc(r[1])}</span> <span class="${statusClass}">${esc(r[2])}</span><span class="http-token-status-text">${esc(r[3])}</span>`;{let z=decorateSemantic(h,line,side,idx,bodyStarted);z=decorateInteractive(z,line,side,idx,bodyStarted);return `<span class="wb-http-line" data-line="${lineNo}">${z}</span>`;}}
     }
@@ -989,6 +1043,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
         let x=`<span class="http-token-header-name${sensitive?' http-token-sensitive':''}">${esc(name)}</span><span class="http-token-punctuation">:</span><span class="http-token-header-value${sensitive?' http-token-sensitive-value':''}">${esc(value)}</span>`;
         x=decorateSemantic(x,line,side,idx,bodyStarted);
         x=decorateInteractive(x,line,side,idx,bodyStarted);
+        x=decorateFieldInteractive(x,line,side,idx,bodyStarted);
         if(smart&&!x.includes('data-inline-index='))x=compactKnownValue(x,value);
         return `<span class="wb-http-line ${tone}" data-line="${lineNo}">${x}</span>`;
       }
@@ -1001,6 +1056,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
              .replace(/(:\s*)(true|false|null)/g,'$1<span class="http-token-literal">$2</span>');
       out=decorateSemantic(out,line,side,idx,bodyStarted);
       out=decorateInteractive(out,line,side,idx,bodyStarted);
+      out=decorateFieldInteractive(out,line,side,idx,bodyStarted);
       if(smart&&!out.includes('data-inline-index=')){const jm=line.match(/^\s*"[^"]+"\s*:\s*"([^"]*)"\s*,?\s*$/);if(jm)out=compactKnownValue(out,jm[1]);}
     }else{out=decorateSemantic(out,line,side,idx,bodyStarted);out=decorateInteractive(out,line,side,idx,bodyStarted);}
     return `<span class="wb-http-line${line===''?' wb-http-separator':''}" data-line="${lineNo}">${out||' '}</span>`;
@@ -1027,18 +1083,18 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const renderSignals=(d)=>{const card=root.querySelector('[data-context-card="signals"]');if(!card)return;const ss=d.signals||[];card.innerHTML=`<div class="wb-card-title"><span>◉</span><b>Signals</b><em>${ss.length}</em></div>${ss.length?`<div class="wb-signal-list">${ss.map(s=>`<div><span class="signal-dot severity-${esc(s.severity)}"></span><span>${esc(s.title)}</span><em>${esc(s.severity)}</em></div>`).join('')}</div>`:'<p class="wb-muted">Sin Signals pendientes.</p>'}`;};
   const renderFlow=(d)=>{const card=root.querySelector('[data-context-card="flow"]');if(!card)return;const fs=d.flows||[];card.innerHTML=`<div class="wb-card-title"><span>⌁</span><b>Flow</b></div>${fs.length?`<div class="wb-flow-list">${fs.map(f=>`<a href="/t/${encodeURIComponent(d.target_key)}/flows/${Number(f.id)}#flow-step-${Number(f.step_id)}"><span>${Number(f.position||0)}</span><b>${esc(f.name)}</b><small>${esc(f.label||f.state_label||'Step observado')}</small></a>`).join('')}</div>`:'<p class="wb-muted">Esta Request aún no pertenece a un Flow.</p>'}`;};
   const renderRelated=(d)=>{const card=root.querySelector('[data-context-card="related"]');if(!card)return;const rs=d.related||[];card.innerHTML=`<summary class="wb-card-title"><span>↔</span><b>Related Requests</b><em>${rs.length}</em></summary>${rs.length?`<div class="wb-related-list">${rs.map(r=>`<button type="button" data-related-source="${esc(d.target_key)}" data-related-exchange="${Number(r.id)}"><b class="${methodClass(r.method)}">${esc(r.method)}</b><code>${esc(r.path)}</code><span>${esc(r.status_code??'—')}</span></button>`).join('')}</div>`:'<p class="wb-muted">Sin relaciones suficientes todavía.</p>'}`;};
-  const renderActions=(d)=>{const card=root.querySelector('.wb-quick-actions');if(!card)return;const e=d.exchange||{};if(d.is_inbox){card.innerHTML='<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><p class="wb-inbox-note"><b>Traffic Inbox.</b> Se conservó esta Request sin ampliar scope. Asigna el host a un proyecto autorizado antes de usar acciones activas.</p><a class="wb-assign-project" href="/projects">Administrar proyectos</a>';return;}const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0);card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><div class="wb-action-grid wb-action-grid-compact"><a href="/t/${t}/parameters/related/${id}">Follow Value</a><a href="/t/${t}/replays/new?exchange_id=${id}">Replay</a></div><form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`;};
+  const renderActions=(d)=>{const card=root.querySelector('.wb-quick-actions');if(!card)return;const e=d.exchange||{};if(d.is_inbox){card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><p class="wb-inbox-note"><b>Traffic Inbox.</b> Puedes incluir este tráfico en el proyecto para analizarlo sin ampliar el scope autorizado de Recon.</p><button type="button" class="wb-assign-project" data-analysis-scope-open data-host="${esc(e.hostname||'')}" data-method="${esc(e.method||'GET')}" data-path="${esc(e.path||'/')}" data-event-id="${Number(d.event_id||selected.event||0)}">Incluir en este proyecto…</button>`;return;}const t=encodeURIComponent(d.target_key),id=Number(e.id||0),rid=Number(e.resource_id||0),activeAllowed=!!d.active_scope_authorized;card.innerHTML=`<summary class="wb-card-title"><span>⚡</span><b>Actions</b></summary><div class="wb-action-grid wb-action-grid-compact"><a href="/t/${t}/parameters/related/${id}">Follow Value</a>${activeAllowed?`<a href="/t/${t}/replays/new?exchange_id=${id}">Replay</a>`:''}</div>${activeAllowed?`<form class="wb-repeater-form" method="post" action="/t/${t}/resource/${rid}/send-repeater"><input type="hidden" name="csrf" value="${esc(root.dataset.csrf||window.NEGRO_CSRF||'')}"><input type="hidden" name="method" value="${esc(e.method||'GET')}"><input type="hidden" name="exchange_id" value="${id}"><button type="submit">Enviar a Burp Repeater</button></form>`:'<p class="wb-analysis-only"><b>Analysis-only.</b> Correlación y Flows sí; Replay/Repeater siguen bloqueados hasta que el host esté dentro del scope autorizado de Recon.</p>'}`;};
   const renderSemanticSummary=(d)=>{const el=root.querySelector('[data-semantic-summary]');if(!el)return;const c=d.semantic_counts||{},labels={auth:'AUTH',resolver:'RESOLVER',context:'CONTEXT',entity:'ENTITY'};el.innerHTML=Object.keys(labels).filter(k=>Number(c[k]||0)>0).map(k=>`<em class="wb-semantic-chip semantic-${k}">${labels[k]} ${Number(c[k])}</em>`).join('');};
   const setUnreadCount=(n)=>{const count=Math.max(0,Number(n)||0),badge=root.querySelector('[data-unread-badge]'),el=root.querySelector('[data-unread-count]'),compact=root.querySelector('[data-compact-new]'),compactCount=root.querySelector('[data-compact-unread]');if(el)el.textContent=String(count);if(badge)badge.classList.toggle('is-empty',count===0);if(compactCount)compactCount.textContent=String(count);if(compact)compact.classList.toggle('is-empty',count===0);};
   const updateTrafficCompact=(d)=>{const c=root.querySelector('[data-traffic-compact]');if(!c)return;const e=d.exchange||{};let host=e.hostname||'',path=e.path||'';if((!host||!path)&&e.url){try{const u=new URL(e.url);host=host||u.host;path=path||(u.pathname+u.search);}catch(_){path=path||e.url;}}const unread=Math.max(0,Number(root.querySelector('[data-unread-count]')?.textContent||0));c.innerHTML=`<button type="button" class="wb-traffic-expand" data-traffic-toggle title="Desplegar Traffic Inbox (T)">⌄</button><b class="${methodClass(e.method)}">${esc(e.method||'—')}</b><strong title="${esc(host)}">${esc(host||d.target_name||'')}</strong><code title="${esc(path||e.url||'')}">${esc(path||e.url||'—')}</code><span class="wb-compact-status status-${Math.floor(Number(e.status_code||0)/100)}xx">${esc(e.status_code??'—')}</span><span class="wb-compact-event">Event #<b>${Number(d.event_id||e.id||0)}</b></span><span class="wb-compact-new ${unread?'':'is-empty'}" data-compact-new>● <b data-compact-unread>${unread}</b> nuevas</span>`;};
-  const renderDetail=(d)=>{const e=d.exchange||{};raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];applyInlineContext({values:d.values||[],identities:d.identity_options||[],object_types:d.object_type_options||[]});paint('request');paint('response');const sm=root.querySelector('[data-summary-method]');if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}const su=root.querySelector('[data-summary-url]');if(su)su.textContent=e.url||'';const ss=root.querySelector('[data-summary-status]');if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}const st=root.querySelector('[data-summary-target]');if(st)st.textContent=d.target_name||'';const si=root.querySelector('[data-summary-id]');if(si)si.textContent=d.event_id||e.id||'';const ct=root.querySelector('.wb-context-title>div>span');if(ct)ct.textContent=d.target_name||'';updateTrafficCompact(d);renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);};
+  const renderDetail=(d)=>{const e=d.exchange||{};raw.request=d.request_text||'';raw.response=d.response_text||'';annotations=d.annotations||[];applyInlineContext({values:d.values||[],identities:d.identity_options||[],object_types:d.object_type_options||[],field_semantics:d.field_semantics||[]});paint('request');paint('response');const sm=root.querySelector('[data-summary-method]');if(sm){sm.textContent=e.method||'';sm.className=methodClass(e.method)}const su=root.querySelector('[data-summary-url]');if(su)su.textContent=e.url||'';const ss=root.querySelector('[data-summary-status]');if(ss){ss.textContent=e.status_code??'—';ss.className=`wb-status status-${Math.floor(Number(e.status_code||0)/100)}xx`;}const st=root.querySelector('[data-summary-target]');if(st)st.textContent=d.target_name||'';const si=root.querySelector('[data-summary-id]');if(si)si.textContent=d.event_id||e.id||'';const ct=root.querySelector('.wb-context-title>div>span');if(ct)ct.textContent=d.target_name||'';updateTrafficCompact(d);renderSemanticSummary(d);renderIdentity(d);renderObjects(d);renderSignals(d);renderFlow(d);renderRelated(d);renderActions(d);};
   const loadEvent=async(eventId,{scroll=true}={})=>{if(!detailUrl||!eventId)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('event_id',String(eventId));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source:d.target_key||'',event:Number(eventId),exchange:Number((d.exchange||{}).id||0)};rows().forEach(r=>r.classList.toggle('active',Number(r.dataset.eventId)===Number(eventId)));const activeRow=rows().find(r=>r.classList.contains('active'));const wasUnread=activeRow?.dataset.unread==='1'||activeRow?.classList.contains('is-unread');if(activeRow){activeRow.classList.remove('is-unread');activeRow.dataset.unread='0';const dot=activeRow.querySelector('.wb-unread-dot');if(dot)dot.setAttribute('aria-hidden','true');}markPendingReviewed(eventId);if(scroll&&activeRow&&!root.classList.contains('traffic-collapsed'))activeRow.scrollIntoView({block:'nearest'});const current=new URL(window.location.href);current.searchParams.set('event',String(eventId));current.searchParams.delete('source_key');current.searchParams.delete('exchange');history.replaceState(null,'',current);const shown=Number(root.querySelector('[data-unread-count]')?.textContent||0);if(wasUnread)setUnreadCount(Math.max(0,shown-1));}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
   const loadExchange=async(source,id)=>{if(!detailUrl||!source||!id)return;root.classList.add('is-loading');try{const u=new URL(detailUrl,window.location.origin);u.searchParams.set('source_key',source);u.searchParams.set('exchange_id',String(id));const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const d=await res.json();renderDetail(d);selected={source,event:0,exchange:Number(id)};rows().forEach(r=>r.classList.remove('active'));}catch(err){console.error('Negro Workbench',err);}finally{root.classList.remove('is-loading');}};
 
   // ---- Inline semantics: teach Negro where you are reading -----------------
   const inlinePopover=root.querySelector('[data-inline-popover]');
-  let currentInlineIndex=-1,currentInlineClass='';
-  const closeInline=()=>{if(inlinePopover){inlinePopover.hidden=true;inlinePopover.classList.remove('open');}currentInlineIndex=-1;};
+  let currentInlineIndex=-1,currentInlineClass='',currentInlineKind='value';
+  const closeInline=()=>{if(inlinePopover){inlinePopover.hidden=true;inlinePopover.classList.remove('open');}currentInlineIndex=-1;currentInlineKind='value';};
   const fillInlineCatalogs=()=>{
     const identitySelect=inlinePopover?.querySelector('[data-inline-identity]');
     if(identitySelect){const current=identitySelect.value;identitySelect.innerHTML='<option value="">Selecciona…</option>'+identityOptions.map(i=>`<option value="${Number(i.id)}">${esc(i.name||('Identity #'+i.id))}</option>`).join('');if(current)identitySelect.value=current;}
@@ -1048,12 +1104,22 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     currentInlineClass=String(cls||'').toLowerCase();
     inlinePopover?.querySelectorAll('[data-inline-class]').forEach(b=>b.classList.toggle('active',b.dataset.inlineClass===currentInlineClass));
     const identityWrap=inlinePopover?.querySelector('[data-inline-identity-wrap]'),objectWrap=inlinePopover?.querySelector('[data-inline-object-wrap]');
-    if(identityWrap)identityWrap.hidden=!['auth','resolver','context'].includes(currentInlineClass);
+    // A field rule describes the role of the key; it never binds every future
+    // value to one concrete Identity. Identity selection therefore only exists
+    // when teaching a specific value.
+    if(identityWrap)identityWrap.hidden=currentInlineKind==='field'||!['auth','resolver','context'].includes(currentInlineClass);
     if(objectWrap)objectWrap.hidden=currentInlineClass!=='entity';
   };
   const placeInline=(anchor)=>{if(!inlinePopover||!anchor)return;const r=anchor.getBoundingClientRect(),w=Math.min(360,window.innerWidth-24);inlinePopover.style.width=`${w}px`;inlinePopover.hidden=false;inlinePopover.classList.add('open');const h=inlinePopover.offsetHeight||310;let left=Math.max(12,Math.min(window.innerWidth-w-12,r.left));let top=r.bottom+8;if(top+h>window.innerHeight-12)top=Math.max(12,r.top-h-8);inlinePopover.style.left=`${left}px`;inlinePopover.style.top=`${top}px`;};
+  const setInlineModeUi=(kind)=>{
+    currentInlineKind=kind==='field'?'field':'value';
+    const kindEl=inlinePopover?.querySelector('[data-inline-kind]'),hint=inlinePopover?.querySelector('[data-inline-field-hint]'),follow=inlinePopover?.querySelector('[data-inline-follow]');
+    if(kindEl)kindEl.textContent=currentInlineKind==='field'?'ENSEÑAR CAMPO A NEGRO':'ENSEÑAR VALOR A NEGRO';
+    if(hint)hint.hidden=currentInlineKind!=='field';
+    if(follow)follow.textContent=currentInlineKind==='field'?'Buscar campo':'Follow Value';
+  };
   const openInline=(idx,anchor)=>{
-    const v=inlineValues[Number(idx)];if(!v||!inlinePopover)return;currentInlineIndex=Number(idx);fillInlineCatalogs();
+    const v=inlineValues[Number(idx)];if(!v||!inlinePopover)return;currentInlineIndex=Number(idx);setInlineModeUi('value');fillInlineCatalogs();
     const learned=(annotations||[]).find(a=>String(a.side||'')===String(v.side||'')&&String(a.location||'')===String(v.location||'')&&String(a.key_name||'')===String(v.key||'')&&String(a.value_raw||a.value_preview||'')===String(v.value||''));
     const ann=learned||v.annotation||{},suggested=String(ann.classification||v.default_classification||'').toLowerCase();
     inlinePopover.querySelector('[data-inline-key]').textContent=v.key||'valor';inlinePopover.querySelector('[data-inline-preview]').textContent=v.preview||compactText(v.value||'');
@@ -1064,12 +1130,32 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const follow=inlinePopover.querySelector('[data-inline-follow]');if(follow)follow.href=`/t/${encodeURIComponent(selected.source||targetKey)}/search?q=${encodeURIComponent(v.value||'')}`;
     setInlineClass(['auth','resolver','context','entity'].includes(suggested)?suggested:'');placeInline(anchor);
   };
+  const openInlineField=(idx,anchor)=>{
+    const v=inlineValues[Number(idx)];if(!v||!inlinePopover)return;currentInlineIndex=Number(idx);setInlineModeUi('field');fillInlineCatalogs();
+    const rule=fieldRuleFor(v.key)||{},suggested=String(rule.classification||v.default_classification||'').toLowerCase();
+    inlinePopover.querySelector('[data-inline-key]').textContent=v.key||'campo';inlinePopover.querySelector('[data-inline-preview]').textContent='Regla para futuros valores de este campo';
+    inlinePopover.querySelector('[data-inline-side]').textContent='FIELD';inlinePopover.querySelector('[data-inline-location]').textContent=v.location||'';
+    const identitySelect=inlinePopover.querySelector('[data-inline-identity]');if(identitySelect)identitySelect.value='';
+    const objectInput=inlinePopover.querySelector('[data-inline-object-type]');if(objectInput)objectInput.value=String(rule.object_type||'');
+    const feedback=inlinePopover.querySelector('[data-inline-feedback]');if(feedback){feedback.hidden=true;feedback.textContent='';}
+    const follow=inlinePopover.querySelector('[data-inline-follow]');if(follow)follow.href=`/t/${encodeURIComponent(selected.source||targetKey)}/search?q=${encodeURIComponent(v.key||'')}`;
+    setInlineClass(['auth','resolver','context','entity'].includes(suggested)?suggested:'');placeInline(anchor);
+  };
   const reloadSelected=()=>selected.event?loadEvent(selected.event,{scroll:false}):loadExchange(selected.source,selected.exchange);
   const saveInline=async(classification)=>{
     const v=inlineValues[currentInlineIndex],feedback=inlinePopover?.querySelector('[data-inline-feedback]');if(!v||!selected.source||!selected.exchange)return;
     if(selected.source==='__inbox__'){if(feedback){feedback.hidden=false;feedback.textContent='Asigna este host a un proyecto antes de enseñar semántica.';}return;}
     const cls=String(classification||currentInlineClass||'').toLowerCase();
     const identityId=Number(inlinePopover?.querySelector('[data-inline-identity]')?.value||0),objectType=String(inlinePopover?.querySelector('[data-inline-object-type]')?.value||'').trim();
+    if(currentInlineKind==='field'){
+      if(cls==='entity'&&!objectType){if(feedback){feedback.hidden=false;feedback.textContent='Indica el tipo de Object.';}return;}
+      const fd=new FormData();fd.set('csrf',root.dataset.csrf||'');fd.set('key',v.key||'');fd.set('classification',cls||'ignore');fd.set('object_type',objectType);fd.set('note','');
+      try{
+        const url=`/t/${encodeURIComponent(selected.source)}/exchange/${Number(selected.exchange)}/field-semantics`,res=await fetch(url,{method:'POST',body:fd,headers:{Accept:'application/json'}}),body=await res.json().catch(()=>({}));
+        if(!res.ok||body.ok===false)throw new Error(body.error||`HTTP ${res.status}`);closeInline();await reloadSelected();
+      }catch(err){if(feedback){feedback.hidden=false;feedback.textContent=`No pude guardar: ${err.message}`;}}
+      return;
+    }
     if(['auth','resolver','context'].includes(cls)&&!identityId){if(feedback){feedback.hidden=false;feedback.textContent='Selecciona una Identity.';}return;}
     if(cls==='entity'&&!objectType){if(feedback){feedback.hidden=false;feedback.textContent='Indica el tipo de Object.';}return;}
     const fd=new FormData();fd.set('csrf',root.dataset.csrf||'');fd.set('annotations_json',JSON.stringify([{side:v.side,location:v.location,key:v.key,value:v.value,classification:cls||'ignore',identity_id:identityId||null,object_type:objectType,note:''}]));
@@ -1134,8 +1220,17 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const decodeJwt=(token)=>{const parts=String(token||'').split('.');if(parts.length!==3)return {header:{},claims:{},signature:'',errors:['El token no tiene las 3 partes esperadas de un JWT.']};const errors=[];let header={},claims={};try{header=JSON.parse(b64urlText(parts[0]));}catch(err){errors.push(`Header: ${err?.message||'no se pudo decodificar'}`);}try{claims=JSON.parse(b64urlText(parts[1]));}catch(err){errors.push(`Payload: ${err?.message||'no se pudo decodificar'}`);}return {header,claims,signature:parts[2],errors};};
   const claimTime=(key,value)=>{if(!['iat','exp','nbf'].includes(String(key))||!Number.isFinite(Number(value)))return '';const ms=Number(value)*1000,date=new Date(ms),delta=ms-Date.now();const mins=Math.round(Math.abs(delta)/60000);let relative='';if(key==='exp')relative=delta>=0?`vigente · vence en ${mins<60?mins+' min':Math.round(mins/60)+' h'}`:`expiró hace ${mins<60?mins+' min':Math.round(mins/60)+' h'}`;else if(key==='nbf')relative=delta>0?`válido en ${mins<60?mins+' min':Math.round(mins/60)+' h'}`:'ya válido';else relative=`emitido ${delta<=0?'hace ':''}${mins<60?mins+' min':Math.round(mins/60)+' h'}`;return `${date.toLocaleString()} · ${relative}`;};
   const claimValue=(v)=>{if(v===null)return 'null';if(Array.isArray(v))return v.join(', ');if(typeof v==='object')return JSON.stringify(v);return String(v);};
-  const claimRows=(obj)=>Object.entries(obj||{}).map(([k,v])=>`<div class="wb-jwt-claim"><code>${esc(k)}</code><div><strong>${esc(claimValue(v))}</strong>${claimTime(k,v)?`<small>${esc(claimTime(k,v))}</small>`:''}</div></div>`).join('')||'<p class="wb-muted">Sin datos.</p>';
-  const openJwt=(token)=>{if(!jwtDialog)return;currentJwt=String(token||'');const full=jwtDialog.querySelector('[data-jwt-full]');if(full){full.value=currentJwt;full.classList.remove('expanded');}const len=jwtDialog.querySelector('[data-jwt-length]');if(len)len.textContent=`${currentJwt.length} caracteres`;const errBox=jwtDialog.querySelector('[data-jwt-error]');let d={header:{},claims:{},signature:'',errors:[]};try{d=decodeJwt(currentJwt);}catch(err){d.errors=[String(err?.message||err||'No se pudo decodificar el JWT')];}const h=jwtDialog.querySelector('[data-jwt-header]');if(h)h.innerHTML=claimRows(d.header);const c=jwtDialog.querySelector('[data-jwt-claims]');if(c)c.innerHTML=claimRows(d.claims);const sig=jwtDialog.querySelector('[data-jwt-signature]');if(sig)sig.textContent=d.signature?'✓ Signature presente':'⚠ Sin signature';if(errBox){const errors=d.errors||[];errBox.hidden=!errors.length;errBox.textContent=errors.length?`No se pudo decodificar completamente: ${errors.join(' · ')}`:'';}try{if(!jwtDialog.open)jwtDialog.showModal();}catch(err){jwtDialog.setAttribute('open','');console.warn('JWT Inspector modal fallback',err);}};
+  const jwtParentIndex=(token)=>inlineValues.findIndex(v=>String(v.value||'').trim()===String(token||'').trim()&&String(v.detected_type||'').toUpperCase()==='JWT');
+  const ensureJwtClaimCandidate=(parentIndex,key,value)=>{
+    const parent=inlineValues[Number(parentIndex)];if(!parent)return -1;const meta=(parent.jwt_claims||[]).find(c=>String(c.key||'')===String(key||''))||{};
+    const claimKey=`jwt.${String(key||'')}`,claimValue=String(value??''),location=String(meta.location||`${parent.location}#jwt:${key}`);
+    let idx=inlineValues.findIndex(v=>String(v.side||'')===String(parent.side||'')&&String(v.location||'')===location&&String(v.key||'')===claimKey&&String(v.value||'')===claimValue);
+    if(idx<0){inlineValues.push({side:parent.side,location,key:claimKey,value:claimValue,preview:claimValue,detected_type:'jwt_claim',default_classification:(meta.field_semantic||{}).classification||meta.default_classification||'ignore',annotation:meta.annotation||null,field_semantic:meta.field_semantic||null,jwt_claim_name:String(key||'')});idx=inlineValues.length-1;}
+    return idx;
+  };
+  const claimRows=(obj,{interactive=false,parentIndex=-1}={})=>Object.entries(obj||{}).map(([k,v])=>{const raw=claimValue(v),idx=interactive?ensureJwtClaimCandidate(parentIndex,k,raw):-1,meta=idx>=0?(inlineValues[idx]||{}):{},ann=meta.annotation||{},cls=String(ann.classification||meta.default_classification||'ignore').toLowerCase(),badge=['auth','resolver','context','entity'].includes(cls)?`<em class="wb-jwt-semantic semantic-${esc(cls)}">${esc(cls.toUpperCase())}</em>`:'';return `<div class="wb-jwt-claim ${idx>=0?'is-interactive':''}"><code ${idx>=0?`role="button" tabindex="0" data-jwt-claim-field-index="${idx}" title="Enseñar el claim jwt.${esc(k)}"`:''}>${esc(k)}</code><div><strong ${idx>=0?`role="button" tabindex="0" data-jwt-claim-value-index="${idx}" title="Enseñar este valor a Negro"`:''}>${esc(raw)}</strong>${badge}${claimTime(k,v)?`<small>${esc(claimTime(k,v))}</small>`:''}</div></div>`;}).join('')||'<p class="wb-muted">Sin datos.</p>';
+  const openJwt=(token)=>{if(!jwtDialog)return;currentJwt=String(token||'');const full=jwtDialog.querySelector('[data-jwt-full]');if(full){full.value=currentJwt;full.classList.remove('expanded');}const len=jwtDialog.querySelector('[data-jwt-length]');if(len)len.textContent=`${currentJwt.length} caracteres`;const errBox=jwtDialog.querySelector('[data-jwt-error]');let d={header:{},claims:{},signature:'',errors:[]};try{d=decodeJwt(currentJwt);}catch(err){d.errors=[String(err?.message||err||'No se pudo decodificar el JWT')];}const parentIndex=jwtParentIndex(currentJwt);const h=jwtDialog.querySelector('[data-jwt-header]');if(h)h.innerHTML=claimRows(d.header);const c=jwtDialog.querySelector('[data-jwt-claims]');if(c)c.innerHTML=claimRows(d.claims,{interactive:parentIndex>=0,parentIndex});const sig=jwtDialog.querySelector('[data-jwt-signature]');if(sig)sig.textContent=d.signature?'✓ Signature presente':'⚠ Sin signature';if(errBox){const errors=d.errors||[];errBox.hidden=!errors.length;errBox.textContent=errors.length?`No se pudo decodificar completamente: ${errors.join(' · ')}`:'';}try{if(!jwtDialog.open)jwtDialog.showModal();}catch(err){jwtDialog.setAttribute('open','');console.warn('JWT Inspector modal fallback',err);}};
+  const openJwtClaimSemantic=(idx,anchor,kind='value')=>{const rect=anchor.getBoundingClientRect();try{jwtDialog?.close();}catch(_){}const virtualAnchor={getBoundingClientRect:()=>rect};window.setTimeout(()=>kind==='field'?openInlineField(Number(idx),virtualAnchor):openInline(Number(idx),virtualAnchor),0);};
   // Capture-phase fallback: JWT is a first-class action in the Workbench.
   // Keeping this independent from the generic code/copy delegation makes the
   // inspector reliable even when the token is nested inside syntax-highlight spans.
@@ -1159,7 +1254,7 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   setLiveFollow(liveFollow);
   const tagHtml=(t)=>`<em class="wb-tag tag-${esc(t.kind||'neutral')}">${esc(t.label||'')}</em>`;
   const paramHtml=(items)=>{const ps=(items||[]).slice(0,4);if(!ps.length)return '';return `<span class="wb-param-preview">${ps.map(p=>`<em title="${esc((p.location||'')+' · '+(p.name||'')+'='+(p.value||''))}"><b>${esc(p.name||'')}</b>${String(p.value??'')!==''?`=<span>${esc(p.value)}</span>`:''}</em>`).join('')}</span>`;};
-  const rowHtml=(r)=>{const unread=!!r.is_unread;return `<a class="wb-traffic-row ${unread?'is-unread':''}" href="?event=${Number(r.id)}" data-source-key="${esc(r.target_key||'')}" data-event-id="${Number(r.id)}" data-exchange-id="${Number(r.exchange_id||0)}" data-compound-id="${esc(r.compound_id||('event:'+r.id))}" data-unread="${unread?'1':'0'}"><span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>${Number(r.id)}</span><b class="${methodClass(r.method)}">${esc(r.method||'')}</b><strong class="wb-row-host" title="${esc(r.hostname||'')}">${esc(r.hostname||'')}</strong><span class="wb-row-endpoint"><code>${esc(r.path||'/')}</code>${paramHtml(r.request_params)}</span><span class="wb-tags">${r.interaction_kind==='EXPERIMENT'?`<em class="wb-tag tag-experiment" title="${esc(r.provenance_source||'EXPERIMENT')}">EXPERIMENT</em>`:''}${(r.tags||[]).map(tagHtml).join('')}${r.is_inbox?'<em class="wb-tag tag-inbox">Sin proyecto</em>':''}</span><span class="wb-status status-${Math.floor(Number(r.status_code||0)/100)}xx">${esc(r.status_code??'—')}</span><time>${esc(String(r.captured_at||'').slice(11,19))}</time></a>`;};
+  const rowHtml=(r)=>{const unread=!!r.is_unread;return `<a class="wb-traffic-row ${unread?'is-unread':''}" href="?event=${Number(r.id)}" data-source-key="${esc(r.target_key||'')}" data-event-id="${Number(r.id)}" data-exchange-id="${Number(r.exchange_id||0)}" data-compound-id="${esc(r.compound_id||('event:'+r.id))}" data-unread="${unread?'1':'0'}"><span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>${Number(r.id)}</span><b class="${methodClass(r.method)}">${esc(r.method||'')}</b><strong class="wb-row-host" title="${esc(r.hostname||'')}">${esc(r.hostname||'')}</strong><span class="wb-row-endpoint" title="${esc(r.path||'/')}"><code>${esc(r.path||'/')}</code>${paramHtml(r.request_params)}</span><span class="wb-status status-${Math.floor(Number(r.status_code||0)/100)}xx">${esc(r.status_code??'—')}</span><span class="wb-tags">${r.interaction_kind==='EXPERIMENT'?`<em class="wb-tag tag-experiment" title="${esc(r.provenance_source||'EXPERIMENT')}">EXPERIMENT</em>`:''}${(r.tags||[]).map(tagHtml).join('')}${r.is_inbox?'<em class="wb-tag tag-inbox">Sin proyecto</em>':''}</span><time>${esc(String(r.captured_at||'').slice(11,19))}</time></a>`;};
   const updateJump=()=>{if(!jump)return;const count=pendingReviewIds.size;jump.hidden=count<=0;const b=jump.querySelector('b');if(b)b.textContent=String(count);};
   const markPendingReviewed=(eventId)=>{const id=Number(eventId||0);if(id>0&&pendingReviewIds.delete(id))updateJump();};
   const appendEvents=(items)=>{if(!list||!items?.length)return;list.querySelector('.wb-empty')?.remove();const fresh=items.filter(r=>!root.querySelector(`[data-event-id="${Number(r.id)}"]`));const html=fresh.map(rowHtml).join('');if(!html)return;const temp=document.createElement('div');temp.innerHTML=html;const added=[...temp.children];added.forEach(el=>list.appendChild(el));applyMarks();const countEl=root.querySelector('[data-event-count]');if(countEl)countEl.textContent=String(rows().length);const shownUnread=Number(root.querySelector('[data-unread-count]')?.textContent||0),addedUnread=fresh.filter(r=>r.is_unread).length;setUnreadCount(shownUnread+addedUnread);fresh.forEach(r=>{if(r.is_unread)pendingReviewIds.add(Number(r.id));});if(liveFollow)list.scrollTop=list.scrollHeight;updateJump();};
@@ -1167,6 +1262,12 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   const pollLive=async()=>{if(liveStopped||!liveUrl)return;try{const u=new URL(liveUrl,window.location.origin);u.search=liveParams().toString();const res=await fetch(u,{headers:{Accept:'application/json'},cache:'no-store'});if(res.ok){const data=await res.json();appendEvents(data.rows||[]);cursorEventId=Math.max(cursorEventId,Number(data.latest_event_id||0));}}catch(err){console.debug('Workbench live',err);}finally{if(!liveStopped)window.setTimeout(pollLive,700);}};
   if(list){if(liveFollow)list.scrollTop=list.scrollHeight;else active?.scrollIntoView({block:'nearest'});list.addEventListener('scroll',()=>{if(liveFollow&&!atBottom())setLiveFollow(false);},{passive:true});window.setTimeout(pollLive,350);}
   window.addEventListener('beforeunload',()=>{liveStopped=true;});
+
+  // ---- Passive project analysis scope --------------------------------------
+  const analysisDialog=root.querySelector('[data-analysis-scope-dialog]');
+  const openAnalysisScope=(button)=>{if(!analysisDialog)return;const host=button?.dataset.host||'',method=button?.dataset.method||'GET',path=button?.dataset.path||'/',eventId=Number(button?.dataset.eventId||selected.event||0);analysisDialog.dataset.eventId=String(eventId);analysisDialog.dataset.host=host;analysisDialog.dataset.method=method;analysisDialog.dataset.path=path;const h=analysisDialog.querySelector('[data-analysis-host]'),e=analysisDialog.querySelector('[data-analysis-endpoint]'),f=analysisDialog.querySelector('[data-analysis-scope-feedback]');if(h)h.textContent=host||'—';if(e)e.textContent=`${method} ${path}`;if(f){f.hidden=true;f.textContent='';}try{analysisDialog.showModal();}catch(_){analysisDialog.setAttribute('open','');}};
+  const closeAnalysisScope=()=>{try{analysisDialog?.close();}catch(_){analysisDialog?.removeAttribute('open');}};
+  analysisDialog?.querySelector('[data-analysis-scope-form]')?.addEventListener('submit',async ev=>{ev.preventDefault();const feedback=analysisDialog.querySelector('[data-analysis-scope-feedback]'),ruleType=analysisDialog.querySelector('input[name="analysis_rule_type"]:checked')?.value||'host',eventId=Number(analysisDialog.dataset.eventId||0);if(!eventId||!analysisScopeUrl)return;feedback.hidden=false;feedback.textContent='Incluyendo tráfico…';try{const res=await fetch(analysisScopeUrl,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({csrf:root.dataset.csrf||'',event_id:eventId,rule_type:ruleType})}),body=await res.json().catch(()=>({}));if(!res.ok)throw new Error(body.detail||`HTTP ${res.status}`);feedback.textContent=`Listo · ${Number(body.moved_events||0)} evento(s) incluidos. Recon activo no cambió.`;window.setTimeout(()=>{const u=new URL(window.location.href);u.searchParams.set('target',targetKey);u.searchParams.set('event',String(eventId));window.location.href=u.toString();},450);}catch(err){feedback.textContent=`No pude incluirlo: ${err.message}`;}});
 
   // ---- Events --------------------------------------------------------------
   list?.addEventListener('click',ev=>{const pin=ev.target.closest('[data-mark-toggle]');if(pin){ev.preventDefault();ev.stopPropagation();setMark(pin.closest('[data-source-key][data-event-id]'),activeColor);return;}const a=ev.target.closest('[data-source-key][data-event-id]');if(!a)return;ev.preventDefault();setLiveFollow(false);loadEvent(Number(a.dataset.eventId));});
@@ -1182,7 +1283,12 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
     const wrapBtn=ev.target.closest('[data-wb-wrap]');if(wrapBtn){const side=wrapBtn.dataset.wbWrap,pre=root.querySelector(`[data-http-view="${side}"]`),next=!pre?.classList.contains('exact-lines');setExactLines(side,next);localStorage.setItem(wrapKey,next?'1':'0');return;}
     if(ev.target.closest('[data-focus-toggle]')){setFocus(!document.body.classList.contains('workbench-focus'));return;}
     const jwt=ev.target.closest('[data-jwt-open],[data-jwt-token]');if(jwt){ev.preventDefault();ev.stopPropagation();openJwt(jwt.dataset.jwtToken||jwt.dataset.copyValue||'');return;}
+    const jwtClaimValue=ev.target.closest('[data-jwt-claim-value-index]');if(jwtClaimValue){ev.preventDefault();ev.stopPropagation();openJwtClaimSemantic(Number(jwtClaimValue.dataset.jwtClaimValueIndex),jwtClaimValue,'value');return;}
+    const jwtClaimField=ev.target.closest('[data-jwt-claim-field-index]');if(jwtClaimField){ev.preventDefault();ev.stopPropagation();openJwtClaimSemantic(Number(jwtClaimField.dataset.jwtClaimFieldIndex),jwtClaimField,'field');return;}
+    const analysisOpen=ev.target.closest('[data-analysis-scope-open]');if(analysisOpen){ev.preventDefault();openAnalysisScope(analysisOpen);return;}
+    if(ev.target.closest('[data-analysis-scope-close]')){ev.preventDefault();closeAnalysisScope();return;}
     const inline=ev.target.closest('[data-inline-index]');if(inline){ev.preventDefault();openInline(Number(inline.dataset.inlineIndex),inline);return;}
+    const inlineField=ev.target.closest('[data-inline-field-index]');if(inlineField){ev.preventDefault();openInlineField(Number(inlineField.dataset.inlineFieldIndex),inlineField);return;}
     if(ev.target.closest('[data-inline-close]')){closeInline();return;}
     const inlineClass=ev.target.closest('[data-inline-class]');if(inlineClass){setInlineClass(inlineClass.dataset.inlineClass);return;}
     if(ev.target.closest('[data-inline-save]')){saveInline(currentInlineClass);return;}
@@ -1200,10 +1306,13 @@ document.querySelectorAll('[data-fill-object-type]').forEach((button) => {
   });
   dialog?.querySelector('[name="mark_scope"]')?.addEventListener('change',refreshFlowDialogCount);
   dialog?.querySelector('[data-flow-dialog-form]')?.addEventListener('submit',ev=>{ev.preventDefault();const fd=new FormData(ev.currentTarget);createFlow(fd.get('flow_name')||'',fd.get('mark_scope')||'all');});
-  document.addEventListener('pointerdown',ev=>{if(inlinePopover&&!inlinePopover.hidden&&!ev.target.closest('[data-inline-popover]')&&!ev.target.closest('[data-inline-index]')&&!ev.target.closest('[data-jwt-open]'))closeInline();});
+  document.addEventListener('pointerdown',ev=>{if(inlinePopover&&!inlinePopover.hidden&&!ev.target.closest('[data-inline-popover]')&&!ev.target.closest('[data-inline-index]')&&!ev.target.closest('[data-inline-field-index]')&&!ev.target.closest('[data-jwt-open]'))closeInline();});
   document.addEventListener('keydown',ev=>{
     const jwtFocus=ev.target?.closest?.('[data-jwt-open],[data-jwt-token]');if(jwtFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openJwt(jwtFocus.dataset.jwtToken||jwtFocus.dataset.copyValue||'');return;}
+    const jwtClaimValueFocus=ev.target?.closest?.('[data-jwt-claim-value-index]');if(jwtClaimValueFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openJwtClaimSemantic(Number(jwtClaimValueFocus.dataset.jwtClaimValueIndex),jwtClaimValueFocus,'value');return;}
+    const jwtClaimFieldFocus=ev.target?.closest?.('[data-jwt-claim-field-index]');if(jwtClaimFieldFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openJwtClaimSemantic(Number(jwtClaimFieldFocus.dataset.jwtClaimFieldIndex),jwtClaimFieldFocus,'field');return;}
     const inlineFocus=ev.target?.closest?.('[data-inline-index]');if(inlineFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openInline(Number(inlineFocus.dataset.inlineIndex),inlineFocus);return;}
+    const inlineFieldFocus=ev.target?.closest?.('[data-inline-field-index]');if(inlineFieldFocus&&(ev.key==='Enter'||ev.key===' ')){ev.preventDefault();openInlineField(Number(inlineFieldFocus.dataset.inlineFieldIndex),inlineFieldFocus);return;}
     if(ev.key==='Escape'&&!inlinePopover?.hidden){closeInline();return;}
     const tag=(document.activeElement?.tagName||'').toLowerCase();if(['input','textarea','select'].includes(tag))return;
     if(ev.key==='/'){const q=root.querySelector('.wb-search input[name="q"]');if(q){ev.preventDefault();q.focus();}return;}

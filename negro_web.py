@@ -3945,6 +3945,24 @@ def create_app(default_domain: str, default_workspace: Path):
             raise HTTPException(status_code=404, detail="Request no encontrada")
         return item
 
+    @app.post("/api/t/{target_key}/workbench/analysis-scope", response_class=JSONResponse)
+    async def http_workbench_analysis_scope_api(request: Request, target_key: str):
+        """Include passive Inbox traffic in a project without widening active Recon scope."""
+        _target_context(target_key)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        verify_csrf(str(payload.get("csrf") or ""))
+        event_id = int(payload.get("event_id") or 0)
+        rule_type = str(payload.get("rule_type") or "").strip().lower()
+        if event_id <= 0 or rule_type not in {"host", "endpoint"}:
+            raise HTTPException(status_code=400, detail="event_id y rule_type(host|endpoint) son requeridos")
+        try:
+            return workbench.assign_event_to_project(target_key, event_id, rule_type=rule_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.post("/api/t/{target_key}/workbench/events/{event_id}/evidence", response_class=JSONResponse)
     async def http_workbench_event_evidence_api(request: Request, target_key: str, event_id: int):
         _target_context(target_key)
@@ -6778,6 +6796,24 @@ def create_app(default_domain: str, default_workspace: Path):
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+    @app.post("/t/{target_key}/exchange/{exchange_id}/field-semantics")
+    def http_workbench_field_semantics(request: Request, target_key: str, exchange_id: int,
+                                       key: str = Form(...), classification: str = Form(...),
+                                       object_type: str = Form(""), note: str = Form(""), csrf: str = Form(...)):
+        verify_csrf(csrf)
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                row = conn.execute("SELECT id FROM http_exchanges WHERE id=?", (int(exchange_id),)).fetchone()
+                if not row:
+                    return JSONResponse({"ok": False, "error": "Request no encontrada"}, status_code=404)
+                saved = http_inspector.save_field_semantic(
+                    conn, key=key, classification=classification, object_type=object_type, note=note
+                )
+                return JSONResponse({"ok": True, "field": saved})
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
     @app.get("/t/{target_key}/findings", response_class=HTMLResponse)
     def findings(request: Request, target_key: str, status: str = "", severity: str = ""):
         domain, workspace, paths = _target_context(target_key)
@@ -7719,6 +7755,16 @@ def create_app(default_domain: str, default_workspace: Path):
         if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise HTTPException(status_code=400, detail="url HTTP(S) requerida")
         target = _matching_target_for_host(parsed.hostname)
+        analysis_rule = None
+        analysis_routed = False
+        if target is None:
+            analysis_rule = workbench.match_project_rule(parsed.hostname, str(payload.get("method") or "GET"), parsed.path or "/")
+            if analysis_rule:
+                analysis_target_key = str(analysis_rule.get("target_key") or "")
+                target = core.get_target(analysis_target_key)
+                if target is not None:
+                    target = {**target, "key": analysis_target_key}
+                analysis_routed = target is not None
         unassigned = target is None
         if unassigned:
             # Capture is global. Unknown hosts are preserved in a passive-only inbox
@@ -7759,7 +7805,7 @@ def create_app(default_domain: str, default_workspace: Path):
                 query=payload.get("query"),
                 response_body_b64=payload.get("response_body_b64"),
                 burp_in_scope=payload.get("burp_in_scope") if isinstance(payload.get("burp_in_scope"), bool) else None,
-                allow_out_of_scope=bool(unassigned),
+                allow_out_of_scope=bool(unassigned or analysis_routed),
             )
         except ValueError as exc:
             return JSONResponse({"accepted": False, "reason": str(exc)}, status_code=202)
@@ -7797,7 +7843,7 @@ def create_app(default_domain: str, default_workspace: Path):
         try:
             import negro_hunter as hunter
             with _db(paths) as conn:
-                passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), str(parsed.hostname or domain) if unassigned else domain, emit_notifications=True)
+                passive = hunter.analyze_http_exchange(conn, int(result["exchange_id"]), str(parsed.hostname or domain) if (unassigned or analysis_routed) else domain, emit_notifications=True)
                 # Resolve identity only from locally observed evidence. Unknown is
                 # preserved when no single human-taught resolver/material matches.
                 try:
@@ -7867,7 +7913,8 @@ def create_app(default_domain: str, default_workspace: Path):
                     print(f"[burp-context] exchange={result.get('exchange_id')} error={type(ctx_exc).__name__}: {str(ctx_exc)[:160]}")
         except Exception as exc:
             print(f"[burp-intel] exchange={result.get('exchange_id')} error={type(exc).__name__}: {str(exc)[:180]}")
-        return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": project_name, "unassigned": bool(unassigned), **result,
+        return {"accepted": True, "target_key": target_key, "target_domain": domain, "project_name": project_name, "unassigned": bool(unassigned),
+                "analysis_routed": bool(analysis_routed), "analysis_rule_type": str((analysis_rule or {}).get("rule_type") or ""), **result,
                 "capture_event_id": int(capture_event.get("id") or 0) if capture_event else None,
                 "interaction_kind": str(capture_event.get("interaction_kind") or "") if capture_event else "",
                 "provenance_source": str(capture_event.get("provenance_source") or "") if capture_event else "",

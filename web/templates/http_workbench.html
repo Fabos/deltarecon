@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}HTTP Workbench · Negro{% endblock %}
 {% block content %}
-<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
+<section class="wb-shell" data-workbench data-detail-url="/api/t/{{ target_key }}/workbench/detail" data-live-url="/api/t/{{ target_key }}/workbench/events" data-seen-all-url="/api/t/{{ target_key }}/workbench/seen-all" data-create-flow-url="/api/t/{{ target_key }}/workbench/create-flow" data-analysis-scope-url="/api/t/{{ target_key }}/workbench/analysis-scope" data-csrf="{{ csrf_token }}" data-target-key="{{ target_key }}" data-since-event-id="{{ filters.since_event_id or 0 }}" data-latest-event-id="{{ traffic.latest_event_id or 0 }}" data-live-follow-default="{{ '1' if live_follow_default else '0' }}">
   <header class="wb-toolbar">
     <div class="wb-title-block">
       <span class="wb-title-icon">⌁</span>
@@ -83,7 +83,7 @@
         {% endif %}
         <span class="wb-compact-new {% if not traffic.unread_count %}is-empty{% endif %}" data-compact-new>● <b data-compact-unread>{{ traffic.unread_count }}</b> nuevas</span>
       </div>
-      <div class="wb-table-head"><span>#</span><span>Método</span><span>Host</span><span>Endpoint / parámetros</span><span>Contexto</span><span>Status</span><span>Hora</span></div>
+      <div class="wb-table-head"><span>#</span><span>Método</span><span>Host</span><span title="Endpoint / parámetros">URL / parámetros</span><span>Status</span><span>Contexto</span><span>Hora</span></div>
       <div class="wb-traffic-list" data-traffic-list>
         {% for row in traffic.rows %}
         <a class="wb-traffic-row {% if selected_event==row.id %}active{% endif %} {% if row.is_unread and selected_event!=row.id %}is-unread{% endif %}"
@@ -92,9 +92,9 @@
           <span class="wb-row-id"><i class="wb-unread-dot" title="Nueva, aún no vista"></i><i class="wb-mark-pin" data-mark-toggle title="Marcar Request"></i>{{ row.id }}</span>
           <b class="wb-method method-{{ row.method|lower }}">{{ row.method }}</b>
           <strong class="wb-row-host" title="{{ row.hostname }}">{{ row.hostname }}</strong>
-          <span class="wb-row-endpoint"><code>{{ row.path }}</code>{% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}</span>
-          <span class="wb-tags">{% if row.interaction_kind=='EXPERIMENT' %}<em class="wb-tag tag-experiment" title="{{ row.provenance_source or 'EXPERIMENT' }}">EXPERIMENT</em>{% endif %}{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
+          <span class="wb-row-endpoint" title="{{ row.path }}"><code>{{ row.path }}</code>{% if row.request_params %}<span class="wb-param-preview">{% for p in row.request_params %}<em title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>{% if p.value != '' %}=<span>{{ p.value }}</span>{% endif %}</em>{% endfor %}</span>{% endif %}</span>
           <span class="wb-status status-{{ (row.status_code or 0)//100 }}xx">{{ row.status_code or '—' }}</span>
+          <span class="wb-tags">{% if row.interaction_kind=='EXPERIMENT' %}<em class="wb-tag tag-experiment" title="{{ row.provenance_source or 'EXPERIMENT' }}">EXPERIMENT</em>{% endif %}{% for tag in row.tags %}<em class="wb-tag tag-{{ tag.kind }}">{{ tag.label }}</em>{% endfor %}{% if row.is_inbox %}<em class="wb-tag tag-inbox">Sin proyecto</em>{% endif %}</span>
           <time>{{ (row.captured_at or '')[11:19] }}</time>
         </a>
         {% else %}
@@ -127,7 +127,7 @@
         </section>
       </div>
       <script type="application/json" data-workbench-annotations>{{ selected.annotations|tojson }}</script>
-      <script type="application/json" data-workbench-inline-context>{{ {'values': selected['values'], 'identities': selected['identity_options'], 'object_types': selected['object_type_options']}|tojson }}</script>
+      <script type="application/json" data-workbench-inline-context>{{ {'values': selected['values'], 'identities': selected['identity_options'], 'object_types': selected['object_type_options'], 'field_semantics': selected['field_semantics']}|tojson }}</script>
       {% else %}
       <div class="wb-empty wb-empty-center"><b>HTTP Workbench está listo.</b><span>Cuando Burp observe tráfico, selecciona una Request a la izquierda.</span></div>
       {% endif %}
@@ -146,12 +146,16 @@
         {% if not selected.is_inbox %}
         <div class="wb-action-grid wb-action-grid-compact">
           <a href="/t/{{ selected.target_key }}/parameters/related/{{ selected.exchange.id }}">Follow Value</a>
-          <a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay</a>
+          {% if selected.active_scope_authorized %}<a href="/t/{{ selected.target_key }}/replays/new?exchange_id={{ selected.exchange.id }}">Replay</a>{% endif %}
         </div>
+        {% if selected.active_scope_authorized %}
         <form class="wb-repeater-form" method="post" action="/t/{{ selected.target_key }}/resource/{{ selected.exchange.resource_id }}/send-repeater"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="method" value="{{ selected.exchange.method }}"><input type="hidden" name="exchange_id" value="{{ selected.exchange.id }}"><button type="submit">Enviar a Burp Repeater</button></form>
         {% else %}
-        <p class="wb-inbox-note"><b>Traffic Inbox.</b> Esta Request se conservó aunque el host no pertenece a un proyecto. Negro no habilita acciones activas hasta que lo asignes a un scope autorizado.</p>
-        <a class="wb-assign-project" href="/projects">Administrar proyectos</a>
+        <p class="wb-analysis-only"><b>Analysis-only.</b> Este host está incluido para correlación y Flows, pero las acciones activas siguen bloqueadas porque no ampliaste el scope autorizado de Recon.</p>
+        {% endif %}
+        {% else %}
+        <p class="wb-inbox-note"><b>Traffic Inbox.</b> Puedes incluir este tráfico en el proyecto para analizarlo sin ampliar el scope autorizado de Recon.</p>
+        <button type="button" class="wb-assign-project" data-analysis-scope-open data-host="{{ selected.exchange.hostname }}" data-method="{{ selected.exchange.method }}" data-path="{{ selected.exchange.path }}" data-event-id="{{ selected.event_id or 0 }}">Incluir en este proyecto…</button>
         {% endif %}
       </details>
       {% else %}
@@ -161,7 +165,7 @@
   </div>
 
   <div class="wb-inline-popover" data-inline-popover hidden role="dialog" aria-label="Enseñar valor a Negro">
-    <div class="wb-inline-popover-head"><div><small>ENSEÑAR A NEGRO</small><b data-inline-key>valor</b><code data-inline-preview></code></div><button type="button" data-inline-close aria-label="Cerrar">×</button></div>
+    <div class="wb-inline-popover-head"><div><small data-inline-kind>ENSEÑAR VALOR A NEGRO</small><b data-inline-key>valor</b><code data-inline-preview></code><span class="wb-inline-field-hint" data-inline-field-hint hidden>Esta regla describe el campo. No vincula todos sus valores a una misma Identity.</span></div><button type="button" data-inline-close aria-label="Cerrar">×</button></div>
     <div class="wb-inline-meta"><span data-inline-side></span><span data-inline-location></span></div>
     <div class="wb-inline-classes" role="group" aria-label="Significado del valor">
       <button type="button" data-inline-class="auth">AUTH</button>
@@ -175,6 +179,17 @@
     <div class="wb-inline-actions"><a href="#" data-inline-follow>Follow Value</a><button type="button" class="quiet" data-inline-ignore>Quitar significado</button><button type="button" class="primary" data-inline-save>Guardar</button></div>
     <p class="wb-inline-feedback" data-inline-feedback hidden></p>
   </div>
+
+  <dialog class="wb-analysis-scope-dialog" data-analysis-scope-dialog>
+    <form method="dialog" class="wb-analysis-scope-shell" data-analysis-scope-form>
+      <header><div><small>SCOPE DE ANÁLISIS</small><h3>Incluir tráfico en {{ domain }}</h3><p>Organiza el Traffic Inbox dentro de este proyecto. <b>No amplía Recon ni cambia el scope autorizado.</b></p></div><button type="button" data-analysis-scope-close>×</button></header>
+      <label class="wb-analysis-choice"><input type="radio" name="analysis_rule_type" value="host" checked><span><b>Host completo</b><code data-analysis-host>—</code><small>Incluye tráfico histórico y futuro de este host exacto.</small></span></label>
+      <label class="wb-analysis-choice"><input type="radio" name="analysis_rule_type" value="endpoint"><span><b>Solo este endpoint</b><code data-analysis-endpoint>—</code><small>Incluye únicamente este método + path.</small></span></label>
+      <div class="wb-analysis-safety">Recon activo seguirá usando exclusivamente los scopes autorizados en Ajustes/Proyecto.</div>
+      <div class="wb-analysis-actions"><button type="button" data-analysis-scope-close>Cancelar</button><button type="submit" class="primary">Incluir en proyecto</button></div>
+      <p data-analysis-scope-feedback hidden></p>
+    </form>
+  </dialog>
 
   <dialog class="wb-jwt-dialog" data-jwt-dialog>
     <div class="wb-jwt-dialog-shell">
