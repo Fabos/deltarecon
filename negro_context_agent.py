@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.2.
+"""Negro Context Agent v1.3.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 import negro_http_inspector as http_inspector
+import negro_core as core
 import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.2"
+AGENT_VERSION = "context-agent-v1.3"
 DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
@@ -373,37 +374,137 @@ def _host_in_project_scope(hostname: str, scopes: list[str]) -> bool:
     return any(host == scope or host.endswith("." + scope) for scope in scopes if scope)
 
 
-def _ai_scope_exchange_ids(conn) -> tuple[set[int], dict[str, int]]:
-    """Return exchanges eligible for Context Agent.
+def _project_scope_policy(conn, target_key: str | None = None) -> tuple[list[str], list[dict[str, Any]]]:
+    """Resolve every explicit Negro source that can make captured traffic eligible.
 
-    Active Burp IN_SCOPE always qualifies. EXCLUDED never qualifies. UNKNOWN is
-    accepted only when the host belongs to the project's configured scopes.
-    This deliberately excludes analysis-only third parties copied into a project
-    unless they are also in the authorized project/Burp scope.
+    The current project DB already proves project membership. Eligibility is then
+    driven by the project's configured target roots, explicit Workbench host/endpoint
+    rules, or Burp IN_SCOPE. Burp EXCLUDED remains an explicit veto.
     """
     scopes = _project_scopes(conn)
+    rules: list[dict[str, Any]] = []
+    key = str(target_key or "").strip()
+    if key:
+        try:
+            target = core.get_target(key) or {}
+            for item in target.get("scopes") or []:
+                value = str(item or "").strip().lower().rstrip(".")
+                if value and value not in scopes:
+                    scopes.append(value)
+            domain = str(target.get("domain") or "").strip().lower().rstrip(".")
+            if domain and domain not in scopes:
+                scopes.append(domain)
+        except Exception:
+            pass
+        try:
+            import negro_workbench as workbench
+            rules = workbench.list_project_rules(key)
+        except Exception:
+            rules = []
+    return scopes, rules
+
+
+def _matches_project_rule(hostname: str, method: str, path: str, rules: list[dict[str, Any]]) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    meth = str(method or "").strip().upper()
+    pth = str(path or "/").strip() or "/"
+    for rule in rules:
+        if str(rule.get("hostname") or "").strip().lower().rstrip(".") != host:
+            continue
+        kind = str(rule.get("rule_type") or "").strip().lower()
+        if kind == "host":
+            return True
+        if kind == "endpoint" and str(rule.get("method") or "").strip().upper() == meth and str(rule.get("path") or "/").strip() == pth:
+            return True
+    return False
+
+
+def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[int], dict[str, Any], dict[int, list[str]]]:
+    """Return project exchanges eligible for Context Agent plus explainability.
+
+    Eligibility is hybrid:
+      - project/target configured scope root,
+      - an explicit Workbench host/endpoint analysis rule,
+      - Burp IN_SCOPE.
+
+    Burp EXCLUDED is an explicit veto. UNKNOWN does not veto Negro's own target
+    configuration. This keeps cost bounded to deliberate target traffic while avoiding
+    the v1.2 failure mode where valid project traffic could all become out-of-scope.
+    """
+    scopes, rules = _project_scope_policy(conn, target_key)
     try:
         rows = conn.execute(
-            """SELECT e.id,COALESCE(e.burp_scope_status,'UNKNOWN') burp_scope_status,h.hostname
+            """SELECT e.id,COALESCE(e.burp_scope_status,'UNKNOWN') burp_scope_status,
+                      h.hostname,o.method,r.path
                  FROM http_exchanges e
                  JOIN resource_operations o ON o.id=e.operation_id
                  JOIN resources r ON r.id=o.resource_id
                  JOIN hosts h ON h.id=r.host_id"""
         ).fetchall()
     except Exception:
-        return set(), {"known_exchanges": 0, "scope_exchanges": 0, "excluded_exchanges": 0}
+        return set(), {
+            "known_exchanges": 0, "scope_exchanges": 0, "excluded_exchanges": 0,
+            "target_scope_exchanges": 0, "workbench_rule_exchanges": 0,
+            "burp_in_scope_exchanges": 0, "burp_excluded_exchanges": 0,
+            "no_scope_exchanges": 0, "configured_scope_roots": scopes,
+            "workbench_rule_count": len(rules), "excluded_hosts": [],
+        }, {}
+
     allowed: set[int] = set()
-    excluded = 0
+    reasons: dict[int, list[str]] = {}
+    target_hits = rule_hits = burp_hits = burp_excluded = no_scope = 0
+    excluded_host_exchanges: dict[str, int] = defaultdict(int)
+
     for row in rows:
+        exid = int(row["id"])
+        host = str(row["hostname"] or "").strip().lower().rstrip(".")
+        method = str(row["method"] or "").strip().upper()
+        path = str(row["path"] or "/").strip() or "/"
         status = str(row["burp_scope_status"] or "UNKNOWN").upper()
+
         if status == "EXCLUDED":
-            excluded += 1
+            burp_excluded += 1
+            excluded_host_exchanges[host or "(sin host)"] += 1
+            reasons[exid] = ["burp_excluded"]
             continue
-        if status == "IN_SCOPE" or _host_in_project_scope(str(row["hostname"] or ""), scopes):
-            allowed.add(int(row["id"]))
+
+        matched: list[str] = []
+        if _host_in_project_scope(host, scopes):
+            matched.append("project_target")
+            target_hits += 1
+        if _matches_project_rule(host, method, path, rules):
+            matched.append("workbench_rule")
+            rule_hits += 1
+        if status == "IN_SCOPE":
+            matched.append("burp_in_scope")
+            burp_hits += 1
+
+        if matched:
+            allowed.add(exid)
+            reasons[exid] = matched
         else:
-            excluded += 1
-    return allowed, {"known_exchanges": len(rows), "scope_exchanges": len(allowed), "excluded_exchanges": excluded}
+            no_scope += 1
+            excluded_host_exchanges[host or "(sin host)"] += 1
+            reasons[exid] = ["no_scope_match"]
+
+    excluded_hosts = [
+        {"host": host, "exchanges": count}
+        for host, count in sorted(excluded_host_exchanges.items(), key=lambda item: (-item[1], item[0]))[:12]
+    ]
+    stats: dict[str, Any] = {
+        "known_exchanges": len(rows),
+        "scope_exchanges": len(allowed),
+        "excluded_exchanges": len(rows) - len(allowed),
+        "target_scope_exchanges": target_hits,
+        "workbench_rule_exchanges": rule_hits,
+        "burp_in_scope_exchanges": burp_hits,
+        "burp_excluded_exchanges": burp_excluded,
+        "no_scope_exchanges": no_scope,
+        "configured_scope_roots": scopes,
+        "workbench_rule_count": len(rules),
+        "excluded_hosts": excluded_hosts,
+    }
+    return allowed, stats, reasons
 
 
 def _is_static_path(path: str) -> bool:
@@ -578,9 +679,9 @@ def _existing_semantic_memory(conn) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", extra_impacted: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", extra_impacted: set[str] | None = None, target_key: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     raw_rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_observations ORDER BY id").fetchall()]
-    scope_ids, scope_stats = _ai_scope_exchange_ids(conn)
+    scope_ids, scope_stats, scope_reasons = _ai_scope_exchange_ids(conn, target_key=target_key)
     known_exchange_ids = {int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges").fetchall()} if _table_exists(conn, "http_exchanges") else set()
     # Synthetic/unit/manual ledger rows without a backing exchange stay eligible;
     # real captured traffic must pass the project/Burp scope gate.
@@ -699,12 +800,36 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
     # impacted_before_gate is the number of lifecycle candidates touched by the
     # delta/impact graph before the semantic relevance gate.
     impacted_before_gate = len(impacted)
+    scope_reason_obs: dict[str, int] = defaultdict(int)
+    excluded_host_obs: dict[str, int] = defaultdict(int)
+    for row in raw_rows:
+        exid = int(row.get("exchange_id") or 0)
+        if exid not in known_exchange_ids:
+            continue
+        if exid in scope_ids:
+            for reason in scope_reasons.get(exid, []):
+                scope_reason_obs[reason] += 1
+        else:
+            excluded_host_obs[str(row.get("hostname") or "(sin host)")] += 1
+    excluded_hosts_obs = [
+        {"host": host, "observations": count}
+        for host, count in sorted(excluded_host_obs.items(), key=lambda item: (-item[1], item[0]))[:12]
+    ]
     meta = {
         "total_observations": len(raw_rows),
         "scope_observations": len(all_rows),
         "excluded_scope_observations": max(0, len(raw_rows) - len(all_rows)),
         "scope_exchanges": int(scope_stats.get("scope_exchanges") or 0),
         "excluded_scope_exchanges": int(scope_stats.get("excluded_exchanges") or 0),
+        "target_scope_exchanges": int(scope_stats.get("target_scope_exchanges") or 0),
+        "workbench_rule_exchanges": int(scope_stats.get("workbench_rule_exchanges") or 0),
+        "burp_in_scope_exchanges": int(scope_stats.get("burp_in_scope_exchanges") or 0),
+        "burp_excluded_exchanges": int(scope_stats.get("burp_excluded_exchanges") or 0),
+        "no_scope_exchanges": int(scope_stats.get("no_scope_exchanges") or 0),
+        "configured_scope_roots": list(scope_stats.get("configured_scope_roots") or []),
+        "workbench_rule_count": int(scope_stats.get("workbench_rule_count") or 0),
+        "scope_observations_by_source": dict(scope_reason_obs),
+        "excluded_hosts": excluded_hosts_obs,
         "new_observations": len(new_rows),
         "impacted_candidates_before_gate": impacted_before_gate,
         "deferred_candidates": max(0, impacted_before_gate - len(candidates)),
@@ -887,7 +1012,7 @@ def _merge_batch_results(results: list[dict[str, Any]], *, completeness: dict[st
     if summaries: summary += " " + " | ".join(summaries[:3])
     return {"summary":summary,"inferences":list(inf_by_id.values()),"relationships":list(rel_by_sig.values()),"completeness":completeness}
 
-def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = DEFAULT_BATCH_SIZE) -> dict[str, Any]:
+def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = DEFAULT_BATCH_SIZE, target_key: str | None = None) -> dict[str, Any]:
     init_schema(conn)
     last = _last_success(conn)
     sync_from = 0 if mode == "full" else last["exchange"]
@@ -896,7 +1021,7 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = 
     flow_delta = refresh_flow_memberships(conn)
     since_obs = 0 if mode == "full" else last["observation"]
     semantic_changes=set(manual_delta.get("candidate_ids") or set()) | set(flow_delta.get("candidate_ids") or set())
-    candidates, meta = _build_candidates(conn, since_observation_id=since_obs, mode=mode, extra_impacted=semantic_changes)
+    candidates, meta = _build_candidates(conn, since_observation_id=since_obs, mode=mode, extra_impacted=semantic_changes, target_key=target_key)
     meta["manual_context_updates"] = int(manual_delta.get("updates") or 0)
     meta["flow_context_updates"] = int(flow_delta.get("updates") or 0)
     ids = {str(c["candidate_id"]) for c in candidates}
@@ -1187,9 +1312,9 @@ def _persist_result(conn, run_id: int, bundle: dict[str, Any], result: dict[str,
     return counts
 
 
-def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium") -> dict[str, Any]:
+def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium", target_key: str | None = None) -> dict[str, Any]:
     init_schema(conn)
-    bundle = build_analysis_bundle(conn, mode=mode)
+    bundle = build_analysis_bundle(conn, mode=mode, target_key=target_key)
     estimate = estimate_bundle(bundle, model=model)
     rate=float(estimate.get("usd_cop_rate") or 0)
     if budget_cop is not None and float(estimate.get("max_total_cop_est") or 0) > float(budget_cop):
@@ -1248,8 +1373,8 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         raise
 
 
-def estimate(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL) -> dict[str, Any]:
-    bundle = build_analysis_bundle(conn, mode=mode)
+def estimate(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, target_key: str | None = None) -> dict[str, Any]:
+    bundle = build_analysis_bundle(conn, mode=mode, target_key=target_key)
     est = estimate_bundle(bundle, model=model)
     return {"estimate":est,"stats":bundle.get("stats",{}),"watermark_before":bundle.get("watermark_before"),"watermark_after":bundle.get("watermark_after"),"sample_candidates":bundle.get("candidates",[])[:12]}
 

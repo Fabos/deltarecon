@@ -1,4 +1,0 @@
---release
-21
--proc:none
-burp-extension/src/main/java/com/negro/bridge/NegroBurpBridge.java

@@ -1,3 +1,12 @@
+## v0.117.3 — Clean repo + Hybrid AI Scope Resolver
+
+- Context Agent v1.3 resuelve Scope IA desde tres fuentes: scopes configurados del proyecto, reglas Host/Endpoint del HTTP Workbench y Burp `IN_SCOPE`.
+- Burp `EXCLUDED` es veto explícito.
+- La estimación muestra por qué entró el tráfico y los hosts que quedaron fuera del gate.
+- Mantiene Semantic Gate, delta + impact, batching completo sin cap fijo y costos/presupuesto en COP.
+- Release limpia: se eliminan notas `V*.md`, caches, `javac.*.args` y otros residuos de desarrollo del paquete distribuido.
+- `install-web.sh` valida también Context Agent y su template.
+
 ## v0.117.2 — Context Agent Scope + Semantic Gate
 
 - Context Agent analiza únicamente tráfico dentro del scope autorizado del proyecto/Burp; analysis-only third parties fuera de scope no consumen IA.

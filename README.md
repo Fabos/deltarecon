@@ -129,9 +129,7 @@ El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido.
 # Negro Recon 🐕 — v0.44.8
 
 
-> **Nuevo · v0.117.2 Context Agent:** Scope Gate + Semantic Gate para reducir costo sin perder evidencia: sólo tráfico autorizado entra a IA y el ruido queda diferido hasta que gane señales conductuales. Ver `V1172_CONTEXT_AGENT_SCOPE_SEMANTIC_GATE.md`.
-
-> **Nuevo · v0.117.1 Context Agent:** análisis completo sin cap fijo de candidatos, batching automático y control de presupuesto/costos en COP. Ver `V1171_CONTEXT_AGENT_COMPLETE_BATCHING_COP.md`.
+> **Actual · v0.117.3 Context Agent:** Scope Gate híbrido + Semantic Gate. El análisis IA acepta tráfico del target configurado del proyecto, reglas Host/Endpoint del HTTP Workbench o Burp `IN_SCOPE`; Burp `EXCLUDED` actúa como veto. El ledger conserva todas las observaciones, pero sólo candidatos con señal semántica llegan al modelo. No existe cap fijo de candidatos: los runs completos usan batching y costos/presupuesto en COP. Consulta `docs/CONTEXT_AGENT.md` para el comportamiento actual.
 
 ## v0.47.1 · Contexto inline explicable
 
@@ -589,7 +587,7 @@ Carga `build/libs/negro-burp-bridge-0.27.0.jar` desde **Burp → Extensions → 
 
 El modo recomendado es **Burp Bridge** porque Burp realiza la conexión al target con su propia ruta DNS/TCP/TLS/upstream proxy. Los modos Python Directo/Entorno/Proxy explícito quedan como fallback.
 
-Consulta `METHODOLOGY.md` para el modelo mental, `ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.
+Consulta `docs/METHODOLOGY.md` para el modelo mental, `docs/ROADMAP.md` para lo siguiente y `CHANGELOG.md` para el historial.
 ## Labs y benchmarks
 
 Los laboratorios Vagrant **no forman parte del código base de Negro**. Cuando se necesite un benchmark guiado, se distribuye como proyecto/ZIP separado para evitar mezclar targets vulnerables con la herramienta.
@@ -650,8 +648,8 @@ Surface map drill-down now collapses security controls and non-edge historical i
 
 ## HTTP Workbench v0.115
 
-HTTP Workbench usa ahora una timeline de Capture Events: cada ocurrencia observada por Burp aparece en orden real aunque el exchange lógico sea idéntico a uno anterior. La vista se actualiza en vivo, distingue eventos no vistos, soporta checkpoints exactos y ofrece un JWT Inspector desde Pretty. Ver `V115_LIVE_TRAFFIC_TIMELINE.md`.
+HTTP Workbench usa ahora una timeline de Capture Events: cada ocurrencia observada por Burp aparece en orden real aunque el exchange lógico sea idéntico a uno anterior. La vista se actualiza en vivo, distingue eventos no vistos, soporta checkpoints exactos y ofrece un JWT Inspector desde Pretty..
 
 ## v0.116 — Evidence & Provenance
 
-Negro separa ahora **Capture Events**, **Evidence** y **Knowledge Relations** para que las pruebas manuales no contaminen el conocimiento del aplicativo. Proxy Intercept modificado y Repeater se registran como experimentos, con parent/diff cuando existe evidencia suficiente. Consulta `V116_EVIDENCE_PROVENANCE.md` para el modelo y la compilación de Burp Bridge v0.40.0 en Kali.
+Negro separa ahora **Capture Events**, **Evidence** y **Knowledge Relations** para que las pruebas manuales no contaminen el conocimiento del aplicativo. Proxy Intercept modificado y Repeater se registran como experimentos, con parent/diff cuando existe evidencia suficiente. La extensión Burp se compila desde `burp-extension/build-extension.sh` en Kali.

@@ -1,7 +1,21 @@
-__pycache__/
-*.pyc
+# Python/runtime
 .venv/
-venv/
-.env
-.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Java/Burp build outputs
+burp-extension/.gradle/
+burp-extension/build/
+*.class
+javac.*.args
+
+# Generated/local artifacts
+*.zip
 *.log
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*~
