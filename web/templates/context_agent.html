@@ -2,7 +2,7 @@
 {% block title %}Context Agent · Negro{% endblock %}
 {% block content %}
 <!-- compatibility marker: Context Agent v1.5 -->
-<section class="ca-shell" data-context-agent data-csrf="{{ csrf_token }}" data-estimate-url="/api/t/{{ target_key }}/context-agent/estimate" data-run-url="/api/t/{{ target_key }}/context-agent/run" data-target-key="{{ target_key }}">
+<section class="ca-shell" data-context-agent data-csrf="{{ csrf_token }}" data-estimate-url="/api/t/{{ target_key }}/context-agent/estimate" data-run-url="/api/t/{{ target_key }}/context-agent/run" data-status-url="/api/t/{{ target_key }}/context-agent/status" data-target-key="{{ target_key }}">
   <header class="ca-hero">
     <div><p class="eyebrow">NEGRO · AI LAYER</p><h1>Context Agent</h1><p>Aprende el modelo semántico del negocio a partir del tráfico HTTP y los Flows. No busca vulnerabilidades ni ejecuta Requests.</p></div>
     <a class="button ghost" href="{{ target_base }}/workbench">← Volver a HTTP Workbench</a>
@@ -21,7 +21,7 @@
 
   <div class="ca-grid">
     <section class="panel ca-control">
-      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.6</span></div>
+      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.7</span></div>
       <p class="muted">La ejecución normal es incremental: analiza lo nuevo + el contexto histórico afectado. Tus marcas manuales tienen prioridad y nunca se eliminan.</p>
       <div class="ca-form-grid">
         <label>Modo<select data-ca-mode><option value="incremental" selected>Inteligente · incremental</option><option value="full">Reanalizar todo</option></select><small>Incremental usa delta + impact graph.</small></label>
@@ -103,11 +103,37 @@
   };
   estimateBtn.addEventListener('click',doEstimate);
   [q('[data-ca-mode]'),q('[data-ca-model]'),q('[data-ca-budget]')].forEach(el=>el?.addEventListener('change',()=>{lastEstimate=null;runBtn.disabled=true;}));
+  let activeJobUrl=null, pollTimer=null;
+  const renderJob=(job)=>{
+    if(!job)return;
+    const p=job.progress||{},stage=String(p.stage||job.status||'running'),current=Number(p.current||0),total=Number(p.total||0);
+    const pct=total>0?Math.max(0,Math.min(100,Math.round(current/total*100))):0;
+    const label=esc(p.label||'Context Agent ejecutándose');
+    const model=esc(p.model||'');
+    const cost=moneyCop(p.cost_cop||0);
+    feedback.hidden=false; feedback.className='ca-run-feedback loading';
+    feedback.innerHTML=`<div class="ca-progress-head"><span><i></i><b>${label}</b></span><strong>${total>0?`${current}/${total}`:'…'}</strong></div><div class="ca-progress-track"><span style="width:${pct}%"></span></div><small>${model?model+' · ':''}${cost}${p.concepts?` · ${Number(p.concepts).toLocaleString('es-CO')} conceptos`:''}</small>`;
+    runBtn.disabled=true; estimateBtn.disabled=true;
+  };
+  const finishJob=(job)=>{
+    clearTimeout(pollTimer); pollTimer=null; activeJobUrl=null;
+    if(job.status==='done'&&job.result){const d=job.result;feedback.hidden=false;feedback.className='ca-run-feedback ok';feedback.innerHTML=`<b>Run #${Number(d.run_id)} completado · ${moneyCop(d.cost_cop)}</b><span>${esc(d.result?.summary||'Análisis completado.')}</span><small>${Number(d.persisted?.auto_applied||0)} marcas automáticas · ${Number(d.persisted?.suggested||0)} sugerencias · ${Number(d.persisted?.relations||0)} relaciones · ${Number(d.completeness?.coverage_pct||0).toFixed(0)}% coverage · ${d.completeness?.truncated?'TRUNCADO':'sin truncamiento'}</small>`;setTimeout(()=>location.reload(),1200);}
+    else if(job.status==='error'){feedback.hidden=false;feedback.className='ca-run-feedback error';feedback.innerHTML=`<b>El Context Agent falló.</b><span>${esc(job.error||job.progress?.error||'Error desconocido')}</span><small>No se persistió memoria parcial como completada.</small>`;estimateBtn.disabled=false;runBtn.disabled=!lastEstimate;}
+  };
+  const pollJob=async(url)=>{
+    activeJobUrl=url;
+    try{const res=await fetch(url,{cache:'no-store'});const job=await res.json();if(!res.ok)throw new Error(job.detail||`HTTP ${res.status}`);if(job.status==='queued'||job.status==='running'){renderJob(job);pollTimer=setTimeout(()=>pollJob(url),900);return;}finishJob(job);}
+    catch(err){feedback.hidden=false;feedback.className='ca-run-feedback error';feedback.innerHTML=`<b>No pude consultar el progreso.</b><span>${esc(err.message)}</span>`;estimateBtn.disabled=false;}
+  };
+  const reconnectStatus=async()=>{
+    try{const res=await fetch(root.dataset.statusUrl,{cache:'no-store'});const d=await res.json();if(!res.ok||!d.ok)return;if(d.active&&d.job){renderJob(d.job);pollJob(`/api/jobs/${encodeURIComponent(d.job.id)}`);return;}if(d.latest_run&&d.latest_run.status==='interrupted'){feedback.hidden=false;feedback.className='ca-run-feedback error';feedback.innerHTML=`<b>Run #${Number(d.latest_run.id)} interrumpido.</b><span>${esc(d.latest_run.error_text||'La ejecución anterior no tenía un worker activo después del reinicio.')}</span><small>Puedes volver a calcular y ejecutar; no se marcó como completado.</small>`;}}catch(_e){}
+  };
   runBtn.addEventListener('click',async()=>{
-    if(!lastEstimate)return; runBtn.disabled=true;estimateBtn.disabled=true;feedback.hidden=false;feedback.className='ca-run-feedback loading';feedback.innerHTML='<i></i><b>Context Agent analizando…</b><span>El HTTP capturado no se modifica. Esperando respuesta estructurada.</span>';
-    try{const res=await fetch(root.dataset.runUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values())});const d=await res.json();if(!res.ok||!d.ok)throw new Error(d.error||`HTTP ${res.status}`);feedback.className='ca-run-feedback ok';feedback.innerHTML=`<b>Run #${Number(d.run_id)} completado · ${moneyCop(d.cost_cop)}</b><span>${esc(d.result?.summary||'Análisis completado.')}</span><small>${Number(d.persisted?.auto_applied||0)} marcas automáticas · ${Number(d.persisted?.suggested||0)} sugerencias · ${Number(d.persisted?.relations||0)} relaciones · ${Number(d.completeness?.coverage_pct||0).toFixed(0)}% coverage · ${d.completeness?.truncated?'TRUNCADO':'sin truncamiento'}</small>`;setTimeout(()=>location.reload(),900);}
-    catch(err){feedback.className='ca-run-feedback error';feedback.innerHTML=`<b>No se ejecutó el análisis.</b><span>${esc(err.message)}</span>`;runBtn.disabled=false;}finally{estimateBtn.disabled=false;}
+    if(!lastEstimate||activeJobUrl)return; runBtn.disabled=true;estimateBtn.disabled=true;feedback.hidden=false;feedback.className='ca-run-feedback loading';feedback.innerHTML='<i></i><b>Creando run…</b><span>Negro responderá inmediatamente y continuará en segundo plano.</span>';
+    try{const res=await fetch(root.dataset.runUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values())});const d=await res.json();if(!res.ok||!d.ok)throw new Error(d.error||`HTTP ${res.status}`);activeJobUrl=d.job_url;feedback.innerHTML=`<i></i><b>${d.already_running?'Reconectado al Context Agent':'Context Agent iniciado'}</b><span>Ya puedes recargar esta página sin perder el seguimiento.</span>`;pollJob(d.job_url);}
+    catch(err){feedback.className='ca-run-feedback error';feedback.innerHTML=`<b>No se inició el análisis.</b><span>${esc(err.message)}</span>`;runBtn.disabled=false;estimateBtn.disabled=false;}
   });
+  reconnectStatus();
   root.addEventListener('click',async(ev)=>{const b=ev.target.closest('[data-ca-decision]');if(!b)return;const row=b.closest('[data-inference-id]');if(!row)return;b.disabled=true;try{const res=await fetch(`/api/t/${encodeURIComponent(root.dataset.targetKey)}/context-agent/inference/${Number(row.dataset.inferenceId)}/decision`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({csrf,decision:b.dataset.caDecision})});const d=await res.json();if(!res.ok||!d.ok)throw new Error(d.error||'No se pudo guardar');location.reload();}catch(err){alert(err.message);b.disabled=false;}});
 })();
 </script>

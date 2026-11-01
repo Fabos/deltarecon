@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.6.
+"""Negro Context Agent v1.7.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,8 +22,10 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.6"
+AGENT_VERSION = "context-agent-v1.7"
 HYBRID_MODEL = "hybrid-luna-sol"
+MODEL_TIMEOUT_SECONDS = 120.0
+MODEL_MAX_RETRIES = 1
 LUNA_MODEL = "gpt-6-luna"
 SOL_MODEL = "gpt-6.1-sol"
 DEFAULT_MODEL = HYBRID_MODEL
@@ -1686,7 +1688,7 @@ def run_model(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, output_toke
         from openai import OpenAI  # type: ignore
     except Exception as exc:
         raise RuntimeError("El SDK de OpenAI no está disponible. Ejecuta ./install-web.sh") from exc
-    client = OpenAI(api_key=key)
+    client = OpenAI(api_key=key, timeout=MODEL_TIMEOUT_SECONDS, max_retries=MODEL_MAX_RETRIES)
     fmt = {"type":"json_schema","name":"negro_context_agent","description":"Modelo semántico incremental del tráfico HTTP de Negro.","schema":_output_schema(),"strict":True}
     response = client.responses.create(
         model=model,
@@ -1941,8 +1943,15 @@ def _overlay_refinement(first_pass: dict[str, Any], refinement: dict[str, Any], 
     return {"summary":str(first_pass.get("summary") or "") + (" | Sol refinó " + str(len(refined_ids)) + " concepto(s)." if refined_ids else ""),"inferences":list(inf.values()),"relationships":list(rel.values())}
 
 
-def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium", target_key: str | None = None) -> dict[str, Any]:
+def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium", target_key: str | None = None, progress_callback=None) -> dict[str, Any]:
     init_schema(conn)
+    def _progress(**data):
+        if progress_callback:
+            try:
+                progress_callback(dict(data))
+            except Exception:
+                pass
+    _progress(stage="preparing", label="Preparando análisis", current=0, total=0, model=model)
     bundle = build_analysis_bundle(conn, mode=mode, target_key=target_key)
     estimate = estimate_bundle(bundle, model=model)
     rate=float(estimate.get("usd_cop_rate") or 0)
@@ -1958,6 +1967,7 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         (AGENT_VERSION,mode,model,int(before.get("exchange") or 0),int(before.get("observation") or 0),int(after.get("exchange") or 0),int(after.get("observation") or 0),int(bundle.get("stats",{}).get("new_observations") or 0),int(bundle.get("stats",{}).get("selected_candidates") or 0),json.dumps(estimate),now_iso()),
     )
     run_id=int(cur.lastrowid)
+    _progress(stage="running", label="Run creado", run_id=run_id, current=0, total=int(estimate.get("batch_count") or 0), model=model, cost_cop=0.0)
     usage_by_model={LUNA_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0},SOL_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0}}
     completed_luna=completed_sol=0
     current_stage = LUNA_MODEL if model == HYBRID_MODEL else model
@@ -1970,12 +1980,15 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
             luna_results=[]
             luna_plan=_plan_candidate_batches(bundle.get("model_units") or [],batch_size=HYBRID_LUNA_BATCH_SIZE)
             luna_bundles=[_batch_bundle(bundle,list(ids),idx+1,len(luna_plan)) for idx,ids in enumerate(luna_plan)]
-            for b in luna_bundles:
+            total_luna=len(luna_bundles)
+            for batch_idx,b in enumerate(luna_bundles, start=1):
                 out_budget=_auto_output_budget(len(b.get("candidates") or []),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
                 current_stage=LUNA_MODEL
+                _progress(stage="luna", label="Luna analizando", run_id=run_id, current=batch_idx, total=total_luna, model=LUNA_MODEL, concepts=len(b.get("candidates") or []), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
                 r,u=run_model(b,model=LUNA_MODEL,output_tokens=out_budget,reasoning_effort="low")
                 luna_results.append(r); completed_luna += 1
                 for k in usage_by_model[LUNA_MODEL]: usage_by_model[LUNA_MODEL][k]+=int(u.get(k) or 0)
+                _progress(stage="luna", label="Luna analizando", run_id=run_id, current=batch_idx, total=total_luna, model=LUNA_MODEL, concepts=len(b.get("candidates") or []), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
             first=_merge_batch_results(luna_results,completeness={})
             escalate=_select_sol_escalations(bundle,first)
             final=first
@@ -1985,9 +1998,11 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
                     b=_refinement_bundle(bundle,ids,first,idx+1,len(sol_plan))
                     out_budget=_auto_output_budget(len(ids),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
                     current_stage=SOL_MODEL
+                    _progress(stage="sol", label="Sol refinando", run_id=run_id, current=idx+1, total=len(sol_plan), model=SOL_MODEL, concepts=len(ids), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
                     r,u=run_model(b,model=SOL_MODEL,output_tokens=out_budget,reasoning_effort=reasoning_effort)
                     sol_results.append(r); completed_sol += 1
                     for k in usage_by_model[SOL_MODEL]: usage_by_model[SOL_MODEL][k]+=int(u.get(k) or 0)
+                    _progress(stage="sol", label="Sol refinando", run_id=run_id, current=idx+1, total=len(sol_plan), model=SOL_MODEL, concepts=len(ids), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
                 refine=_merge_batch_results(sol_results,completeness={})
                 final=_overlay_refinement(first,refine,set(escalate))
             total_candidates=len(bundle.get("candidates") or []); total_concepts=len(bundle.get("model_units") or [])
@@ -1996,21 +2011,25 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         else:
             batch_bundles=_batch_bundles(bundle); batch_results=[]
             if model not in usage_by_model: usage_by_model[model]={"input_tokens":0,"output_tokens":0,"total_tokens":0}
-            for b in batch_bundles:
+            for idx,b in enumerate(batch_bundles, start=1):
                 out_budget=_auto_output_budget(len(b.get("candidates") or []),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
                 current_stage=model
+                _progress(stage="model", label="Modelo analizando", run_id=run_id, current=idx, total=len(batch_bundles), model=model, concepts=len(b.get("candidates") or []), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
                 r,u=run_model(b,model=model,output_tokens=out_budget,reasoning_effort=reasoning_effort)
                 batch_results.append(r); completed_luna += 1
                 for k in usage_by_model[model]: usage_by_model[model][k]+=int(u.get(k) or 0)
+                _progress(stage="model", label="Modelo analizando", run_id=run_id, current=idx, total=len(batch_bundles), model=model, concepts=len(b.get("candidates") or []), cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
             total_candidates=len(bundle.get("candidates") or []); total_concepts=len(bundle.get("model_units") or [])
             completeness={"candidates_total":total_candidates,"candidates_analyzed":total_candidates,"concepts_total":total_concepts,"concepts_analyzed":total_concepts,"batches_total":len(batch_bundles),"batches_completed":len(batch_bundles),"coverage_pct":100.0,"truncated":False,"luna_concepts":total_concepts if model==LUNA_MODEL else 0,"sol_refined":total_concepts if model==SOL_MODEL else 0}
             result=_merge_batch_results(batch_results,completeness=completeness)
 
+        _progress(stage="persisting", label="Guardando memoria semántica", run_id=run_id, current=1, total=1, model=current_stage, cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
         persisted=_persist_result(conn,run_id,bundle,result,auto_apply_threshold=auto_apply_threshold,suggest_threshold=suggest_threshold)
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)
         cost_cop=cost*rate
         usage_total={"by_model":usage_by_model,"input_tokens":sum(int(u.get("input_tokens") or 0) for u in usage_by_model.values()),"output_tokens":sum(int(u.get("output_tokens") or 0) for u in usage_by_model.values()),"total_tokens":sum(int(u.get("total_tokens") or 0) for u in usage_by_model.values())}
         conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?",(json.dumps(usage_total),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
+        _progress(stage="completed", label="Análisis completado", run_id=run_id, current=1, total=1, model=current_stage, cost_cop=cost_cop, coverage=float((result.get("completeness") or {}).get("coverage_pct") or 0))
         return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage_total,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
     except ContextAgentModelError as exc:
         # Preserve billed usage without persisting partial semantic memory.
@@ -2020,11 +2039,13 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
         err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        _progress(stage="error", label="El análisis falló", run_id=run_id, current=0, total=0, model=current_stage, cost_cop=cost_cop, error=str(exc)[:1000])
         raise
     except Exception as exc:
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
         err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        _progress(stage="error", label="El análisis falló", run_id=run_id, current=0, total=0, model=current_stage, cost_cop=cost_cop, error=str(exc)[:1000])
         raise
 
 

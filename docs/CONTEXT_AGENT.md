@@ -55,3 +55,8 @@ El modo recomendado es `Luna → Sol selectivo`:
 2. **GPT-6.1 Sol** sólo revisa una reserva pequeña de casos ambiguos, conflictos con memoria previa, relaciones inciertas y posibles authorization boundaries.
 3. Ninguna familia se elimina para ahorrar costo: Sol es una segunda opinión, no un reemplazo del análisis base.
 4. La estimación separa costo Luna, reserva Sol, costo esperado y máximo. El presupuesto sigue siendo un hard-stop.
+
+
+## Ejecución observable (v0.117.7)
+
+Los runs se ejecutan en un worker local asíncrono. La UI consulta el job aproximadamente cada segundo y muestra etapa, batch, modelo y costo acumulado. Recargar la página no inicia otro run: se reconecta al worker activo. Si Negro se reinicia durante un run, cualquier fila `running` sin worker se marca `interrupted`; no se presenta como memoria completada.

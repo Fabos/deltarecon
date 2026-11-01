@@ -1,3 +1,14 @@
+## 2026-11-01 · v0.117.7 — Context Agent observable / async
+
+- `Ejecutar Context Agent` ya no bloquea el event loop de FastAPI.
+- El run se ejecuta en un worker local y el POST responde inmediatamente con un `job_id`.
+- Progreso visible por etapa/batch: Luna, Sol selectivo, persistencia y costo real acumulado.
+- Reload seguro: la página se reconecta al job activo mediante `/context-agent/status`.
+- Prevención de doble ejecución por target.
+- Runs `running` huérfanos de builds anteriores se marcan `interrupted` al reiniciar.
+- Timeout explícito por llamada OpenAI (120 s, 1 retry) para evitar esperas indefinidas.
+- Memoria parcial no se marca como completada si un batch falla.
+
 ## 2026-11-01 · v0.117.6 — Semantic Preflight + Luna→Sol selectivo
 - Añade supresión determinística de telemetry/logging repetitivo sin borrar el Observation Ledger.
 - Agrupa aliases/instancias en familias semánticas más amplias, manteniendo campos genéricos acotados por contexto para evitar falsos merges.

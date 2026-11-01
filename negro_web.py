@@ -199,6 +199,51 @@ def _start_job(label: str, target_key: str, fn, *args, **kwargs) -> str:
     return job_id
 
 
+def _start_context_agent_job(paths: dict[str, Path], target_key: str, *, mode: str, model: str, budget_cop: float) -> tuple[str, bool]:
+    """Start one Context Agent worker per target without blocking the FastAPI event loop."""
+    with JOBS_LOCK:
+        for existing in reversed(list(JOBS.values())):
+            if existing.get("target_key") == target_key and existing.get("kind") == "context_agent" and existing.get("status") in {"queued", "running"}:
+                return str(existing["id"]), True
+        job_id = uuid.uuid4().hex[:12]
+        JOBS[job_id] = {
+            "id": job_id, "kind": "context_agent", "target_key": target_key,
+            "label": "Context Agent", "status": "queued", "queued_at": _now(),
+            "started_at": None, "finished_at": None, "error": None,
+            "progress": {"stage": "queued", "label": "En cola", "current": 0, "total": 0, "cost_cop": 0.0},
+            "result": None,
+        }
+
+    def runner() -> None:
+        import negro_context_agent as context_agent
+        with JOB_SLOTS:
+            _set_job(job_id, status="running", started_at=_now())
+            def on_progress(data: dict[str, Any]) -> None:
+                _set_job(job_id, progress=data, run_id=data.get("run_id"), updated_at=_now())
+            try:
+                with _db(paths) as conn:
+                    result = context_agent.execute(
+                        conn, mode=mode, model=model, budget_cop=budget_cop,
+                        target_key=target_key, progress_callback=on_progress,
+                    )
+                _set_job(job_id, status="done", finished_at=_now(), result=result, progress={
+                    "stage": "completed", "label": "Análisis completado",
+                    "run_id": result.get("run_id"), "current": 1, "total": 1,
+                    "cost_cop": float(result.get("cost_cop") or 0),
+                    "coverage": float((result.get("completeness") or {}).get("coverage_pct") or 0),
+                })
+            except Exception as exc:
+                traceback.print_exc()
+                _set_job(job_id, status="error", finished_at=_now(), error=str(exc)[:2000], progress={
+                    "stage": "error", "label": "El análisis falló", "current": 0, "total": 0,
+                    "error": str(exc)[:1000],
+                })
+
+    thread = threading.Thread(target=runner, name=f"negro-context-{job_id}", daemon=True)
+    thread.start()
+    return job_id, False
+
+
 def _db(paths: dict[str, Path]):
     return core.db_connect(paths)
 
@@ -4163,15 +4208,45 @@ def create_app(default_domain: str, default_workspace: Path):
         if mode not in {"incremental","full"}: mode = "incremental"
         model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
         if model not in {"hybrid-luna-sol","gpt-6.1-sol","gpt-6-luna"}:
-            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.6"}, status_code=400)
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.7"}, status_code=400)
         budget_cop = max(1.0, min(100000000.0, float(payload.get("budget_cop") or 1000.0)))
         _, _, paths = _target_context(target_key)
+        # Recalculate immediately before queueing so budget remains a hard stop.
         try:
             with _db(paths) as conn:
-                result = context_agent.execute(conn, mode=mode, model=model, budget_cop=budget_cop, target_key=target_key)
-            return result
+                preflight = context_agent.estimate(conn, mode=mode, model=model, target_key=target_key)
+            max_cop = float((preflight.get("estimate") or {}).get("max_total_cop_est") or 0)
+            if max_cop > budget_cop:
+                return JSONResponse({"ok":False,"error":f"El costo máximo estimado COP ${max_cop:,.0f} supera tu límite COP ${budget_cop:,.0f}."}, status_code=400)
         except Exception as exc:
             return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)
+        job_id, already_running = _start_context_agent_job(paths, target_key, mode=mode, model=model, budget_cop=budget_cop)
+        return JSONResponse({
+            "ok": True, "job_id": job_id, "already_running": already_running,
+            "job_url": f"/api/jobs/{job_id}",
+            "status_url": f"/api/t/{target_key}/context-agent/status",
+        }, status_code=200 if already_running else 202)
+
+    @app.get("/api/t/{target_key}/context-agent/status", response_class=JSONResponse)
+    def context_agent_status_api(target_key: str):
+        import negro_context_agent as context_agent
+        _, _, paths = _target_context(target_key)
+        with JOBS_LOCK:
+            jobs=[dict(j) for j in JOBS.values() if j.get("target_key")==target_key and j.get("kind")=="context_agent"]
+        active=next((j for j in reversed(jobs) if j.get("status") in {"queued","running"}), None)
+        if active:
+            return {"ok":True,"active":True,"job":active}
+        latest_job=jobs[-1] if jobs else None
+        with _db(paths) as conn:
+            context_agent.init_schema(conn)
+            row=conn.execute("SELECT * FROM semantic_agent_runs ORDER BY id DESC LIMIT 1").fetchone()
+            latest=dict(row) if row else None
+            if latest and latest.get("status") in {"running","queued"}:
+                # No in-memory worker exists in this process, therefore this is a run left behind by a restart/old synchronous build.
+                conn.execute("UPDATE semantic_agent_runs SET status='interrupted',error_text=COALESCE(error_text,'Ejecución interrumpida al reiniciar Negro; no se persistió memoria parcial.'),finished_at=COALESCE(finished_at,?) WHERE id=?", (_now(), int(latest["id"])))
+                latest["status"]="interrupted"
+                latest["error_text"]=latest.get("error_text") or "Ejecución interrumpida al reiniciar Negro; no se persistió memoria parcial."
+        return {"ok":True,"active":False,"job":latest_job,"latest_run":latest}
 
     @app.post("/api/t/{target_key}/context-agent/inference/{inference_id}/decision", response_class=JSONResponse)
     async def context_agent_decision_api(request: Request, target_key: str, inference_id: int):
