@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ object_data.object.display_label }} · Negro{% endblock %}
+{% block content %}
+{% set o=object_data.object %}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">{% if o.ui_quality == 'ambiguous' %}IDENTIFICADOR SIN CLASIFICAR{% else %}BUSINESS OBJECT{% endif %} · #{{ o.id }}</p>
+    <h1>{% if o.ui_quality == 'ambiguous' %}<code>{{ o.identifier_field or 'identifier' }}</code> = <code>{{ o.display_value }}</code>{% else %}{{ o.object_type }} <code>{{ o.display_value }}</code>{% endif %}</h1>
+    {% if o.ui_quality == 'ambiguous' %}
+      <p class="muted">Negro sabe <b>dónde apareció este valor</b>, pero todavía no sabe qué entidad del negocio representa. No asumas User, Order, Role u otro significado hasta clasificarlo.</p>
+    {% else %}
+      <p class="muted">Una misma cosa correlacionada entre Requests. Campo observado: <code>{{ o.identifier_field or '—' }}</code>. {% if o.cross_host %}<b>Aparece en {{ object_data.hosts|length }} hosts.</b>{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=object:{{ o.id }}">Ver en mapa</a><a class="button ghost" href="{{ target_base }}/objects">← Objetos</a></div>
+</section>
+
+{% if o.ui_quality == 'ambiguous' %}
+<section class="panel callout warning object-meaning-warning">
+  <b>Qué significa esta ficha:</b> en una o más Requests apareció <code>{{ o.identifier_field or 'identifier' }}={{ o.display_value }}</code>. El tipo interno <code>{{ o.object_type }}</code> no aporta suficiente contexto, por eso Negro no lo presenta como una entidad confirmada.
+  <div class="hero-meta">{% for a in object_data.aliases %}<span class="badge"><code>{{ a.normalized_name }}</code> · {{ a.observations }} observación(es)</span>{% endfor %}</div>
+</section>
+{% else %}
+<section class="object-meaning-line panel">
+  <span>Tipo</span><b>{{ o.object_type }}</b><span>Campo identificador</span><code>{{ o.identifier_field or '—' }}</code><span>Valor</span><code>{{ o.display_value }}</code>
+</section>
+{% endif %}
+
+{% if object_data.anomalies and o.ui_quality != 'ambiguous' %}
+<section class="panel callout warning">
+  <p class="eyebrow">DIFERENCIAS OBSERVADAS</p>
+  {% for a in object_data.anomalies %}<div class="pattern-anomaly-row"><span class="badge">{{ a.kind }}</span><div><b>{{ a.title }}</b><p>{{ a.message }}</p>{% if a.baseline is defined %}<small>Patrón: <code>{{ a.baseline }}</code> · esta instancia: <code>{{ a.current }}</code></small>{% endif %}</div></div>{% endfor %}
+  <small>No implica que el comportamiento sea incorrecto; sólo justifica volver a mirar.</small>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">DÓNDE APARECIÓ</p><h2>{{ object_data.timeline|length }} Requests con este valor</h2><p class="muted">Empieza aquí: método, endpoint, status e identidad. Eso te dice qué papel tuvo realmente el valor.</p></div></div>
+  <div class="timeline object-timeline">
+  {% for x in object_data.timeline %}
+    <div class="timeline-item"><span class="timeline-dot"></span><div class="trace-card">
+      <div><b>#{{ x.exchange_id }} · {{ x.method }} <code>{{ x.path }}</code></b><span class="badge">HTTP {{ x.status_code or '—' }}</span>{% if x.identity_name %}<span class="badge identity-badge">{{ x.identity_name }}</span>{% endif %}</div>
+      <small>{{ x.hostname }} · key <code>{{ x.identifier_name }}</code> · {{ x.first_seen_at }}</small>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ x.exchange_id }}/inspect">Abrir HTTP Inspector</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ x.exchange_id }}">Buscar relacionados</a><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ x.exchange_id }}">Ver contexto</a></div>
+    </div></div>
+  {% else %}<p class="empty">No hay Requests enlazadas a este valor.</p>{% endfor %}
+  </div>
+</section>
+
+{% if object_data.produced or object_data.consumed %}
+<section class="object-io-grid">
+  <article class="panel"><p class="eyebrow">OBSERVADO COMO SALIDA</p><h2>Produced / returned by</h2><p class="muted">La aplicación devolvió este identificador en estas Requests. Negro no asume que el endpoint sea su creador real.</p>{% for x in object_data.produced %}<div class="object-fact-row"><a href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}"><b>{{ x.method }}</b> <code>{{ x.path }}</code></a><span>{% if x.identity_name %}{{ x.identity_name }} · {% endif %}HTTP {{ x.status_code or '—' }}</span></div>{% else %}<p class="empty">No observado como salida.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">OBSERVADO COMO ENTRADA</p><h2>Consumed / sent to</h2><p class="muted">Este identificador fue enviado en path, query o body hacia estas operaciones.</p>{% for x in object_data.consumed %}<div class="object-fact-row"><a href="{{ target_base }}/resource/{{ x.resource_id }}?exchange={{ x.exchange_id }}#exchange-{{ x.exchange_id }}"><b>{{ x.method }}</b> <code>{{ x.path }}</code></a><span>{% if x.identity_name %}{{ x.identity_name }} · {% endif %}HTTP {{ x.status_code or '—' }}</span></div>{% else %}<p class="empty">No observado como entrada.</p>{% endfor %}</article>
+</section>
+{% endif %}
+
+{% if object_data.signals or object_data.hypotheses %}
+<section class="panel object-intelligence-summary">
+  <div class="panel-head"><div><p class="eyebrow">INTELIGENCIA RELACIONADA</p><h2>Lo que Negro ya tiene mapeado alrededor de esta cosa</h2></div><div class="badges"><span class="badge">⚡ {{ object_data.signals|length }} Señales</span><span class="badge">◆ {{ object_data.hypotheses|length }} Hipótesis</span></div></div>
+  <div class="related-intelligence-list">
+    {% for s in object_data.signals %}<a href="{{ target_base }}/hypotheses#signal-{{ s.id }}"><span>{% if s.signal_level=='correlation' %}⚡{% else %}🩵{% endif %}</span><div><b>{{ s.title }}</b><small>{{ s.signal_level or 'local' }} · {{ s.source }}</small></div></a>{% endfor %}
+    {% for h in object_data.hypotheses %}<a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}"><span>◆</span><div><b>{{ h.title }}</b><small>{{ h.status }} · {{ h.review_priority }}</small></div></a>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="object-summary-grid">
+  <article class="panel"><p class="eyebrow">IDENTIDADES</p><h2>{{ object_data.identities|length }}</h2>{% for i in object_data.identities %}<div class="object-fact-row"><a href="{{ target_base }}/identities/view/{{ i.id }}">{{ i.name }}</a><span>{{ i.exchanges }} Request(s)</span></div>{% else %}<p class="empty">No asociadas todavía.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">FLUJOS</p><h2>{{ object_data.flows|length }}</h2>{% for f in object_data.flows %}<div class="object-fact-row"><a href="{{ target_base }}/flows/{{ f.id }}">{{ f.name }}</a><span>{{ f.steps }} paso(s)</span></div>{% else %}<p class="empty">No aparece en un Flujo incluido.</p>{% endfor %}</article>
+  <article class="panel"><p class="eyebrow">HOSTS</p><h2>{{ object_data.hosts|length }}</h2>{% for h in object_data.hosts %}<div class="object-fact-row"><b>{{ h.hostname }}</b><span>{{ h.exchanges }} Request(s)</span></div>{% else %}<p class="empty">—</p>{% endfor %}</article>
+</section>
+
+{% if object_data.states %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">ESTADOS OBSERVADOS</p><h2>Cómo cambió esta instancia</h2></div><small>Sólo secuencia observada; no afirma que sea la única válida.</small></div>
+  <div class="state-sequence object-state-sequence">{% for s in object_data.states %}<a class="state-node" href="{{ target_base }}/resource/{{ s.resource_id }}?exchange={{ s.exchange_id }}#exchange-{{ s.exchange_id }}"><span>{{ s.state }}</span><small>#{{ s.exchange_id }}{% if s.identity_name %} · {{ s.identity_name }}{% endif %}</small></a>{% if not loop.last %}<span class="state-arrow">→</span>{% endif %}{% endfor %}</div>
+</section>
+{% endif %}
+
+{% set meaningful_related = object_data.related|selectattr('ui_quality','ne','ambiguous')|list %}
+{% set ambiguous_related = object_data.related|selectattr('ui_quality','equalto','ambiguous')|list %}
+{% if meaningful_related %}
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">RELACIONES ÚTILES</p><h2>Objetos con significado vistos junto a éste</h2></div><small>Co-observación en una o más Requests; no implica causalidad.</small></div>
+  <div class="related-object-grid">
+  {% for r in meaningful_related %}<a class="related-object-card" href="{{ target_base }}/objects/{{ r.id }}"><div><b>{{ r.object_type }}</b> <code>{{ r.identifier_raw or r.identifier_preview }}</code></div><small>{{ r.occurrences }} Request(s) compartidas{% if r.identifier_field %} · key {{ r.identifier_field }}{% endif %}</small></a>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if ambiguous_related %}
+<details class="panel noisy-evidence-details">
+  <summary><b>{{ ambiguous_related|length }} relaciones sin clasificar</b><span>Se conservan como contexto, no como entidades confirmadas.</span></summary>
+  <div class="related-object-grid">
+    {% for r in ambiguous_related %}<a class="related-object-card" href="{{ target_base }}/objects/{{ r.id }}"><div><code>{{ r.identifier_field or 'identifier' }}={{ r.identifier_raw or r.identifier_preview }}</code></div><small>tipo interno {{ r.object_type }} · {{ r.occurrences }} Request(s)</small></a>{% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endblock %}

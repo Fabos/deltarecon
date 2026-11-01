@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ signal.title }} · Señal · Negro{% endblock %}
+{% block content %}
+<nav class="breadcrumbs"><a href="{{ target_base }}/hypotheses">Hipótesis</a><span>›</span><strong>Señal #{{ signal.id }}</strong></nav>
+<section class="hero compact-hero signal-detail-hero">
+  <div><p class="eyebrow">SEÑAL · EVIDENCIA OBSERVABLE</p><h1>{{ signal.title }}</h1><p class="muted">{{ signal.why.message or 'Una Regla coincidió con evidencia observada.' }}</p><div class="hero-meta"><span class="badge">{{ ui_label(signal.source) }}</span><span class="badge">{{ ui_label(signal.category or signal.kind) }}</span><span class="badge signal-decision-{{ signal.human_decision or 'new' }}">{{ {'new':'Sin decisión','interesting':'Interesante','investigating':'Investigar','dismissed':'Descartada'}.get(signal.human_decision or 'new', signal.human_decision or 'new') }}</span>{% if signal.occurrences>1 %}<span class="badge">{{ signal.occurrences }} observaciones</span>{% endif %}</div></div>
+  <div class="page-actions">{% if signal.resource_id %}<a class="button ghost" href="{{ target_base }}/resource/{{ signal.resource_id }}{% if signal.exchange_id %}?exchange={{ signal.exchange_id }}#exchange-{{ signal.exchange_id }}{% endif %}">Abrir Request</a>{% endif %}<a class="button ghost" href="{{ target_base }}/hypotheses">← Hipótesis</a></div>
+</section>
+
+{% if signal.needs_reconsideration or signal.reconsideration_needed %}<section class="panel callout warning"><b>Nueva evidencia después del descarte</b><p>Esta Señal fue descartada con la evidencia disponible en ese momento, pero volvió a observarse. El descarte se conserva; Negro sólo te pide reconsiderarla.</p></section>{% endif %}
+
+<section class="signal-decision-panel panel">
+  <div class="panel-head"><div><p class="eyebrow">DECISIÓN HUMANA</p><h2>¿Qué significa para tu investigación?</h2><p class="muted small">Cambiar esta decisión nunca elimina la evidencia ni su provenance.</p></div></div>
+  <div class="signal-decision-grid">
+    {% for value,label,desc in [('interesting','Interesante','Merece atención, pero todavía no la estás persiguiendo.'),('investigating','Investigar','La vas a incorporar activamente a una investigación.'),('dismissed','Descartar','No aporta por ahora. Conserva el motivo y puede reconsiderarse si aparece evidencia nueva.')] %}
+    <form class="signal-decision-card {% if signal.human_decision==value %}selected{% endif %}" action="{{ target_base }}/signals/{{ signal.id }}/decision" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="decision" value="{{ value }}"><b>{{ label }}</b><span>{{ desc }}</span><textarea name="reason" rows="2" placeholder="Motivo humano{% if value=='dismissed' %} (recomendado){% endif %}">{% if signal.human_decision==value %}{{ signal.decision_reason or '' }}{% endif %}</textarea><button class="button {% if value=='dismissed' %}ghost{% else %}secondary{% endif %}" type="submit">{{ 'Actualizar' if signal.human_decision==value else label }}</button></form>
+    {% endfor %}
+  </div>
+  {% if signal.decision_at %}<p class="muted small">Última decisión: {{ signal.decision_at }}{% if signal.decision_reason %} · “{{ signal.decision_reason }}”{% endif %}</p>{% endif %}
+</section>
+
+<section class="grid two signal-evidence-grid">
+  <article class="panel"><div class="panel-head"><div><p class="eyebrow">QUÉ OCURRIÓ</p><h2>Evidencia</h2></div></div><div class="signal-fact-list"><p><b>Request:</b> {% if signal.method %}<code>{{ signal.method }} {{ signal.path }}</code>{% else %}#{{ signal.exchange_id or '—' }}{% endif %}</p><p><b>HTTP:</b> {{ signal.status_code if signal.status_code is not none else '—' }}</p><p><b>Host:</b> {{ signal.hostname or '—' }}</p><p><b>Primera vez:</b> {{ signal.first_seen_at }}</p><p><b>Última vez:</b> {{ signal.last_seen_at }}</p></div>{% if signal.evidence %}<details class="advanced-context"><summary>Ver evidencia estructurada</summary><pre class="http-message">{{ signal.evidence|tojson(indent=2) }}</pre></details>{% endif %}</article>
+  <article class="panel"><div class="panel-head"><div><p class="eyebrow">POR QUÉ NEGRO LA MARCÓ</p><h2>Explicación</h2></div></div><p>{{ signal.why.message or 'Coincidió con una Regla activa.' }}</p>{% if signal.why.rule_match %}<div class="rule-match-grid">{% for k,v in signal.why.rule_match.items() %}<code>{{ k }} = {{ v }}</code>{% endfor %}</div>{% endif %}</article>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">INVESTIGACIONES</p><h2>Contexto donde estás usando esta Señal</h2></div><span>{{ signal_investigations|length }}</span></div>
+  {% if signal_investigations %}<div class="investigation-link-grid">{% for i in signal_investigations %}<a class="investigation-link-card" href="{{ target_base }}/investigations/{{ i.id }}"><b>{{ i.title }}</b><small>{{ ui_label(i.status) }} · {{ i.relation }}</small></a>{% endfor %}</div>{% endif %}
+  {% if active_investigations %}<details class="inline-create"><summary>+ Adjuntar a Investigation</summary><form class="form-row" action="{{ target_base }}/signals/{{ signal.id }}/investigation" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="investigation_id">{% for i in active_investigations %}<option value="{{ i.id }}">#{{ i.id }} · {{ i.title }}</option>{% endfor %}</select><button class="button secondary" type="submit">Adjuntar</button></form></details>{% endif %}
+</section>
+{% endblock %}

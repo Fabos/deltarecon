@@ -92,7 +92,7 @@ def test_context_agent_cost_budget_blocks_before_model_call(tmp_path: Path, monk
     monkeypatch.setattr(ca, 'run_model', lambda *a, **k: called.__setitem__('model', True))
     with core.db_connect(paths) as conn:
         try:
-            ca.execute(conn, budget_usd=0.000001)
+            ca.execute(conn, budget_cop=0.01)
             assert False, 'expected budget block'
         except RuntimeError as exc:
             assert 'supera tu límite' in str(exc)
@@ -165,9 +165,11 @@ def test_context_agent_ui_contract_and_workbench_relation_rendering():
     wb = (root/'web/templates/http_workbench.html').read_text(encoding='utf-8')
     js = (root/'web/static/app.js').read_text(encoding='utf-8')
     assert 'Calcular antes de ejecutar' in page
-    assert 'Límite por ejecución · USD' in page
+    assert 'Límite por ejecución · COP' in page
     assert 'Inteligente · incremental' in page
     assert 'Cost Ledger' in page or 'COST LEDGER' in page
+    assert 'Automática · adaptativa por batch' in page
+    assert 'no existe un cap fijo de 120' in page
     assert 'AI Context' in wb and 'RELACIONES' in wb
     assert "r.relation||'related_to'" in js
 

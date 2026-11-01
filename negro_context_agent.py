@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.
+"""Negro Context Agent v1.1.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -21,12 +21,14 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1"
+AGENT_VERSION = "context-agent-v1.1"
 DEFAULT_MODEL = "gpt-6.1-sol"
-DEFAULT_OUTPUT_TOKENS = 6000
+DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
 DEFAULT_SUGGEST = 0.70
-MAX_CANDIDATES = 120
+DEFAULT_BATCH_SIZE = 48
+MIN_BATCH_OUTPUT_TOKENS = 2200
+MAX_BATCH_OUTPUT_TOKENS = 12000
 
 CATEGORIES = (
     "identity", "credential", "business_object", "reference", "state", "action",
@@ -121,6 +123,7 @@ def init_schema(conn) -> None:
             usage_json TEXT,
             result_json TEXT,
             cost_usd REAL,
+            cost_cop REAL,
             error_text TEXT,
             created_at TEXT NOT NULL,
             finished_at TEXT
@@ -182,6 +185,9 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE semantic_inferences ADD COLUMN model_confidence REAL NOT NULL DEFAULT 0")
     if "evidence_confidence" not in inf_cols:
         conn.execute("ALTER TABLE semantic_inferences ADD COLUMN evidence_confidence REAL NOT NULL DEFAULT 0")
+    run_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(semantic_agent_runs)").fetchall()}
+    if "cost_cop" not in run_cols:
+        conn.execute("ALTER TABLE semantic_agent_runs ADD COLUMN cost_cop REAL")
     rel_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(semantic_relations)").fetchall()}
     if "model_confidence" not in rel_cols:
         conn.execute("ALTER TABLE semantic_relations ADD COLUMN model_confidence REAL NOT NULL DEFAULT 0")
@@ -413,16 +419,17 @@ def _score_candidate(rows: list[dict[str, Any]]) -> float:
 
 
 def _existing_semantic_memory(conn) -> list[dict[str, Any]]:
+    # No arbitrary semantic-memory cap: batching controls what is sent to the model.
     rows = conn.execute(
         """SELECT si.* FROM semantic_inferences si
              JOIN (SELECT candidate_id,MAX(id) id FROM semantic_inferences GROUP BY candidate_id) x ON x.id=si.id
             WHERE si.status IN ('auto_applied','confirmed','suggested','rejected')
-            ORDER BY si.confidence DESC,si.id DESC LIMIT 240"""
+            ORDER BY si.confidence DESC,si.id DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", limit: int = MAX_CANDIDATES, extra_impacted: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", extra_impacted: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     all_rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_observations ORDER BY id").fetchall()]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in all_rows:
@@ -490,7 +497,7 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
         for r in rows:
             obs_ids.append(int(r["id"]))
             ep_key = (r.get("method"), r.get("path"), r.get("side"), r.get("location"))
-            if ep_key not in seen_ep and len(endpoints) < 12:
+            if ep_key not in seen_ep:
                 seen_ep.add(ep_key)
                 endpoints.append({"method":r.get("method"),"path":r.get("path"),"side":r.get("side"),"location":r.get("location"),"exchange_id":r.get("exchange_id")})
             try: flow_ids.update(json.loads(r.get("flow_ids_json") or "[]"))
@@ -504,7 +511,7 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
             "impact_tier": impact_tier,
             "key": str(rows[0].get("key_name") or norm),
             "normalized_key": norm,
-            "aliases": sorted({str(r.get("key_name") or r.get("normalized_key") or "") for r in rows if str(r.get("key_name") or r.get("normalized_key") or "")})[:20],
+            "aliases": sorted({str(r.get("key_name") or r.get("normalized_key") or "") for r in rows if str(r.get("key_name") or r.get("normalized_key") or "")}),
             "value_sample": _safe_value(rows[0]),
             "value_hash_prefix": vh[:12],
             "value_kind": str(rows[0].get("value_kind") or "scalar"),
@@ -514,7 +521,7 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
             "produced_then_consumed": "request" in sides and "response" in sides,
             "endpoints": endpoints,
             "flow_ids": sorted(int(x) for x in flow_ids if str(x).isdigit()),
-            "manual_ground_truth": manual[:8],
+            "manual_ground_truth": manual,
             "observation_ids": obs_ids[:100],
             "score": round(score, 2),
         }
@@ -528,12 +535,13 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
     # then broader co-observed/field impact context.
     traffic_new_ids = {str(r.get("candidate_id") or "") for r in new_rows if str(r.get("candidate_id") or "")}
     new_ids = set(direct)
-    selected = candidates[:max(10, int(limit))]
+    selected = candidates
     meta = {
         "total_observations": len(all_rows),
         "new_observations": len(new_rows),
         "impacted_candidates": len(candidates),
         "selected_candidates": len(selected),
+        "candidate_cap_applied": False,
         "new_candidate_ids": sorted(traffic_new_ids),
         "context_changed_candidate_ids": sorted(set(direct) - set(traffic_new_ids)),
         "graph_neighbor_candidates": len(locals().get("graph_neighbors", set())) if mode != "full" else 0,
@@ -544,7 +552,11 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
 def _relations_memory(conn, candidate_ids: set[str]) -> list[dict[str, Any]]:
     if not candidate_ids:
         return []
-    rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_relations WHERE status IN ('auto_applied','confirmed','suggested') ORDER BY id DESC LIMIT 400").fetchall()]
+    # Keep every current relation that touches the impacted set. Batching, not
+    # arbitrary truncation, controls model payload size.
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM semantic_relations WHERE status IN ('auto_applied','confirmed','suggested') ORDER BY id DESC"
+    ).fetchall()]
     out = []
     seen = set()
     for r in rows:
@@ -555,8 +567,6 @@ def _relations_memory(conn, candidate_ids: set[str]) -> list[dict[str, Any]]:
             continue
         seen.add(sig)
         out.append({k:r.get(k) for k in ("src_candidate_id","relation","dst_candidate_id","dst_literal","confidence","status","explanation")})
-        if len(out) >= 100:
-            break
     return out
 
 
@@ -572,7 +582,7 @@ def _state_transitions(conn, relevant_ids: set[str]) -> list[dict[str, Any]]:
         exid=int(st.get("exchange_id") or 0)
         if not exid: continue
         neighbors=[dict(r) for r in conn.execute(
-            "SELECT candidate_id,key_name,value_preview,id FROM semantic_observations WHERE exchange_id=? AND candidate_id LIKE 'v_%' AND candidate_id<>? ORDER BY id LIMIT 12",
+            "SELECT candidate_id,key_name,value_preview,id FROM semantic_observations WHERE exchange_id=? AND candidate_id LIKE 'v_%' AND candidate_id<>? ORDER BY id",
             (exid,str(st.get("candidate_id") or "")),
         ).fetchall()]
         for obj in neighbors:
@@ -600,11 +610,115 @@ def _state_transitions(conn, relevant_ids: set[str]) -> list[dict[str, Any]]:
                 "from_exchange_id":a["exchange_id"],"to_exchange_id":b["exchange_id"],
                 "evidence_observation_ids":[a["object_observation_id"],a["state_observation_id"],b["object_observation_id"],b["state_observation_id"]],
             })
-            if len(out)>=80: return out
     return out
 
 
-def build_analysis_bundle(conn, *, mode: str = "incremental", max_candidates: int = MAX_CANDIDATES) -> dict[str, Any]:
+
+def _plan_candidate_batches(candidates: list[dict[str, Any]], *, batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[str]]:
+    """Group correlated candidates without dropping any candidate.
+
+    Candidates sharing exchanges or Flows are preferentially kept together so
+    relation discovery survives batching. Every candidate appears exactly once.
+    """
+    batch_size=max(8,int(batch_size or DEFAULT_BATCH_SIZE))
+    order=[str(c.get("candidate_id") or "") for c in candidates if str(c.get("candidate_id") or "")]
+    if not order:
+        return []
+    rank={cid:i for i,cid in enumerate(order)}
+    by_id={str(c.get("candidate_id")):c for c in candidates}
+    exchange_groups: dict[int,set[str]]=defaultdict(set)
+    flow_groups: dict[int,set[str]]=defaultdict(set)
+    for cid,c in by_id.items():
+        for ep in c.get("endpoints") or []:
+            exid=int(ep.get("exchange_id") or 0)
+            if exid: exchange_groups[exid].add(cid)
+        for fid in c.get("flow_ids") or []:
+            try: flow_groups[int(fid)].add(cid)
+            except Exception: pass
+    adjacency: dict[str,set[str]]=defaultdict(set)
+    for group in list(exchange_groups.values())+list(flow_groups.values()):
+        if len(group)<2: continue
+        vals=list(group)
+        for cid in vals:
+            adjacency[cid].update(x for x in vals if x!=cid)
+    remaining=set(order); batches=[]
+    while remaining:
+        seed=min(remaining,key=lambda x:rank[x])
+        batch=[]; queue=[seed]; queued={seed}
+        while queue and len(batch)<batch_size:
+            cid=queue.pop(0)
+            if cid not in remaining: continue
+            remaining.remove(cid); batch.append(cid)
+            neighbors=sorted((n for n in adjacency.get(cid,set()) if n in remaining and n not in queued),key=lambda x:rank.get(x,10**9))
+            queue.extend(neighbors); queued.update(neighbors)
+        if len(batch)<batch_size and remaining:
+            for cid in sorted(remaining,key=lambda x:rank[x])[:batch_size-len(batch)]:
+                remaining.remove(cid); batch.append(cid)
+        batches.append(batch)
+    return batches
+
+
+def _batch_bundle(bundle: dict[str, Any], candidate_ids: list[str], batch_no: int, batch_count: int) -> dict[str, Any]:
+    ids=set(candidate_ids)
+    candidates=[c for c in bundle.get("candidates") or [] if str(c.get("candidate_id")) in ids]
+    memory=[m for m in bundle.get("existing_semantic_memory") or [] if str(m.get("candidate_id")) in ids]
+    relations=[r for r in bundle.get("existing_relations") or [] if str(r.get("src_candidate_id")) in ids or str(r.get("dst_candidate_id")) in ids]
+    transitions=[t for t in bundle.get("state_transitions") or [] if str(t.get("object_candidate_id")) in ids or str(t.get("state_candidate_id")) in ids]
+    full_stats=bundle.get("stats") or {}
+    batch_stats={k:full_stats.get(k) for k in ("new_observations","impacted_candidates","selected_candidates","manual_context_updates","flow_context_updates","graph_neighbor_candidates") if k in full_stats}
+    batch_stats.update({"batch_no":batch_no,"batch_count":batch_count,"batch_candidates":len(candidates)})
+    return {
+        "agent":bundle.get("agent"),"mode":bundle.get("mode"),
+        "watermark_before":bundle.get("watermark_before"),"watermark_after":bundle.get("watermark_after"),
+        "stats":batch_stats,
+        "instructions":bundle.get("instructions"),
+        "batch":{"number":batch_no,"count":batch_count,"candidate_ids":candidate_ids},
+        "candidates":candidates,"existing_semantic_memory":memory,"existing_relations":relations,"state_transitions":transitions,
+    }
+
+
+def _auto_output_budget(candidate_count: int, relation_count: int = 0, transition_count: int = 0) -> int:
+    # Adaptive ceiling. This reserves enough room; actual billing is based on
+    # tokens really generated. Batching keeps the per-call ceiling bounded.
+    wanted=1200 + max(0,int(candidate_count))*105 + max(0,int(relation_count))*35 + max(0,int(transition_count))*30
+    step=500
+    rounded=((wanted+step-1)//step)*step
+    return max(MIN_BATCH_OUTPUT_TOKENS,min(MAX_BATCH_OUTPUT_TOKENS,rounded))
+
+
+def _expected_output_tokens(output_budget: int, candidate_count: int) -> int:
+    # Used only for a softer expected-cost display; hard-stop always uses the
+    # maximum reserved output budget.
+    return min(int(output_budget), max(900, 550 + int(candidate_count)*60))
+
+
+def _batch_bundles(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    plan=bundle.get("batch_plan") or []
+    count=len(plan)
+    return [_batch_bundle(bundle,list(ids),idx+1,count) for idx,ids in enumerate(plan)]
+
+
+def _merge_batch_results(results: list[dict[str, Any]], *, completeness: dict[str, Any]) -> dict[str, Any]:
+    inf_by_id: dict[str,dict[str,Any]]={}
+    rel_by_sig: dict[tuple,dict[str,Any]]={}
+    summaries=[]
+    for result in results:
+        text=str(result.get("summary") or "").strip()
+        if text: summaries.append(text)
+        for inf in result.get("inferences") or []:
+            cid=str(inf.get("candidate_id") or "")
+            if not cid: continue
+            prev=inf_by_id.get(cid)
+            if prev is None or float(inf.get("confidence") or 0)>float(prev.get("confidence") or 0): inf_by_id[cid]=inf
+        for rel in result.get("relationships") or []:
+            sig=(str(rel.get("src_candidate_id") or ""),str(rel.get("relation") or ""),str(rel.get("dst_candidate_id") or ""),str(rel.get("dst_literal") or ""))
+            prev=rel_by_sig.get(sig)
+            if prev is None or float(rel.get("confidence") or 0)>float(prev.get("confidence") or 0): rel_by_sig[sig]=rel
+    summary=f"Análisis completo en {completeness.get('batches_completed',0)}/{completeness.get('batches_total',0)} batches; {completeness.get('candidates_analyzed',0)} candidatos cubiertos."
+    if summaries: summary += " " + " | ".join(summaries[:3])
+    return {"summary":summary,"inferences":list(inf_by_id.values()),"relationships":list(rel_by_sig.values()),"completeness":completeness}
+
+def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = DEFAULT_BATCH_SIZE) -> dict[str, Any]:
     init_schema(conn)
     last = _last_success(conn)
     sync_from = 0 if mode == "full" else last["exchange"]
@@ -613,14 +727,20 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", max_candidates: in
     flow_delta = refresh_flow_memberships(conn)
     since_obs = 0 if mode == "full" else last["observation"]
     semantic_changes=set(manual_delta.get("candidate_ids") or set()) | set(flow_delta.get("candidate_ids") or set())
-    candidates, meta = _build_candidates(conn, since_observation_id=since_obs, mode=mode, limit=max_candidates, extra_impacted=semantic_changes)
+    candidates, meta = _build_candidates(conn, since_observation_id=since_obs, mode=mode, extra_impacted=semantic_changes)
     meta["manual_context_updates"] = int(manual_delta.get("updates") or 0)
     meta["flow_context_updates"] = int(flow_delta.get("updates") or 0)
     ids = {str(c["candidate_id"]) for c in candidates}
     memory = []
+    norms={str(c.get("normalized_key") or "") for c in candidates}
     for row in _existing_semantic_memory(conn):
-        if str(row.get("candidate_id")) in ids or str(row.get("normalized_key")) in {c["normalized_key"] for c in candidates}:
+        if str(row.get("candidate_id")) in ids or str(row.get("normalized_key")) in norms:
             memory.append({k:row.get(k) for k in ("candidate_id","normalized_key","value_preview","category","semantic_type","role","confidence","status","explanation")})
+    relations = _relations_memory(conn, ids)
+    transitions = _state_transitions(conn, ids)
+    plan = _plan_candidate_batches(candidates, batch_size=batch_size)
+    meta["batch_count"] = len(plan)
+    meta["batch_size"] = int(batch_size)
     bundle = {
         "agent": AGENT_VERSION,
         "mode": mode,
@@ -632,28 +752,58 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", max_candidates: in
             "manual_ground_truth_wins": True,
             "do_not_search_vulnerabilities": True,
             "unknown_is_allowed": True,
+            "no_candidate_truncation": True,
         },
         "candidates": candidates,
         "existing_semantic_memory": memory,
-        "existing_relations": _relations_memory(conn, ids),
-        "state_transitions": _state_transitions(conn, ids),
+        "existing_relations": relations,
+        "state_transitions": transitions,
+        "batch_plan": plan,
     }
     return bundle
 
 
-def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, output_tokens: int = DEFAULT_OUTPUT_TOKENS, usd_cop_rate: float | None = None) -> dict[str, Any]:
-    payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, usd_cop_rate: float | None = None) -> dict[str, Any]:
     settings = intel.load_settings()
     rate = float(usd_cop_rate if usd_cop_rate is not None else settings.get("usd_cop_rate") or 0)
-    est = intel.estimate_ai_cost(payload, model, int(output_tokens), rate)
-    est.update({
-        "payload_chars": len(payload),
-        "candidate_count": int(bundle.get("stats", {}).get("selected_candidates") or 0),
-        "new_observations": int(bundle.get("stats", {}).get("new_observations") or 0),
-        "impacted_candidates": int(bundle.get("stats", {}).get("impacted_candidates") or 0),
-        "mode": bundle.get("mode"),
-    })
-    return est
+    batches=_batch_bundles(bundle)
+    details=[]
+    totals={"input_tokens":0,"max_output_tokens":0,"expected_output_tokens":0,"max_usd":0.0,"expected_usd":0.0,"payload_chars":0}
+    for b in batches:
+        payload=json.dumps(b,ensure_ascii=False,separators=(",",":"))
+        candidate_count=len(b.get("candidates") or [])
+        out_budget=_auto_output_budget(candidate_count,len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
+        expected_out=_expected_output_tokens(out_budget,candidate_count)
+        max_est=intel.estimate_ai_cost(payload,model,out_budget,rate)
+        expected_est=intel.estimate_ai_cost(payload,model,expected_out,rate)
+        details.append({"batch":int((b.get("batch") or {}).get("number") or 0),"candidates":candidate_count,"input_tokens_est":int(max_est.get("input_tokens_est") or 0),"output_tokens_budget":out_budget,"expected_output_tokens":expected_out,"max_total_usd_est":float(max_est.get("max_total_usd_est") or 0),"max_total_cop_est":float(max_est.get("max_total_cop_est") or 0)})
+        totals["input_tokens"] += int(max_est.get("input_tokens_est") or 0)
+        totals["max_output_tokens"] += int(out_budget)
+        totals["expected_output_tokens"] += int(expected_out)
+        totals["max_usd"] += float(max_est.get("max_total_usd_est") or 0)
+        totals["expected_usd"] += float(expected_est.get("max_total_usd_est") or 0)
+        totals["payload_chars"] += len(payload)
+    return {
+        "model":model,
+        "input_tokens_est":totals["input_tokens"],
+        "output_tokens_budget":totals["max_output_tokens"],
+        "output_tokens_max_batch":max((d["output_tokens_budget"] for d in details),default=0),
+        "expected_output_tokens":totals["expected_output_tokens"],
+        "max_total_usd_est":totals["max_usd"],
+        "expected_total_usd_est":totals["expected_usd"],
+        "usd_cop_rate":rate,
+        "max_total_cop_est":totals["max_usd"]*rate,
+        "expected_total_cop_est":totals["expected_usd"]*rate,
+        "payload_chars":totals["payload_chars"],
+        "candidate_count":int(bundle.get("stats",{}).get("selected_candidates") or 0),
+        "new_observations":int(bundle.get("stats",{}).get("new_observations") or 0),
+        "impacted_candidates":int(bundle.get("stats",{}).get("impacted_candidates") or 0),
+        "batch_count":len(details),
+        "batches":details,
+        "mode":bundle.get("mode"),
+        "candidate_cap_applied":False,
+        "pricing_snapshot":"2026-11-01",
+    }
 
 
 def _output_schema() -> dict[str, Any]:
@@ -664,7 +814,7 @@ def _output_schema() -> dict[str, Any]:
         "properties": {
             "summary": {"type": "string"},
             "inferences": {
-                "type": "array", "maxItems": 160,
+                "type": "array",
                 "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["candidate_id","category","semantic_type","role","confidence","explanation","evidence_observation_ids"],
@@ -680,7 +830,7 @@ def _output_schema() -> dict[str, Any]:
                 },
             },
             "relationships": {
-                "type": "array", "maxItems": 160,
+                "type": "array",
                 "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["src_candidate_id","relation","dst_candidate_id","dst_literal","confidence","explanation","evidence_observation_ids"],
@@ -868,12 +1018,16 @@ def _persist_result(conn, run_id: int, bundle: dict[str, Any], result: dict[str,
     return counts
 
 
-def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, output_tokens: int = DEFAULT_OUTPUT_TOKENS, budget_usd: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium") -> dict[str, Any]:
+def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium") -> dict[str, Any]:
     init_schema(conn)
     bundle = build_analysis_bundle(conn, mode=mode)
-    estimate = estimate_bundle(bundle, model=model, output_tokens=output_tokens)
-    if budget_usd is not None and float(estimate.get("max_total_usd_est") or 0) > float(budget_usd):
-        raise RuntimeError(f"El costo máximo estimado ${estimate['max_total_usd_est']:.4f} supera tu límite ${float(budget_usd):.4f}")
+    estimate = estimate_bundle(bundle, model=model)
+    rate=float(estimate.get("usd_cop_rate") or 0)
+    if budget_cop is not None and float(estimate.get("max_total_cop_est") or 0) > float(budget_cop):
+        raise RuntimeError(
+            f"El costo máximo estimado COP ${float(estimate.get('max_total_cop_est') or 0):,.0f} "
+            f"supera tu límite COP ${float(budget_cop):,.0f}. Negro no recorta candidatos: aumenta el presupuesto o reduce el scope."
+        )
     before = bundle.get("watermark_before") or {}
     after = bundle.get("watermark_after") or {}
     cur = conn.execute(
@@ -882,29 +1036,52 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, outp
         (AGENT_VERSION,mode,model,int(before.get("exchange") or 0),int(before.get("observation") or 0),int(after.get("exchange") or 0),int(after.get("observation") or 0),int(bundle.get("stats",{}).get("new_observations") or 0),int(bundle.get("stats",{}).get("selected_candidates") or 0),json.dumps(estimate),now_iso()),
     )
     run_id = int(cur.lastrowid)
+    batch_bundles=_batch_bundles(bundle)
+    batch_results=[]
+    usage_total={"input_tokens":0,"output_tokens":0,"total_tokens":0}
+    completed=0
     try:
         if not bundle.get("candidates"):
-            result = {"summary":"No hay candidatos nuevos o impactados que justifiquen una llamada al modelo.","inferences":[],"relationships":[]}
-            usage = {"input_tokens":0,"output_tokens":0,"total_tokens":0}
+            completeness={"candidates_total":0,"candidates_analyzed":0,"batches_total":0,"batches_completed":0,"coverage_pct":100.0,"truncated":False}
+            result = {"summary":"No hay candidatos nuevos o impactados que justifiquen una llamada al modelo.","inferences":[],"relationships":[],"completeness":completeness}
         else:
-            result, usage = run_model(bundle, model=model, output_tokens=output_tokens, reasoning_effort=reasoning_effort)
+            for b in batch_bundles:
+                out_budget=_auto_output_budget(len(b.get("candidates") or []),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
+                batch_result,batch_usage=run_model(b,model=model,output_tokens=out_budget,reasoning_effort=reasoning_effort)
+                batch_results.append(batch_result); completed += 1
+                for key in usage_total:
+                    usage_total[key] += int(batch_usage.get(key) or 0)
+            total_candidates=len(bundle.get("candidates") or [])
+            completeness={
+                "candidates_total":total_candidates,"candidates_analyzed":total_candidates,
+                "batches_total":len(batch_bundles),"batches_completed":completed,
+                "coverage_pct":100.0,"truncated":False,
+            }
+            result=_merge_batch_results(batch_results,completeness=completeness)
+        usage=usage_total
         persisted = _persist_result(conn, run_id, bundle, result, auto_apply_threshold=auto_apply_threshold, suggest_threshold=suggest_threshold)
         cost = _actual_cost(model, usage)
-        conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,finished_at=? WHERE id=?", (json.dumps(usage),json.dumps(result,ensure_ascii=False),cost,now_iso(),run_id))
-        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage,"cost_usd":cost,"result":result,"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
+        cost_cop=cost*rate
+        conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?", (json.dumps(usage),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
+        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
     except ContextAgentModelError as exc:
-        usage=dict(exc.usage or {})
-        cost=_actual_cost(model,usage)
-        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,cost_usd=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage),cost,str(exc)[:2000],now_iso(),run_id))
+        partial=dict(exc.usage or {})
+        for key in usage_total:
+            usage_total[key] += int(partial.get(key) or 0)
+        cost=_actual_cost(model,usage_total); cost_cop=cost*rate
+        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":sum(len(x.get("candidates") or []) for x in batch_bundles[:completed]),"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((completed/max(1,len(batch_bundles)))*100,2),"truncated":True}}
+        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
     except Exception as exc:
-        conn.execute("UPDATE semantic_agent_runs SET status='error',error_text=?,finished_at=? WHERE id=?", (str(exc)[:2000],now_iso(),run_id))
+        cost=_actual_cost(model,usage_total); cost_cop=cost*rate
+        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":sum(len(x.get("candidates") or []) for x in batch_bundles[:completed]),"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((completed/max(1,len(batch_bundles)))*100,2),"truncated":True}}
+        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
 
 
-def estimate(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, output_tokens: int = DEFAULT_OUTPUT_TOKENS) -> dict[str, Any]:
+def estimate(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL) -> dict[str, Any]:
     bundle = build_analysis_bundle(conn, mode=mode)
-    est = estimate_bundle(bundle, model=model, output_tokens=output_tokens)
+    est = estimate_bundle(bundle, model=model)
     return {"estimate":est,"stats":bundle.get("stats",{}),"watermark_before":bundle.get("watermark_before"),"watermark_after":bundle.get("watermark_after"),"sample_candidates":bundle.get("candidates",[])[:12]}
 
 
@@ -925,12 +1102,16 @@ def dashboard(conn) -> dict[str, Any]:
         r["src_label"] = labels.get(str(r.get("src_candidate_id"))) or str(r.get("src_candidate_id") or "")
         r["dst_label"] = labels.get(str(r.get("dst_candidate_id"))) if r.get("dst_candidate_id") else str(r.get("dst_literal") or "")
     total_cost = float(conn.execute("SELECT COALESCE(SUM(cost_usd),0) v FROM semantic_agent_runs WHERE cost_usd IS NOT NULL").fetchone()["v"] or 0)
+    settings=intel.load_settings(); rate=float(settings.get("usd_cop_rate") or 0)
+    total_cost_cop=float(conn.execute("SELECT COALESCE(SUM(cost_cop),0) v FROM semantic_agent_runs WHERE cost_cop IS NOT NULL").fetchone()["v"] or 0)
+    if not total_cost_cop and total_cost: total_cost_cop=total_cost*rate
     counts = {
         "observations": int(conn.execute("SELECT COUNT(*) c FROM semantic_observations").fetchone()["c"] or 0),
         "inferences": len(inferences),
         "relations": len(relations),
         "runs": int(conn.execute("SELECT COUNT(*) c FROM semantic_agent_runs WHERE status='completed'").fetchone()["c"] or 0),
         "cost_usd": total_cost,
+        "cost_cop": total_cost_cop,
     }
     return {"runs":runs,"inferences":inferences,"relations":relations,"counts":counts}
 

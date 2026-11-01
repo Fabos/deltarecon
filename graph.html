@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+{% block title %}{{ flow_data.flow.name }} · Flow · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero flow-minimal-hero">
+  <div>
+    <p class="eyebrow">FLOW #{{ flow_data.flow.id }}</p>
+    <h1>{{ flow_data.flow.name }}</h1>
+    <p class="muted">{{ flow_data.flow.description or 'Proceso observado del aplicativo.' }}</p>
+    <div class="hero-meta">
+      <span class="badge">{{ flow_data.included_steps|length }} Steps</span>
+      {% if flow_data.flow.capture_status == 'capturing' %}<span class="badge state-chip">● capturando · {{ flow_data.steps|length }} Request(s)</span>{% endif %}
+      {% if flow_data.flow.identity_name %}<span class="badge identity-badge">{{ flow_data.flow.identity_name }}</span>{% endif %}
+      {% if flow_runtime.variables %}<span class="badge">{{ flow_runtime.variables|length }} valores dinámicos</span>{% endif %}
+      {% if flow_runtime.prerequisites %}<span class="badge">{{ flow_runtime.prerequisites|length }} requisito(s)</span>{% endif %}
+      {% if flow_runners %}<span class="badge class-interesting">{{ flow_runners|length }} escenario(s)</span>{% endif %}
+    </div>
+  </div>
+  <div class="page-actions flow-primary-actions">
+    {% if flow_data.flow.capture_status == 'capturing' %}
+      <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/stop" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button danger" type="submit">■ Detener captura</button></form>
+    {% else %}
+      <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/capture/start" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">● Activar captura</button></form>
+    {% endif %}
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/run" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button secondary" type="submit">▶ Reproducir flujo</button></form>
+    <a class="button" href="#create-scenario">+ Crear prueba</a>
+    <a class="button ghost" href="{{ target_base }}/flows">← Flujos</a>
+  </div>
+</section>
+
+{% if flow_data.flow.capture_status == 'capturing' %}
+<section class="panel flow-capture-status capture-active-panel">
+  <div>
+    <p class="eyebrow">CAPTURA ACTIVA</p>
+    <h2>Ahora recorre el proceso real</h2>
+    <p class="muted">Navega el <b>target a través de Burp</b>. Negro añadirá aquí las Requests que el Burp Bridge vaya enviando mientras esta ventana esté activa.</p>
+    <p class="muted small">Importante: Negro no observa tu navegador directamente. Si una Request no llega a Negro mediante el Bridge, no aparecerá en este Flow.</p>
+  </div>
+  {% set session_baseline = flow_data.flow.capture_session_start_step_count or 0 %}
+  {% set session_new = (flow_data.steps|length) - session_baseline %}
+  <div class="capture-live-count"><b>{{ session_new if session_new > 0 else 0 }}</b><span>nueva(s) esta sesión · {{ flow_data.steps|length }} total</span></div>
+</section>
+{% elif capture_stopped %}
+<section class="panel flow-capture-status {% if capture_added %}capture-finished-panel{% else %}capture-empty-panel{% endif %}">
+  {% if capture_added %}
+    <div><p class="eyebrow">CAPTURA DETENIDA</p><h2>{{ capture_added }} Request(s) nuevas · {{ captured_steps }} total</h2><p class="muted">Puedes editar el Flow ahora y volver a <b>Activar captura</b> en cualquier momento para seguir agregando tráfico al mismo proceso.</p></div>
+  {% else %}
+    <div><p class="eyebrow">CAPTURA DETENIDA</p><h2>No llegaron Requests nuevas en esta sesión</h2><p class="muted">El Flow conserva sus {{ captured_steps or flow_data.steps|length }} Request(s) actuales. Puedes corregirlo y volver a activar la captura cuando quieras.</p><p class="muted small">Si esperabas tráfico nuevo, comprueba navegador → Burp → Bridge → Negro y el target activo.</p></div>
+  {% endif %}
+</section>
+{% elif capture_started %}
+<section class="panel flow-capture-status capture-active-panel">
+  <div><p class="eyebrow">CAPTURA REACTIVADA</p><h2>Sigue recorriendo el proceso</h2><p class="muted">Lo que ya habías ordenado permanece intacto. Las nuevas Requests se agregarán al final como candidatos para que luego las ubiques o elimines.</p></div>
+</section>
+{% else %}
+<section class="panel flow-capture-status capture-paused-panel">
+  <div><p class="eyebrow">CAPTURA PAUSADA</p><h2>Puedes seguir capturando cuando quieras</h2><p class="muted">Activa la captura, recorre otra parte del proceso en el navegador y deténla de nuevo. El Flow no se reinicia: conserva lo anterior y acumula las nuevas Requests.</p></div>
+</section>
+{% endif %}
+
+<section class="scenario-model-strip flow-model-strip" aria-label="Modelo mental de Flow">
+  <span class="active"><b>Flow</b><small>lo que ocurrió</small></span><i>→</i>
+  <span><b>Escenario</b><small>lo que quiero probar</small></span><i>→</i>
+  <span><b>Run</b><small>qué ocurrió al ejecutar</small></span>
+</section>
+
+<section class="panel scenario-create-card scenario-create-visible" id="create-scenario">
+  <div class="panel-head scenario-create-head">
+    <div><p class="eyebrow">NUEVA PRUEBA</p><h2>¿Qué quieres probar sobre este Flow?</h2><p class="muted small">Negro copia la secuencia como Escenario. El Flow original no cambia; después modificas sólo el Step que te interesa.</p></div>
+    <span class="badge">Flow → Escenario</span>
+  </div>
+  <form class="scenario-create-form scenario-create-fast" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runners/create" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label class="scenario-name-field"><span>Nombre de la prueba</span><input id="scenario-name" name="alias" required placeholder="Ej. Emitir ticket sin pago / User B consulta Order A"></label>
+    <label class="grow"><span>Pregunta <small>(opcional)</small></span><input name="description" placeholder="¿Qué comportamiento quieres comprobar?"></label>
+    <button class="button" type="submit">+ Crear escenario</button>
+    <details class="scenario-create-options"><summary>Opciones</summary><div class="form-row"><label><span>Identity normal</span><select name="identity_id"><option value="">Heredar del Flow</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label><label><span>Hypothesis</span><select name="hypothesis_id"><option value="">Sin Hypothesis</option>{% for h in hypotheses %}<option value="{{ h.id }}">#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select></label></div></details>
+  </form>
+</section>
+
+{% if flow_runners %}
+<section class="flow-scenarios-strip">
+  <div class="flow-scenarios-label"><b>Pruebas basadas en este Flow</b><a href="{{ target_base }}/runners">Ver todos →</a></div>
+  <div class="flow-scenarios-list">{% for r in flow_runners[:6] %}<a href="{{ target_base }}/runners/{{ r.id }}"><b>{{ r.alias }}</b><small>{{ r.run_count }} run(s){% if r.source_flow_count and r.source_flow_count>1 %} · {{ r.source_flow_count }} Flows{% endif %}</small></a>{% endfor %}</div>
+</section>
+{% endif %}
+
+<section class="panel flow-sequence-minimal" id="flow-sequence">
+  <div class="panel-head"><div><p class="eyebrow">SECUENCIA</p><h2>Así funciona el proceso</h2><p class="muted small">Deja sólo la historia útil. Agrega Requests y arrastra los Steps para ordenar el proceso como realmente ocurre.</p></div><span>{{ flow_data.included_steps|length }}/{{ flow_data.steps|length }} incluidos</span></div>
+
+  <div class="flow-editor-bar">
+    <form class="flow-inline-add flow-quick-add" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-exchange" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label><span>Agregar Request</span><input name="exchange_id" type="number" min="1" required placeholder="# Request, ej. 4812"></label>
+      <button class="button secondary" type="submit">+ Agregar</button>
+      <small class="flow-add-hint">Se agrega al final. Luego arrástrala al lugar correcto.</small>
+    </form>
+    <div class="flow-editor-actions">
+      {% if flow_data.noise_suggested_count %}<form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/exclude-noise" method="post" onsubmit="return confirm('¿Omitir {{ flow_data.noise_suggested_count }} Step(s) marcados por Negro como posible ruido? Puedes volver a incluirlos individualmente.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost" type="submit">Limpiar ruido sugerido · {{ flow_data.noise_suggested_count }}</button></form>{% endif %}
+      {% if flow_data.ignored_count %}<span class="muted small">{{ flow_data.ignored_count }} omitido(s); siguen visibles para que puedas recuperarlos.</span>{% endif %}
+    </div>
+  </div>
+
+  {% set bulk_removed = request.query_params.get('bulk_removed', '0')|int %}
+  {% set bulk_blocked = request.query_params.get('bulk_blocked', '0')|int %}
+  {% if bulk_removed or bulk_blocked %}
+  <div class="flow-bulk-result {% if bulk_blocked %}has-warning{% endif %}">
+    {% if bulk_removed %}<b>{{ bulk_removed }} Step(s) quitado(s) del Flow.</b>{% endif %}
+    {% if bulk_blocked %}<span>{{ bulk_blocked }} no se quitaron porque tienen Runs, variables o bindings asociados.</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <form class="flow-bulk-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/steps/remove" method="post" data-flow-bulk-form onsubmit="return window.confirmFlowBulkRemove ? window.confirmFlowBulkRemove(this) : confirm('¿Quitar los Steps seleccionados del Flow? Las Requests HTTP seguirán guardadas en Negro.')">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="flow-bulk-toolbar" data-flow-bulk-toolbar>
+      <label class="flow-select-all"><input type="checkbox" data-flow-select-all> <span>Seleccionar todo</span></label>
+      <span class="muted small" data-flow-selection-count>0 seleccionados</span>
+      <button class="button ghost danger-button" type="submit" data-flow-bulk-remove disabled>Quitar seleccionadas del Flow</button>
+      <button class="button ghost" type="button" data-flow-clear-selection disabled>Limpiar selección</button>
+      <small>Quita sólo la pertenencia al Flow; no borra las Requests capturadas.</small>
+    </div>
+  </form>
+
+  <div class="flow-timeline minimal-timeline flow-sortable" data-flow-sortable data-flow-id="{{ flow_data.flow.id }}" data-csrf="{{ csrf_token }}">
+  {% for s in flow_data.steps %}
+    <article class="flow-step minimal-flow-step {% if not s.included %}flow-step-ignored{% endif %}" id="flow-step-{{ s.id }}" data-flow-step-id="{{ s.id }}" data-position="{{ s.position }}">
+      <label class="flow-step-select" title="Seleccionar Step {{ s.position }}"><input type="checkbox" value="{{ s.id }}" data-flow-select-step aria-label="Seleccionar Step {{ s.position }}"></label>
+      <button class="flow-drag-handle" type="button" data-drag-handle aria-label="Arrastrar Step {{ s.position }}" title="Mantén y arrastra para mover"><span aria-hidden="true">⠿</span></button>
+      <div class="flow-step-index" data-step-index>{{ s.position }}</div>
+      <div class="flow-step-main">
+        <div class="flow-step-head human-step-head">
+          <div class="human-step-copy">
+            <div class="human-step-kicker">STEP {{ s.position }}{% if s.role_label %} · {{ s.role_label|upper }}{% endif %}</div>
+            {% if s.label %}<h3 class="flow-step-title">{{ s.label }}</h3>{% endif %}
+            <div class="flow-request-summary" title="{{ s.method }} {{ s.path }}">
+              <span class="flow-method">{{ s.method }}</span>
+              <code class="flow-path" title="{{ s.path }}">{{ s.path }}</code>
+              <span class="flow-status {% if s.status_code and s.status_code >= 200 and s.status_code < 300 %}is-ok{% elif s.status_code and s.status_code >= 400 %}is-error{% endif %}">{{ s.status_code or '—' }}</span>
+              <span class="flow-request-id">Request #{{ s.exchange_id }}</span>
+            </div>
+            {% if s.request_parameters %}
+            <div class="flow-request-params" aria-label="Parámetros observados en la Request">
+              <span class="flow-param-label">PARÁMETROS</span>
+              {% for p in s.request_parameters[:6] %}<span class="flow-param-chip kind-{{ p.kind }}" title="{{ p.location }} · {{ p.name }}={{ p.value }}"><b>{{ p.name }}</b>=<code>{{ p.value }}</code></span>{% endfor %}
+              {% if s.request_parameters|length > 6 %}
+              <details class="flow-param-more"><summary>+{{ s.request_parameters|length - 6 }} más</summary><div class="flow-param-popover">{% for p in s.request_parameters[6:] %}<span class="flow-param-chip kind-{{ p.kind }}" title="{{ p.location }}"><b>{{ p.name }}</b>=<code>{{ p.value }}</code></span>{% endfor %}</div></details>
+              {% endif %}
+            </div>
+            {% endif %}
+            {% if s.notes %}<p class="human-step-note" title="{{ s.notes }}">{{ s.notes }}</p>{% endif %}
+            {% if s.hostname %}<small class="flow-host">{{ s.hostname }}</small>{% endif %}
+          </div>
+          <div class="badges">{% if s.checkpoint_label %}<span class="badge checkpoint-badge">◆ {{ s.checkpoint_label }}</span>{% endif %}{% if s.identity_name %}<span class="badge identity-badge">{{ s.identity_name }}</span>{% endif %}{% if s.noise_suggested and s.included %}<span class="badge noise-badge" title="{{ s.noise_reason or 'Posible tráfico de fondo' }}">Ruido sugerido</span>{% endif %}{% if not s.included %}<span class="badge">Omitido</span>{% endif %}</div>
+        </div>
+
+        {% set needs = flow_runtime.step_inputs.get(s.id, []) %}{% set produces = flow_runtime.step_outputs.get(s.id, []) %}
+        {% if needs or produces %}
+        <div class="step-story compact-step-story" id="flow-step-pos-{{ s.position }}">
+          {% if needs %}<div class="step-story-group"><span class="step-story-label">ENTRA</span>{% for x in needs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}✋{% else %}←{% endif %} {{ x.name }}{% if x.target_name and x.target_name != x.name %} <b>→ {{ x.target_name }}</b>{% endif %} <small>· {% if x.source_type=='IDENTITY' and x.identity_name %}{{ x.identity_name }}{% elif x.source_type in ['PREVIOUS_RESPONSE','REQUEST_VALUE'] and x.producer_position %}Step {{ x.producer_position }}{% elif x.source_type=='OBJECT' and x.object_type %}{{ x.object_type }}{% else %}{{ x.source_label }}{% endif %}</small></span>{% endfor %}</div>{% endif %}
+          {% if produces %}<div class="step-story-group"><span class="step-story-label">SALE</span>{% for x in produces %}<span class="story-chip source-{{ x.source_type|lower }}">{{ 'Request' if x.source_type=='REQUEST_VALUE' else 'Response' }} · <b>{{ x.name }}</b>{% if x.consumers %} → Step {{ x.consumers|join(', ') }}{% endif %}</span>{% endfor %}</div>{% endif %}
+        </div>
+        {% endif %}
+
+        <div class="minimal-step-actions">
+          <a class="button secondary small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect?flow_id={{ flow_data.flow.id }}&flow_step_id={{ s.id }}">Ver HTTP</a>
+          <details class="step-more-menu">
+            <summary class="button ghost small-button">⋯</summary>
+            <div class="step-more-popover">
+              <details class="human-step-edit"><summary>Editar nombre / rol / nota</summary><form class="stack-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Nombre</span><input name="label" value="{{ s.label or '' }}" placeholder="Cliente crea la orden"></label><label><span>Rol</span><input name="role_label" value="{{ s.role_label or '' }}" placeholder="Cliente / Vendedor / Admin"></label><label><span>Nota corta</span><textarea name="notes" rows="2" placeholder="Qué ocurre aquí y por qué importa">{{ s.notes or '' }}</textarea></label><label><span>Checkpoint <small>(opcional)</small></span><input name="checkpoint_label" value="{{ s.checkpoint_label or '' }}" placeholder="Orden pagada"></label><input type="hidden" name="state_label" value="{{ s.state_label or '' }}"><button class="button secondary" type="submit">Guardar</button></form></details>
+              <a href="{{ target_base }}/graph?focus=request:{{ s.exchange_id }}">Ver en mapa</a>
+              <a href="{{ target_base }}/parameters/related/{{ s.exchange_id }}">Buscar relacionados</a>
+              {% if not loop.first %}<a href="{{ target_base }}/parameters/diff?a={{ flow_data.steps[loop.index0-1].exchange_id }}&b={{ s.exchange_id }}">Comparar con Step anterior</a>{% endif %}
+              <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/include" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="included" value="{{ '1' if not s.included else '0' }}"><button class="menu-link" type="submit">{{ 'Volver a incluir' if not s.included else 'Omitir al ejecutar' }}</button></form>
+              <details class="step-position-fallback"><summary>Mover por número</summary><form class="step-move-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/move" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Posición</span><input name="target_position" type="number" min="1" max="{{ flow_data.steps|length }}" value="{{ s.position }}"></label><button class="menu-link" type="submit">Mover</button></form></details>
+              <div class="step-boundary-row"><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="start"><button class="menu-link" type="submit">Marcar inicio</button></form><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/boundary" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="boundary" value="end"><button class="menu-link" type="submit">Marcar final</button></form></div>
+              <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/step/{{ s.id }}/remove" method="post" onsubmit="return confirm('¿Quitar este Step del Flow? La Request seguirá guardada en Negro. Si el Step alimenta variables o bindings, esas referencias pueden cambiar.')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="menu-link danger-link" type="submit">Quitar del Flow</button></form>
+            </div>
+          </details>
+        </div>
+      </div>
+    </article>
+  {% else %}<p class="empty">Este Flow todavía no tiene Requests.</p>{% endfor %}
+  </div>
+</section>
+
+<details class="panel flow-collapsible-section">
+  <summary><span><b>Valores dinámicos</b><small>{{ flow_runtime.variables|length }} configurado{{ '' if flow_runtime.variables|length == 1 else 's' }} · OTP, JWT, IDs y otros valores que cambian.</small></span><span>＋</span></summary>
+  <div class="flow-variable-grid simple-variable-grid">
+    {% for v in flow_runtime.variables %}
+      <article class="flow-variable-card simple-variable-card source-{{ v.source_type|lower }}">
+        <div class="simple-variable-main"><div class="simple-variable-icon">{% if v.source_type=='MANUAL_INPUT' %}🟣{% elif v.source_type=='PREVIOUS_RESPONSE' %}🔵{% elif v.source_type=='IDENTITY' %}🟢{% elif v.source_type=='OBJECT' %}🟠{% else %}⚪{% endif %}</div><div class="simple-variable-copy"><div class="simple-variable-title-row"><h4>{{ v.name }}</h4>{% if v.sensitive %}<span class="badge">Sensitive</span>{% endif %}</div><p class="simple-variable-source"><b>{{ v.source_label }}</b>{% if v.source_type=='MANUAL_INPUT' %} · “{{ v.prompt or v.name }}”{% elif v.source_type=='PREVIOUS_RESPONSE' %} · Step {{ v.producer_position }}{% elif v.source_type=='IDENTITY' %} · {{ v.identity_name or 'Identity' }}{% endif %}</p><div class="simple-variable-uses"><span>Se usa en:</span>{% if v.consumers %}{% for c in v.consumers %}<a href="#flow-step-pos-{{ c }}" class="badge">Step {{ c }}</a>{% endfor %}{% else %}<span class="muted">todavía no se usa</span>{% endif %}</div></div></div>
+      </article>
+    {% else %}<div class="empty-state compact"><strong>Sin valores dinámicos.</strong><span>Abre un Step → Ver HTTP → Conexiones de datos. Ahí eliges qué pedir y qué enviar al siguiente Step.</span></div>{% endfor %}
+  </div>
+  <p class="muted small">La forma recomendada es <b>Ver HTTP → Conexiones de datos</b>: selecciona un valor y decide si Negro debe pedirlo o enviarlo al siguiente Step. La configuración manual queda como opción avanzada.</p>
+  <details class="advanced-context"><summary>Configuración manual avanzada</summary>
+    <form class="runtime-variable-form simple-source-form" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/variables" method="post" data-simple-source-form>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><label><span>Fuente</span><select name="source_type" data-flow-source><option value="MANUAL_INPUT">Pedírmelo al ejecutar</option><option value="PREVIOUS_RESPONSE">Respuesta anterior</option><option value="IDENTITY">Identity</option><option value="OBJECT">Object</option><option value="CONSTANT">Fijo</option><option value="GENERATED">Generado</option></select></label><label><span>Nombre</span><input name="name" required placeholder="otp / jwt / orderId"></label><label class="wide"><span>Descripción</span><input name="description"></label><label data-source-field="MANUAL_INPUT"><span>Pregunta</span><input name="prompt"></label><label data-source-field="CONSTANT"><span>Valor</span><input name="default_value"></label><label data-source-field="PREVIOUS_RESPONSE"><span>Step productor</span><select name="producer_step_id"><option value="">Selecciona…</option>{% for s in flow_data.included_steps %}<option value="{{ s.id }}">Step {{ s.position }} · {{ s.method }} {{ s.path }}</option>{% endfor %}</select></label><label data-source-field="PREVIOUS_RESPONSE"><span>Extractor</span><select name="extraction_type"><option value="json">JSON</option><option value="header">Header</option><option value="cookie">Cookie</option><option value="location">Location</option><option value="regex">Regex</option></select></label><label data-source-field="PREVIOUS_RESPONSE"><span>Expresión</span><input name="extraction_expr"></label><label data-source-field="IDENTITY"><span>Identity</span><select name="identity_id"><option value="">Selecciona…</option>{% for i in identities %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}</select></label><label data-source-field="IDENTITY"><span>Campo</span><input name="identity_field" placeholder="auth:Authorization"></label><label data-source-field="OBJECT"><span>Object</span><select name="object_id"><option value="">Selecciona…</option>{% for o in business_objects %}<option value="{{ o.id }}">{{ o.object_type }} · {{ o.object_value }}</option>{% endfor %}</select></label><label data-source-field="GENERATED"><span>Generar</span><select name="generated_type"><option value="token">Token</option><option value="uuid">UUID</option><option value="email">Email</option></select></label><div class="wide checkbox-row"><label><input type="checkbox" name="required" value="1" checked> Obligatorio</label><label><input type="checkbox" name="sensitive" value="1"> Ocultar</label><label><input type="checkbox" name="exported" value="1"> Exportar</label></div><button class="button secondary">Guardar</button>
+    </form>
+  </details>
+</details>
+
+<details class="panel flow-collapsible-section">
+  <summary><span><b>Cómo se reproduce este Flow</b><small>Configuración para repetir el proceso normal: Identity, requisitos y Runs recientes.</small></span><span>＋</span></summary>
+  <div class="runtime-grid compact-runtime-grid">
+    <article class="runtime-card"><h3>Identity por defecto</h3><form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/default-identity" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="identity_id"><option value="">Sin Identity fija</option>{% for i in identities %}<option value="{{ i.id }}" {% if flow_data.flow.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select><button class="button secondary">Guardar</button></form></article>
+    <article class="runtime-card"><h3>Flows requeridos</h3>{% for p in flow_runtime.prerequisites %}<div class="runtime-row"><span>{{ p.prerequisite_name }}</span><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites/{{ p.prerequisite_flow_id }}/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button">×</button></form></div>{% else %}<p class="muted small">Ninguno.</p>{% endfor %}{% if reusable_flows %}<form class="form-row" action="{{ target_base }}/flows/{{ flow_data.flow.id }}/runtime/prerequisites" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="prerequisite_flow_id">{% for f in reusable_flows %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select><button class="button ghost">+ Añadir</button></form>{% endif %}</article>
+    <article class="runtime-card"><h3>Runs recientes</h3>{% for r in flow_runtime.runs[:5] %}<a class="runtime-run-row" href="{{ target_base }}/flow-runs/{{ r.id }}"><span>Run #{{ r.id }}</span><small>{{ r.status }}</small></a>{% else %}<p class="muted small">Sin Runs.</p>{% endfor %}</article>
+  </div>
+</details>
+
+<details class="panel flow-collapsible-section">
+  <summary><span><b>Editar captura y herramientas</b><small>Agregar Requests, comparar, mapa e Investigation.</small></span><span>＋</span></summary>
+  <div class="flow-secondary-tools-grid">
+    <article><h3>Agregar un rango</h3><p class="muted small">Útil si ya conoces un bloque consecutivo de Requests. Para insertar una Request concreta en mitad de la historia, usa el editor de secuencia de arriba.</p><div class="flow-add-forms"><form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/add-range" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="start_exchange" type="number" min="1" required placeholder="Desde #"><input name="end_exchange" type="number" min="1" required placeholder="Hasta #"><input type="hidden" name="exclude_options" value="1"><button class="button ghost">Agregar rango</button></form></div></article>
+    <article><h3>Herramientas</h3><div class="row-actions"><a class="button ghost" href="{{ target_base }}/graph?focus=flow:{{ flow_data.flow.id }}">Mapa</a>{% if flow_investigations %}{% for i in flow_investigations[:2] %}<a class="button ghost" href="{{ target_base }}/investigations/{{ i.id }}">Investigation · {{ i.title }}</a>{% endfor %}{% endif %}</div></article>
+  </div>
+  <details class="advanced-context flow-ai-collapsed">
+    <summary>Explorar lógica con IA <small>(opcional)</small></summary>
+    <section class="flow-logic-panel compact-subsection" data-flow-logic data-flow-id="{{ flow_data.flow.id }}" data-estimate-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-estimate" data-run-url="/api/t/{{ target_key }}/flows/{{ flow_data.flow.id }}/logic-run">
+      <div class="flow-logic-head"><div><h3>Explorar lógica de este Flow</h3><p class="muted small">Negro propone preguntas; no ejecuta nada automáticamente.</p></div><div class="flow-logic-actions"><select data-flow-ai-model><option value="gpt-6-luna" {% if settings.ai_model=='gpt-6-luna' %}selected{% endif %}>GPT-6 Luna</option><option value="gpt-6-sol" {% if settings.ai_model=='gpt-6-sol' %}selected{% endif %}>GPT-6 Sol</option></select><button class="btn-secondary" type="button" data-flow-ai-estimate>Estimar</button><button class="button" type="button" data-flow-ai-run hidden>Dame ideas</button></div></div>
+      <div class="flow-logic-status" data-flow-ai-status>Primero analiza el proceso y luego propone ideas.</div><div class="flow-logic-results" data-flow-ai-results></div><script type="application/json" data-flow-ai-initial>{{ logic_ai_latest|tojson }}</script>
+      {% if logic_ai_batches %}<details class="advanced-context"><summary>Historial IA · {{ logic_ai_batches|length }}</summary><div class="ai-generation-list">{% for batch in logic_ai_batches[:5] %}<article class="ai-generation"><b>Exploración #{{ batch.generation_number }}</b><small>{{ batch.created_at }}</small>{% for idea in batch.ideas[:5] %}<div class="runtime-row"><span>{{ idea.question }}</span>{% if idea.status not in ['dismissed','converted_to_hypothesis'] %}<form action="{{ target_base }}/ai-ideas/{{ idea.id }}/hypothesis" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button">◆ Hipótesis</button></form>{% endif %}</div>{% endfor %}</article>{% endfor %}</div></details>{% endif %}
+    </section>
+  </details>
+</details>
+
+<details class="panel flow-danger-zone">
+  <summary><span><b>Administrar Flow</b><small>Acciones poco frecuentes.</small></span><span>＋</span></summary>
+  <div class="flow-danger-row">
+    <div><b>Eliminar este Flow</b><p class="muted small">Borra la secuencia y su configuración asociada. Las Requests HTTP originales permanecen en Negro.</p></div>
+    <form action="{{ target_base }}/flows/{{ flow_data.flow.id }}/delete" method="post" onsubmit="return confirm('¿Eliminar este Flow? Las Requests HTTP originales NO se borrarán. Las pruebas (Escenarios) y Runs ligados directamente a este Flow también pueden eliminarse.')">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="confirm_delete" value="delete">
+      <button class="button danger" type="submit">Eliminar Flow</button>
+    </form>
+  </div>
+</details>
+
+<script>
+(() => {
+  const form=document.querySelector('[data-simple-source-form]'); if(!form) return;
+  const source=form.querySelector('[data-flow-source]'); const fields=[...form.querySelectorAll('[data-source-field]')];
+  const refresh=()=>{ const v=source.value; fields.forEach(el=>{ el.hidden=el.dataset.sourceField!==v; el.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=el.hidden); }); };
+  source.addEventListener('change',refresh); refresh();
+})();
+</script>
+<script>
+(() => {
+  const list=document.querySelector('[data-flow-sortable]');
+  if(!list) return;
+
+  const bulkForm=document.querySelector('[data-flow-bulk-form]');
+  const selectAll=bulkForm?.querySelector('[data-flow-select-all]');
+  const selectionCount=bulkForm?.querySelector('[data-flow-selection-count]');
+  const bulkRemove=bulkForm?.querySelector('[data-flow-bulk-remove]');
+  const clearSelection=bulkForm?.querySelector('[data-flow-clear-selection]');
+  const selections=()=>[...list.querySelectorAll('[data-flow-select-step]')];
+  const selected=()=>selections().filter(input=>input.checked);
+  const refreshSelection=()=>{
+    const chosen=selected().length;
+    const total=selections().length;
+    if(selectionCount) selectionCount.textContent=`${chosen} seleccionado${chosen===1?'':'s'}`;
+    if(bulkRemove) bulkRemove.disabled=chosen===0;
+    if(clearSelection) clearSelection.disabled=chosen===0;
+    if(selectAll){
+      selectAll.checked=total>0 && chosen===total;
+      selectAll.indeterminate=chosen>0 && chosen<total;
+    }
+    selections().forEach(input=>input.closest('[data-flow-step-id]')?.classList.toggle('is-selected',input.checked));
+  };
+  selectAll?.addEventListener('change',()=>{selections().forEach(input=>input.checked=selectAll.checked);refreshSelection();});
+  list.addEventListener('change',(event)=>{if(event.target.matches?.('[data-flow-select-step]')) refreshSelection();});
+  clearSelection?.addEventListener('click',()=>{selections().forEach(input=>input.checked=false);refreshSelection();});
+  window.confirmFlowBulkRemove=()=>{
+    const chosen=selected().length;
+    if(!chosen) return false;
+    return confirm(`¿Quitar ${chosen} Step${chosen===1?'':'s'} del Flow?\n\nLas Requests HTTP originales seguirán guardadas en Negro.`);
+  };
+  bulkForm?.addEventListener('submit',()=>{
+    bulkForm.querySelectorAll('input[data-generated-step-id]').forEach(node=>node.remove());
+    selected().forEach(input=>{
+      const hidden=document.createElement('input');
+      hidden.type='hidden'; hidden.name='step_ids'; hidden.value=input.value; hidden.dataset.generatedStepId='1';
+      bulkForm.appendChild(hidden);
+    });
+  });
+  refreshSelection();
+
+  let drag=null;
+  const steps=()=>[...list.querySelectorAll('[data-flow-step-id]')];
+  const refreshNumbers=()=>steps().forEach((step,index)=>{
+    const badge=step.querySelector('[data-step-index]');
+    if(badge) badge.textContent=String(index+1);
+  });
+  const restore=(snapshot)=>{snapshot.forEach(node=>list.appendChild(node));refreshNumbers();};
+  const afterElement=(y,dragged)=>{
+    const candidates=steps().filter(el=>el!==dragged);
+    let closest={offset:Number.NEGATIVE_INFINITY,element:null};
+    for(const el of candidates){
+      const box=el.getBoundingClientRect();
+      const offset=y-box.top-box.height/2;
+      if(offset<0 && offset>closest.offset) closest={offset,element:el};
+    }
+    return closest.element;
+  };
+  const finishVisual=()=>{
+    if(!drag) return;
+    drag.step.classList.remove('is-dragging','is-saving');
+    drag.handle.classList.remove('is-grabbing');
+    list.classList.remove('is-sorting');
+  };
+  const cancelDrag=()=>{
+    if(!drag) return;
+    restore(drag.snapshot);
+    finishVisual();
+    drag=null;
+  };
+  const saveDrag=async()=>{
+    if(!drag) return;
+    const current=drag;
+    const targetPosition=steps().indexOf(current.step)+1;
+    if(!current.moved || targetPosition===current.originalPosition){
+      restore(current.snapshot);
+      finishVisual();
+      drag=null;
+      return;
+    }
+    current.step.classList.add('is-saving');
+    const body=new URLSearchParams({csrf:list.dataset.csrf,target_position:String(targetPosition)});
+    try{
+      const response=await fetch(`${location.pathname.replace(/\/flows\/\d+.*$/,'')}/flows/${list.dataset.flowId}/step/${current.step.dataset.flowStepId}/move`,{
+        method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()
+      });
+      if(!response.ok) throw new Error(`HTTP ${response.status}`);
+      window.location.hash=`flow-step-${current.step.dataset.flowStepId}`;
+      window.location.reload();
+    }catch(error){
+      restore(current.snapshot);
+      finishVisual();
+      drag=null;
+      alert('No se pudo guardar el nuevo orden. El Flow volvió a su posición anterior.');
+    }
+  };
+
+  list.addEventListener('pointerdown',(event)=>{
+    const handle=event.target.closest?.('[data-drag-handle]');
+    if(!handle || event.button!==0) return;
+    const step=handle.closest('[data-flow-step-id]');
+    if(!step) return;
+    event.preventDefault();
+    drag={
+      step,handle,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,
+      lastY:event.clientY,moved:false,snapshot:steps(),originalPosition:steps().indexOf(step)+1
+    };
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList.add('is-grabbing');
+  });
+
+  list.addEventListener('pointermove',(event)=>{
+    if(!drag || event.pointerId!==drag.pointerId) return;
+    drag.lastY=event.clientY;
+    if(!drag.moved){
+      if(Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)<4) return;
+      drag.moved=true;
+      drag.step.classList.add('is-dragging');
+      list.classList.add('is-sorting');
+    }
+    event.preventDefault();
+    const after=afterElement(event.clientY,drag.step);
+    if(after) list.insertBefore(drag.step,after); else list.appendChild(drag.step);
+    refreshNumbers();
+  });
+
+  list.addEventListener('pointerup',(event)=>{
+    if(!drag || event.pointerId!==drag.pointerId) return;
+    drag.handle.releasePointerCapture?.(event.pointerId);
+    void saveDrag();
+  });
+  list.addEventListener('pointercancel',(event)=>{if(drag && event.pointerId===drag.pointerId) cancelDrag();});
+  window.addEventListener('blur',cancelDrag);
+})();
+</script>
+{% endblock %}

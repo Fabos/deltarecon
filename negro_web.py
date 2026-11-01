@@ -4130,8 +4130,9 @@ def create_app(default_domain: str, default_workspace: Path):
             request, "context_agent.html", target_key, domain, workspace,
             agent=dashboard, secret_status=intel.secret_status(),
             default_model=context_agent.DEFAULT_MODEL,
-            default_output_tokens=context_agent.DEFAULT_OUTPUT_TOKENS,
-            default_budget_usd=float(settings.get("context_agent_budget_usd") or 0.25),
+            default_budget_cop=float(settings.get("context_agent_budget_cop") or 1000.0),
+            usd_cop_rate=float(settings.get("usd_cop_rate") or 0),
+            usd_cop_rate_date=str(settings.get("usd_cop_rate_date") or ""),
         )
 
     @app.post("/api/t/{target_key}/context-agent/estimate", response_class=JSONResponse)
@@ -4144,12 +4145,11 @@ def create_app(default_domain: str, default_workspace: Path):
         if mode not in {"incremental","full"}: mode = "incremental"
         model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
         if model not in {"gpt-6.1-sol","gpt-6-luna"}:
-            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1"}, status_code=400)
-        output_tokens = max(1500, min(12000, int(payload.get("output_tokens") or context_agent.DEFAULT_OUTPUT_TOKENS)))
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.1"}, status_code=400)
         _, _, paths = _target_context(target_key)
         try:
             with _db(paths) as conn:
-                data = context_agent.estimate(conn, mode=mode, model=model, output_tokens=output_tokens)
+                data = context_agent.estimate(conn, mode=mode, model=model)
             return {"ok":True, **data}
         except Exception as exc:
             return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)
@@ -4163,13 +4163,12 @@ def create_app(default_domain: str, default_workspace: Path):
         if mode not in {"incremental","full"}: mode = "incremental"
         model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
         if model not in {"gpt-6.1-sol","gpt-6-luna"}:
-            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1"}, status_code=400)
-        output_tokens = max(1500, min(12000, int(payload.get("output_tokens") or context_agent.DEFAULT_OUTPUT_TOKENS)))
-        budget_usd = max(0.001, min(100.0, float(payload.get("budget_usd") or 0.25)))
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.1"}, status_code=400)
+        budget_cop = max(1.0, min(100000000.0, float(payload.get("budget_cop") or 1000.0)))
         _, _, paths = _target_context(target_key)
         try:
             with _db(paths) as conn:
-                result = context_agent.execute(conn, mode=mode, model=model, output_tokens=output_tokens, budget_usd=budget_usd)
+                result = context_agent.execute(conn, mode=mode, model=model, budget_cop=budget_cop)
             return result
         except Exception as exc:
             return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)

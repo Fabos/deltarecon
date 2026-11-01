@@ -28,8 +28,9 @@ SETTINGS_PATH = CONFIG_DIR / "settings.json"
 DEFAULT_SETTINGS = {
     "ai_model": "gpt-6-luna",
     "ai_output_tokens": 3000,
-    "usd_cop_rate": 3344.62,
-    "usd_cop_rate_date": "2026-09-26",
+    "usd_cop_rate": 3160.05,
+    "usd_cop_rate_date": "2026-11-01",
+    "context_agent_budget_cop": 1000.0,
     "js_max_download_mb": 8,
     "js_ai_max_chars": 650000,
     "target_ai_max_chars": 500000,
@@ -155,6 +156,15 @@ def load_settings() -> dict[str, Any]:
             raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 data.update(raw)
+                # v0.117.1 refreshes the COP reference used only for display/budget
+                # estimates. Preserve explicit user rates, but migrate the old
+                # bundled default so existing installs do not keep a stale value.
+                try:
+                    if str(raw.get("usd_cop_rate_date") or "") == "2026-09-26" and abs(float(raw.get("usd_cop_rate") or 0) - 3344.62) < 0.01:
+                        data["usd_cop_rate"] = 3160.05
+                        data["usd_cop_rate_date"] = "2026-11-01"
+                except Exception:
+                    pass
                 # v0.41 changes the default transport architecture: Runner traffic
                 # should reuse the already-connected Burp Bridge instead of opening
                 # a second Python network path. v0.40 persisted ``direct`` as its

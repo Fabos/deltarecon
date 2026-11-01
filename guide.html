@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ runner_data.runner.alias }} · Escenario · Negro{% endblock %}
+{% block content %}
+{% set r=runner_data.runner %}
+<section class="hero compact-hero runner-hero scenario-hero">
+  <div>
+    <p class="eyebrow">ESCENARIO #{{ r.id }}</p>
+    <h1>{{ r.alias }}</h1>
+    <p class="muted">{{ r.description or 'Versión reutilizable de uno o varios Flows.' }}</p>
+    <div class="hero-meta">
+      {% for f in runner_data.source_flows %}<a class="badge" href="{{ target_base }}/flows/{{ f.flow_id }}">Flow · {{ f.name }}</a>{% endfor %}
+      {% if r.identity_name %}<span class="badge identity-badge">{{ r.identity_name }}</span>{% endif %}
+      {% if r.target_flow_step_id %}<span class="badge class-interesting">🎯 Step objetivo</span>{% endif %}
+      {% if runner_data.linked_hypotheses %}<span class="badge">◆ {{ runner_data.linked_hypotheses|length }} Hypothesis</span>{% endif %}
+    </div>
+  </div>
+  <div class="page-actions">
+    <form action="{{ target_base }}/runners/{{ r.id }}/execute" method="post" onsubmit="return confirm('¿Ejecutar esta prueba ahora?');"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="hypothesis_id" value="{{ r.hypothesis_id or '' }}"><input type="hidden" name="target_flow_step_id" value="{{ r.target_flow_step_id or '' }}"><button class="button" type="submit" {% if planned_requests>r.max_requests %}disabled{% endif %}>▶ Ejecutar prueba</button></form>
+    <a class="button ghost" href="{{ target_base }}/runners">← Escenarios</a>
+  </div>
+</section>
+
+{% if live_run %}
+{% set lr=live_run.run %}
+<section class="panel live-run-panel" id="live-run" data-scenario-live data-live-url="/api/t/{{ target_key }}/runners/{{ r.id }}/runs/{{ lr.id }}/live" data-run-id="{{ lr.id }}" data-run-status="{{ lr.status }}" data-live-total="{{ planned_requests }}">
+  <div class="panel-head"><div><p class="eyebrow">RUN #{{ lr.id }} · EN VIVO</p><h2 data-live-title>{% if lr.status=='waiting_input' %}Esperando tu input{% elif lr.status in ['completed','failed'] %}Ejecución terminada{% else %}Ejecutando prueba…{% endif %}</h2><p class="muted small" data-live-status-text>Ves cada Step a medida que Negro lo ejecuta. Si el Flow pide un OTP u otro valor manual, el Run se pausa aquí.</p></div><span class="badge run-state state-{{ lr.status }}" data-live-status-badge>{{ lr.status }}</span></div>
+  <div class="live-run-progress"><div class="live-run-progress-bar"><span data-live-progress style="width: {{ ((live_run.attempts|length / planned_requests * 100) if planned_requests else 0)|round(0) }}%"></span></div><small><b data-live-count>{{ live_run.attempts|length }}</b> / {{ planned_requests }} Request(s)</small></div>
+  <div class="live-run-steps" data-live-steps>
+    {% for a in live_run.attempts %}<div class="live-run-step {% if a.error %}has-error{% endif %}"><span class="live-step-number">{{ a.position }}</span><b>{{ a.method or a.flow_method }} <code>{{ a.url or a.flow_path }}</code></b><span class="badge">{{ a.status_code or a.execution_class or '…' }}</span><small>{{ a.elapsed_ms or 0 }} ms</small></div>{% else %}<div class="live-run-empty" data-live-empty>Preparando Step 1…</div>{% endfor %}
+  </div>
+  {% if lr.status=='waiting_input' %}
+  <div class="live-run-input"><div><p class="eyebrow">✋ INPUT REQUERIDO</p><h3>{{ lr.waiting_prompt or lr.waiting_variable_name or 'Ingresa el valor para continuar' }}</h3><p class="muted small">El Scenario heredó esta regla del Flow. El Run queda pausado exactamente en este Step.</p></div><form class="form-row" action="{{ target_base }}/runners/{{ r.id }}/runs/{{ lr.id }}/input" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="variable_id" value="{{ lr.waiting_variable_id }}"><input name="value" {% if lr.waiting_sensitive %}type="password"{% endif %} autocomplete="off" required placeholder="{{ lr.waiting_variable_name or 'Valor' }}"><button class="button" type="submit">Continuar Run</button></form></div>
+  {% endif %}
+  {% if lr.status=='failed' and lr.error %}<div class="run-error"><b>Run detenido:</b> {{ lr.error }}</div>{% endif %}
+</section>
+{% elif job %}<section class="panel runner-job" data-runner-job data-job-id="{{ job }}"><div class="panel-head"><div><p class="eyebrow">EJECUCIÓN</p><h2>Preparando Run…</h2></div><span class="spinner-dot">●</span></div><p class="muted" data-runner-job-status>Creando la ejecución…</p></section>{% endif %}
+
+<details class="panel flow-collapsible-section scenario-overview" id="scenario-flows">
+  <summary><span><b>Flows usados · {{ runner_data.source_flows|length }}</b><small>El Escenario puede encadenar varios procesos sin copiarlos.</small></span><span>＋</span></summary>
+  <div class="scenario-flow-list">
+    {% for f in runner_data.source_flows %}<article><div><b>{{ loop.index }}. {{ f.name }}</b><small>{{ f.step_count }} Step(s){% if f.flow_id==r.flow_id %} · Flow base{% endif %}</small></div>{% if f.flow_id!=r.flow_id %}<form action="{{ target_base }}/runners/{{ r.id }}/flows/{{ f.flow_id }}/remove" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="Quitar Flow">×</button></form>{% endif %}</article>{% endfor %}
+  </div>
+  {% if available_flows %}<details class="inline-create"><summary>+ Añadir otro Flow</summary><form class="form-row" action="{{ target_base }}/runners/{{ r.id }}/flows/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="flow_id">{% for f in available_flows %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select><button class="button secondary">Añadir al escenario</button></form></details>{% endif %}
+</details>
+
+{% if manual_input_count %}<section class="panel scenario-runtime-inheritance"><div><p class="eyebrow">RUNTIME HEREDADO DEL FLOW</p><h3>✋ {{ manual_input_count }} input(s) manual(es)</h3><p class="muted small">Este Escenario conserva las reglas dinámicas del Flow. Durante el Run se pausará en el Step correspondiente para pedirte OTP/código/valor, igual que al reproducir el Flow.</p></div></section>{% endif %}
+
+<section class="scenario-context-strip">
+  <div><small>IDENTITY NORMAL</small><b>{{ r.identity_name or 'Auth capturado del Flow' }}</b></div>
+  <div><small>STEP OBJETIVO</small><b>{% if r.target_flow_step_id %}{% for s in runner_data.steps if s.flow_step_id==r.target_flow_step_id %}{{ s.alias_label or s.flow_label or (s.method ~ ' ' ~ s.path) }}{% endfor %}{% else %}Ninguno · reproducción normal{% endif %}</b></div>
+  <div><small>HYPOTHESIS</small><b>{{ r.hypothesis_title or 'Opcional / ninguna' }}</b></div>
+  <details><summary>Editar escenario</summary>
+    <form class="stack-form scenario-config-form" action="{{ target_base }}/runners/{{ r.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>Nombre<input name="alias" value="{{ r.alias }}" required></label>
+      <label>Descripción<textarea name="description" rows="2">{{ r.description or '' }}</textarea></label>
+      <label>Identity normal<select name="identity_id"><option value="">Auth capturado del Flow</option>{% for i in identities %}<option value="{{ i.id }}" {% if r.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select></label>
+      <label>Hypothesis por defecto<select name="hypothesis_id"><option value="">Sin Hypothesis</option>{% for h in hypotheses %}<option value="{{ h.id }}" {% if r.hypothesis_id==h.id %}selected{% endif %}>#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select></label>
+      <label>Step bajo prueba<select name="target_flow_step_id"><option value="">Ninguno</option>{% for s in runner_data.steps %}<option value="{{ s.flow_step_id }}" {% if r.target_flow_step_id==s.flow_step_id %}selected{% endif %}>Step {{ s.position }} · {{ s.alias_label or s.flow_label or (s.method ~ ' ' ~ s.path) }}</option>{% endfor %}</select></label>
+      <input type="hidden" name="experiment_goal" value="{{ r.experiment_goal or '' }}"><input type="hidden" name="expected_support" value="{{ r.expected_support or '' }}"><input type="hidden" name="expected_refute" value="{{ r.expected_refute or '' }}">
+      <label>Límite de Requests<input type="number" name="max_requests" min="1" max="100" value="{{ r.max_requests or 30 }}"></label>
+      <button class="button secondary">Guardar</button>
+    </form>
+  </details>
+</section>
+
+<section class="panel scenario-steps-panel">
+  <div class="panel-head"><div><p class="eyebrow">STEPS</p><h2>Qué hará esta prueba</h2><p class="muted small">Este es el Escenario: una variante del Flow. Modifica sólo lo necesario; el Flow original no cambia.</p></div><span>{{ active_steps }} activos</span></div>
+  <div class="runner-step-list scenario-step-list">
+  {% for s in runner_data.steps %}
+    <article id="scenario-step-{{ s.id }}" class="runner-step scenario-step {% if s.action=='omit' %}runner-step-omit{% endif %} {% if r.target_flow_step_id==s.flow_step_id %}scenario-target-step{% endif %} {% if s.patches %}scenario-step-modified{% endif %}">
+      <div class="scenario-step-number">{{ s.position }}</div>
+      <div class="scenario-step-main">
+        <div class="runner-step-head">
+          <div>
+            <div class="human-step-kicker">STEP {{ s.position }}{% if s.role_label_override or s.role_label %} · {{ (s.role_label_override or s.role_label)|upper }}{% endif %}{% if r.target_flow_step_id==s.flow_step_id %} · 🎯 BAJO PRUEBA{% endif %}</div>
+            <b class="scenario-step-title">{{ s.alias_label or s.flow_label or (s.method ~ ' ' ~ s.path) }}</b>
+            {% if s.notes or s.flow_notes %}<p class="human-step-note">{{ s.notes or s.flow_notes }}</p>{% endif %}
+            <small><span class="source-flow-tag">{{ s.source_flow_name }}</span> · <b>{{ s.method }}</b> <code>{{ s.path }}</code>{% if s.checkpoint_label %} · ◆ {{ s.checkpoint_label }}{% endif %}</small>
+          </div>
+          <div class="scenario-step-status">{% if s.manual_inputs %}<span class="badge manual-input-badge">✋ Pide {{ s.manual_inputs|map(attribute='name')|join(', ') }}</span>{% endif %}{% if s.patches %}<span class="badge class-interesting">● HTTP modificado · {{ s.patches|length }}</span>{% endif %}{% if s.step_identity_name %}<span class="badge identity-badge">⚠ {{ s.step_identity_name }}</span>{% endif %}{% if s.action=='omit' %}<span class="badge">Omitido</span>{% elif s.action=='repeat' %}<span class="badge class-interesting">Repetir ×{{ s.repeat_count }}</span>{% endif %}</div>
+        </div>
+
+        {% if s.flow_inputs or s.flow_outputs %}<div class="step-story runner-step-story compact-step-story">{% if s.flow_inputs %}<div class="step-story-group"><span class="step-story-label">ENTRA</span>{% for x in s.flow_inputs %}<span class="story-chip source-{{ x.source_type|lower }}">{% if x.source_type=='MANUAL_INPUT' %}✋{% else %}←{% endif %} {{ x.name }}{% if x.target_name and x.target_name != x.name %} <b>→ {{ x.target_name }}</b>{% endif %} <small>· {% if x.source_type=='IDENTITY' and x.identity_name %}{{ x.identity_name }}{% elif x.source_type in ['PREVIOUS_RESPONSE','REQUEST_VALUE'] and x.producer_position %}Step {{ x.producer_position }}{% else %}{{ x.source_label }}{% endif %}</small></span>{% endfor %}</div>{% endif %}{% if s.flow_outputs %}<div class="step-story-group"><span class="step-story-label">SALE</span>{% for x in s.flow_outputs %}<span class="story-chip source-{{ x.source_type|lower }}">{{ 'Request' if x.source_type=='REQUEST_VALUE' else 'Response' }} · <b>{{ x.name }}</b>{% if x.consumers %} → Step {{ x.consumers|join(', ') }}{% endif %}</span>{% endfor %}</div>{% endif %}</div>{% endif %}
+
+        <div class="row-actions scenario-step-primary-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/http">Editar HTTP</a>{% if s.exchange_id %}<a class="button ghost small-button" href="{{ target_base }}/exchange/{{ s.exchange_id }}/inspect">Ver evidencia base</a>{% endif %}</div>
+        {% if s.patches %}<div class="scenario-patch-summary">{% for p in s.patches %}<span class="story-chip">{{ p.operation|upper }} · {{ p.location }} · {{ p.key_name }}</span>{% endfor %}</div>{% endif %}
+
+        <details class="scenario-step-edit"><summary>Alias, Identity y secuencia</summary>
+          <form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/steps/{{ s.id }}/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <label>Alias del Step<input name="alias_label" value="{{ s.alias_label or '' }}" placeholder="Aceptar la orden"></label>
+            <label>Rol<input name="role_label" value="{{ s.role_label_override or '' }}" placeholder="Cliente / Vendedor / Admin"></label>
+            <label>Nota<input name="notes" value="{{ s.notes or '' }}" placeholder="Qué cambia o qué quieres observar aquí"></label>
+            <label>Identity sólo para este Step<select name="identity_id"><option value="">Heredar {{ r.identity_name or 'Identity normal / auth del Flow' }}</option>{% for i in identities %}<option value="{{ i.id }}" {% if s.identity_id==i.id %}selected{% endif %}>{{ i.name }}</option>{% endfor %}</select><small>{% if s.step_identity_name %}⚠ Override: este Step se ejecutará como {{ s.step_identity_name }}.{% else %}Si no eliges nada, hereda la Identity normal del escenario.{% endif %}</small></label>
+            <div class="form-row"><label>Acción<select name="action"><option value="keep" {% if s.action=='keep' %}selected{% endif %}>Mantener</option><option value="omit" {% if s.action=='omit' %}selected{% endif %}>Omitir</option><option value="repeat" {% if s.action=='repeat' %}selected{% endif %}>Repetir</option></select></label><label>Veces<input type="number" name="repeat_count" min="1" max="20" value="{{ s.repeat_count }}"></label></div>
+            <button class="button secondary">Guardar Step</button>
+          </form>
+        </details>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel" id="runner-history">
+  <div class="panel-head"><div><p class="eyebrow">RUNS</p><h2>Resultados de tus pruebas</h2><p class="muted small">Marca un comportamiento normal como baseline y compara las siguientes pruebas contra él.</p></div><span>{{ runner_data.runs|length }}</span></div>
+  {% if baseline_run %}<div class="scenario-baseline-banner"><span>★ BASELINE</span><b>Run #{{ baseline_run.id }}</b><small>{% if baseline_run.summary.statuses %}HTTP {{ baseline_run.summary.statuses|join(', ') }}{% endif %}</small></div>{% endif %}
+  {% if runner_data.runs|length >= 2 %}<details class="inline-create run-compare-picker"><summary>Comparar dos Runs manualmente</summary><form class="form-row" action="{{ target_base }}/runners/runs/compare" method="get"><label>A<select name="a">{% for x in runner_data.runs %}<option value="{{ x.id }}" {% if x.is_baseline %}selected{% endif %}>Run #{{ x.id }}{% if x.is_baseline %} · baseline{% endif %}</option>{% endfor %}</select></label><label>B<select name="b">{% for x in runner_data.runs %}<option value="{{ x.id }}">Run #{{ x.id }}</option>{% endfor %}</select></label><button class="button ghost small-button">Comparar</button></form></details>{% endif %}
+  <div class="runner-run-list">
+  {% for run in runner_data.runs %}
+    {% set valid=run.counts_as_test %}
+    <article class="runner-run outcome-{{ run.outcome }} execution-{{ run.execution_class }} {% if not valid %}run-not-counted{% endif %} {% if run.is_baseline %}runner-run-baseline{% endif %}">
+      <div class="runner-run-main"><b>{% if run.is_baseline %}★ {% endif %}Run #{{ run.id }}</b><span class="badge execution-chip execution-{{ run.execution_class }}">{{ {'application_response':'Aplicativo','transport_error':'Transporte','timeout':'Timeout','dns_error':'DNS','tls_error':'TLS','proxy_error':'Proxy','runner_error':'Error interno','pending':'Pendiente'}.get(run.execution_class,run.execution_class) }}</span><small>{{ run.request_count }} Requests{% if run.summary.statuses %} · HTTP {{ run.summary.statuses|join(', ') }}{% endif %}</small></div>
+      <div class="row-actions"><a class="button secondary small-button" href="{{ target_base }}/runners/runs/{{ run.id }}">Abrir Run</a>{% if baseline_run and baseline_run.id != run.id %}<a class="button small-button" href="{{ target_base }}/runners/runs/compare?a={{ baseline_run.id }}&b={{ run.id }}">Comparar con baseline</a>{% endif %}{% if not run.is_baseline and run.counts_as_test %}<form action="{{ target_base }}/runners/{{ r.id }}/runs/{{ run.id }}/baseline" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button ghost small-button">Usar como baseline</button></form>{% endif %}</div>
+      {% if run.context.hypothesis or run.context.target_step %}<div class="run-context-summary">{% if run.context.hypothesis %}<span class="badge">◆ {{ run.context.hypothesis.title }}</span>{% endif %}{% if run.context.target_step %}<span class="badge class-interesting">🎯 {{ run.context.target_step.name }}</span>{% endif %}</div>{% endif %}
+    </article>
+  {% else %}<div class="empty-state compact"><strong>Sin Runs todavía.</strong><span>Ejecuta la prueba; cada ejecución quedará guardada como un Run.</span></div>{% endfor %}
+  </div>
+</section>
+
+<details class="panel flow-collapsible-section scenario-advanced">
+  <summary><span><b>Opciones avanzadas</b><small>Hypotheses vinculadas, transporte y variables manuales.</small></span><span>＋</span></summary>
+  <section class="runner-hypothesis-links compact-subsection"><h3>Hypotheses vinculadas</h3>{% for h in runner_data.linked_hypotheses %}<div class="runtime-row"><a href="{{ target_base }}/hypotheses#hypothesis-{{ h.id }}">◆ {{ h.title }}</a><form action="{{ target_base }}/runners/{{ r.id }}/hypotheses/{{ h.id }}/unlink" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button">×</button></form></div>{% else %}<p class="muted small">Ninguna. No es obligatorio.</p>{% endfor %}{% if hypotheses %}<form class="form-row" action="{{ target_base }}/runners/{{ r.id }}/hypotheses/link" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><select name="hypothesis_id">{% for h in hypotheses %}<option value="{{ h.id }}">#{{ h.id }} · {{ h.title }}</option>{% endfor %}</select><button class="button ghost">Asociar</button></form>{% endif %}</section>
+  <section class="compact-subsection"><h3>Transporte</h3><p class="muted small">Actual: <b>{{ {'burp_bridge':'Burp Bridge','direct':'Directo','environment':'Proxy del entorno','proxy':'Proxy explícito'}.get(transport.mode,transport.mode) }}</b>{% if bridge_status.runner_transport_ready %} · Bridge listo{% endif %}</p><form class="stack-form" action="{{ target_base }}/runners/{{ r.id }}/transport" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Modo<select name="mode"><option value="burp_bridge" {% if transport.mode=='burp_bridge' %}selected{% endif %}>Burp Bridge</option><option value="direct" {% if transport.mode=='direct' %}selected{% endif %}>Directo</option><option value="environment" {% if transport.mode=='environment' %}selected{% endif %}>Entorno</option><option value="proxy" {% if transport.mode=='proxy' %}selected{% endif %}>Proxy explícito</option></select></label><input type="hidden" name="proxy_url" value="{{ transport.proxy_url or '' }}"><input type="hidden" name="timeout_seconds" value="{{ transport.timeout_seconds or 20 }}"><input type="hidden" name="verify_tls" value="{{ 1 if transport.verify_tls else 0 }}"><input type="hidden" name="ca_bundle" value="{{ transport.ca_bundle or '' }}"><button class="button ghost">Guardar transporte</button></form></section>
+  <section class="compact-subsection"><h3>Variables manuales del escenario</h3><p class="muted small">Úsalas sólo cuando las variables del Flow no alcanzan.</p><details><summary>+ Añadir variable</summary><form class="runner-variable-form" action="{{ target_base }}/runners/{{ r.id }}/variables/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Campo destino<select name="target_ref" required><option value="">Selecciona…</option>{% for s in runner_data.steps %}{% for p in s.request_params %}<option value="{{ s.id }}|||{{ p.normalized_name or p.name }}|||{{ p.value|e }}">Step {{ s.position }} · {{ p.normalized_name or p.name }}</option>{% endfor %}{% endfor %}</select></label><label>Fuente<select name="mode"><option value="values">Valor/lista</option><option value="response_key">Response JSON</option><option value="response_regex">Regex</option></select></label><label>Valores<textarea name="values_text" rows="2"></textarea></label><label>Step fuente<select name="source_runner_step_id"><option value="">—</option>{% for s in runner_data.steps %}<option value="{{ s.id }}">Step {{ s.position }}</option>{% endfor %}</select></label><label>Key JSON<input name="source_name"></label><label>Regex<input name="regex_pattern"></label><button class="button secondary">Añadir</button></form></details></section>
+</details>
+{% endblock %}

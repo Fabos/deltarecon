@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.summary.name }} · Parámetros · Negro{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div><p class="eyebrow">PARAMETER EXPLORER</p><h1><code>{{ detail.summary.name }}</code></h1><p class="muted">{{ detail.summary.observations }} observaciones · {{ detail.summary.distinct_values }} valores · {{ detail.summary.exchanges }} Requests · {{ detail.summary.hosts }} hosts</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ target_base }}/parameters">← Parámetros</a><a class="button secondary" href="{{ target_base }}/search?q={{ ('param:' ~ detail.summary.name)|urlencode }}">Buscar en todo</a></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">VALORES OBSERVADOS</p><h2>Reutilización</h2></div><span>{{ detail['values']|length }}</span></div>
+  <div class="value-card-grid">
+  {% for v in detail['values'] %}
+    <div class="value-card"><code>{{ v.value_raw or v.value_preview or '(vacío)' }}</code><div><span>{{ v.occurrences }} observaciones</span><span>{{ v.exchanges }} Requests</span><span>{{ v.resources }} recursos</span></div><small>hash {{ v.value_hash[:12] }}…</small></div>
+  {% else %}<p class="empty">Sin valores.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><p class="eyebrow">OBSERVACIONES</p><h2>Dónde apareció</h2></div><span>{{ detail['observations']|length }}</span></div>
+  <div class="observation-list">
+  {% for o in detail['observations'] %}
+    <div class="observation-row">
+      <div><b>{{ o.method }} <code>{{ o.path }}</code></b><small>{{ o.hostname }} · HTTP {{ o.status_code or '—' }} · Request #{{ o.exchange_id }}</small></div>
+      <div class="badges"><span class="badge">{{ o.location }}</span><code>{{ o.value_raw or o.value_preview or '(vacío)' }}</code></div>
+      <div class="row-actions"><a class="button ghost small-button" href="{{ target_base }}/graph?focus=request:{{ o.exchange_id }}">Mapa</a><a class="button ghost small-button" href="{{ target_base }}/parameters/follow/{{ o.id }}">Seguir valor</a><a class="button ghost small-button" href="{{ target_base }}/parameters/related/{{ o.exchange_id }}">Buscar relacionados</a><a class="button ghost small-button" href="{{ target_base }}/exchange/{{ o.exchange_id }}/inspect">Inspector</a></div>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -129,7 +129,7 @@ El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido.
 # Negro Recon 🐕 — v0.44.8
 
 
-> **Nuevo · v0.117.0 Context Agent:** desde HTTP Workbench puedes abrir `Context Agent`, calcular costo antes de ejecutar y construir una memoria semántica incremental del target (Identity/Object/State/relations) sin perder el workflow manual. Ver `V1170_CONTEXT_AGENT_MVP.md`.
+> **Nuevo · v0.117.1 Context Agent:** análisis completo sin cap fijo de candidatos, batching automático y control de presupuesto/costos en COP. Ver `V1171_CONTEXT_AGENT_COMPLETE_BATCHING_COP.md`.
 
 ## v0.47.1 · Contexto inline explicable
 

@@ -1,3 +1,14 @@
+## v0.117.1 — Context Agent Complete Batching + COP
+
+- Eliminado el cap fijo de 120 candidatos.
+- Batching correlacionado por exchange/Flow sin descartar candidatos relevantes.
+- Output automático/adaptativo por batch.
+- Presupuesto como hard-stop en pesos colombianos (COP), nunca como recorte silencioso.
+- Estimación de costo esperado y máximo en COP.
+- Cost ledger guarda costo real en COP y USD.
+- Completeness verificable: coverage, batches completados y flag de truncamiento.
+- Migración del rate de referencia USD→COP al snapshot 2026-11-01.
+
 ## v0.117.0 — Context Agent MVP
 
 - Primer agente semántico persistente de Negro: analiza tráfico HTTP/Flows capturados y enriquece HTTP Workbench sin reemplazar el marcado manual.
