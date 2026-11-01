@@ -1,3 +1,12 @@
+## v0.117.4 — Scope precedence + navigation dropdown fix
+
+- Los roots de scope se normalizan como hostnames y un root como `viveterpel.com` incluye correctamente `www.viveterpel.com` y subdominios reales.
+- El scope explícito de Negro (target root o regla Host/Endpoint) es autoritativo; `Burp EXCLUDED` ya no puede sacar tráfico que el usuario incluyó deliberadamente en Negro.
+- `Burp IN_SCOPE` sigue pudiendo añadir tráfico y `Burp EXCLUDED` sigue vetando tráfico no incluido por Negro.
+- Scope explainability diferencia EXCLUDED detectado, veto efectivo y EXCLUDED sobrescrito por scope explícito.
+- Corrige el menú superior `Más`: el dropdown ya no queda recortado por `overflow-y:hidden`.
+- Navegación responsive usa wrap para conservar el dropdown accesible.
+
 ## v0.117.3 — Clean repo + Hybrid AI Scope Resolver
 
 - Context Agent v1.3 resuelve Scope IA desde tres fuentes: scopes configurados del proyecto, reglas Host/Endpoint del HTTP Workbench y Burp `IN_SCOPE`.

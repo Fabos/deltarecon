@@ -377,7 +377,7 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .graph-node.flow-endpoint-node circle{fill:#14242b!important;stroke:#7fb4c9!important;stroke-width:2!important}.graph-node.flow-endpoint-node .graph-node-label{fill:#d8edf5!important}
 
 /* v0.33.0 — semantic graph icons, comparison readability and direct navigation */
-.direct-nav{display:flex;align-items:center;gap:2px;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;padding:0 2px}
+.direct-nav{display:flex;align-items:center;gap:2px;min-width:0;overflow:visible;scrollbar-width:none;padding:0 2px}
 .direct-nav::-webkit-scrollbar{display:none}.direct-nav .nav-divider{width:1px;height:24px;background:#263038;margin:0 4px;flex:0 0 auto}.direct-nav a{font-size:12px;padding:9px 9px}.direct-nav a.nav-utility{font-size:11px;color:#7f8b92}.direct-nav a.nav-utility:hover{color:var(--text)}
 
 .identity-compare-summary{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #20292e}.identity-compare-summary>span{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#6f7b82;margin-right:2px}.identity-compare-summary button{border:1px solid #263138;background:#0b1114;color:#9eabb2;border-radius:999px;padding:5px 8px;font-size:10px;cursor:pointer}.identity-compare-summary button:hover{border-color:#587383;color:#d8e7ee}.identity-compare-summary button.active{border-color:#7fb4c9;background:rgba(127,180,201,.08);color:#e1f4fb}
@@ -392,6 +392,7 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .graph-detail-group{display:grid;gap:7px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}.graph-detail-group>h3{margin:0;font-size:11px;color:#aeb8be}.graph-detail-group>p{margin:0;color:#78858d;font-size:10px}.graph-relation-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;padding:2px 6px;border-radius:999px;background:#172027;color:#8fa0aa;font-size:9px;margin-left:auto}.graph-relation.compact{grid-template-columns:1fr auto;align-items:center;gap:7px}.graph-relation.compact>span{grid-column:1/-1}.graph-relation-note{font-size:9px;color:#66747c;font-weight:400}.graph-detail-technical{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}.graph-detail-technical summary{cursor:pointer;color:#7f8c93;font-size:10px}.graph-detail-technical[open] summary{color:#aeb8be}
 
 @media(max-width:1250px){.direct-nav a{padding:8px 7px;font-size:11px}.direct-nav .nav-divider{margin:0 2px}.target-switch-wrap label{display:none}}
+@media(max-width:980px){.main-nav.direct-nav{overflow:visible;flex-wrap:wrap;row-gap:2px}.nav-more-menu{left:0;right:auto}}
 .graph-edge.graph-edge-identity-primary{stroke:#5f9fcc;opacity:.82;stroke-width:1.55}.graph-edge.graph-edge-identity-secondary{stroke:#a887d0;opacity:.82;stroke-width:1.55}.graph-edge.graph-edge-identity-primary:hover,.graph-edge.graph-edge-identity-secondary:hover{stroke:var(--accent);opacity:1}
 .graph-node:hover .node-icon-fill,.graph-node.selected .node-icon-fill{stroke:none!important;transform:none!important}
 

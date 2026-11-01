@@ -1,4 +1,4 @@
-# Context Agent v1.3
+# Context Agent v1.4
 
 El Context Agent convierte tráfico HTTP capturado en memoria semántica persistente sin reemplazar el flujo manual de Negro.
 
@@ -10,7 +10,7 @@ Un exchange del proyecto puede entrar al análisis si cumple al menos una de est
 - coincide con una regla Host/Endpoint añadida explícitamente desde HTTP Workbench;
 - Burp lo reporta como `IN_SCOPE`.
 
-`Burp EXCLUDED` actúa como veto explícito.
+`Burp EXCLUDED` sólo actúa como veto cuando el tráfico no está incluido explícitamente por un root/regla de Negro. El scope explícito de Negro es autoritativo.
 
 La estimación muestra cuántas observaciones entraron por cada fuente y los principales hosts que quedaron fuera del gate.
 

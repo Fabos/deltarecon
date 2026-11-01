@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.3.
+"""Negro Context Agent v1.4.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,7 +22,7 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.3"
+AGENT_VERSION = "context-agent-v1.4"
 DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
@@ -361,17 +361,44 @@ def _project_scopes(conn) -> list[str]:
         raw = []
     scopes = []
     for item in raw if isinstance(raw, list) else []:
-        value = str(item or "").strip().lower().rstrip(".")
+        value = _normalize_scope_host(item)
         if value and value not in scopes:
             scopes.append(value)
     return scopes
 
 
+def _normalize_scope_host(value: str) -> str:
+    """Normalize a target/scope entry to a hostname without widening it.
+
+    Accepts plain hosts, wildcard roots and URL-like values. A root such as
+    ``viveterpel.com`` intentionally matches ``www.viveterpel.com`` and other
+    real subdomains, but never sibling/lookalike domains.
+    """
+    from urllib.parse import urlsplit
+
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = raw.lstrip(".")
+    if raw.startswith("*."):
+        raw = raw[2:]
+    try:
+        parsed = urlsplit(raw if "://" in raw else "//" + raw)
+        host = parsed.hostname or ""
+    except Exception:
+        host = raw.split("/", 1)[0].split(":", 1)[0]
+    return host.strip().lower().rstrip(".")
+
+
 def _host_in_project_scope(hostname: str, scopes: list[str]) -> bool:
-    host = str(hostname or "").strip().lower().rstrip(".")
+    host = _normalize_scope_host(hostname)
     if not host:
         return False
-    return any(host == scope or host.endswith("." + scope) for scope in scopes if scope)
+    for raw_scope in scopes:
+        scope = _normalize_scope_host(raw_scope)
+        if scope and (host == scope or host.endswith("." + scope)):
+            return True
+    return False
 
 
 def _project_scope_policy(conn, target_key: str | None = None) -> tuple[list[str], list[dict[str, Any]]]:
@@ -379,7 +406,7 @@ def _project_scope_policy(conn, target_key: str | None = None) -> tuple[list[str
 
     The current project DB already proves project membership. Eligibility is then
     driven by the project's configured target roots, explicit Workbench host/endpoint
-    rules, or Burp IN_SCOPE. Burp EXCLUDED remains an explicit veto.
+    rules, or Burp IN_SCOPE. Explicit Negro scope is authoritative; Burp EXCLUDED only vetoes traffic not explicitly included by Negro.
     """
     scopes = _project_scopes(conn)
     rules: list[dict[str, Any]] = []
@@ -391,7 +418,7 @@ def _project_scope_policy(conn, target_key: str | None = None) -> tuple[list[str
                 value = str(item or "").strip().lower().rstrip(".")
                 if value and value not in scopes:
                     scopes.append(value)
-            domain = str(target.get("domain") or "").strip().lower().rstrip(".")
+            domain = _normalize_scope_host(target.get("domain") or "")
             if domain and domain not in scopes:
                 scopes.append(domain)
         except Exception:
@@ -427,8 +454,8 @@ def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[
       - an explicit Workbench host/endpoint analysis rule,
       - Burp IN_SCOPE.
 
-    Burp EXCLUDED is an explicit veto. UNKNOWN does not veto Negro's own target
-    configuration. This keeps cost bounded to deliberate target traffic while avoiding
+    Explicit Negro target/rule scope is authoritative. Burp EXCLUDED only vetoes
+    traffic that Negro has not deliberately included; UNKNOWN never vetoes Negro scope. This keeps cost bounded to deliberate target traffic while avoiding
     the v1.2 failure mode where valid project traffic could all become out-of-scope.
     """
     scopes, rules = _project_scope_policy(conn, target_key)
@@ -446,6 +473,7 @@ def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[
             "known_exchanges": 0, "scope_exchanges": 0, "excluded_exchanges": 0,
             "target_scope_exchanges": 0, "workbench_rule_exchanges": 0,
             "burp_in_scope_exchanges": 0, "burp_excluded_exchanges": 0,
+            "burp_excluded_veto_exchanges": 0, "burp_excluded_overridden_exchanges": 0,
             "no_scope_exchanges": 0, "configured_scope_roots": scopes,
             "workbench_rule_count": len(rules), "excluded_hosts": [],
         }, {}
@@ -453,6 +481,7 @@ def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[
     allowed: set[int] = set()
     reasons: dict[int, list[str]] = {}
     target_hits = rule_hits = burp_hits = burp_excluded = no_scope = 0
+    burp_excluded_veto = burp_excluded_overridden = 0
     excluded_host_exchanges: dict[str, int] = defaultdict(int)
 
     for row in rows:
@@ -462,20 +491,32 @@ def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[
         path = str(row["path"] or "/").strip() or "/"
         status = str(row["burp_scope_status"] or "UNKNOWN").upper()
 
-        if status == "EXCLUDED":
-            burp_excluded += 1
-            excluded_host_exchanges[host or "(sin host)"] += 1
-            reasons[exid] = ["burp_excluded"]
-            continue
-
         matched: list[str] = []
+        negro_explicit = False
         if _host_in_project_scope(host, scopes):
             matched.append("project_target")
             target_hits += 1
+            negro_explicit = True
         if _matches_project_rule(host, method, path, rules):
             matched.append("workbench_rule")
             rule_hits += 1
-        if status == "IN_SCOPE":
+            negro_explicit = True
+
+        # Negro's explicit target configuration is authoritative. Burp can add
+        # scope with IN_SCOPE, but EXCLUDED only vetoes traffic that Negro has
+        # not explicitly included. This prevents stale/misaligned Burp scope
+        # metadata from excluding a host the user deliberately targeted here.
+        if status == "EXCLUDED":
+            burp_excluded += 1
+            if negro_explicit:
+                matched.append("burp_excluded_overridden")
+                burp_excluded_overridden += 1
+            else:
+                burp_excluded_veto += 1
+                excluded_host_exchanges[host or "(sin host)"] += 1
+                reasons[exid] = ["burp_excluded"]
+                continue
+        elif status == "IN_SCOPE":
             matched.append("burp_in_scope")
             burp_hits += 1
 
@@ -499,6 +540,8 @@ def _ai_scope_exchange_ids(conn, *, target_key: str | None = None) -> tuple[set[
         "workbench_rule_exchanges": rule_hits,
         "burp_in_scope_exchanges": burp_hits,
         "burp_excluded_exchanges": burp_excluded,
+        "burp_excluded_veto_exchanges": burp_excluded_veto,
+        "burp_excluded_overridden_exchanges": burp_excluded_overridden,
         "no_scope_exchanges": no_scope,
         "configured_scope_roots": scopes,
         "workbench_rule_count": len(rules),
@@ -825,6 +868,8 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
         "workbench_rule_exchanges": int(scope_stats.get("workbench_rule_exchanges") or 0),
         "burp_in_scope_exchanges": int(scope_stats.get("burp_in_scope_exchanges") or 0),
         "burp_excluded_exchanges": int(scope_stats.get("burp_excluded_exchanges") or 0),
+        "burp_excluded_veto_exchanges": int(scope_stats.get("burp_excluded_veto_exchanges") or 0),
+        "burp_excluded_overridden_exchanges": int(scope_stats.get("burp_excluded_overridden_exchanges") or 0),
         "no_scope_exchanges": int(scope_stats.get("no_scope_exchanges") or 0),
         "configured_scope_roots": list(scope_stats.get("configured_scope_roots") or []),
         "workbench_rule_count": int(scope_stats.get("workbench_rule_count") or 0),

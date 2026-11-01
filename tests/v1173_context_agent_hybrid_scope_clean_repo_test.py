@@ -44,11 +44,12 @@ def test_hybrid_scope_accepts_project_target_workbench_rule_and_burp(tmp_path: P
         assert 'M-1' in values                      # Workbench host rule
         assert 'P-1' in values                      # Burp IN_SCOPE
         assert 'T-1' not in values                  # no scope source
-        assert 'SHOULD-NOT' not in values           # Burp EXCLUDED veto
+        assert 'SHOULD-NOT' in values               # explicit Negro target overrides stale Burp EXCLUDED
         assert stats['scope_observations_by_source']['project_target'] > 0
         assert stats['scope_observations_by_source']['workbench_rule'] > 0
         assert stats['scope_observations_by_source']['burp_in_scope'] > 0
         assert stats['burp_excluded_exchanges'] > 0
+        assert stats['burp_excluded_overridden_exchanges'] > 0
         assert any(x['host'] == 'noise.example' for x in stats['excluded_hosts'])
 
 
@@ -76,4 +77,4 @@ def test_scope_explainability_template_mentions_all_sources():
     assert 'Reglas Workbench' in tpl
     assert 'Burp IN_SCOPE' in tpl
     assert 'Hosts fuera del gate' in tpl
-    assert 'Context Agent v1.3' in tpl
+    assert 'Context Agent v1.4' in tpl
