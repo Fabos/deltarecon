@@ -1,3 +1,12 @@
+## v0.117.5 — Semantic concept compression
+
+- Context Agent v1.5 separates concrete instances from billable semantic concepts.
+- Repeated values such as hundreds of `accountId` instances are clustered by key + HTTP context before the LLM call.
+- Every concrete instance remains in the Observation Ledger and receives projected AI semantics after the concept is classified.
+- Relationships are learned at concept level and materialized to concrete value pairs when HTTP/Flow evidence supports them.
+- Cost estimator now shows instance candidates, AI concepts and semantic compression ratio.
+- No candidate cap and no evidence deletion: optimization removes redundant model work, not context.
+
 ## v0.117.4 — Scope precedence + navigation dropdown fix
 
 - Los roots de scope se normalizan como hostnames y un root como `viveterpel.com` incluye correctamente `www.viveterpel.com` y subdominios reales.

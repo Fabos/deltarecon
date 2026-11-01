@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.4.
+"""Negro Context Agent v1.5.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,7 +22,7 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.4"
+AGENT_VERSION = "context-agent-v1.5"
 DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
@@ -56,6 +56,15 @@ STATIC_EXTENSIONS = {
     ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
     ".woff", ".woff2", ".ttf", ".eot", ".webp", ".avif", ".mp4", ".webm", ".mp3",
 }
+
+GENERIC_CONTEXT_KEYS = {
+    "id", "code", "key", "value", "name", "type", "status", "state", "phase", "stage",
+    "reference", "ref", "identifier", "number", "uuid", "slug",
+}
+MAX_CONCEPT_VALUE_SAMPLES = 6
+MAX_CONCEPT_ENDPOINTS = 12
+MAX_CONCEPT_OBSERVATIONS = 48
+
 TRANSPORT_NOISE_TOKENS = (
     "trace", "request_id", "requestid", "correlation_id", "correlationid", "ray",
     "timing", "cache", "content_security", "strict_transport", "x_frame", "x_content",
@@ -185,6 +194,28 @@ def init_schema(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sem_rel_src ON semantic_relations(src_candidate_id,id DESC);
         CREATE INDEX IF NOT EXISTS idx_sem_rel_dst ON semantic_relations(dst_candidate_id,id DESC);
+
+        CREATE TABLE IF NOT EXISTS semantic_concept_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            src_concept_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            dst_concept_id TEXT,
+            dst_literal TEXT,
+            src_label TEXT,
+            dst_label TEXT,
+            model_confidence REAL NOT NULL DEFAULT 0,
+            evidence_confidence REAL NOT NULL DEFAULT 0,
+            confidence REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'suggested',
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            explanation TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id,src_concept_id,relation,dst_concept_id,dst_literal),
+            FOREIGN KEY(run_id) REFERENCES semantic_agent_runs(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sem_concept_rel_src ON semantic_concept_relations(src_concept_id,id DESC);
+        CREATE INDEX IF NOT EXISTS idx_sem_concept_rel_dst ON semantic_concept_relations(dst_concept_id,id DESC);
         """
     )
     obs_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(semantic_observations)").fetchall()}
@@ -711,6 +742,177 @@ def _score_candidate(rows: list[dict[str, Any]]) -> float:
     return score
 
 
+
+def _endpoint_family(path: str) -> str:
+    """Normalize concrete resource identifiers out of a path for semantic clustering."""
+    raw = str(path or "").split("?", 1)[0] or "/"
+    parts = []
+    for part in raw.split("/"):
+        if not part:
+            continue
+        low = part.lower()
+        if (
+            re.fullmatch(r"\d{3,}", part)
+            or re.fullmatch(r"[0-9a-fA-F-]{24,64}", part)
+            or (len(part) >= 12 and re.fullmatch(r"[A-Za-z0-9_.:-]+", part) and any(c.isdigit() for c in part))
+        ):
+            parts.append("{id}")
+        else:
+            parts.append(low[:80])
+    return "/" + "/".join(parts[:12])
+
+
+def _location_family(location: str) -> str:
+    low = str(location or "").lower()
+    low = re.sub(r"\[\d+\]", "[]", low)
+    if "#jwt:" in low or "jwt_claim" in low:
+        return "jwt_claim"
+    for token, label in (
+        ("request_path:", "path"), ("_query:", "query"), ("_json:", "json"),
+        ("_form:", "form"), ("_multipart:", "multipart"), ("_xml:", "xml"),
+        ("_cookie:", "cookie"), ("_header:", "header"),
+    ):
+        if token in low:
+            side = "request" if low.startswith("request") else "response" if low.startswith("response") else "http"
+            return f"{side}_{label}"
+    return "request_other" if low.startswith("request") else "response_other" if low.startswith("response") else "other"
+
+
+def _concept_signature(candidate: dict[str, Any]) -> str:
+    """Stable schema-level signature. Concrete values never participate."""
+    key = _norm_key(str(candidate.get("normalized_key") or candidate.get("key") or "value")) or "value"
+    endpoints = candidate.get("endpoints") or []
+    locs = sorted({_location_family(str(ep.get("location") or "")) for ep in endpoints}) or ["other"]
+    families = sorted({_endpoint_family(str(ep.get("path") or "")) for ep in endpoints if str(ep.get("path") or "")})
+    # Semantically explicit fields can be learned across endpoints. Generic fields
+    # such as `id` must remain endpoint-scoped to avoid merging unrelated objects.
+    context = ",".join(locs[:3])
+    if key in GENERIC_CONTEXT_KEYS or len(key) <= 2:
+        context += "|" + ",".join(families[:3] or ["/"])
+    manual = candidate.get("manual_ground_truth") or []
+    if manual:
+        tags = sorted({f"{m.get('classification') or ''}:{m.get('object_type') or ''}" for m in manual})
+        context += "|manual=" + ",".join(tags[:3])
+    return f"{key}|{context}"
+
+
+def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Compress concrete lifecycle candidates into schema-level semantic concepts.
+
+    Nothing is dropped: every concrete candidate remains a member of exactly one
+    concept. The LLM reasons about concepts; inferred semantics are later projected
+    back to every member candidate locally.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    member_to_concept: dict[str, str] = {}
+    for c in candidates:
+        sig = _concept_signature(c)
+        concept_id = "c_" + _sha(sig)[:16]
+        grouped[concept_id].append(c)
+        member_to_concept[str(c.get("candidate_id") or "")] = concept_id
+
+    units: list[dict[str, Any]] = []
+    for concept_id, members in grouped.items():
+        members = sorted(members, key=lambda c: (-float(c.get("score") or 0), -int(c.get("occurrences") or 0), str(c.get("candidate_id") or "")))
+        aliases = sorted({str(a) for c in members for a in (c.get("aliases") or []) if str(a)})
+        keys = defaultdict(int)
+        for c in members:
+            keys[str(c.get("normalized_key") or "value")] += int(c.get("occurrences") or 1)
+        norm = sorted(keys, key=lambda k: (-keys[k], k))[0] if keys else "value"
+        samples=[]
+        for c in members:
+            v=str(c.get("value_sample") or "")
+            if v and v not in samples:
+                samples.append(v)
+            if len(samples) >= MAX_CONCEPT_VALUE_SAMPLES:
+                break
+        endpoint_map: dict[tuple, dict[str, Any]] = {}
+        for c in members:
+            for ep in c.get("endpoints") or []:
+                fam=_endpoint_family(str(ep.get("path") or ""))
+                lf=_location_family(str(ep.get("location") or ""))
+                sig=(str(ep.get("method") or ""),fam,str(ep.get("side") or ""),lf)
+                item=endpoint_map.setdefault(sig,{"method":sig[0],"path_family":fam,"side":sig[2],"location_family":lf,"examples":0})
+                item["examples"] += 1
+        endpoints=sorted(endpoint_map.values(), key=lambda x:(-int(x["examples"]),x["path_family"],x["location_family"]))[:MAX_CONCEPT_ENDPOINTS]
+        flow_ids=sorted({int(fid) for c in members for fid in (c.get("flow_ids") or []) if str(fid).isdigit()})
+        obs=[]
+        # Round-robin evidence preserves breadth across instances instead of letting
+        # one noisy value consume the entire evidence window.
+        per_member=[list(c.get("observation_ids") or []) for c in members]
+        while len(obs)<MAX_CONCEPT_OBSERVATIONS and any(per_member):
+            for bucket in per_member:
+                if bucket and len(obs)<MAX_CONCEPT_OBSERVATIONS:
+                    oid=int(bucket.pop(0))
+                    if oid not in obs: obs.append(oid)
+        reasons=sorted({str(r) for c in members for r in (c.get("selection_reasons") or []) if str(r)})
+        manual=[m for c in members for m in (c.get("manual_ground_truth") or [])][:20]
+        existing=[]
+        seen_existing=set()
+        for c in members:
+            old=c.get("existing_inference") or {}
+            if not old: continue
+            sig=(old.get("category"),old.get("semantic_type"),old.get("role"),old.get("status"))
+            if sig in seen_existing: continue
+            seen_existing.add(sig)
+            existing.append({**old,"member_count":sum(1 for x in members if (x.get("existing_inference") or {}).get("semantic_type")==old.get("semantic_type"))})
+        unit={
+            "candidate_id":concept_id,
+            "concept_id":concept_id,
+            "normalized_key":norm,
+            "key":str(members[0].get("key") or norm),
+            "aliases":aliases[:16],
+            "value_samples":samples,
+            "value_sample":samples[0] if samples else "",
+            "value_kind":str(members[0].get("value_kind") or "scalar"),
+            "instance_count":len(members),
+            "occurrences":sum(int(c.get("occurrences") or 0) for c in members),
+            "request_occurrences":sum(int(c.get("request_occurrences") or 0) for c in members),
+            "response_occurrences":sum(int(c.get("response_occurrences") or 0) for c in members),
+            "produced_then_consumed":any(bool(c.get("produced_then_consumed")) for c in members),
+            "endpoints":endpoints,
+            "flow_ids":flow_ids[:30],
+            "manual_ground_truth":manual,
+            "observation_ids":obs,
+            "score":round(max(float(c.get("score") or 0) for c in members),2),
+            "selection_reasons":reasons,
+            "existing_inference_summary":existing[:12],
+            # Local-only expansion metadata. _batch_bundle strips these before API.
+            "member_candidate_ids":[str(c.get("candidate_id") or "") for c in members],
+        }
+        units.append(unit)
+    units.sort(key=lambda u:(-float(u.get("score") or 0),-int(u.get("instance_count") or 0),str(u.get("normalized_key") or "")))
+    return units,member_to_concept
+
+
+def _model_unit_payload(unit: dict[str, Any]) -> dict[str, Any]:
+    return {k:v for k,v in unit.items() if k not in {"member_candidate_ids"}}
+
+
+def _conceptize_relations(relations: list[dict[str, Any]], member_to_concept: dict[str, str]) -> list[dict[str, Any]]:
+    grouped: dict[tuple, dict[str, Any]] = {}
+    for r in relations:
+        src=member_to_concept.get(str(r.get("src_candidate_id") or ""))
+        dst_raw=str(r.get("dst_candidate_id") or "")
+        dst=member_to_concept.get(dst_raw) if dst_raw else None
+        if not src:
+            continue
+        sig=(src,str(r.get("relation") or "related_to"),dst,str(r.get("dst_literal") or ""))
+        item=grouped.setdefault(sig,{"src_candidate_id":src,"relation":sig[1],"dst_candidate_id":dst,"dst_literal":sig[3] or None,"confidence":0.0,"status":str(r.get("status") or "suggested"),"explanation":str(r.get("explanation") or ""),"instance_relationships":0})
+        item["confidence"]=max(float(item.get("confidence") or 0),float(r.get("confidence") or 0))
+        item["instance_relationships"] += 1
+    return list(grouped.values())
+
+
+def _conceptize_transitions(transitions: list[dict[str, Any]], member_to_concept: dict[str, str]) -> list[dict[str, Any]]:
+    out=[]
+    for t in transitions:
+        cid=member_to_concept.get(str(t.get("object_candidate_id") or ""))
+        if not cid: continue
+        item=dict(t); item["object_candidate_id"]=cid
+        out.append(item)
+    return out
+
 def _existing_semantic_memory(conn) -> list[dict[str, Any]]:
     # No arbitrary semantic-memory cap: batching controls what is sent to the model.
     rows = conn.execute(
@@ -999,19 +1201,25 @@ def _plan_candidate_batches(candidates: list[dict[str, Any]], *, batch_size: int
 
 def _batch_bundle(bundle: dict[str, Any], candidate_ids: list[str], batch_no: int, batch_count: int) -> dict[str, Any]:
     ids=set(candidate_ids)
-    candidates=[c for c in bundle.get("candidates") or [] if str(c.get("candidate_id")) in ids]
-    memory=[m for m in bundle.get("existing_semantic_memory") or [] if str(m.get("candidate_id")) in ids]
+    model_units=bundle.get("model_units") or bundle.get("candidates") or []
+    candidates=[_model_unit_payload(c) for c in model_units if str(c.get("candidate_id")) in ids]
+    memory=[]
+    for c in model_units:
+        if str(c.get("candidate_id")) not in ids:
+            continue
+        for old in c.get("existing_inference_summary") or []:
+            memory.append({"concept_id":c.get("candidate_id"),**old})
     relations=[r for r in bundle.get("existing_relations") or [] if str(r.get("src_candidate_id")) in ids or str(r.get("dst_candidate_id")) in ids]
-    transitions=[t for t in bundle.get("state_transitions") or [] if str(t.get("object_candidate_id")) in ids or str(t.get("state_candidate_id")) in ids]
+    transitions=[t for t in bundle.get("state_transitions") or [] if str(t.get("object_candidate_id")) in ids]
     full_stats=bundle.get("stats") or {}
-    batch_stats={k:full_stats.get(k) for k in ("new_observations","impacted_candidates","selected_candidates","manual_context_updates","flow_context_updates","graph_neighbor_candidates") if k in full_stats}
-    batch_stats.update({"batch_no":batch_no,"batch_count":batch_count,"batch_candidates":len(candidates)})
+    batch_stats={k:full_stats.get(k) for k in ("new_observations","impacted_candidates","selected_candidates","model_concepts","manual_context_updates","flow_context_updates","graph_neighbor_candidates") if k in full_stats}
+    batch_stats.update({"batch_no":batch_no,"batch_count":batch_count,"batch_concepts":len(candidates)})
     return {
         "agent":bundle.get("agent"),"mode":bundle.get("mode"),
         "watermark_before":bundle.get("watermark_before"),"watermark_after":bundle.get("watermark_after"),
         "stats":batch_stats,
         "instructions":bundle.get("instructions"),
-        "batch":{"number":batch_no,"count":batch_count,"candidate_ids":candidate_ids},
+        "batch":{"number":batch_no,"count":batch_count,"concept_ids":candidate_ids},
         "candidates":candidates,"existing_semantic_memory":memory,"existing_relations":relations,"state_transitions":transitions,
     }
 
@@ -1069,17 +1277,38 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = 
     candidates, meta = _build_candidates(conn, since_observation_id=since_obs, mode=mode, extra_impacted=semantic_changes, target_key=target_key)
     meta["manual_context_updates"] = int(manual_delta.get("updates") or 0)
     meta["flow_context_updates"] = int(flow_delta.get("updates") or 0)
+
+    # Concrete lifecycle candidates remain local. The model reasons over compressed
+    # schema concepts so repeated instances do not multiply token cost.
+    model_units, member_to_concept = _build_concept_units(candidates)
     ids = {str(c["candidate_id"]) for c in candidates}
-    memory = []
-    norms={str(c.get("normalized_key") or "") for c in candidates}
-    for row in _existing_semantic_memory(conn):
-        if str(row.get("candidate_id")) in ids or str(row.get("normalized_key")) in norms:
-            memory.append({k:row.get(k) for k in ("candidate_id","normalized_key","value_preview","category","semantic_type","role","confidence","status","explanation")})
-    relations = _relations_memory(conn, ids)
-    transitions = _state_transitions(conn, ids)
-    plan = _plan_candidate_batches(candidates, batch_size=batch_size)
+    member_relations = _relations_memory(conn, ids)
+    relations = _conceptize_relations(member_relations, member_to_concept)
+    concept_ids={str(u.get("candidate_id") or "") for u in model_units}
+    # Preserve schema-level relations learned on prior runs. They are cheap and
+    # help a new delta reconnect with old business context.
+    if _table_exists(conn,"semantic_concept_relations") and concept_ids:
+        seen={(str(r.get("src_candidate_id") or ""),str(r.get("relation") or ""),str(r.get("dst_candidate_id") or ""),str(r.get("dst_literal") or "")) for r in relations}
+        for rr in conn.execute("SELECT * FROM semantic_concept_relations WHERE status IN ('auto_applied','confirmed','suggested') ORDER BY id DESC").fetchall():
+            r=dict(rr); src=str(r.get("src_concept_id") or ""); dst=str(r.get("dst_concept_id") or "")
+            if src not in concept_ids and dst not in concept_ids: continue
+            sig=(src,str(r.get("relation") or ""),dst,str(r.get("dst_literal") or ""))
+            if sig in seen: continue
+            seen.add(sig)
+            relations.append({"src_candidate_id":src,"relation":r.get("relation"),"dst_candidate_id":dst or None,"dst_literal":r.get("dst_literal"),"confidence":r.get("confidence"),"status":r.get("status"),"explanation":r.get("explanation")})
+    transitions = _conceptize_transitions(_state_transitions(conn, ids), member_to_concept)
+    plan = _plan_candidate_batches(model_units, batch_size=batch_size)
+
+    meta["instance_candidates"] = len(candidates)
+    meta["model_concepts"] = len(model_units)
+    meta["concept_clusters"] = len(model_units)
+    meta["semantic_compression_ratio"] = round((len(candidates) / max(1,len(model_units))),2) if candidates else 1.0
     meta["batch_count"] = len(plan)
     meta["batch_size"] = int(batch_size)
+    # selected_candidates keeps its original meaning: every relevant concrete
+    # lifecycle is covered. model_concepts is what is actually billed to the LLM.
+    meta["selected_candidates"] = len(candidates)
+
     bundle = {
         "agent": AGENT_VERSION,
         "mode": mode,
@@ -1092,9 +1321,13 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = 
             "do_not_search_vulnerabilities": True,
             "unknown_is_allowed": True,
             "no_candidate_truncation": True,
+            "concept_clusters_not_instances": True,
+            "infer_schema_semantics_then_project_locally": True,
         },
+        # Local concrete candidates are never serialized wholesale to OpenAI.
         "candidates": candidates,
-        "existing_semantic_memory": memory,
+        "model_units": model_units,
+        "member_to_concept": member_to_concept,
         "existing_relations": relations,
         "state_transitions": transitions,
         "batch_plan": plan,
@@ -1110,18 +1343,19 @@ def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, usd_c
     totals={"input_tokens":0,"max_output_tokens":0,"expected_output_tokens":0,"max_usd":0.0,"expected_usd":0.0,"payload_chars":0}
     for b in batches:
         payload=json.dumps(b,ensure_ascii=False,separators=(",",":"))
-        candidate_count=len(b.get("candidates") or [])
-        out_budget=_auto_output_budget(candidate_count,len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
-        expected_out=_expected_output_tokens(out_budget,candidate_count)
+        concept_count=len(b.get("candidates") or [])
+        out_budget=_auto_output_budget(concept_count,len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
+        expected_out=_expected_output_tokens(out_budget,concept_count)
         max_est=intel.estimate_ai_cost(payload,model,out_budget,rate)
         expected_est=intel.estimate_ai_cost(payload,model,expected_out,rate)
-        details.append({"batch":int((b.get("batch") or {}).get("number") or 0),"candidates":candidate_count,"input_tokens_est":int(max_est.get("input_tokens_est") or 0),"output_tokens_budget":out_budget,"expected_output_tokens":expected_out,"max_total_usd_est":float(max_est.get("max_total_usd_est") or 0),"max_total_cop_est":float(max_est.get("max_total_cop_est") or 0)})
+        details.append({"batch":int((b.get("batch") or {}).get("number") or 0),"concepts":concept_count,"input_tokens_est":int(max_est.get("input_tokens_est") or 0),"output_tokens_budget":out_budget,"expected_output_tokens":expected_out,"max_total_usd_est":float(max_est.get("max_total_usd_est") or 0),"max_total_cop_est":float(max_est.get("max_total_cop_est") or 0)})
         totals["input_tokens"] += int(max_est.get("input_tokens_est") or 0)
         totals["max_output_tokens"] += int(out_budget)
         totals["expected_output_tokens"] += int(expected_out)
         totals["max_usd"] += float(max_est.get("max_total_usd_est") or 0)
         totals["expected_usd"] += float(expected_est.get("max_total_usd_est") or 0)
         totals["payload_chars"] += len(payload)
+    stats=bundle.get("stats",{})
     return {
         "model":model,
         "input_tokens_est":totals["input_tokens"],
@@ -1134,9 +1368,12 @@ def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, usd_c
         "max_total_cop_est":totals["max_usd"]*rate,
         "expected_total_cop_est":totals["expected_usd"]*rate,
         "payload_chars":totals["payload_chars"],
-        "candidate_count":int(bundle.get("stats",{}).get("selected_candidates") or 0),
-        "new_observations":int(bundle.get("stats",{}).get("new_observations") or 0),
-        "impacted_candidates":int(bundle.get("stats",{}).get("impacted_candidates") or 0),
+        "candidate_count":int(stats.get("selected_candidates") or 0),
+        "instance_candidates":int(stats.get("instance_candidates") or stats.get("selected_candidates") or 0),
+        "concept_count":int(stats.get("model_concepts") or 0),
+        "semantic_compression_ratio":float(stats.get("semantic_compression_ratio") or 1.0),
+        "new_observations":int(stats.get("new_observations") or 0),
+        "impacted_candidates":int(stats.get("impacted_candidates") or 0),
         "batch_count":len(details),
         "batches":details,
         "mode":bundle.get("mode"),
@@ -1191,7 +1428,7 @@ def _output_schema() -> dict[str, Any]:
 def _system_prompt() -> str:
     return """Eres el Context Agent de Negro, una herramienta de pentesting AUTORIZADO. Tu única tarea en esta fase es comprender el modelo semántico del negocio a partir de evidencia HTTP ya capturada. NO busques vulnerabilidades, NO propongas ataques y NO inventes datos.
 
-Analiza candidatos construidos determinísticamente desde URL/path/query params, headers, cookies, JWT claims, bodies request/response y Flows. El nombre de una key es sólo una señal; prioriza comportamiento: producción en response y consumo posterior, repetición entre endpoints, cambio entre actores/cuentas, ubicación, método, estado y co-ocurrencias.
+Analiza CONCEPT CLUSTERS construidos determinísticamente desde URL/path/query params, headers, cookies, JWT claims, bodies request/response y Flows. Cada candidate_id representa un concepto/campo contextual y puede resumir muchas instancias concretas. value_samples son ejemplos, instance_count indica cuántas instancias locales cubre y endpoints resume dónde aparece. NO interpretes cada muestra como un concepto independiente. El nombre de una key es sólo una señal; prioriza comportamiento: producción en response y consumo posterior, repetición entre endpoints, cambio entre actores/cuentas, ubicación, método, estado y co-ocurrencias.
 
 Categorías válidas:
 - identity: actor/principal real del sistema.
@@ -1210,7 +1447,7 @@ REGLAS:
 3. Usa semantic_type como nombre conceptual inferido (por ejemplo Member, Account, Order) pero NO dependas de una lista hardcodeada.
 4. role describe el papel contextual (source, target, owner, actor, destination, etc.) cuando esté respaldado.
 5. confidence debe reflejar la evidencia suministrada, no seguridad retórica. >=0.90 debe ser realmente fuerte.
-6. Cada inference debe citar observation IDs REALES incluidos en su candidato.
+6. Cada inference debe citar observation IDs REALES incluidos en su concept cluster. La inferencia se proyectará localmente a todas sus instancias.
 7. Cada relationship debe conectar candidate IDs REALES del bundle o usar dst_literal cuando el destino no sea un candidato explícito.
 8. existing_semantic_memory y existing_relations son memoria previa: úsala para reinterpretar evidencia nueva, pero permite reclasificar si aparece evidencia mejor.
 9. state_transitions fue calculado determinísticamente: úsalo como evidencia fuerte de ciclo de vida, sin asumir que toda transición implica vulnerabilidad.
@@ -1302,58 +1539,130 @@ def _final_confidence(model_confidence: float, evidence_confidence: float) -> fl
     return round(min(model, model * 0.65 + evidence * 0.35), 4)
 
 
+
+def _relation_member_pairs(src_unit: dict[str, Any], dst_unit: dict[str, Any], candidate_map: dict[str, dict[str, Any]]) -> set[tuple[str,str]]:
+    """Materialize only concrete relations supported by co-occurrence/unique Flow context."""
+    src_ids=[cid for cid in src_unit.get("member_candidate_ids") or [] if cid in candidate_map]
+    dst_ids=[cid for cid in dst_unit.get("member_candidate_ids") or [] if cid in candidate_map]
+    pairs:set[tuple[str,str]]=set()
+    src_ex={cid:{int(ep.get("exchange_id") or 0) for ep in candidate_map[cid].get("endpoints") or [] if int(ep.get("exchange_id") or 0)} for cid in src_ids}
+    dst_ex={cid:{int(ep.get("exchange_id") or 0) for ep in candidate_map[cid].get("endpoints") or [] if int(ep.get("exchange_id") or 0)} for cid in dst_ids}
+    for a in src_ids:
+        for b in dst_ids:
+            if src_ex[a] & dst_ex[b]:
+                pairs.add((a,b))
+    if pairs:
+        return pairs
+    if len(src_ids)==1 and len(dst_ids)==1:
+        return {(src_ids[0],dst_ids[0])}
+    # A Flow can bridge requests where the two values never occur in the same
+    # exchange. Only materialize when that Flow has one unambiguous member on
+    # each side; this avoids Cartesian relation explosions.
+    src_by_flow:dict[int,set[str]]=defaultdict(set); dst_by_flow:dict[int,set[str]]=defaultdict(set)
+    for cid in src_ids:
+        for fid in candidate_map[cid].get("flow_ids") or []:
+            try: src_by_flow[int(fid)].add(cid)
+            except Exception: pass
+    for cid in dst_ids:
+        for fid in candidate_map[cid].get("flow_ids") or []:
+            try: dst_by_flow[int(fid)].add(cid)
+            except Exception: pass
+    for fid in set(src_by_flow)&set(dst_by_flow):
+        if len(src_by_flow[fid])==1 and len(dst_by_flow[fid])==1:
+            pairs.add((next(iter(src_by_flow[fid])),next(iter(dst_by_flow[fid]))))
+    return pairs
+
+
+def _candidate_value_hash(conn, candidate: dict[str, Any]) -> str:
+    ids=[int(x) for x in candidate.get("observation_ids") or [] if str(x).isdigit()]
+    if not ids: return ""
+    row=conn.execute("SELECT value_hash FROM semantic_observations WHERE id=?",(ids[0],)).fetchone()
+    return str(row["value_hash"] or "") if row else ""
+
 def _persist_result(conn, run_id: int, bundle: dict[str, Any], result: dict[str, Any], *, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST) -> dict[str, int]:
-    candidate_map = {str(c["candidate_id"]): c for c in bundle.get("candidates") or []}
+    concrete_map = {str(c["candidate_id"]): c for c in bundle.get("candidates") or []}
+    concept_map = {str(c["candidate_id"]): c for c in bundle.get("model_units") or bundle.get("candidates") or []}
     now = now_iso()
-    counts = {"inferences":0,"auto_applied":0,"suggested":0,"candidates":0,"relations":0}
+    counts = {"inferences":0,"auto_applied":0,"suggested":0,"candidates":0,"relations":0,"concepts":0}
+
+    # One model inference is projected onto every concrete lifecycle instance in
+    # the concept. The expensive semantic decision happens once; Workbench still
+    # receives per-value marks with per-instance evidence confidence.
     for inf in result.get("inferences") or []:
-        cid = str(inf.get("candidate_id") or "")
-        c = candidate_map.get(cid)
-        if not c:
+        concept_id = str(inf.get("candidate_id") or "")
+        concept = concept_map.get(concept_id)
+        if not concept and concept_id in concrete_map:
+            concept = {**concrete_map[concept_id], "member_candidate_ids":[concept_id], "concept_id":concept_id}
+        if not concept:
             continue
         category = str(inf.get("category") or "unknown")
         if category not in CATEGORIES:
             category = "unknown"
         model_conf = max(0.0, min(1.0, float(inf.get("confidence") or 0)))
-        evidence_conf = _evidence_confidence(c)
-        conf = _final_confidence(model_conf, evidence_conf)
-        status = "auto_applied" if conf >= auto_apply_threshold and category != "unknown" else "suggested" if conf >= suggest_threshold and category != "unknown" else "candidate"
-        evidence_ids = [int(x) for x in (inf.get("evidence_observation_ids") or []) if str(x).isdigit()]
-        valid_ids = set(int(x) for x in c.get("observation_ids") or [])
-        evidence_ids = [x for x in evidence_ids if x in valid_ids][:40] or list(valid_ids)[:12]
-        conn.execute(
-            """INSERT INTO semantic_inferences(candidate_id,normalized_key,value_hash,value_preview,category,semantic_type,role,model_confidence,evidence_confidence,confidence,status,source,explanation,evidence_json,run_id,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,'ai',?,?,?,?,?)""",
-            (cid,c["normalized_key"], next((r["value_hash"] for r in conn.execute("SELECT value_hash FROM semantic_observations WHERE id=?", (c["observation_ids"][0],)).fetchall()), ""), str(c.get("value_sample") or "")[:500], category, str(inf.get("semantic_type") or "")[:120], str(inf.get("role") or "")[:120], model_conf, evidence_conf, conf, status, str(inf.get("explanation") or "")[:2000], json.dumps(evidence_ids), int(run_id), now, now),
-        )
-        counts["inferences"] += 1
-        counts[status if status in counts else "candidates"] += 1
+        model_evidence=[int(x) for x in (inf.get("evidence_observation_ids") or []) if str(x).isdigit()]
+        members=[cid for cid in (concept.get("member_candidate_ids") or [concept_id]) if cid in concrete_map]
+        if not members and concept_id in concrete_map:
+            members=[concept_id]
+        for cid in members:
+            c=concrete_map[cid]
+            evidence_conf = _evidence_confidence(c)
+            conf = _final_confidence(model_conf, evidence_conf)
+            status = "auto_applied" if conf >= auto_apply_threshold and category != "unknown" else "suggested" if conf >= suggest_threshold and category != "unknown" else "candidate"
+            valid_ids = set(int(x) for x in c.get("observation_ids") or [])
+            evidence_ids = [x for x in model_evidence if x in valid_ids][:40] or list(valid_ids)[:12]
+            conn.execute(
+                """INSERT INTO semantic_inferences(candidate_id,normalized_key,value_hash,value_preview,category,semantic_type,role,model_confidence,evidence_confidence,confidence,status,source,explanation,evidence_json,run_id,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,'ai',?,?,?,?,?)""",
+                (cid,c["normalized_key"],_candidate_value_hash(conn,c),str(c.get("value_sample") or "")[:500],category,str(inf.get("semantic_type") or "")[:120],str(inf.get("role") or "")[:120],model_conf,evidence_conf,conf,status,str(inf.get("explanation") or "")[:2000],json.dumps(evidence_ids),int(run_id),now,now),
+            )
+            counts["inferences"] += 1
+            counts[status if status in counts else "candidates"] += 1
+        counts["concepts"] += 1
 
-    # Relations are versioned per run. Keep lower confidence relationships as
-    # suggestions rather than discarding them; future deltas can strengthen them.
-    known_ids = set(candidate_map)
     for rel in result.get("relationships") or []:
-        src = str(rel.get("src_candidate_id") or "")
-        dst = rel.get("dst_candidate_id")
-        dst = str(dst) if dst else None
-        if src not in known_ids or (dst and dst not in known_ids):
+        src_concept=str(rel.get("src_candidate_id") or "")
+        dst_raw=rel.get("dst_candidate_id")
+        dst_concept=str(dst_raw) if dst_raw else None
+        src_unit=concept_map.get(src_concept)
+        if not src_unit and src_concept in concrete_map:
+            src_unit={**concrete_map[src_concept],"member_candidate_ids":[src_concept],"concept_id":src_concept}
+        dst_unit=concept_map.get(dst_concept) if dst_concept else None
+        if dst_concept and not dst_unit and dst_concept in concrete_map:
+            dst_unit={**concrete_map[dst_concept],"member_candidate_ids":[dst_concept],"concept_id":dst_concept}
+        if not src_unit or (dst_concept and not dst_unit):
             continue
-        relation = re.sub(r"[^a-zA-Z0-9_:-]+", "_", str(rel.get("relation") or "related_to")).strip("_")[:100] or "related_to"
-        model_rel_conf = max(0.0, min(1.0, float(rel.get("confidence") or 0)))
-        src_support=_evidence_confidence(candidate_map[src])
-        dst_support=_evidence_confidence(candidate_map[dst]) if dst and dst in candidate_map else src_support
+        relation=re.sub(r"[^a-zA-Z0-9_:-]+","_",str(rel.get("relation") or "related_to")).strip("_")[:100] or "related_to"
+        model_rel_conf=max(0.0,min(1.0,float(rel.get("confidence") or 0)))
+        src_support=_evidence_confidence(src_unit)
+        dst_support=_evidence_confidence(dst_unit) if dst_unit else src_support
         evidence_rel_conf=min(src_support,dst_support)
         conf=_final_confidence(model_rel_conf,evidence_rel_conf)
-        status = "auto_applied" if conf >= auto_apply_threshold else "suggested" if conf >= suggest_threshold else "candidate"
-        valid_relation_obs=set(int(x) for x in candidate_map[src].get("observation_ids") or [])
-        if dst and dst in candidate_map: valid_relation_obs.update(int(x) for x in candidate_map[dst].get("observation_ids") or [])
-        relation_evidence=[int(x) for x in (rel.get("evidence_observation_ids") or []) if str(x).isdigit() and int(x) in valid_relation_obs][:50]
+        status="auto_applied" if conf>=auto_apply_threshold else "suggested" if conf>=suggest_threshold else "candidate"
+        rel_obs=[int(x) for x in (rel.get("evidence_observation_ids") or []) if str(x).isdigit()][:50]
+        # Preserve schema-level knowledge separately from concrete instance edges.
+        inference_by_concept={str(x.get("candidate_id") or ""):x for x in result.get("inferences") or []}
+        src_inf=inference_by_concept.get(src_concept) or {}; dst_inf=inference_by_concept.get(dst_concept or "") or {}
+        src_label=str(src_inf.get("semantic_type") or src_inf.get("category") or src_unit.get("normalized_key") or src_concept)[:160]
+        dst_label=str(dst_inf.get("semantic_type") or dst_inf.get("category") or (dst_unit or {}).get("normalized_key") or rel.get("dst_literal") or dst_concept or "")[:160]
         conn.execute(
-            """INSERT OR IGNORE INTO semantic_relations(run_id,src_candidate_id,relation,dst_candidate_id,dst_literal,model_confidence,evidence_confidence,confidence,status,evidence_json,explanation,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (int(run_id),src,relation,dst,str(rel.get("dst_literal") or "")[:300] or None,model_rel_conf,evidence_rel_conf,conf,status,json.dumps(relation_evidence),str(rel.get("explanation") or "")[:2000],now),
+            """INSERT OR IGNORE INTO semantic_concept_relations(run_id,src_concept_id,relation,dst_concept_id,dst_literal,src_label,dst_label,model_confidence,evidence_confidence,confidence,status,evidence_json,explanation,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (int(run_id),src_concept,relation,dst_concept,str(rel.get("dst_literal") or "")[:300] or None,src_label,dst_label,model_rel_conf,evidence_rel_conf,conf,status,json.dumps(rel_obs),str(rel.get("explanation") or "")[:2000],now),
         )
         counts["relations"] += 1
+        if dst_unit:
+            for src,dst in _relation_member_pairs(src_unit,dst_unit,concrete_map):
+                src_support=_evidence_confidence(concrete_map[src]); dst_support=_evidence_confidence(concrete_map[dst])
+                local_evidence=min(src_support,dst_support); local_conf=_final_confidence(model_rel_conf,local_evidence)
+                local_status="auto_applied" if local_conf>=auto_apply_threshold else "suggested" if local_conf>=suggest_threshold else "candidate"
+                valid=set(int(x) for x in concrete_map[src].get("observation_ids") or [])|set(int(x) for x in concrete_map[dst].get("observation_ids") or [])
+                evidence=[x for x in rel_obs if x in valid][:50] or list(valid)[:12]
+                conn.execute(
+                    """INSERT OR IGNORE INTO semantic_relations(run_id,src_candidate_id,relation,dst_candidate_id,dst_literal,model_confidence,evidence_confidence,confidence,status,evidence_json,explanation,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (int(run_id),src,relation,dst,None,model_rel_conf,local_evidence,local_conf,local_status,json.dumps(evidence),str(rel.get("explanation") or "")[:2000],now),
+                )
+                counts["relations"] += 1
     return counts
 
 
@@ -1381,7 +1690,7 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
     completed=0
     try:
         if not bundle.get("candidates"):
-            completeness={"candidates_total":0,"candidates_analyzed":0,"batches_total":0,"batches_completed":0,"coverage_pct":100.0,"truncated":False}
+            completeness={"candidates_total":0,"candidates_analyzed":0,"concepts_total":0,"concepts_analyzed":0,"batches_total":0,"batches_completed":0,"coverage_pct":100.0,"truncated":False}
             result = {"summary":"No hay candidatos nuevos o impactados que justifiquen una llamada al modelo.","inferences":[],"relationships":[],"completeness":completeness}
         else:
             for b in batch_bundles:
@@ -1391,8 +1700,10 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
                 for key in usage_total:
                     usage_total[key] += int(batch_usage.get(key) or 0)
             total_candidates=len(bundle.get("candidates") or [])
+            total_concepts=len(bundle.get("model_units") or [])
             completeness={
                 "candidates_total":total_candidates,"candidates_analyzed":total_candidates,
+                "concepts_total":total_concepts,"concepts_analyzed":total_concepts,
                 "batches_total":len(batch_bundles),"batches_completed":completed,
                 "coverage_pct":100.0,"truncated":False,
             }
@@ -1408,12 +1719,26 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         for key in usage_total:
             usage_total[key] += int(partial.get(key) or 0)
         cost=_actual_cost(model,usage_total); cost_cop=cost*rate
-        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":sum(len(x.get("candidates") or []) for x in batch_bundles[:completed]),"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((completed/max(1,len(batch_bundles)))*100,2),"truncated":True}}
+        completed_concepts=sum(len(x.get("candidates") or []) for x in batch_bundles[:completed])
+        represented=set()
+        concept_map={str(u.get("candidate_id") or ""):u for u in bundle.get("model_units") or []}
+        for b in batch_bundles[:completed]:
+            for c in b.get("candidates") or []:
+                unit=concept_map.get(str(c.get("candidate_id") or "")) or {}
+                represented.update(unit.get("member_candidate_ids") or [])
+        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":len(represented),"concepts_total":len(bundle.get("model_units") or []),"concepts_analyzed":completed_concepts,"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((len(represented)/max(1,len(bundle.get("candidates") or [])))*100,2),"truncated":True}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
     except Exception as exc:
         cost=_actual_cost(model,usage_total); cost_cop=cost*rate
-        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":sum(len(x.get("candidates") or []) for x in batch_bundles[:completed]),"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((completed/max(1,len(batch_bundles)))*100,2),"truncated":True}}
+        completed_concepts=sum(len(x.get("candidates") or []) for x in batch_bundles[:completed])
+        represented=set()
+        concept_map={str(u.get("candidate_id") or ""):u for u in bundle.get("model_units") or []}
+        for b in batch_bundles[:completed]:
+            for c in b.get("candidates") or []:
+                unit=concept_map.get(str(c.get("candidate_id") or "")) or {}
+                represented.update(unit.get("member_candidate_ids") or [])
+        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":len(represented),"concepts_total":len(bundle.get("model_units") or []),"concepts_analyzed":completed_concepts,"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((len(represented)/max(1,len(bundle.get("candidates") or [])))*100,2),"truncated":True}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
 

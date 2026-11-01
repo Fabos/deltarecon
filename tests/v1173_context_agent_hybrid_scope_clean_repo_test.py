@@ -77,4 +77,4 @@ def test_scope_explainability_template_mentions_all_sources():
     assert 'Reglas Workbench' in tpl
     assert 'Burp IN_SCOPE' in tpl
     assert 'Hosts fuera del gate' in tpl
-    assert 'Context Agent v1.4' in tpl
+    assert 'Context Agent v1.5' in tpl

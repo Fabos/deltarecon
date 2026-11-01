@@ -129,7 +129,7 @@ El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido.
 # Negro Recon 🐕 — v0.44.8
 
 
-> **Actual · v0.117.4 Context Agent:** Scope Gate híbrido + Semantic Gate. El análisis IA acepta tráfico del target configurado del proyecto (incluyendo subdominios como `www.`), reglas Host/Endpoint del HTTP Workbench o Burp `IN_SCOPE`. El scope explícito de Negro es autoritativo; Burp `EXCLUDED` sólo veta tráfico que Negro no incluyó explícitamente. El ledger conserva todas las observaciones, pero sólo candidatos con señal semántica llegan al modelo. No existe cap fijo de candidatos: los runs completos usan batching y costos/presupuesto en COP. Consulta `docs/CONTEXT_AGENT.md` para el comportamiento actual.
+> **Actual · v0.117.5 Context Agent:** Scope Gate híbrido + Semantic Gate. El análisis IA acepta tráfico del target configurado del proyecto (incluyendo subdominios como `www.`), reglas Host/Endpoint del HTTP Workbench o Burp `IN_SCOPE`. El scope explícito de Negro es autoritativo; Burp `EXCLUDED` sólo veta tráfico que Negro no incluyó explícitamente. El ledger conserva todas las observaciones, pero sólo candidatos con señal semántica llegan al modelo. No existe cap fijo de candidatos: los runs completos usan batching y costos/presupuesto en COP. Consulta `docs/CONTEXT_AGENT.md` para el comportamiento actual.
 
 ## v0.47.1 · Contexto inline explicable
 

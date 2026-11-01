@@ -1,4 +1,4 @@
-# Context Agent v1.4
+# Context Agent v1.5
 
 El Context Agent convierte tráfico HTTP capturado en memoria semántica persistente sin reemplazar el flujo manual de Negro.
 
@@ -30,3 +30,8 @@ Todas las observaciones permanecen en el ledger local. No todas consumen IA. El 
 ## Incremental
 
 Los runs normales usan delta + impact graph. Se reenvía tráfico nuevo y el contexto histórico afectado, incluyendo relaciones cercanas, cambios de Flow y marcas manuales, sin reanalizar indiscriminadamente todo el target.
+
+
+## Compresión semántica
+
+El ledger conserva cada instancia concreta. Antes de llamar al modelo, Negro agrupa instancias equivalentes en **concept clusters** usando la key normalizada, la ubicación HTTP y, para campos genéricos como `id`, la familia del endpoint. El LLM interpreta el concepto una vez y Negro proyecta el resultado de vuelta a cada instancia. Esto reduce tokens por redundancia sin eliminar evidencia ni aplicar un cap de candidatos.
