@@ -129,6 +129,8 @@ El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido.
 # Negro Recon 🐕 — v0.44.8
 
 
+> **Nuevo · v0.117.2 Context Agent:** Scope Gate + Semantic Gate para reducir costo sin perder evidencia: sólo tráfico autorizado entra a IA y el ruido queda diferido hasta que gane señales conductuales. Ver `V1172_CONTEXT_AGENT_SCOPE_SEMANTIC_GATE.md`.
+
 > **Nuevo · v0.117.1 Context Agent:** análisis completo sin cap fijo de candidatos, batching automático y control de presupuesto/costos en COP. Ver `V1171_CONTEXT_AGENT_COMPLETE_BATCHING_COP.md`.
 
 ## v0.47.1 · Contexto inline explicable

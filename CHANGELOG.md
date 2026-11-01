@@ -1,3 +1,12 @@
+## v0.117.2 — Context Agent Scope + Semantic Gate
+
+- Context Agent analiza únicamente tráfico dentro del scope autorizado del proyecto/Burp; analysis-only third parties fuera de scope no consumen IA.
+- Observation Ledger conserva evidencia local, pero un nuevo Semantic Gate difiere ruido de transporte/estáticos y sólo envía candidatos con señales semánticas o conductuales suficientes.
+- Candidatos diferidos pueden “despertar” en runs posteriores cuando se repiten, propagan response→request, entran en un Flow, reciben una marca manual o se conectan al grafo.
+- X-Trace-Id, X-Request-Id, cache/transport metadata y assets estáticos ya no se convierten en candidatos por contener `id` o valores con aspecto de referencia.
+- La estimación muestra observaciones in-scope, fuera de scope ignoradas, candidatos antes del filtro, diferidos y candidatos realmente enviados.
+- Se mantiene batching sin cap, output automático, hard-stop en COP y coverage 100% para runs completos.
+
 ## v0.117.1 — Context Agent Complete Batching + COP
 
 - Eliminado el cap fijo de 120 candidatos.

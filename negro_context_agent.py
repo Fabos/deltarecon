@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.1.
+"""Negro Context Agent v1.2.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -21,7 +21,7 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.1"
+AGENT_VERSION = "context-agent-v1.2"
 DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
@@ -49,6 +49,16 @@ SEMANTIC_HINTS = (
     "payment", "transaction", "booking", "shipment", "refund", "return", "invoice",
     "product", "benefit", "address", "card", "status", "state", "phase", "stage",
     "token", "authorization", "session", "role", "scope", "permission", "owner",
+)
+
+STATIC_EXTENSIONS = {
+    ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".woff", ".woff2", ".ttf", ".eot", ".webp", ".avif", ".mp4", ".webm", ".mp3",
+}
+TRANSPORT_NOISE_TOKENS = (
+    "trace", "request_id", "requestid", "correlation_id", "correlationid", "ray",
+    "timing", "cache", "content_security", "strict_transport", "x_frame", "x_content",
+    "server_timing", "priority", "alt_svc", "cf_", "akamai", "datadog", "newrelic",
 )
 
 
@@ -342,6 +352,145 @@ def _last_success(conn) -> dict[str, int]:
     }
 
 
+def _project_scopes(conn) -> list[str]:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='scopes_json'").fetchone()
+        raw = json.loads(row["value"]) if row and row["value"] else []
+    except Exception:
+        raw = []
+    scopes = []
+    for item in raw if isinstance(raw, list) else []:
+        value = str(item or "").strip().lower().rstrip(".")
+        if value and value not in scopes:
+            scopes.append(value)
+    return scopes
+
+
+def _host_in_project_scope(hostname: str, scopes: list[str]) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    return any(host == scope or host.endswith("." + scope) for scope in scopes if scope)
+
+
+def _ai_scope_exchange_ids(conn) -> tuple[set[int], dict[str, int]]:
+    """Return exchanges eligible for Context Agent.
+
+    Active Burp IN_SCOPE always qualifies. EXCLUDED never qualifies. UNKNOWN is
+    accepted only when the host belongs to the project's configured scopes.
+    This deliberately excludes analysis-only third parties copied into a project
+    unless they are also in the authorized project/Burp scope.
+    """
+    scopes = _project_scopes(conn)
+    try:
+        rows = conn.execute(
+            """SELECT e.id,COALESCE(e.burp_scope_status,'UNKNOWN') burp_scope_status,h.hostname
+                 FROM http_exchanges e
+                 JOIN resource_operations o ON o.id=e.operation_id
+                 JOIN resources r ON r.id=o.resource_id
+                 JOIN hosts h ON h.id=r.host_id"""
+        ).fetchall()
+    except Exception:
+        return set(), {"known_exchanges": 0, "scope_exchanges": 0, "excluded_exchanges": 0}
+    allowed: set[int] = set()
+    excluded = 0
+    for row in rows:
+        status = str(row["burp_scope_status"] or "UNKNOWN").upper()
+        if status == "EXCLUDED":
+            excluded += 1
+            continue
+        if status == "IN_SCOPE" or _host_in_project_scope(str(row["hostname"] or ""), scopes):
+            allowed.add(int(row["id"]))
+        else:
+            excluded += 1
+    return allowed, {"known_exchanges": len(rows), "scope_exchanges": len(allowed), "excluded_exchanges": excluded}
+
+
+def _is_static_path(path: str) -> bool:
+    low = str(path or "").lower().split("?", 1)[0]
+    return any(low.endswith(ext) for ext in STATIC_EXTENSIONS)
+
+
+def _is_semantic_candidate(rows: list[dict[str, Any]], score: float, *, has_existing: bool = False, graph_neighbor: bool = False) -> tuple[bool, list[str]]:
+    """Conservative semantic gate.
+
+    Every observation remains in the local ledger. This function only decides
+    whether the LLM needs to see the candidate *now*. Candidates can wake up on
+    later runs when they repeat, propagate, enter a Flow, receive a manual mark,
+    or become connected to the semantic graph.
+    """
+    if not rows:
+        return False, ["empty"]
+    reasons: list[str] = []
+    if any(r.get("manual_classification") for r in rows):
+        return True, ["manual_ground_truth"]
+    if has_existing:
+        return True, ["existing_semantic_memory"]
+    if graph_neighbor:
+        return True, ["impact_graph_neighbor"]
+
+    key = _norm_key(rows[0].get("key_name") or "")
+    kinds = {str(r.get("value_kind") or "").lower() for r in rows}
+    locations = [str(r.get("location") or "").lower() for r in rows]
+    sides = {str(r.get("side") or "") for r in rows}
+    endpoints = {(str(r.get("method") or ""), str(r.get("path") or "")) for r in rows}
+    flows: set[int] = set()
+    for r in rows:
+        try:
+            flows.update(int(x) for x in json.loads(r.get("flow_ids_json") or "[]"))
+        except Exception:
+            pass
+    sample = str(rows[0].get("value_raw") or "")
+
+    transportish = any(tok in key for tok in TRANSPORT_NOISE_TOKENS)
+    # Auth/JWT semantics are always relevant, but raw secrets are redacted later.
+    # Generic response headers ending in `id` (X-Trace-Id, X-Request-Id) can look
+    # like entities to the generic inspector, so transport metadata is explicitly
+    # prevented from creating an AI candidate on that signal alone.
+    inspector_signal = any(http_inspector.default_classification(str(r.get("key_name") or ""), str(r.get("value_raw") or ""), str(r.get("location") or "")) != "ignore" for r in rows)
+    if any(k.startswith("jwt") for k in kinds) or (inspector_signal and not transportish):
+        reasons.append("inspector_semantic_signal")
+
+    if any(h in key for h in SEMANTIC_HINTS):
+        reasons.append("semantic_key_signal")
+    if _reference_like(key, sample, str(rows[0].get("value_kind") or "scalar"), str(rows[0].get("location") or "")):
+        reasons.append("reference_like")
+    if "request" in sides and "response" in sides:
+        reasons.append("produced_then_consumed")
+    if len(endpoints) >= 2 and len(rows) >= 2:
+        reasons.append("cross_endpoint_reuse")
+    if flows:
+        reasons.append("flow_context")
+
+    structured = any(any(tag in loc for tag in ("_query:", "_json:", "_form:", "_multipart:", "_xml:", "request_path:")) for loc in locations)
+    header_only = bool(locations) and all("_header:" in loc or "_cookie:" in loc for loc in locations)
+    static_only = bool(rows) and all(_is_static_path(str(r.get("path") or "")) for r in rows)
+
+    # Static assets and transport-only headers must earn their way in through an
+    # explicit behavioral signal. A name like X-Request-Id contains "id" but is
+    # still transport metadata unless it propagates into business traffic.
+    behavioral = any(x in reasons for x in ("inspector_semantic_signal", "produced_then_consumed", "cross_endpoint_reuse", "flow_context"))
+    strong = bool(reasons) and (
+        behavioral
+        or ("semantic_key_signal" in reasons and score >= 1.5)
+        or ("reference_like" in reasons and score >= 1.5)
+    )
+    if static_only and not behavioral:
+        return False, ["static_transport_noise"]
+    if header_only and transportish and not behavioral:
+        return False, ["transport_header_noise"]
+
+    # Unique arbitrary JSON/header scalars are kept in the ledger but deferred.
+    # They wake up automatically if future traffic adds behavioral evidence.
+    if strong:
+        return True, reasons
+    if structured and score >= 2.0:
+        return True, reasons + ["structured_behavior_score"]
+    if not header_only and score >= 3.0:
+        return True, reasons + ["behavior_score"]
+    return False, reasons or ["insufficient_semantic_evidence"]
+
+
 def _is_noise_key(key: str) -> bool:
     low = _norm_key(key)
     if low in NOISE_KEYS:
@@ -430,7 +579,12 @@ def _existing_semantic_memory(conn) -> list[dict[str, Any]]:
 
 
 def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", extra_impacted: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    all_rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_observations ORDER BY id").fetchall()]
+    raw_rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_observations ORDER BY id").fetchall()]
+    scope_ids, scope_stats = _ai_scope_exchange_ids(conn)
+    known_exchange_ids = {int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges").fetchall()} if _table_exists(conn, "http_exchanges") else set()
+    # Synthetic/unit/manual ledger rows without a backing exchange stay eligible;
+    # real captured traffic must pass the project/Burp scope gate.
+    all_rows = [r for r in raw_rows if int(r.get("exchange_id") or 0) not in known_exchange_ids or int(r.get("exchange_id") or 0) in scope_ids]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in all_rows:
         cid = str(r.get("candidate_id") or _candidate_id(str(r["normalized_key"]), str(r["value_hash"]), value=str(r.get("value_raw") or ""), kind=str(r.get("value_kind") or "scalar"), location=str(r.get("location") or "")))
@@ -485,6 +639,11 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
         score = _score_candidate(rows)
         if score < 0:
             continue
+        has_existing = cid in existing
+        is_graph_neighbor = mode != "full" and cid in locals().get("graph_neighbors", set())
+        relevant, gate_reasons = _is_semantic_candidate(rows, score, has_existing=has_existing, graph_neighbor=is_graph_neighbor)
+        if not relevant:
+            continue
         alias_counts: dict[str,int] = defaultdict(int)
         for r in rows: alias_counts[str(r.get("normalized_key") or "value")] += 1
         norm = sorted(alias_counts, key=lambda k:(-alias_counts[k], k))[0] if alias_counts else "value"
@@ -524,6 +683,7 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
             "manual_ground_truth": manual,
             "observation_ids": obs_ids[:100],
             "score": round(score, 2),
+            "selection_reasons": gate_reasons,
         }
         if cid in existing:
             old = existing[cid]
@@ -536,9 +696,18 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
     traffic_new_ids = {str(r.get("candidate_id") or "") for r in new_rows if str(r.get("candidate_id") or "")}
     new_ids = set(direct)
     selected = candidates
+    # impacted_before_gate is the number of lifecycle candidates touched by the
+    # delta/impact graph before the semantic relevance gate.
+    impacted_before_gate = len(impacted)
     meta = {
-        "total_observations": len(all_rows),
+        "total_observations": len(raw_rows),
+        "scope_observations": len(all_rows),
+        "excluded_scope_observations": max(0, len(raw_rows) - len(all_rows)),
+        "scope_exchanges": int(scope_stats.get("scope_exchanges") or 0),
+        "excluded_scope_exchanges": int(scope_stats.get("excluded_exchanges") or 0),
         "new_observations": len(new_rows),
+        "impacted_candidates_before_gate": impacted_before_gate,
+        "deferred_candidates": max(0, impacted_before_gate - len(candidates)),
         "impacted_candidates": len(candidates),
         "selected_candidates": len(selected),
         "candidate_cap_applied": False,
