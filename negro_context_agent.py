@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.5.
+"""Negro Context Agent v1.6.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,8 +22,11 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.5"
-DEFAULT_MODEL = "gpt-6.1-sol"
+AGENT_VERSION = "context-agent-v1.6"
+HYBRID_MODEL = "hybrid-luna-sol"
+LUNA_MODEL = "gpt-6-luna"
+SOL_MODEL = "gpt-6.1-sol"
+DEFAULT_MODEL = HYBRID_MODEL
 DEFAULT_OUTPUT_TOKENS = 6000  # legacy fallback; v1.1 uses automatic per-batch output budgets
 DEFAULT_AUTO_APPLY = 0.90
 DEFAULT_SUGGEST = 0.70
@@ -64,6 +67,21 @@ GENERIC_CONTEXT_KEYS = {
 MAX_CONCEPT_VALUE_SAMPLES = 6
 MAX_CONCEPT_ENDPOINTS = 12
 MAX_CONCEPT_OBSERVATIONS = 48
+HYBRID_LUNA_BATCH_SIZE = 64
+HYBRID_SOL_MAX_FRACTION = 0.18
+HYBRID_SOL_MIN_RESERVE = 4
+HYBRID_SOL_MAX_RESERVE = 24
+
+TELEMETRY_PATH_HINTS = (
+    "logging", "log", "logs", "telemetry", "analytics", "collect", "metrics",
+    "trace", "traces", "beacon", "pixel", "session-replay", "sessionreplay",
+)
+TELEMETRY_KEY_HINTS = (
+    "event", "message", "timestamp", "duration", "latency", "browser", "screen",
+    "trace", "correlation", "requestid", "request_id", "sessionreplay", "metric",
+)
+SEMANTIC_ID_SUFFIXES = ("identifier", "reference", "uuid", "number", "code", "ref", "id")
+SEMANTIC_ROLE_PREFIXES = ("source", "destination", "target", "origin", "owner", "current", "selected", "from", "to")
 
 TRANSPORT_NOISE_TOKENS = (
     "trace", "request_id", "requestid", "correlation_id", "correlationid", "ray",
@@ -586,6 +604,100 @@ def _is_static_path(path: str) -> bool:
     return any(low.endswith(ext) for ext in STATIC_EXTENSIONS)
 
 
+def _looks_telemetry_path(path: str) -> bool:
+    low = str(path or "").lower().split("?", 1)[0]
+    segments=[seg for seg in low.split("/") if seg]
+    if any(seg in TELEMETRY_PATH_HINTS for seg in segments):
+        return True
+    joined="/".join(segments)
+    return joined.endswith("events/track") or joined.endswith("event/track")
+
+
+def _candidate_has_flow(rows: list[dict[str, Any]]) -> bool:
+    for r in rows:
+        try:
+            if json.loads(r.get("flow_ids_json") or "[]"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _is_dormant_telemetry(rows: list[dict[str, Any]], *, has_existing: bool = False, graph_neighbor: bool = False, status_by_exchange: dict[int, int | None] | None = None) -> bool:
+    """Keep likely telemetry in the ledger without paying LLM tokens for it yet.
+
+    This is intentionally behavioral: a telemetry-looking path alone is not enough.
+    Manual truth, graph memory, Flow membership, propagation, cross-endpoint reuse or
+    auth/JWT evidence always wakes the candidate back up.
+    """
+    if not rows or has_existing or graph_neighbor:
+        return False
+    if any(r.get("manual_classification") for r in rows) or _candidate_has_flow(rows):
+        return False
+    sides = {str(r.get("side") or "") for r in rows}
+    endpoints = {(str(r.get("method") or ""), str(r.get("path") or "")) for r in rows}
+    kinds = {str(r.get("value_kind") or "").lower() for r in rows}
+    key = _norm_key(rows[0].get("key_name") or "")
+    if any(k.startswith("jwt") for k in kinds) or any(tok in key for tok in ("authorization", "token", "session", "account", "member", "user", "tenant", "organization", "wallet", "order", "payment")):
+        return False
+    if "request" in sides and "response" in sides:
+        return False
+    if len(endpoints) >= 2:
+        return False
+    paths = [str(r.get("path") or "") for r in rows]
+    if not paths or not all(_looks_telemetry_path(p) for p in paths):
+        return False
+    statuses = []
+    for r in rows:
+        exid = int(r.get("exchange_id") or 0)
+        if exid and status_by_exchange is not None and exid in status_by_exchange:
+            statuses.append(status_by_exchange.get(exid))
+    benign_status = bool(statuses) and all(s in {200, 202, 204, 304, None} for s in statuses)
+    key_signal = any(tok in key for tok in TELEMETRY_KEY_HINTS) or key in {"value", "data", "payload", "info", "level"}
+    # Repetition makes the classification safer; a single unfamiliar endpoint is
+    # preserved as a normal candidate unless its key/status also scream telemetry.
+    return (len(rows) >= 2 and (benign_status or key_signal)) or (benign_status and key_signal)
+
+
+def _semantic_key_family(value: str) -> str:
+    """Normalize alias-ish field names without hardcoding business object types."""
+    key = _norm_key(value) or "value"
+    # Remove contextual role prefixes while preserving the role itself elsewhere in
+    # the evidence bundle (aliases/endpoints). fromMemberId and toMemberId should
+    # teach one Member concept, not cost two semantic classifications.
+    changed = True
+    while changed:
+        changed = False
+        for prefix in SEMANTIC_ROLE_PREFIXES:
+            if key.startswith(prefix) and len(key) > len(prefix) + 2:
+                remainder = key[len(prefix):]
+                # Avoid corrupting ordinary words such as `token` merely because
+                # they begin with `to`. Role-prefix normalization is only useful
+                # when what remains looks like a semantic/reference field.
+                if any(h in remainder for h in SEMANTIC_HINTS) or any(remainder.endswith(s) for s in SEMANTIC_ID_SUFFIXES):
+                    key = remainder
+                    changed = True
+                    break
+    for suffix in SEMANTIC_ID_SUFFIXES:
+        if key.endswith(suffix) and len(key) > len(suffix) + 2:
+            key = key[:-len(suffix)]
+            break
+    return key or "value"
+
+
+def _semantic_location_group(location: str) -> str:
+    low = str(location or "").lower()
+    if "#jwt:" in low or "jwt_claim" in low:
+        return "jwt_claim"
+    if "_header:" in low:
+        return "header"
+    if "_cookie:" in low:
+        return "cookie"
+    if any(tag in low for tag in ("_query:", "request_path:", "_json:", "_form:", "_multipart:", "_xml:")):
+        return "structured"
+    return "http"
+
+
 def _is_semantic_candidate(rows: list[dict[str, Any]], score: float, *, has_existing: bool = False, graph_neighbor: bool = False) -> tuple[bool, list[str]]:
     """Conservative semantic gate.
 
@@ -779,21 +891,40 @@ def _location_family(location: str) -> str:
 
 
 def _concept_signature(candidate: dict[str, Any]) -> str:
-    """Stable schema-level signature. Concrete values never participate."""
-    key = _norm_key(str(candidate.get("normalized_key") or candidate.get("key") or "value")) or "value"
+    """Stable schema-family signature. Concrete values never participate.
+
+    v1.6 intentionally learns semantic *families* rather than every syntactic
+    field spelling. Alias-ish keys (fromMemberId/toMemberId/memberRef) can share
+    one semantic classification, while generic keys such as `id` stay scoped to
+    endpoint families to avoid accidental cross-object merging.
+    """
+    raw_key = _norm_key(str(candidate.get("normalized_key") or candidate.get("key") or "value")) or "value"
+    family = _semantic_key_family(raw_key)
     endpoints = candidate.get("endpoints") or []
-    locs = sorted({_location_family(str(ep.get("location") or "")) for ep in endpoints}) or ["other"]
-    families = sorted({_endpoint_family(str(ep.get("path") or "")) for ep in endpoints if str(ep.get("path") or "")})
-    # Semantically explicit fields can be learned across endpoints. Generic fields
-    # such as `id` must remain endpoint-scoped to avoid merging unrelated objects.
+    locs = sorted({_semantic_location_group(str(ep.get("location") or "")) for ep in endpoints}) or ["http"]
+    endpoint_families = sorted({_endpoint_family(str(ep.get("path") or "")) for ep in endpoints if str(ep.get("path") or "")})
+    aliases = {_norm_key(str(a)) for a in (candidate.get("aliases") or []) if str(a)}
+    alias_families = {_semantic_key_family(a) for a in aliases if a}
+    if alias_families:
+        # Prefer the shortest stable family represented by lifecycle aliases.
+        family = sorted(alias_families | {family}, key=lambda x: (len(x), x))[0]
+
+    semanticish = any(h in family for h in SEMANTIC_HINTS) or raw_key != family
+    generic = raw_key in GENERIC_CONTEXT_KEYS or family in GENERIC_CONTEXT_KEYS or len(family) <= 2
     context = ",".join(locs[:3])
-    if key in GENERIC_CONTEXT_KEYS or len(key) <= 2:
-        context += "|" + ",".join(families[:3] or ["/"])
+    # Unknown/generic fields remain endpoint scoped. Business-ish families may
+    # span endpoints, which is precisely where the token savings come from.
+    if generic or not semanticish:
+        context += "|" + ",".join(endpoint_families[:3] or ["/"])
+    flows = sorted({int(fid) for fid in (candidate.get("flow_ids") or []) if str(fid).isdigit()})
+    # Flow is context, not identity: only generic fields need it in the signature.
+    if generic and flows:
+        context += "|flow=" + ",".join(str(x) for x in flows[:3])
     manual = candidate.get("manual_ground_truth") or []
     if manual:
         tags = sorted({f"{m.get('classification') or ''}:{m.get('object_type') or ''}" for m in manual})
         context += "|manual=" + ",".join(tags[:3])
-    return f"{key}|{context}"
+    return f"{family}|{context}"
 
 
 def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -813,7 +944,7 @@ def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[st
 
     units: list[dict[str, Any]] = []
     for concept_id, members in grouped.items():
-        members = sorted(members, key=lambda c: (-float(c.get("score") or 0), -int(c.get("occurrences") or 0), str(c.get("candidate_id") or "")))
+        members = sorted(members, key=lambda c: (0 if c.get("flow_ids") else 1, 0 if c.get("produced_then_consumed") else 1, -float(c.get("score") or 0), -int(c.get("occurrences") or 0), str(c.get("candidate_id") or "")))
         aliases = sorted({str(a) for c in members for a in (c.get("aliases") or []) if str(a)})
         keys = defaultdict(int)
         for c in members:
@@ -859,6 +990,7 @@ def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[st
         unit={
             "candidate_id":concept_id,
             "concept_id":concept_id,
+            "semantic_family":_semantic_key_family(norm),
             "normalized_key":norm,
             "key":str(members[0].get("key") or norm),
             "aliases":aliases[:16],
@@ -872,6 +1004,7 @@ def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[st
             "produced_then_consumed":any(bool(c.get("produced_then_consumed")) for c in members),
             "endpoints":endpoints,
             "flow_ids":flow_ids[:30],
+            "flow_priority":bool(flow_ids),
             "manual_ground_truth":manual,
             "observation_ids":obs,
             "score":round(max(float(c.get("score") or 0) for c in members),2),
@@ -881,7 +1014,7 @@ def _build_concept_units(candidates: list[dict[str, Any]]) -> tuple[list[dict[st
             "member_candidate_ids":[str(c.get("candidate_id") or "") for c in members],
         }
         units.append(unit)
-    units.sort(key=lambda u:(-float(u.get("score") or 0),-int(u.get("instance_count") or 0),str(u.get("normalized_key") or "")))
+    units.sort(key=lambda u:(0 if u.get("flow_priority") else 1, 0 if u.get("produced_then_consumed") else 1, -float(u.get("score") or 0),-int(u.get("instance_count") or 0),str(u.get("normalized_key") or "")))
     return units,member_to_concept
 
 
@@ -927,7 +1060,13 @@ def _existing_semantic_memory(conn) -> list[dict[str, Any]]:
 def _build_candidates(conn, *, since_observation_id: int, mode: str = "incremental", extra_impacted: set[str] | None = None, target_key: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     raw_rows = [dict(r) for r in conn.execute("SELECT * FROM semantic_observations ORDER BY id").fetchall()]
     scope_ids, scope_stats, scope_reasons = _ai_scope_exchange_ids(conn, target_key=target_key)
-    known_exchange_ids = {int(r["id"]) for r in conn.execute("SELECT id FROM http_exchanges").fetchall()} if _table_exists(conn, "http_exchanges") else set()
+    if _table_exists(conn, "http_exchanges"):
+        ex_meta_rows = conn.execute("SELECT id,status_code FROM http_exchanges").fetchall()
+        known_exchange_ids = {int(r["id"]) for r in ex_meta_rows}
+        status_by_exchange = {int(r["id"]): (int(r["status_code"]) if r["status_code"] is not None else None) for r in ex_meta_rows}
+    else:
+        known_exchange_ids = set()
+        status_by_exchange = {}
     # Synthetic/unit/manual ledger rows without a backing exchange stay eligible;
     # real captured traffic must pass the project/Burp scope gate.
     all_rows = [r for r in raw_rows if int(r.get("exchange_id") or 0) not in known_exchange_ids or int(r.get("exchange_id") or 0) in scope_ids]
@@ -980,6 +1119,8 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
 
     existing = {str(r["candidate_id"]): r for r in _existing_semantic_memory(conn)}
     candidates: list[dict[str, Any]] = []
+    dormant_telemetry_candidates = 0
+    dormant_telemetry_observations = 0
     for cid in impacted:
         rows = grouped.get(cid) or []
         score = _score_candidate(rows)
@@ -987,6 +1128,10 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
             continue
         has_existing = cid in existing
         is_graph_neighbor = mode != "full" and cid in locals().get("graph_neighbors", set())
+        if _is_dormant_telemetry(rows, has_existing=has_existing, graph_neighbor=is_graph_neighbor, status_by_exchange=status_by_exchange):
+            dormant_telemetry_candidates += 1
+            dormant_telemetry_observations += len(rows)
+            continue
         relevant, gate_reasons = _is_semantic_candidate(rows, score, has_existing=has_existing, graph_neighbor=is_graph_neighbor)
         if not relevant:
             continue
@@ -1080,6 +1225,8 @@ def _build_candidates(conn, *, since_observation_id: int, mode: str = "increment
         "new_observations": len(new_rows),
         "impacted_candidates_before_gate": impacted_before_gate,
         "deferred_candidates": max(0, impacted_before_gate - len(candidates)),
+        "dormant_telemetry_candidates": dormant_telemetry_candidates,
+        "dormant_telemetry_observations": dormant_telemetry_observations,
         "impacted_candidates": len(candidates),
         "selected_candidates": len(selected),
         "candidate_cap_applied": False,
@@ -1335,50 +1482,110 @@ def build_analysis_bundle(conn, *, mode: str = "incremental", batch_size: int = 
     return bundle
 
 
-def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, usd_cop_rate: float | None = None) -> dict[str, Any]:
-    settings = intel.load_settings()
-    rate = float(usd_cop_rate if usd_cop_rate is not None else settings.get("usd_cop_rate") or 0)
-    batches=_batch_bundles(bundle)
+def _sol_reserve_count(concept_count: int) -> int:
+    if concept_count <= 0:
+        return 0
+    reserve=max(HYBRID_SOL_MIN_RESERVE, int(round(concept_count * HYBRID_SOL_MAX_FRACTION)))
+    return min(concept_count, HYBRID_SOL_MAX_RESERVE, reserve)
+
+
+def _preflight_sol_reserve(bundle: dict[str, Any]) -> list[str]:
+    """Reserve expensive review for the concepts most likely to need judgment.
+
+    This never drops a concept from AI: Luna still sees every model unit. The
+    reserve only estimates/selects which concepts may receive a second Sol pass.
+    """
+    units=list(bundle.get("model_units") or [])
+    def risk(u: dict[str, Any]) -> tuple:
+        key=str(u.get("normalized_key") or "")
+        reasons=set(u.get("selection_reasons") or [])
+        boundaryish=any(x in key for x in ("tenant","organization","workspace","company","account","permission","scope","owner"))
+        generic=key in GENERIC_CONTEXT_KEYS or _semantic_key_family(key) in GENERIC_CONTEXT_KEYS
+        return (
+            0 if boundaryish else 1,
+            0 if u.get("flow_priority") else 1,
+            0 if u.get("produced_then_consumed") else 1,
+            0 if generic else 1,
+            -len(reasons),
+            -float(u.get("score") or 0),
+            str(u.get("candidate_id") or ""),
+        )
+    units.sort(key=risk)
+    return [str(u.get("candidate_id") or "") for u in units[:_sol_reserve_count(len(units))] if str(u.get("candidate_id") or "")]
+
+
+def _estimate_plan(bundle: dict[str, Any], *, model: str, plan: list[list[str]], usd_cop_rate: float | None = None) -> dict[str, Any]:
     details=[]
     totals={"input_tokens":0,"max_output_tokens":0,"expected_output_tokens":0,"max_usd":0.0,"expected_usd":0.0,"payload_chars":0}
-    for b in batches:
+    count=len(plan)
+    for idx,ids in enumerate(plan):
+        b=_batch_bundle(bundle,list(ids),idx+1,count)
         payload=json.dumps(b,ensure_ascii=False,separators=(",",":"))
         concept_count=len(b.get("candidates") or [])
         out_budget=_auto_output_budget(concept_count,len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
         expected_out=_expected_output_tokens(out_budget,concept_count)
+        settings=intel.load_settings(); rate=float(usd_cop_rate if usd_cop_rate is not None else settings.get("usd_cop_rate") or 0)
         max_est=intel.estimate_ai_cost(payload,model,out_budget,rate)
         expected_est=intel.estimate_ai_cost(payload,model,expected_out,rate)
-        details.append({"batch":int((b.get("batch") or {}).get("number") or 0),"concepts":concept_count,"input_tokens_est":int(max_est.get("input_tokens_est") or 0),"output_tokens_budget":out_budget,"expected_output_tokens":expected_out,"max_total_usd_est":float(max_est.get("max_total_usd_est") or 0),"max_total_cop_est":float(max_est.get("max_total_cop_est") or 0)})
+        details.append({"batch":idx+1,"concepts":concept_count,"input_tokens_est":int(max_est.get("input_tokens_est") or 0),"output_tokens_budget":out_budget,"expected_output_tokens":expected_out,"max_total_usd_est":float(max_est.get("max_total_usd_est") or 0),"max_total_cop_est":float(max_est.get("max_total_cop_est") or 0)})
         totals["input_tokens"] += int(max_est.get("input_tokens_est") or 0)
         totals["max_output_tokens"] += int(out_budget)
         totals["expected_output_tokens"] += int(expected_out)
         totals["max_usd"] += float(max_est.get("max_total_usd_est") or 0)
         totals["expected_usd"] += float(expected_est.get("max_total_usd_est") or 0)
         totals["payload_chars"] += len(payload)
+    return {"model":model,"details":details,**totals}
+
+
+def estimate_bundle(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, usd_cop_rate: float | None = None) -> dict[str, Any]:
+    settings = intel.load_settings()
+    rate = float(usd_cop_rate if usd_cop_rate is not None else settings.get("usd_cop_rate") or 0)
     stats=bundle.get("stats",{})
+    plan=list(bundle.get("batch_plan") or [])
+
+    if model == HYBRID_MODEL:
+        luna_plan=_plan_candidate_batches(bundle.get("model_units") or [],batch_size=HYBRID_LUNA_BATCH_SIZE)
+        luna=_estimate_plan(bundle,model=LUNA_MODEL,plan=luna_plan,usd_cop_rate=rate)
+        reserve_ids=_preflight_sol_reserve(bundle)
+        sol_plan=[reserve_ids[i:i+24] for i in range(0,len(reserve_ids),24)]
+        sol=_estimate_plan(bundle,model=SOL_MODEL,plan=sol_plan,usd_cop_rate=rate) if sol_plan else {"details":[],"input_tokens":0,"max_output_tokens":0,"expected_output_tokens":0,"max_usd":0.0,"expected_usd":0.0,"payload_chars":0}
+        max_usd=float(luna["max_usd"])+float(sol["max_usd"])
+        # Sol is a reserve, not a guaranteed second pass. For the user-facing
+        # expected cost assume roughly half of the reserved ambiguous concepts
+        # actually need escalation; hard-stop/max still budgets the full reserve.
+        expected_sol_usd=float(sol["expected_usd"])*0.5
+        expected_usd=float(luna["expected_usd"])+expected_sol_usd
+        details=[{**d,"stage":"Luna"} for d in luna["details"]]+[{**d,"stage":"Sol reserve"} for d in sol["details"]]
+        return {
+            "model":model,"pipeline_mode":"luna_then_selective_sol",
+            "input_tokens_est":int(luna["input_tokens"])+int(sol["input_tokens"]),
+            "luna_input_tokens_est":int(luna["input_tokens"]),"sol_input_tokens_reserve":int(sol["input_tokens"]),
+            "output_tokens_budget":int(luna["max_output_tokens"])+int(sol["max_output_tokens"]),
+            "output_tokens_max_batch":max([d["output_tokens_budget"] for d in details],default=0),
+            "expected_output_tokens":int(luna["expected_output_tokens"])+int(sol["expected_output_tokens"]),
+            "max_total_usd_est":max_usd,"expected_total_usd_est":expected_usd,"usd_cop_rate":rate,
+            "max_total_cop_est":max_usd*rate,"expected_total_cop_est":expected_usd*rate,
+            "luna_expected_cop_est":float(luna["expected_usd"])*rate,"sol_expected_cop_reserve":float(sol["expected_usd"])*rate,"sol_expected_cop_likely":expected_sol_usd*rate,
+            "luna_max_cop_est":float(luna["max_usd"])*rate,"sol_max_cop_reserve":float(sol["max_usd"])*rate,
+            "payload_chars":int(luna["payload_chars"])+int(sol["payload_chars"]),
+            "candidate_count":int(stats.get("selected_candidates") or 0),"instance_candidates":int(stats.get("instance_candidates") or stats.get("selected_candidates") or 0),
+            "concept_count":int(stats.get("model_concepts") or 0),"luna_concepts":int(stats.get("model_concepts") or 0),"sol_reserve_concepts":len(reserve_ids),
+            "semantic_compression_ratio":float(stats.get("semantic_compression_ratio") or 1.0),"new_observations":int(stats.get("new_observations") or 0),
+            "impacted_candidates":int(stats.get("impacted_candidates") or 0),"batch_count":len(details),"luna_batch_count":len(luna["details"]),"sol_reserve_batch_count":len(sol["details"]),
+            "batches":details,"mode":bundle.get("mode"),"candidate_cap_applied":False,"pricing_snapshot":"2026-11-01",
+        }
+
+    direct=_estimate_plan(bundle,model=model,plan=plan,usd_cop_rate=rate)
+    max_usd=float(direct["max_usd"]); expected_usd=float(direct["expected_usd"])
     return {
-        "model":model,
-        "input_tokens_est":totals["input_tokens"],
-        "output_tokens_budget":totals["max_output_tokens"],
-        "output_tokens_max_batch":max((d["output_tokens_budget"] for d in details),default=0),
-        "expected_output_tokens":totals["expected_output_tokens"],
-        "max_total_usd_est":totals["max_usd"],
-        "expected_total_usd_est":totals["expected_usd"],
-        "usd_cop_rate":rate,
-        "max_total_cop_est":totals["max_usd"]*rate,
-        "expected_total_cop_est":totals["expected_usd"]*rate,
-        "payload_chars":totals["payload_chars"],
-        "candidate_count":int(stats.get("selected_candidates") or 0),
-        "instance_candidates":int(stats.get("instance_candidates") or stats.get("selected_candidates") or 0),
-        "concept_count":int(stats.get("model_concepts") or 0),
-        "semantic_compression_ratio":float(stats.get("semantic_compression_ratio") or 1.0),
-        "new_observations":int(stats.get("new_observations") or 0),
-        "impacted_candidates":int(stats.get("impacted_candidates") or 0),
-        "batch_count":len(details),
-        "batches":details,
-        "mode":bundle.get("mode"),
-        "candidate_cap_applied":False,
-        "pricing_snapshot":"2026-11-01",
+        "model":model,"pipeline_mode":"single_model","input_tokens_est":int(direct["input_tokens"]),
+        "output_tokens_budget":int(direct["max_output_tokens"]),"output_tokens_max_batch":max((d["output_tokens_budget"] for d in direct["details"]),default=0),
+        "expected_output_tokens":int(direct["expected_output_tokens"]),"max_total_usd_est":max_usd,"expected_total_usd_est":expected_usd,"usd_cop_rate":rate,
+        "max_total_cop_est":max_usd*rate,"expected_total_cop_est":expected_usd*rate,"payload_chars":int(direct["payload_chars"]),
+        "candidate_count":int(stats.get("selected_candidates") or 0),"instance_candidates":int(stats.get("instance_candidates") or stats.get("selected_candidates") or 0),
+        "concept_count":int(stats.get("model_concepts") or 0),"semantic_compression_ratio":float(stats.get("semantic_compression_ratio") or 1.0),
+        "new_observations":int(stats.get("new_observations") or 0),"impacted_candidates":int(stats.get("impacted_candidates") or 0),"batch_count":len(direct["details"]),
+        "batches":direct["details"],"mode":bundle.get("mode"),"candidate_cap_applied":False,"pricing_snapshot":"2026-11-01",
     }
 
 
@@ -1442,7 +1649,7 @@ Categorías válidas:
 - unknown: evidencia insuficiente. Abstenerse es correcto.
 
 REGLAS:
-1. precision > recall. No etiquetes por llenar la salida.
+1. precision > recall. Para CADA candidate_id del batch devuelve exactamente una inference; si la evidencia no alcanza usa category=unknown con confianza baja en vez de omitirlo.
 2. Respeta manual_ground_truth como evidencia de máxima prioridad; nunca la contradigas silenciosamente.
 3. Usa semantic_type como nombre conceptual inferido (por ejemplo Member, Account, Order) pero NO dependas de una lista hardcodeada.
 4. role describe el papel contextual (source, target, owner, actor, destination, etc.) cuando esté respaldado.
@@ -1452,7 +1659,8 @@ REGLAS:
 8. existing_semantic_memory y existing_relations son memoria previa: úsala para reinterpretar evidencia nueva, pero permite reclasificar si aparece evidencia mejor.
 9. state_transitions fue calculado determinísticamente: úsalo como evidencia fuerte de ciclo de vida, sin asumir que toda transición implica vulnerabilidad.
 10. Nunca incluyas secretos/tokens en explanation.
-11. Devuelve únicamente JSON válido según el schema."""
+11. Si existe first_pass, estás en una pasada de refinamiento: revisa críticamente esas inferencias Luna usando toda la evidencia del bundle. Puedes bajar confianza, cambiar categoría/tipo/rol o mantenerla; no estás obligado a ser más seguro.
+12. Devuelve únicamente JSON válido según el schema."""
 
 
 def _response_usage(response) -> dict[str, Any]:
@@ -1496,6 +1704,11 @@ def run_model(bundle: dict[str, Any], *, model: str = DEFAULT_MODEL, output_toke
         result = json.loads(text)
     except Exception as exc:
         raise ContextAgentModelError("OpenAI no devolvió JSON estructurado válido para Context Agent", _response_usage(response)) from exc
+    expected={str(c.get("candidate_id") or "") for c in bundle.get("candidates") or [] if str(c.get("candidate_id") or "")}
+    got={str(i.get("candidate_id") or "") for i in result.get("inferences") or [] if str(i.get("candidate_id") or "")}
+    missing=sorted(expected-got)
+    if missing:
+        raise ContextAgentModelError(f"Context Agent devolvió un batch incompleto: faltan {len(missing)} concepto(s)", _response_usage(response))
     return result, _response_usage(response)
 
 
@@ -1666,6 +1879,68 @@ def _persist_result(conn, run_id: int, bundle: dict[str, Any], result: dict[str,
     return counts
 
 
+def _select_sol_escalations(bundle: dict[str, Any], first_pass: dict[str, Any]) -> list[str]:
+    """Pick concepts that deserve an expensive second opinion.
+
+    Every concept has already been analyzed by Luna. Sol is only for ambiguity,
+    authorization boundaries, conflicting memory or relation-heavy cases.
+    """
+    units={str(u.get("candidate_id") or ""):u for u in bundle.get("model_units") or []}
+    scored: dict[str,float]={}
+    for inf in first_pass.get("inferences") or []:
+        cid=str(inf.get("candidate_id") or "")
+        if cid not in units: continue
+        conf=float(inf.get("confidence") or 0)
+        cat=str(inf.get("category") or "")
+        unit=units[cid]
+        score=0.0
+        if cat == "authorization_boundary": score += 8.0
+        if 0.55 <= conf < 0.90: score += 6.0 + (0.90-conf)*4
+        if cat == "unknown" and (unit.get("flow_priority") or unit.get("produced_then_consumed") or float(unit.get("score") or 0)>=5): score += 5.0
+        if unit.get("existing_inference_summary"):
+            old_types={str(x.get("semantic_type") or x.get("category") or "") for x in unit.get("existing_inference_summary") or []}
+            new_type=str(inf.get("semantic_type") or cat)
+            if old_types and new_type not in old_types: score += 7.0
+        key=str(unit.get("normalized_key") or "")
+        if any(x in key for x in ("tenant","organization","workspace","company","account","permission","scope","owner")): score += 2.5
+        if unit.get("flow_priority"): score += 1.5
+        if unit.get("produced_then_consumed"): score += 1.0
+        if score > 0: scored[cid]=max(scored.get(cid,0),score)
+    for rel in first_pass.get("relationships") or []:
+        conf=float(rel.get("confidence") or 0)
+        for cid in (str(rel.get("src_candidate_id") or ""),str(rel.get("dst_candidate_id") or "")):
+            if cid in units and conf < 0.90:
+                scored[cid]=max(scored.get(cid,0),4.5+(0.90-conf)*3)
+    limit=_sol_reserve_count(len(units))
+    return [cid for cid,_ in sorted(scored.items(),key=lambda x:(-x[1],x[0]))[:limit]]
+
+
+def _refinement_bundle(bundle: dict[str, Any], ids: list[str], first_pass: dict[str, Any], batch_no: int, batch_count: int) -> dict[str, Any]:
+    b=_batch_bundle(bundle,ids,batch_no,batch_count)
+    idset=set(ids)
+    b["instructions"]={**(b.get("instructions") or {}),"refinement_pass":True,"first_pass_model":LUNA_MODEL,"refine_only_listed_concepts":True}
+    b["first_pass"]={
+        "inferences":[x for x in first_pass.get("inferences") or [] if str(x.get("candidate_id") or "") in idset],
+        "relationships":[x for x in first_pass.get("relationships") or [] if str(x.get("src_candidate_id") or "") in idset or str(x.get("dst_candidate_id") or "") in idset],
+    }
+    return b
+
+
+def _overlay_refinement(first_pass: dict[str, Any], refinement: dict[str, Any], refined_ids: set[str]) -> dict[str, Any]:
+    inf={str(x.get("candidate_id") or ""):x for x in first_pass.get("inferences") or [] if str(x.get("candidate_id") or "")}
+    for x in refinement.get("inferences") or []:
+        cid=str(x.get("candidate_id") or "")
+        if cid in refined_ids: inf[cid]=x
+    rel={
+        (str(x.get("src_candidate_id") or ""),str(x.get("relation") or ""),str(x.get("dst_candidate_id") or ""),str(x.get("dst_literal") or "")):x
+        for x in first_pass.get("relationships") or []
+    }
+    for x in refinement.get("relationships") or []:
+        sig=(str(x.get("src_candidate_id") or ""),str(x.get("relation") or ""),str(x.get("dst_candidate_id") or ""),str(x.get("dst_literal") or ""))
+        if sig[0] in refined_ids or sig[2] in refined_ids: rel[sig]=x
+    return {"summary":str(first_pass.get("summary") or "") + (" | Sol refinó " + str(len(refined_ids)) + " concepto(s)." if refined_ids else ""),"inferences":list(inf.values()),"relationships":list(rel.values())}
+
+
 def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budget_cop: float | None = None, auto_apply_threshold: float = DEFAULT_AUTO_APPLY, suggest_threshold: float = DEFAULT_SUGGEST, reasoning_effort: str = "medium", target_key: str | None = None) -> dict[str, Any]:
     init_schema(conn)
     bundle = build_analysis_bundle(conn, mode=mode, target_key=target_key)
@@ -1674,72 +1949,82 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
     if budget_cop is not None and float(estimate.get("max_total_cop_est") or 0) > float(budget_cop):
         raise RuntimeError(
             f"El costo máximo estimado COP ${float(estimate.get('max_total_cop_est') or 0):,.0f} "
-            f"supera tu límite COP ${float(budget_cop):,.0f}. Negro no recorta candidatos: aumenta el presupuesto o reduce el scope."
+            f"supera tu límite COP ${float(budget_cop):,.0f}. Negro no recorta contexto: aumenta el presupuesto o reduce el scope."
         )
-    before = bundle.get("watermark_before") or {}
-    after = bundle.get("watermark_after") or {}
+    before = bundle.get("watermark_before") or {}; after = bundle.get("watermark_after") or {}
     cur = conn.execute(
         """INSERT INTO semantic_agent_runs(agent_version,mode,model,status,watermark_exchange_before,watermark_observation_before,watermark_exchange_after,watermark_observation_after,new_observations,candidate_count,estimate_json,created_at)
            VALUES(?,?,?,'running',?,?,?,?,?,?,?,?)""",
         (AGENT_VERSION,mode,model,int(before.get("exchange") or 0),int(before.get("observation") or 0),int(after.get("exchange") or 0),int(after.get("observation") or 0),int(bundle.get("stats",{}).get("new_observations") or 0),int(bundle.get("stats",{}).get("selected_candidates") or 0),json.dumps(estimate),now_iso()),
     )
-    run_id = int(cur.lastrowid)
-    batch_bundles=_batch_bundles(bundle)
-    batch_results=[]
-    usage_total={"input_tokens":0,"output_tokens":0,"total_tokens":0}
-    completed=0
+    run_id=int(cur.lastrowid)
+    usage_by_model={LUNA_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0},SOL_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0}}
+    completed_luna=completed_sol=0
+    current_stage = LUNA_MODEL if model == HYBRID_MODEL else model
+    result={}
     try:
         if not bundle.get("candidates"):
-            completeness={"candidates_total":0,"candidates_analyzed":0,"concepts_total":0,"concepts_analyzed":0,"batches_total":0,"batches_completed":0,"coverage_pct":100.0,"truncated":False}
-            result = {"summary":"No hay candidatos nuevos o impactados que justifiquen una llamada al modelo.","inferences":[],"relationships":[],"completeness":completeness}
+            completeness={"candidates_total":0,"candidates_analyzed":0,"concepts_total":0,"concepts_analyzed":0,"batches_total":0,"batches_completed":0,"coverage_pct":100.0,"truncated":False,"luna_concepts":0,"sol_refined":0}
+            result={"summary":"No hay candidatos nuevos o impactados que justifiquen una llamada al modelo.","inferences":[],"relationships":[],"completeness":completeness}
+        elif model == HYBRID_MODEL:
+            luna_results=[]
+            luna_plan=_plan_candidate_batches(bundle.get("model_units") or [],batch_size=HYBRID_LUNA_BATCH_SIZE)
+            luna_bundles=[_batch_bundle(bundle,list(ids),idx+1,len(luna_plan)) for idx,ids in enumerate(luna_plan)]
+            for b in luna_bundles:
+                out_budget=_auto_output_budget(len(b.get("candidates") or []),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
+                current_stage=LUNA_MODEL
+                r,u=run_model(b,model=LUNA_MODEL,output_tokens=out_budget,reasoning_effort="low")
+                luna_results.append(r); completed_luna += 1
+                for k in usage_by_model[LUNA_MODEL]: usage_by_model[LUNA_MODEL][k]+=int(u.get(k) or 0)
+            first=_merge_batch_results(luna_results,completeness={})
+            escalate=_select_sol_escalations(bundle,first)
+            final=first
+            if escalate:
+                sol_results=[]; sol_plan=[escalate[i:i+24] for i in range(0,len(escalate),24)]
+                for idx,ids in enumerate(sol_plan):
+                    b=_refinement_bundle(bundle,ids,first,idx+1,len(sol_plan))
+                    out_budget=_auto_output_budget(len(ids),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
+                    current_stage=SOL_MODEL
+                    r,u=run_model(b,model=SOL_MODEL,output_tokens=out_budget,reasoning_effort=reasoning_effort)
+                    sol_results.append(r); completed_sol += 1
+                    for k in usage_by_model[SOL_MODEL]: usage_by_model[SOL_MODEL][k]+=int(u.get(k) or 0)
+                refine=_merge_batch_results(sol_results,completeness={})
+                final=_overlay_refinement(first,refine,set(escalate))
+            total_candidates=len(bundle.get("candidates") or []); total_concepts=len(bundle.get("model_units") or [])
+            completeness={"candidates_total":total_candidates,"candidates_analyzed":total_candidates,"concepts_total":total_concepts,"concepts_analyzed":total_concepts,"batches_total":len(luna_bundles)+completed_sol,"batches_completed":completed_luna+completed_sol,"coverage_pct":100.0,"truncated":False,"luna_concepts":total_concepts,"sol_refined":len(escalate),"pipeline":"Luna→Sol selectivo"}
+            result={**final,"completeness":completeness}
         else:
+            batch_bundles=_batch_bundles(bundle); batch_results=[]
+            if model not in usage_by_model: usage_by_model[model]={"input_tokens":0,"output_tokens":0,"total_tokens":0}
             for b in batch_bundles:
                 out_budget=_auto_output_budget(len(b.get("candidates") or []),len(b.get("existing_relations") or []),len(b.get("state_transitions") or []))
-                batch_result,batch_usage=run_model(b,model=model,output_tokens=out_budget,reasoning_effort=reasoning_effort)
-                batch_results.append(batch_result); completed += 1
-                for key in usage_total:
-                    usage_total[key] += int(batch_usage.get(key) or 0)
-            total_candidates=len(bundle.get("candidates") or [])
-            total_concepts=len(bundle.get("model_units") or [])
-            completeness={
-                "candidates_total":total_candidates,"candidates_analyzed":total_candidates,
-                "concepts_total":total_concepts,"concepts_analyzed":total_concepts,
-                "batches_total":len(batch_bundles),"batches_completed":completed,
-                "coverage_pct":100.0,"truncated":False,
-            }
+                current_stage=model
+                r,u=run_model(b,model=model,output_tokens=out_budget,reasoning_effort=reasoning_effort)
+                batch_results.append(r); completed_luna += 1
+                for k in usage_by_model[model]: usage_by_model[model][k]+=int(u.get(k) or 0)
+            total_candidates=len(bundle.get("candidates") or []); total_concepts=len(bundle.get("model_units") or [])
+            completeness={"candidates_total":total_candidates,"candidates_analyzed":total_candidates,"concepts_total":total_concepts,"concepts_analyzed":total_concepts,"batches_total":len(batch_bundles),"batches_completed":len(batch_bundles),"coverage_pct":100.0,"truncated":False,"luna_concepts":total_concepts if model==LUNA_MODEL else 0,"sol_refined":total_concepts if model==SOL_MODEL else 0}
             result=_merge_batch_results(batch_results,completeness=completeness)
-        usage=usage_total
-        persisted = _persist_result(conn, run_id, bundle, result, auto_apply_threshold=auto_apply_threshold, suggest_threshold=suggest_threshold)
-        cost = _actual_cost(model, usage)
+
+        persisted=_persist_result(conn,run_id,bundle,result,auto_apply_threshold=auto_apply_threshold,suggest_threshold=suggest_threshold)
+        cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)
         cost_cop=cost*rate
-        conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?", (json.dumps(usage),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
-        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
+        usage_total={"by_model":usage_by_model,"input_tokens":sum(int(u.get("input_tokens") or 0) for u in usage_by_model.values()),"output_tokens":sum(int(u.get("output_tokens") or 0) for u in usage_by_model.values()),"total_tokens":sum(int(u.get("total_tokens") or 0) for u in usage_by_model.values())}
+        conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?",(json.dumps(usage_total),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
+        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage_total,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
     except ContextAgentModelError as exc:
-        partial=dict(exc.usage or {})
-        for key in usage_total:
-            usage_total[key] += int(partial.get(key) or 0)
-        cost=_actual_cost(model,usage_total); cost_cop=cost*rate
-        completed_concepts=sum(len(x.get("candidates") or []) for x in batch_bundles[:completed])
-        represented=set()
-        concept_map={str(u.get("candidate_id") or ""):u for u in bundle.get("model_units") or []}
-        for b in batch_bundles[:completed]:
-            for c in b.get("candidates") or []:
-                unit=concept_map.get(str(c.get("candidate_id") or "")) or {}
-                represented.update(unit.get("member_candidate_ids") or [])
-        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":len(represented),"concepts_total":len(bundle.get("model_units") or []),"concepts_analyzed":completed_concepts,"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((len(represented)/max(1,len(bundle.get("candidates") or [])))*100,2),"truncated":True}}
-        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        # Preserve billed usage without persisting partial semantic memory.
+        target=current_stage
+        if target not in usage_by_model: usage_by_model[target]={"input_tokens":0,"output_tokens":0,"total_tokens":0}
+        for k in usage_by_model[target]: usage_by_model[target][k]+=int((exc.usage or {}).get(k) or 0)
+        cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
+        err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
+        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
     except Exception as exc:
-        cost=_actual_cost(model,usage_total); cost_cop=cost*rate
-        completed_concepts=sum(len(x.get("candidates") or []) for x in batch_bundles[:completed])
-        represented=set()
-        concept_map={str(u.get("candidate_id") or ""):u for u in bundle.get("model_units") or []}
-        for b in batch_bundles[:completed]:
-            for c in b.get("candidates") or []:
-                unit=concept_map.get(str(c.get("candidate_id") or "")) or {}
-                represented.update(unit.get("member_candidate_ids") or [])
-        error_result={"completeness":{"candidates_total":len(bundle.get("candidates") or []),"candidates_analyzed":len(represented),"concepts_total":len(bundle.get("model_units") or []),"concepts_analyzed":completed_concepts,"batches_total":len(batch_bundles),"batches_completed":completed,"coverage_pct":round((len(represented)/max(1,len(bundle.get("candidates") or [])))*100,2),"truncated":True}}
-        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?", (json.dumps(usage_total),json.dumps(error_result),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
+        err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
+        conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
         raise
 
 

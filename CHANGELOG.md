@@ -1,3 +1,11 @@
+## 2026-11-01 · v0.117.6 — Semantic Preflight + Luna→Sol selectivo
+- Añade supresión determinística de telemetry/logging repetitivo sin borrar el Observation Ledger.
+- Agrupa aliases/instancias en familias semánticas más amplias, manteniendo campos genéricos acotados por contexto para evitar falsos merges.
+- Prioriza evidencia de Flows y propagación response→request.
+- Nuevo modo recomendado `hybrid-luna-sol`: Luna analiza todas las familias; Sol sólo refina ambigüedades, conflictos y posibles authorization boundaries.
+- La estimación separa costo Luna, reserva Sol y costo total esperado/máximo en COP.
+- Completeness exige una inferencia por familia; `unknown` cuenta como abstención válida.
+
 ## v0.117.5 — Semantic concept compression
 
 - Context Agent v1.5 separates concrete instances from billable semantic concepts.

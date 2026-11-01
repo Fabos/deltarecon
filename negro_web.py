@@ -4144,8 +4144,8 @@ def create_app(default_domain: str, default_workspace: Path):
         mode = str(payload.get("mode") or "incremental").lower()
         if mode not in {"incremental","full"}: mode = "incremental"
         model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
-        if model not in {"gpt-6.1-sol","gpt-6-luna"}:
-            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.5"}, status_code=400)
+        if model not in {"hybrid-luna-sol","gpt-6.1-sol","gpt-6-luna"}:
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.6"}, status_code=400)
         _, _, paths = _target_context(target_key)
         try:
             with _db(paths) as conn:
@@ -4162,8 +4162,8 @@ def create_app(default_domain: str, default_workspace: Path):
         mode = str(payload.get("mode") or "incremental").lower()
         if mode not in {"incremental","full"}: mode = "incremental"
         model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
-        if model not in {"gpt-6.1-sol","gpt-6-luna"}:
-            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.5"}, status_code=400)
+        if model not in {"hybrid-luna-sol","gpt-6.1-sol","gpt-6-luna"}:
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1.6"}, status_code=400)
         budget_cop = max(1.0, min(100000000.0, float(payload.get("budget_cop") or 1000.0)))
         _, _, paths = _target_context(target_key)
         try:
