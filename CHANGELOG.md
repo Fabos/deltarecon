@@ -1,3 +1,16 @@
+## v0.117.0 — Context Agent MVP
+
+- Primer agente semántico persistente de Negro: analiza tráfico HTTP/Flows capturados y enriquece HTTP Workbench sin reemplazar el marcado manual.
+- Observation Ledger para path/query, headers, cookies, JWT claims, JSON/form, multipart y XML, con provenance por exchange/location.
+- Análisis incremental Delta + Impact Graph: tráfico nuevo + cambios de Flow/manual + vecinos semánticos previos (hasta dos saltos).
+- Cost preview obligatorio antes del run, hard budget por ejecución, usage/cost ledger y contabilización de errores con usage reportado.
+- GPT-6.1 Sol como default del agente y GPT-6 Luna como alternativa económica.
+- Confidence híbrido: model confidence + evidence confidence determinística; precisión sobre recall.
+- Alta confianza se proyecta al Workbench, media aparece como Suggested, baja permanece interna; marcas manuales tienen prioridad.
+- AI Context muestra conceptos y relaciones mientras se navegan Requests.
+- Detección determinística de transiciones de estado asociadas a identificadores concretos.
+- El agente no busca vulnerabilidades ni ejecuta HTTP en esta fase.
+
 ## v0.116.9 — Styled First Frame
 
 - Fast HTTP preview now renders with the final syntax/layout immediately instead of flashing raw text first.

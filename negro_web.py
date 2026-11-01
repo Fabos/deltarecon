@@ -4117,6 +4117,76 @@ def create_app(default_domain: str, default_workspace: Path):
         count = workbench.mark_all_events_seen(through_event_id=through if through > 0 else None)
         return {"ok": True, "updated": count, "unread_count": workbench.event_unread_count()}
 
+    @app.get("/t/{target_key}/context-agent", response_class=HTMLResponse)
+    def context_agent_page(request: Request, target_key: str):
+        import negro_context_agent as context_agent
+        import negro_intel as intel
+        domain, workspace, paths = _target_context(target_key)
+        with _db(paths) as conn:
+            context_agent.init_schema(conn)
+            dashboard = context_agent.dashboard(conn)
+        settings = intel.load_settings()
+        return render(
+            request, "context_agent.html", target_key, domain, workspace,
+            agent=dashboard, secret_status=intel.secret_status(),
+            default_model=context_agent.DEFAULT_MODEL,
+            default_output_tokens=context_agent.DEFAULT_OUTPUT_TOKENS,
+            default_budget_usd=float(settings.get("context_agent_budget_usd") or 0.25),
+        )
+
+    @app.post("/api/t/{target_key}/context-agent/estimate", response_class=JSONResponse)
+    async def context_agent_estimate_api(request: Request, target_key: str):
+        import negro_context_agent as context_agent
+        import negro_intel as intel
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        mode = str(payload.get("mode") or "incremental").lower()
+        if mode not in {"incremental","full"}: mode = "incremental"
+        model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
+        if model not in {"gpt-6.1-sol","gpt-6-luna"}:
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1"}, status_code=400)
+        output_tokens = max(1500, min(12000, int(payload.get("output_tokens") or context_agent.DEFAULT_OUTPUT_TOKENS)))
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                data = context_agent.estimate(conn, mode=mode, model=model, output_tokens=output_tokens)
+            return {"ok":True, **data}
+        except Exception as exc:
+            return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)
+
+    @app.post("/api/t/{target_key}/context-agent/run", response_class=JSONResponse)
+    async def context_agent_run_api(request: Request, target_key: str):
+        import negro_context_agent as context_agent
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        mode = str(payload.get("mode") or "incremental").lower()
+        if mode not in {"incremental","full"}: mode = "incremental"
+        model = str(payload.get("model") or context_agent.DEFAULT_MODEL)
+        if model not in {"gpt-6.1-sol","gpt-6-luna"}:
+            return JSONResponse({"ok":False,"error":"Modelo no permitido para Context Agent v1"}, status_code=400)
+        output_tokens = max(1500, min(12000, int(payload.get("output_tokens") or context_agent.DEFAULT_OUTPUT_TOKENS)))
+        budget_usd = max(0.001, min(100.0, float(payload.get("budget_usd") or 0.25)))
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                result = context_agent.execute(conn, mode=mode, model=model, output_tokens=output_tokens, budget_usd=budget_usd)
+            return result
+        except Exception as exc:
+            return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)
+
+    @app.post("/api/t/{target_key}/context-agent/inference/{inference_id}/decision", response_class=JSONResponse)
+    async def context_agent_decision_api(request: Request, target_key: str, inference_id: int):
+        import negro_context_agent as context_agent
+        payload = await request.json()
+        verify_csrf(str(payload.get("csrf") or ""))
+        _, _, paths = _target_context(target_key)
+        try:
+            with _db(paths) as conn:
+                result = context_agent.decide_inference(conn, int(inference_id), str(payload.get("decision") or ""))
+            return {"ok":True, **result}
+        except Exception as exc:
+            return JSONResponse({"ok":False,"error":str(exc)}, status_code=400)
+
     @app.get("/t/{target_key}/notifications", response_class=HTMLResponse)
     def notifications_page(request: Request, target_key: str):
         domain, workspace, paths = _target_context(target_key)

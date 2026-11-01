@@ -6,6 +6,7 @@ import html
 import json
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
 
@@ -217,6 +218,58 @@ def _path_values(first_line: str) -> list[tuple[str, str, str]]:
     return out
 
 
+def _multipart_values(body: str, content_type: str):
+    m = re.search(r"boundary=(?:\"([^\"]+)\"|([^;\s]+))", str(content_type or ""), re.I)
+    boundary = (m.group(1) or m.group(2)) if m else ""
+    if not boundary or not body:
+        return
+    marker = "--" + boundary
+    for part in str(body).split(marker):
+        if not part or part.startswith("--"):
+            continue
+        part = part.lstrip("\r\n")
+        if "\r\n\r\n" in part:
+            head, value = part.split("\r\n\r\n", 1)
+        elif "\n\n" in part:
+            head, value = part.split("\n\n", 1)
+        else:
+            continue
+        value = value.rstrip("\r\n-")
+        dm = re.search(r'name="([^"]+)"', head, re.I)
+        if not dm:
+            continue
+        name = dm.group(1)
+        fm = re.search(r'filename="([^"]*)"', head, re.I)
+        if fm:
+            # File bytes are deliberately not treated as semantic scalar data, but
+            # the filename itself may carry useful business context.
+            if fm.group(1):
+                yield f"{name}.filename", fm.group(1)
+            continue
+        if len(value) <= 12000:
+            yield name, value
+
+
+def _xml_values(body: str):
+    if not body or len(body) > 500_000:
+        return
+    try:
+        root = ET.fromstring(body)
+    except Exception:
+        return
+    count = 0
+    for elem in root.iter():
+        if count >= 300:
+            break
+        text = (elem.text or "").strip()
+        if not text or len(list(elem)) or len(text) > 12000:
+            continue
+        tag = str(elem.tag).split("}")[-1]
+        if tag:
+            count += 1
+            yield tag, text
+
+
 def extract_message(text: str, side: str) -> list[dict[str, Any]]:
     head, body = split_http(text)
     out: list[dict[str, Any]] = []
@@ -265,6 +318,18 @@ def extract_message(text: str, side: str) -> list[dict[str, Any]]:
             for key, values in urllib.parse.parse_qs(raw_body, keep_blank_values=True).items():
                 for value in values:
                     _append(out, seen, side=side, location=f"{side}_form:{key}", key=key, value=value)
+        except Exception:
+            pass
+    if raw_body and "multipart/form-data" in content_type:
+        try:
+            for key, value in _multipart_values(raw_body, content_type) or []:
+                _append(out, seen, side=side, location=f"{side}_multipart:{key}", key=key, value=value)
+        except Exception:
+            pass
+    if raw_body and ("xml" in content_type or stripped.startswith("<")):
+        try:
+            for key, value in _xml_values(raw_body) or []:
+                _append(out, seen, side=side, location=f"{side}_xml:{key}", key=key, value=value)
         except Exception:
             pass
     return out

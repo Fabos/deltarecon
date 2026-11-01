@@ -1071,6 +1071,14 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             annotations = http_inspector.learned_annotations(conn, int(exchange_id))
         except Exception:
             annotations = [dict(a) for a in (inspector.get("annotations") or [])]
+        semantic_context = {"inferences": [], "relations": []}
+        try:
+            import negro_context_agent as context_agent
+            context_agent.init_schema(conn)
+            semantic_context = context_agent.semantics_for_exchange(conn, int(exchange_id))
+            annotations = list(annotations or []) + context_agent.synthetic_annotations_for_exchange(conn, int(exchange_id))
+        except Exception:
+            semantic_context = {"inferences": [], "relations": []}
 
         identity = None
         identity_rows = _safe_query(conn, """
@@ -1219,6 +1227,13 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
                 "object_type": str(ann.get("object_type") or ""),
                 "match_reason": str(ann.get("match_reason") or ""),
                 "source_exchange_id": ann.get("source_exchange_id"),
+                "source": str(ann.get("source") or ""),
+                "semantic_category": str(ann.get("semantic_category") or ""),
+                "semantic_type": str(ann.get("semantic_type") or ""),
+                "semantic_role": str(ann.get("semantic_role") or ""),
+                "ai_confidence": float(ann.get("ai_confidence") or 0),
+                "ai_status": str(ann.get("ai_status") or ""),
+                "inference_id": int(ann.get("inference_id") or 0) or None,
             })
 
         active_scope_authorized = False
@@ -1262,6 +1277,7 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
             "signals": signals,
             "flows": flows,
             "related": related,
+            "semantic_context": semantic_context,
         }
 
 

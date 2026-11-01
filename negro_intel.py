@@ -55,9 +55,10 @@ DEFAULT_SETTINGS = {
 }
 
 OPENAI_PRICING = {
-    # Standard processing prices per 1M text tokens, snapshot 2026-09-27.
+    # Standard processing prices per 1M text tokens, snapshot 2026-11-01.
     "gpt-6-luna": {"input": 0.10, "output": 0.50, "long_input": 0.20, "long_output": 0.75},
     "gpt-6-sol": {"input": 2.00, "output": 10.00, "long_input": 4.00, "long_output": 15.00},
+    "gpt-6.1-sol": {"input": 2.00, "output": 10.00, "long_input": 4.00, "long_output": 15.00},
 }
 LONG_CONTEXT_THRESHOLD = 272_000
 
@@ -751,7 +752,7 @@ def estimate_ai_cost(payload: str, model: str, output_tokens: int, usd_cop_rate:
         "max_total_usd_est": total_usd_max,
         "usd_cop_rate": usd_cop_rate,
         "max_total_cop_est": total_usd_max * usd_cop_rate,
-        "pricing_snapshot": "2026-09-27",
+        "pricing_snapshot": "2026-11-01",
     }
 
 

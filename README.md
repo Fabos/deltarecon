@@ -128,6 +128,9 @@ El Workbench y HTTP Inspector comparten el mismo renderer de contexto aprendido.
 
 # Negro Recon 🐕 — v0.44.8
 
+
+> **Nuevo · v0.117.0 Context Agent:** desde HTTP Workbench puedes abrir `Context Agent`, calcular costo antes de ejecutar y construir una memoria semántica incremental del target (Identity/Object/State/relations) sin perder el workflow manual. Ver `V1170_CONTEXT_AGENT_MVP.md`.
+
 ## v0.47.1 · Contexto inline explicable
 
 Los valores enseñados como AUTH/RESOLVER/CONTEXT/ENTITY se proyectan sobre Requests y Responses compatibles. Negro prefiere coincidencia de path+valor y usa key+valor sólo como fallback conservador. El visor muestra badges inline y tooltip con la razón. Burp Bridge v0.35.0 usa la pestaña `Negro Context` como visor HTTP contextual, no como simple resumen.
