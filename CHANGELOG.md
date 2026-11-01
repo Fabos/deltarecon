@@ -1,3 +1,11 @@
+## v0.117.8 — Context Agent stable run
+
+- Context Agent libera la transacción SQLite antes de llamar a Luna/Sol.
+- notifications/status/summary usan un fast path read-only y no relanzan migraciones durante polling.
+- SQLite busy timeout aumentado a 30 s para ráfagas concurrentes.
+- El estado del run aparece inmediatamente debajo de Ejecutar Context Agent.
+- Los estados completed/error se confirman explícitamente antes de cerrar el worker.
+
 ## 2026-11-01 · v0.117.7 — Context Agent observable / async
 
 - `Ejecutar Context Agent` ya no bloquea el event loop de FastAPI.

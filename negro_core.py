@@ -284,12 +284,12 @@ def workspace_project_name(paths: dict[str, Path], fallback_domain: str) -> str:
 
 
 def db_connect(paths: dict[str, Path]) -> sqlite3.Connection:
-    conn = sqlite3.connect(paths["db_file"], timeout=5.0)
+    conn = sqlite3.connect(paths["db_file"], timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # SQLite remains a good fit for a local-first single-hunter workspace. WAL +
     # a busy timeout make simultaneous Burp ingestion and UI reads far less brittle.
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
     return conn

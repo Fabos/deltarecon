@@ -1791,3 +1791,7 @@ form[data-repeater-form]{display:flex;align-items:center;gap:.45rem;flex-wrap:wr
 .ca-scope-diagnostic{margin:12px 0;padding:12px 14px;border:1px solid rgba(125,168,255,.18);border-radius:12px;background:rgba(16,24,36,.72);color:#aeb9c8}.ca-scope-diagnostic p{margin:4px 0;line-height:1.55}.ca-scope-diagnostic b{color:#e4eaf2}.ca-scope-diagnostic code{color:#9fc5ff}
 /* v0.1177 · Context Agent observable async progress */
 .ca-progress-head{display:flex;align-items:center;justify-content:space-between;gap:12px;grid-column:1/-1}.ca-progress-head>span{display:flex;align-items:center;gap:9px}.ca-progress-head strong{color:#b9d2e7;font-variant-numeric:tabular-nums}.ca-progress-track{grid-column:1/-1;height:7px;border-radius:999px;background:#0d151c;border:1px solid #273846;overflow:hidden}.ca-progress-track>span{display:block;height:100%;background:linear-gradient(90deg,#628eb4,#79b57c);transition:width .25s ease}.ca-run-feedback.loading>small{grid-column:1/-1;color:#8e9cab}
+
+/* v0.1178 · Context Agent stable run / visible progress */
+.ca-run-feedback-prominent{margin:12px 0 10px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:#0c1115;min-height:54px}
+.ca-run-feedback-prominent.loading{border-color:#35526a;background:#0c141a}.ca-run-feedback-prominent.ok{border-color:#34552e;background:#0d1510}.ca-run-feedback-prominent.error{border-color:#603333;background:#170f10}

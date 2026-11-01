@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.7.
+"""Negro Context Agent v1.8.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,7 +22,7 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.7"
+AGENT_VERSION = "context-agent-v1.8"
 HYBRID_MODEL = "hybrid-luna-sol"
 MODEL_TIMEOUT_SECONDS = 120.0
 MODEL_MAX_RETRIES = 1
@@ -1967,6 +1967,10 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         (AGENT_VERSION,mode,model,int(before.get("exchange") or 0),int(before.get("observation") or 0),int(after.get("exchange") or 0),int(after.get("observation") or 0),int(bundle.get("stats",{}).get("new_observations") or 0),int(bundle.get("stats",{}).get("selected_candidates") or 0),json.dumps(estimate),now_iso()),
     )
     run_id=int(cur.lastrowid)
+    # Persist the run row and release SQLite's write transaction before any
+    # potentially slow network/model call. Keeping this transaction open across
+    # Luna/Sol batches blocks Burp ingestion, notifications and other writers.
+    conn.commit()
     _progress(stage="running", label="Run creado", run_id=run_id, current=0, total=int(estimate.get("batch_count") or 0), model=model, cost_cop=0.0)
     usage_by_model={LUNA_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0},SOL_MODEL:{"input_tokens":0,"output_tokens":0,"total_tokens":0}}
     completed_luna=completed_sol=0
@@ -2029,6 +2033,7 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         cost_cop=cost*rate
         usage_total={"by_model":usage_by_model,"input_tokens":sum(int(u.get("input_tokens") or 0) for u in usage_by_model.values()),"output_tokens":sum(int(u.get("output_tokens") or 0) for u in usage_by_model.values()),"total_tokens":sum(int(u.get("total_tokens") or 0) for u in usage_by_model.values())}
         conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?",(json.dumps(usage_total),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
+        conn.commit()
         _progress(stage="completed", label="Análisis completado", run_id=run_id, current=1, total=1, model=current_stage, cost_cop=cost_cop, coverage=float((result.get("completeness") or {}).get("coverage_pct") or 0))
         return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage_total,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
     except ContextAgentModelError as exc:
@@ -2039,12 +2044,14 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
         err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        conn.commit()
         _progress(stage="error", label="El análisis falló", run_id=run_id, current=0, total=0, model=current_stage, cost_cop=cost_cop, error=str(exc)[:1000])
         raise
     except Exception as exc:
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING); cost_cop=cost*rate
         err={"completeness":{"coverage_pct":0.0,"truncated":True,"luna_batches_completed":completed_luna,"sol_batches_completed":completed_sol}}
         conn.execute("UPDATE semantic_agent_runs SET status='error',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,error_text=?,finished_at=? WHERE id=?",(json.dumps({"by_model":usage_by_model}),json.dumps(err),cost,cost_cop,str(exc)[:2000],now_iso(),run_id))
+        conn.commit()
         _progress(stage="error", label="El análisis falló", run_id=run_id, current=0, total=0, model=current_stage, cost_cop=cost_cop, error=str(exc)[:1000])
         raise
 

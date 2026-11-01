@@ -429,7 +429,7 @@ def _visual_state(coverage: str, signal: str) -> str:
     return "normal"
 
 
-def _target_context(target_key: str) -> tuple[str, Path, dict[str, Path]]:
+def _target_context(target_key: str, *, ensure: bool = True) -> tuple[str, Path, dict[str, Path]]:
     target = core.get_target(target_key)
     if not target:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -437,7 +437,14 @@ def _target_context(target_key: str) -> tuple[str, Path, dict[str, Path]]:
     workspace = Path(str(target.get("workspace", ""))).expanduser()
     if not domain or not workspace:
         raise HTTPException(status_code=500, detail="Proyecto mal configurado")
-    paths = core.ensure_workspace(workspace, domain, scopes=target.get("scopes"), project_name=target.get("name"))
+    if ensure:
+        paths = core.ensure_workspace(workspace, domain, scopes=target.get("scopes"), project_name=target.get("name"))
+    else:
+        # Polling/read-only endpoints must not re-run schema migrations while a
+        # long Context Agent job is active. Reuse the already initialized DB.
+        paths = core.workspace_paths(workspace)
+        if not paths["db_file"].exists():
+            paths = core.ensure_workspace(workspace, domain, scopes=target.get("scopes"), project_name=target.get("name"))
     return domain, workspace, paths
 
 
@@ -4230,7 +4237,7 @@ def create_app(default_domain: str, default_workspace: Path):
     @app.get("/api/t/{target_key}/context-agent/status", response_class=JSONResponse)
     def context_agent_status_api(target_key: str):
         import negro_context_agent as context_agent
-        _, _, paths = _target_context(target_key)
+        _, _, paths = _target_context(target_key, ensure=False)
         with JOBS_LOCK:
             jobs=[dict(j) for j in JOBS.values() if j.get("target_key")==target_key and j.get("kind")=="context_agent"]
         active=next((j for j in reversed(jobs) if j.get("status") in {"queued","running"}), None)
@@ -4269,7 +4276,7 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/api/t/{target_key}/notifications", response_class=JSONResponse)
     def notifications_api(target_key: str, after_id: int = 0, limit: int = 50):
-        _, _, paths = _target_context(target_key)
+        _, _, paths = _target_context(target_key, ensure=False)
         with _db(paths) as conn:
             unread = int(conn.execute("SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL").fetchone()["c"] or 0)
             rows = conn.execute(
@@ -8903,7 +8910,7 @@ def create_app(default_domain: str, default_workspace: Path):
 
     @app.get("/api/t/{target_key}/summary", response_class=JSONResponse)
     def summary_api(target_key: str):
-        _, _, paths = _target_context(target_key)
+        _, _, paths = _target_context(target_key, ensure=False)
         return _dashboard_data(paths)["stats"]
 
     return app

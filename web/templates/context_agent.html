@@ -2,6 +2,7 @@
 {% block title %}Context Agent · Negro{% endblock %}
 {% block content %}
 <!-- compatibility marker: Context Agent v1.5 -->
+<!-- compatibility marker: Context Agent v1.7 -->
 <section class="ca-shell" data-context-agent data-csrf="{{ csrf_token }}" data-estimate-url="/api/t/{{ target_key }}/context-agent/estimate" data-run-url="/api/t/{{ target_key }}/context-agent/run" data-status-url="/api/t/{{ target_key }}/context-agent/status" data-target-key="{{ target_key }}">
   <header class="ca-hero">
     <div><p class="eyebrow">NEGRO · AI LAYER</p><h1>Context Agent</h1><p>Aprende el modelo semántico del negocio a partir del tráfico HTTP y los Flows. No busca vulnerabilidades ni ejecuta Requests.</p></div>
@@ -21,7 +22,7 @@
 
   <div class="ca-grid">
     <section class="panel ca-control">
-      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.7</span></div>
+      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.8</span></div>
       <p class="muted">La ejecución normal es incremental: analiza lo nuevo + el contexto histórico afectado. Tus marcas manuales tienen prioridad y nunca se eliminan.</p>
       <div class="ca-form-grid">
         <label>Modo<select data-ca-mode><option value="incremental" selected>Inteligente · incremental</option><option value="full">Reanalizar todo</option></select><small>Incremental usa delta + impact graph.</small></label>
@@ -30,11 +31,11 @@
         <label>Límite por ejecución · COP<input type="number" min="1" max="100000000" step="100" value="{{ default_budget_cop|round|int }}" data-ca-budget><small>Hard stop: si el análisis completo supera este valor, Negro no ejecuta parcialmente.</small></label>
       </div>
       <div class="ca-actions"><button type="button" class="button ghost" data-ca-estimate>Calcular antes de ejecutar</button><button type="button" class="button primary" data-ca-run disabled>✦ Ejecutar Context Agent</button></div>
+      <div class="ca-run-feedback ca-run-feedback-prominent" data-ca-feedback hidden></div>
       <p class="muted small">Costos mostrados en pesos colombianos · tasa de referencia: 1 USD ≈ COP ${{ '{:,.2f}'.format(usd_cop_rate or 0) }}{% if usd_cop_rate_date %} · {{ usd_cop_rate_date }}{% endif %}.</p>
       <div class="ca-estimate" data-ca-estimate-box>
         <div class="ca-estimate-empty"><b>Aún no hemos calculado.</b><span>No se envía nada a OpenAI al estimar.</span></div>
       </div>
-      <div class="ca-run-feedback" data-ca-feedback hidden></div>
     </section>
 
     <aside class="panel ca-how">
