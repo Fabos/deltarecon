@@ -25,3 +25,5 @@ cd burp-extension
 ## Datos
 
 El código y los workspaces son cosas distintas. Borrar el checkout no debe borrar un workspace externo. Los datos de cada proyecto viven en la ruta `workspace` registrada en `~/.config/negro/targets.json`.
+
+Release: v0.117.9

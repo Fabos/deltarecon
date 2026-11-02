@@ -1,3 +1,9 @@
+## v0.117.9 — Native Identity Projection + Relationship Synthesis
+
+Context Agent ya no deja el conocimiento aislado en AI Context. La memoria semántica de alta señal se reproyecta localmente sobre el modelo nativo de Identity: primero intenta resolver/enriquecer identities existentes, y sólo crea una Identity `AI · PROVISIONAL` cuando hay resolvers fuertes y no existe un match inequívoco. Email/nombre/teléfono son atributos, no anchors. Roles source/target incompatibles nunca se auto-mergean.
+
+La reproyección reutiliza runs ya pagados sin llamar otra vez al modelo. HTTP Workbench prioriza Identity/Auth/Object/Reference y pliega transporte/telemetría bajo `Contexto técnico`. Un Relationship Synthesizer local conecta la Identity con documento, contacto, credenciales y referencias asociadas.
+
 ## v0.116.8 — navegación HTTP instantánea
 
 El Workbench ya no espera la hidratación completa de Context para mostrar una Request. Request/Response se pintan desde una caché/previsualización ligera y las correlaciones de Negro llegan después en segundo plano. Las filas vecinas se precargan para navegación con flechas y las Requests LIVE traen su preview en el mismo polling.

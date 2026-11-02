@@ -3,6 +3,7 @@
 {% block content %}
 <!-- compatibility marker: Context Agent v1.5 -->
 <!-- compatibility marker: Context Agent v1.7 -->
+<!-- compatibility marker: Context Agent v1.8 -->
 <section class="ca-shell" data-context-agent data-csrf="{{ csrf_token }}" data-estimate-url="/api/t/{{ target_key }}/context-agent/estimate" data-run-url="/api/t/{{ target_key }}/context-agent/run" data-status-url="/api/t/{{ target_key }}/context-agent/status" data-target-key="{{ target_key }}">
   <header class="ca-hero">
     <div><p class="eyebrow">NEGRO · AI LAYER</p><h1>Context Agent</h1><p>Aprende el modelo semántico del negocio a partir del tráfico HTTP y los Flows. No busca vulnerabilidades ni ejecuta Requests.</p></div>
@@ -19,10 +20,11 @@
     <article><span>Relaciones</span><b>{{ agent.counts.relations }}</b><small>grafo semántico persistente</small></article>
     <article><span>Runs IA</span><b>{{ agent.counts.runs }}</b><small>costo acumulado <strong>COP ${{ '{:,.0f}'.format(agent.counts.cost_cop or 0) }}</strong></small></article>
   </section>
+  {% if agent.native_projection %}<div class="ca-native-projection"><b>Native Projection</b><span>{{ agent.native_projection.ai_identities or 0 }} Identity(s) IA · {{ agent.native_projection.provisional or 0 }} provisionales · {{ agent.native_projection.links or 0 }} relaciones nativas{% if agent.native_projection.conflicts %} · {{ agent.native_projection.conflicts }} conflicto(s) sin auto-merge{% endif %}</span><small>Reproyección local de memoria ya pagada · COP $0</small></div>{% endif %}
 
   <div class="ca-grid">
     <section class="panel ca-control">
-      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.8</span></div>
+      <div class="panel-head"><div><p class="eyebrow">EJECUCIÓN CONTROLADA</p><h2>Analizar contexto</h2></div><span class="ca-agent-chip">Context Agent v1.9</span></div>
       <p class="muted">La ejecución normal es incremental: analiza lo nuevo + el contexto histórico afectado. Tus marcas manuales tienen prioridad y nunca se eliminan.</p>
       <div class="ca-form-grid">
         <label>Modo<select data-ca-mode><option value="incremental" selected>Inteligente · incremental</option><option value="full">Reanalizar todo</option></select><small>Incremental usa delta + impact graph.</small></label>
@@ -44,8 +46,9 @@
         <li><b>1</b><span><strong>Scope Gate + Observation Ledger</strong><small>Scope híbrido: target del proyecto + reglas Host/Endpoint del Workbench + Burp IN_SCOPE. El scope explícito de Negro manda; Burp IN_SCOPE puede añadir tráfico y Burp EXCLUDED sólo veta lo no incluido por Negro. Path/query, headers, cookies, JWT claims, body y response quedan trazables.</small></span></li>
         <li><b>2</b><span><strong>Semantic Preflight + Delta + Impact</strong><small>Telemetry/transporte repetitivo queda dormido. Flows, propagación y memoria despiertan evidencia relevante y la agrupan por familias.</small></span></li>
         <li><b>3</b><span><strong>Luna → Sol selectivo</strong><small>Luna analiza todas las familias relevantes; Sol sólo recibe los casos ambiguos, conflictivos o sensibles a autorización. Todos los candidatos relevantes se procesan: no existe un cap fijo de 120.</small></span></li>
-        <li><b>4</b><span><strong>Persistent Memory</strong><small>Inferencias y relaciones sobreviven entre runs.</small></span></li>
-        <li><b>5</b><span><strong>HTTP Workbench</strong><small>Las marcas fuertes vuelven a tus Requests para seguir trabajando manual.</small></span></li>
+        <li><b>4</b><span><strong>Native Projection</strong><small>Resolvers fuertes crean o enriquecen Identities nativas provisionales; nunca auto-mergea identities ambiguas. La memoria ya pagada se reproyecta localmente sin otra llamada IA.</small></span></li>
+        <li><b>5</b><span><strong>Persistent Memory + Relations</strong><small>Identity, credenciales, atributos y relaciones sobreviven entre runs.</small></span></li>
+        <li><b>6</b><span><strong>HTTP Workbench</strong><small>Identity nativa + contexto IA priorizado vuelven a tus Requests para seguir trabajando manual.</small></span></li>
       </ol>
     </aside>
   </div>

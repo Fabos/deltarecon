@@ -1,3 +1,14 @@
+## 2026-11-01 · v0.117.9 — Native Identity Projection + semantic ranking
+
+- Reproyecta memoria IA existente a `identities`, `identity_resolvers`, `auth_materials` y `exchange_identities` sin una nueva llamada al modelo.
+- Crea Identities provisionales AI sólo con resolvers fuertes; attributes de contacto no crean actores por sí solos.
+- Enriquece Identities manuales existentes en lugar de duplicarlas.
+- Nunca auto-mergea source/from con target/to/destination aunque coexistan en la misma Request.
+- Relationship Synthesizer local genera links `identified_by`, `has_contact`, `authenticated_by`, `associated_with` y contexto relacionado.
+- HTTP Workbench muestra la Identity nativa con estado/confidence AI.
+- AI Context prioriza señales de alto valor y pliega transporte/telemetry en `Contexto técnico`.
+- Reproyección idempotente y local: los 200 resultados de un run previo pueden aprovecharse a COP $0.
+
 ## v0.117.8 — Context Agent stable run
 
 - Context Agent libera la transacción SQLite antes de llamar a Luna/Sol.

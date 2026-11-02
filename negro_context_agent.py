@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Negro Context Agent v1.8.
+"""Negro Context Agent v1.9.
 
 A conservative semantic layer over captured HTTP traffic.  The deterministic
 layer inventories observations and builds candidate/evidence bundles.  The LLM
@@ -22,7 +22,7 @@ import negro_identity as identity_tools
 import negro_objects as object_tools
 import negro_intel as intel
 
-AGENT_VERSION = "context-agent-v1.8"
+AGENT_VERSION = "context-agent-v1.9"
 HYBRID_MODEL = "hybrid-luna-sol"
 MODEL_TIMEOUT_SECONDS = 120.0
 MODEL_MAX_RETRIES = 1
@@ -255,6 +255,14 @@ def init_schema(conn) -> None:
         conn.execute("ALTER TABLE semantic_relations ADD COLUMN model_confidence REAL NOT NULL DEFAULT 0")
     if "evidence_confidence" not in rel_cols:
         conn.execute("ALTER TABLE semantic_relations ADD COLUMN evidence_confidence REAL NOT NULL DEFAULT 0")
+    try:
+        import negro_native_projection as native_projection
+        native_projection.init_schema(conn)
+        # Cheap/idempotent local replay: after an upgrade, already-paid semantic
+        # memory is projected into native Identities without another model call.
+        native_projection.project_current_memory(conn)
+    except Exception:
+        pass
 
 
 def _flows_for_exchange(conn, exchange_id: int) -> list[int]:
@@ -2029,13 +2037,19 @@ def execute(conn, *, mode: str = "incremental", model: str = DEFAULT_MODEL, budg
 
         _progress(stage="persisting", label="Guardando memoria semántica", run_id=run_id, current=1, total=1, model=current_stage, cost_cop=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)*rate)
         persisted=_persist_result(conn,run_id,bundle,result,auto_apply_threshold=auto_apply_threshold,suggest_threshold=suggest_threshold)
+        projection={}
+        try:
+            import negro_native_projection as native_projection
+            projection=native_projection.project_current_memory(conn, force=True)
+        except Exception as projection_exc:
+            projection={"error":str(projection_exc)[:1000]}
         cost=sum(_actual_cost(m,u) for m,u in usage_by_model.items() if m in intel.OPENAI_PRICING)
         cost_cop=cost*rate
         usage_total={"by_model":usage_by_model,"input_tokens":sum(int(u.get("input_tokens") or 0) for u in usage_by_model.values()),"output_tokens":sum(int(u.get("output_tokens") or 0) for u in usage_by_model.values()),"total_tokens":sum(int(u.get("total_tokens") or 0) for u in usage_by_model.values())}
         conn.execute("UPDATE semantic_agent_runs SET status='completed',usage_json=?,result_json=?,cost_usd=?,cost_cop=?,finished_at=? WHERE id=?",(json.dumps(usage_total),json.dumps(result,ensure_ascii=False),cost,cost_cop,now_iso(),run_id))
         conn.commit()
         _progress(stage="completed", label="Análisis completado", run_id=run_id, current=1, total=1, model=current_stage, cost_cop=cost_cop, coverage=float((result.get("completeness") or {}).get("coverage_pct") or 0))
-        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage_total,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"bundle_stats":bundle.get("stats",{})}
+        return {"ok":True,"run_id":run_id,"estimate":estimate,"usage":usage_total,"cost_usd":cost,"cost_cop":cost_cop,"result":result,"completeness":result.get("completeness") or {},"persisted":persisted,"native_projection":projection,"bundle_stats":bundle.get("stats",{})}
     except ContextAgentModelError as exc:
         # Preserve billed usage without persisting partial semantic memory.
         target=current_stage
@@ -2078,6 +2092,22 @@ def dashboard(conn) -> dict[str, Any]:
     for r in relations:
         r["src_label"] = labels.get(str(r.get("src_candidate_id"))) or str(r.get("src_candidate_id") or "")
         r["dst_label"] = labels.get(str(r.get("dst_candidate_id"))) if r.get("dst_candidate_id") else str(r.get("dst_literal") or "")
+    try:
+        native_rows=conn.execute("""SELECT l.*,i.name identity_name FROM identity_semantic_links l JOIN identities i ON i.id=l.identity_id
+                                   ORDER BY l.confidence DESC,l.id DESC LIMIT 160""").fetchall()
+        for row in native_rows:
+            d=dict(row)
+            val=str(d.get("value_preview") or "").strip()
+            typ=str(d.get("semantic_type") or "Context")
+            relations.append({
+                **d,
+                "src_candidate_id":f"identity:{int(d['identity_id'])}",
+                "dst_candidate_id":str(d.get("candidate_id") or ""),
+                "src_label":str(d.get("identity_name") or f"Identity #{d['identity_id']}"),
+                "dst_label":f"{typ}[{val[:40]}]" if val else typ,
+            })
+    except Exception:
+        pass
     total_cost = float(conn.execute("SELECT COALESCE(SUM(cost_usd),0) v FROM semantic_agent_runs WHERE cost_usd IS NOT NULL").fetchone()["v"] or 0)
     settings=intel.load_settings(); rate=float(settings.get("usd_cop_rate") or 0)
     total_cost_cop=float(conn.execute("SELECT COALESCE(SUM(cost_cop),0) v FROM semantic_agent_runs WHERE cost_cop IS NOT NULL").fetchone()["v"] or 0)
@@ -2090,7 +2120,23 @@ def dashboard(conn) -> dict[str, Any]:
         "cost_usd": total_cost,
         "cost_cop": total_cost_cop,
     }
-    return {"runs":runs,"inferences":inferences,"relations":relations,"counts":counts}
+    native_projection={}
+    try:
+        import negro_native_projection as native_projection_tools
+        native_projection=native_projection_tools.projection_summary(conn)
+    except Exception:
+        native_projection={}
+    return {"runs":runs,"inferences":inferences,"relations":relations,"counts":counts,"native_projection":native_projection}
+
+
+def _inference_display_bucket(inf: dict[str, Any]) -> tuple[int, int]:
+    category=str(inf.get("category") or "")
+    text=" ".join([str(inf.get("normalized_key") or ""),str(inf.get("semantic_type") or ""),str(inf.get("role") or ""),str(inf.get("explanation") or "")]).lower()
+    technical_tokens=("transport","telemetry","timing","priority","browser","cache","cors","strict_transport","security policy","http transfer","nextjs","trace","correlation","rum","static asset","request metadata","response metadata")
+    technical=category=="context" and any(t in text for t in technical_tokens)
+    if technical: return (4,0)
+    rank={"identity":0,"credential":0,"authorization_boundary":0,"business_object":1,"reference":1,"action":2,"state":2,"context":3}.get(category,3)
+    return (rank,0)
 
 
 def semantics_for_exchange(conn, exchange_id: int) -> dict[str, Any]:
@@ -2126,12 +2172,37 @@ def semantics_for_exchange(conn, exchange_id: int) -> dict[str, Any]:
                 d["src_label"]=_label(src,str(d.get("src_candidate_id") or ""))
                 d["dst_label"]=_label(dst,str(d.get("dst_literal") or d.get("dst_candidate_id") or ""))
                 rels.append(d)
-    summary=[]; seen=set()
-    for i in sorted(infs,key=lambda x:(-float(x.get("confidence") or 0),int(x.get("id") or 0))):
+    summary=[]; technical=[]; seen=set()
+    ordered=sorted(infs,key=lambda x:(_inference_display_bucket(x)[0],-float(x.get("confidence") or 0),int(x.get("id") or 0)))
+    for i in ordered:
         cid=str(i.get("candidate_id") or "")
         if cid in seen: continue
-        seen.add(cid); summary.append(i)
-    return {"inferences":infs,"summary_inferences":summary,"relations":rels[:80]}
+        seen.add(cid)
+        if _inference_display_bucket(i)[0] >= 4:
+            technical.append(i)
+        else:
+            summary.append(i)
+    native_identity=None; native_links=[]
+    try:
+        row=conn.execute("""SELECT i.id,i.name,i.kind,xi.confidence,xi.source,iam.status ai_status,iam.confidence ai_confidence,iam.semantic_type ai_semantic_type
+                              FROM exchange_identities xi JOIN identities i ON i.id=xi.identity_id
+                              LEFT JOIN identity_ai_meta iam ON iam.identity_id=i.id WHERE xi.exchange_id=? LIMIT 1""",(int(exchange_id),)).fetchone()
+        if row:
+            native_identity=dict(row)
+            import negro_native_projection as native_projection
+            native_links=native_projection.identity_links(conn,int(row["id"]),limit=16)
+            for link in native_links:
+                rels.insert(0,{
+                    "src_label":str(row["name"]),"src_candidate_id":f"identity:{int(row['id'])}",
+                    "relation":str(link.get("relation") or "related_to"),
+                    "dst_label":str(link.get("semantic_type") or link.get("value_preview") or link.get("candidate_id") or "Context"),
+                    "dst_candidate_id":str(link.get("candidate_id") or ""),
+                    "confidence":float(link.get("confidence") or 0),"status":str(link.get("status") or "suggested"),
+                    "explanation":"Native Identity projection",
+                })
+    except Exception:
+        native_identity=None; native_links=[]
+    return {"inferences":infs,"summary_inferences":summary,"technical_inferences":technical,"relations":rels[:80],"native_identity":native_identity,"native_links":native_links}
 
 
 def synthetic_annotations_for_exchange(conn, exchange_id: int) -> list[dict[str, Any]]:

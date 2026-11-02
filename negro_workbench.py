@@ -1082,9 +1082,11 @@ def detail(source_key: str, exchange_id: int) -> dict[str, Any] | None:
 
         identity = None
         identity_rows = _safe_query(conn, """
-            SELECT i.id,i.name,i.kind,ic.id context_id,ic.label context_label,ic.role,ic.tenant,xi.confidence,xi.source
+            SELECT i.id,i.name,i.kind,ic.id context_id,ic.label context_label,ic.role,ic.tenant,xi.confidence,xi.source,
+                   iam.status ai_status,iam.confidence ai_confidence,iam.semantic_type ai_semantic_type
               FROM exchange_identities xi JOIN identities i ON i.id=xi.identity_id
               LEFT JOIN identity_contexts ic ON ic.id=xi.context_id
+              LEFT JOIN identity_ai_meta iam ON iam.identity_id=i.id
              WHERE xi.exchange_id=? LIMIT 1
         """, (int(exchange_id),))
         if identity_rows:
